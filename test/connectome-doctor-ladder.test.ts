@@ -788,6 +788,14 @@ describe('the ladder\'s inference stage', () => {
     expect(out).toContain("no readable turn's model call since the host last started at 11-12 11:02:38: 2 other model call(s)");
     expect(out).not.toContain("no turn's model call");
   });
+
+  test('with an incomplete last row and no turn\'s call, it says no readable turn\'s call, since that row may be a turn\'s', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'data', STARTED), `${row(at.now - 9, 'complete')}\n{"timestamp":"${new Date((at.now - 4) * 1000).toISOString()}","kind":"str`);
+    const { out } = ladder(at);
+    expect(out).toContain("no readable turn's model call since the host last started at 11-12 11:02:38: 1 other model call(s)");
+    expect(out).not.toContain("no turn's model call");
+  });
 });
 
 describe('the ladder\'s data directory', () => {
