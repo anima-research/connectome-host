@@ -218,9 +218,10 @@ describe('the opening\'s steps, in the order the person meets them', () => {
       finished: first(/`setup--finished`/),
     };
     const found = Object.values(at).every((step) => step >= 0);
-    expect({ at, found, order: found && at.discord < at.readBack && at.history < at.readBack && at.readBack <= at.goingLive
-      && at.setupMd < at.hello && at.hello < at.backups && at.backups < at.finished })
-      .toEqual({ at, found: true, order: true });
+    const readBacks = steps.filter((step) => /"The read-back"/.test(step)).length;
+    expect({ at, found, readBacks, order: found && at.discord < at.readBack && at.history < at.readBack
+      && at.readBack <= at.goingLive && at.setupMd < at.hello && at.hello < at.backups && at.backups < at.finished })
+      .toEqual({ at, found: true, readBacks: 1, order: true });
   });
 });
 
