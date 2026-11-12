@@ -1243,3 +1243,44 @@ describe('the ladder run by doctor, with --findings-json', () => {
     expect(found).toContainEqual({ text: expect.stringMatching(/^agent is ASLEEP until /), counts: false });
   });
 });
+
+describe('the ladder, its round on the review of 3c6be0fd0', () => {
+  const exhausted = (at: Install, s: number) => writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({
+    at: new Date(s * 1000).toISOString(), agent: 'resident', consecutive: 3, reason: '529 overloaded', kind: 'inference-exhausted' })}\n`);
+  const row = (s: number, kind: string, rawResponse: unknown = { stop_reason: 'end_turn' }) =>
+    JSON.stringify({ timestamp: new Date(s * 1000).toISOString(), kind, rawResponse });
+  const findings = (at: Install): Array<{ text: string; counts: boolean }> => {
+    const line = ladder(at, ['--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '));
+    if (line === undefined) throw new Error('the ladder gave no findings line');
+    return JSON.parse(line.slice('connectome-doctor findings: '.length));
+  };
+  const hardDown = { text: expect.stringMatching(/^inference failures, the last \d+m ago, with no successful turn found since/), counts: true };
+  const startsAfter = { text: expect.stringMatching(new RegExp('^inference failures, the last \\d+m ago; whether a turn has succeeded ' +
+    'since isn\'t known, since the call log read here starts at \\S+ \\S+, after it$')), counts: false };
+
+  test('a failure from before the call log the ladder reads isn\'t called hard-down: whether a turn has succeeded since isn\'t known', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'journal.txt'), '');
+    exhausted(at, at.now - 300);
+    const before = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    writeFileSync(before, `${row(at.now - 200, 'stream')}\n`);
+    utimesSync(before, at.now - 200, at.now - 200);
+    const newest = join(at.work, 'data', 'llm-calls.2026-10-31T00-00-00.jsonl');
+    writeFileSync(newest, `${row(at.now - 50, 'complete')}\n`);
+    expect(findings(at)).toContainEqual(startsAfter);
+    expect(findings(at)).not.toContainEqual(hardDown);
+    writeFileSync(newest, `${row(at.now - 400, 'complete')}\n${row(at.now - 50, 'complete')}\n`);
+    expect(findings(at)).toContainEqual(hardDown);
+  });
+
+  test('a failure from before the last 30 MB of the call log isn\'t called hard-down either', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'journal.txt'), '');
+    exhausted(at, at.now - 300);
+    const poke = JSON.stringify({ timestamp: new Date((at.now - 100) * 1000).toISOString(), kind: 'keepalive', pad: 'x'.repeat(900) });
+    writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'),
+      `${row(at.now - 200, 'stream')}\n${`${poke}\n`.repeat(Math.ceil(31_000_000 / (poke.length + 1)))}`);
+    expect(findings(at)).toContainEqual(startsAfter);
+    expect(findings(at)).not.toContainEqual(hardDown);
+  }, 60_000);
+});

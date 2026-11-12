@@ -687,8 +687,11 @@ if times or untimed:
              "doesn't say whose, so whether the agent that failed has recovered isn't known" + (
                  "; newer rows of the call log can't be read, so whether a call after it failed isn't known"
                  if newer_unread else ""), counts=False)
-    elif failed_at is not None and (INFERENCE in unknown or newer_unread):
-        why = unseen_why if INFERENCE in unknown else "newer rows of the call log can't be read"
+    elif failed_at is not None and (INFERENCE in unknown or newer_unread or (
+            turn_ts is None and window_from is not None and window_from > failed_at)):
+        why = (unseen_why if INFERENCE in unknown
+               else "newer rows of the call log can't be read" if newer_unread
+               else f"the call log read here starts at {hhmm(window_from)}, after it")
         warn(f"inference failures, the last{timed} {age(failed_at)}; whether a turn has succeeded since isn't known, "
              f"since {why}", counts=False)
     elif failed_at is not None:
