@@ -938,6 +938,24 @@ function windowInsteadOfBudget(agent: { model: string; physicalWindowTokens?: nu
   return agent.physicalWindowTokens !== undefined && leavesOutChangedThinking(agent.model) ? agent.physicalWindowTokens : undefined;
 }
 
+/**
+ * A token count as an operator types it: a whole number (`200000`), or a
+ * number with a `k` or `m` suffix (`150k`, `1.5m`) that comes to a whole
+ * number of tokens above 0. Anything else is `undefined`, the whole of it:
+ * `parseInt` read `1e5` as 1, `200,000` as 200 and `150abc` as 150, and
+ * `/budget` set that for every agent, confirming it as a success.
+ */
+export function parseTokenCount(arg: string): number | undefined {
+  const match = /^(\d+)(?:\.(\d+))?([km])?$/i.exec(arg.trim());
+  if (!match) return undefined;
+  const [, whole, fraction = '', suffix] = match;
+  // Scale by digits, not by float arithmetic: 1.1 * 1000 is 1100.0000000000002.
+  const exponent = (suffix?.toLowerCase() === 'm' ? 6 : suffix ? 3 : 0) - fraction.length;
+  if (exponent < 0) return undefined;
+  const tokens = Number(whole + fraction) * 10 ** exponent;
+  return Number.isSafeInteger(tokens) && tokens > 0 ? tokens : undefined;
+}
+
 function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
   const agents = framework.getAllAgents();
   if (agents.length === 0) {
@@ -962,17 +980,8 @@ function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
     return { lines };
   }
 
-  let tokens: number;
-  const lower = arg.toLowerCase();
-  if (lower.endsWith('m')) {
-    tokens = parseFloat(lower.slice(0, -1)) * 1_000_000;
-  } else if (lower.endsWith('k')) {
-    tokens = parseFloat(lower.slice(0, -1)) * 1_000;
-  } else {
-    tokens = parseInt(arg, 10);
-  }
-
-  if (!Number.isFinite(tokens) || tokens <= 0) {
+  const tokens = parseTokenCount(arg);
+  if (tokens === undefined) {
     return { lines: [{ text: `Invalid token count: "${arg}". Examples: 150k, 1m, 200000`, style: 'system' }] };
   }
 
