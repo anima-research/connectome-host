@@ -2785,4 +2785,14 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
       'systemd runs the service in another directory, said above: that process isn\'t this install\'s host.');
     expect(r.out).not.toContain('Where an incoming message got to');
   });
+
+  test('the service\'s section says that doctor reads the unit or plist as loaded or on disk, not the running host\'s own environment', async () => {
+    const linux = install();
+    expect((await withHost(linux, HEALTHY_HOST, () => run(linux))).out).toContain('Doctor reads the environment the unit gives as ' +
+      'systemd last loaded it, so a value a daemon-reload took up after the host started isn\'t what a running host has.');
+    const mac = install({ manager: 'launchd' });
+    expect((await withHost(mac, HEALTHY_HOST, () => run(mac))).out).toContain(`Doctor reads the environment ${mac.unit} gives as ` +
+      'the plist is on disk, which launchd takes up only at the agent\'s next load, so a value changed there since then ' +
+      'isn\'t what a running host has.');
+  });
 });

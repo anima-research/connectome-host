@@ -335,6 +335,12 @@ export async function doctor(
           report.line('It\'s stopped.');
         }
       });
+      // A running process keeps the environment it started with, whatever its unit or plist says since.
+      report.line(installed.units.manager === 'launchd'
+        ? `Doctor reads the environment ${installed.units.host.file} gives as the plist is on disk, which launchd takes up ` +
+          'only at the agent\'s next load, so a value changed there since then isn\'t what a running host has.'
+        : 'Doctor reads the environment the unit gives as systemd last loaded it, so a value a daemon-reload took up ' +
+          'after the host started isn\'t what a running host has.');
     }
     if (shellElsewhere !== null) report.problem(shellElsewhere);
 
