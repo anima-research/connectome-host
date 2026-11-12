@@ -410,6 +410,7 @@ describe('the wait for a line\'s turn', () => {
       await advance(PIPED_TURN_CAP_MS * 10);
       expect(await settledNow(wait)).toBe(false);
       emit('inference:started');
+      await advance(PIPED_TURN_CAP_MS * 10);
       expect(await settledNow(wait)).toBe(false);
       emit('inference:completed');
       expect(await settledNow(wait)).toBe(true);

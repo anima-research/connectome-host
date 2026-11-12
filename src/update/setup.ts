@@ -305,8 +305,8 @@ function setupsOwn(root: string): boolean {
 }
 
 const CHANGED_MEANWHILE = 'This install\'s record, the fleet\'s children file, what its root keeps from updates and Go ' +
-  'backs, or the trial or Go back its journal leaves unfinished isn\'t what setup read before it held the lock, so setup has ' +
-  'changed none of them. Run it again, and it reads them afresh.';
+  'backs, the trial or Go back its journal leaves unfinished, or the Go back its mark asks for isn\'t what setup read ' +
+  'before it held the lock, so setup has changed none of them. Run it again, and it reads them afresh.';
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

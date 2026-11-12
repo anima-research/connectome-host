@@ -27,6 +27,7 @@ export function makeSpawnHelperExecutable(ptyDir: string, platform: NodeJS.Platf
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     return `${prebuilds} couldn't be read (${(error as Error).message})`;
   }
+  let missing: string | null = null;
   for (const name of names) {
     const helper = join(prebuilds, name, 'spawn-helper');
     try {
@@ -34,9 +35,11 @@ export function makeSpawnHelperExecutable(ptyDir: string, platform: NodeJS.Platf
       if (mode & 0o100) continue;
       chmodSync(helper, mode | 0o111);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return `${helper} isn't there`;
-      return `${helper} couldn't be made executable (${(error as Error).message})`;
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        return `${helper} couldn't be made executable (${(error as Error).message})`;
+      }
+      missing ??= `${helper} isn't there`;
     }
   }
-  return null;
+  return missing;
 }

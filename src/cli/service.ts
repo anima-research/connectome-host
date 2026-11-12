@@ -12,7 +12,7 @@ import { lingerOf } from '../setup/linger.js';
 import { StoredSecrets, envForm, readEnvFile, writeEnvValue } from '../setup/secrets.js';
 import { readRecipeDocument } from '../recipe-document.js';
 import { parseHandWrittenJson } from '../hand-written-json.js';
-import { AGENT_OVERLAY_FILE_NAME } from '../update/agent-overlay-path.js';
+import { agentOverlayPath } from '../update/agent-overlay-path.js';
 import { THINKING_BINDING_PROBE_MS } from '../thinking-binding-bound.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
@@ -512,13 +512,21 @@ function serversIn(raw: unknown, work: string): number {
   const named = (raw as { mcpServers?: unknown } | null)?.mcpServers;
   let added: unknown;
   try {
-    added = (parseHandWrittenJson(readFileSync(join(work, AGENT_OVERLAY_FILE_NAME), 'utf-8')) as
+    added = (parseHandWrittenJson(readFileSync(agentOverlayPath(work, settingsOf(work)), 'utf-8')) as
       { mcplServers?: unknown } | null)?.mcplServers;
   } catch {
     added = undefined;
   }
   return [named, added].reduce<number>((count, servers) =>
     count + (servers !== null && typeof servers === 'object' ? Object.keys(servers).length : 0), 0);
+}
+
+function settingsOf(work: string): Record<string, string> {
+  try {
+    return Object.fromEntries(readEnvFile(join(work, '.env')));
+  } catch {
+    return {};
+  }
 }
 
 async function awaitReady(root: string, manager: Manager, unit: ServiceUnit, sys: ServiceSystem,

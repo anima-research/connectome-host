@@ -17,9 +17,8 @@ export interface KeyCheckOptions {
 
 export const ANTHROPIC_API = 'https://api.anthropic.com';
 
-/** The words with the key shown as <ANTHROPIC_API_KEY> and each secret of hide by its name, trimmed or whole, their
- *  ASCII letters in any case: fetch sends a header's value trimmed, so a server can quote the key that way, and one that
- *  puts a secret in a URL's host gets it back lowercased. */
+/** fetch sends a header's value trimmed, so a server can quote the key that way, and one that puts a secret in a URL's
+ *  host gets it back lowercased. */
 export function withSecretsHidden(words: string, key: string, hide: readonly Secret[] = []): string {
   return shownByName(words, [{ name: 'ANTHROPIC_API_KEY', value: key }, ...hide]);
 }

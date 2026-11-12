@@ -2,8 +2,9 @@ import { existsSync, linkSync, lstatSync, readdirSync, realpathSync, renameSync,
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   ContractError, ITEM_UPDATE_DIR, VersionError, childrenFilePath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir,
-  pendingGoBack, readCurrent, readGoBackList, readJournal, readRecord, realOrResolved, syncDir, unfinishedTrial,
+  markSpent, pendingGoBack, readCurrent, readGoBackList, readJournal, readRecord, realOrResolved, syncDir, unfinishedTrial,
   WRITE_RECORD_AGAIN, writeJsonAtomic, type ChildrenFile, type InstallRecord, type JournalLine, type LockRecord,
+  type Mark,
 } from './contract.js';
 import { makeDirs } from './data-swap.js';
 import { RELEASE_HOST, isUnder, itemStagingDir, lockLive, takeLock, type LauncherOps } from './launcher.js';
@@ -206,7 +207,22 @@ export function bindChildren(children: Children, mapping: Mapping): void {
       throw new ContractError(`${children.path} names ${child.dataDir}, which this binding gives no place, so setup ` +
         'can\'t bind it.');
     }
-    const other = existsSync(child.dataDir) && !sameDirectory(child.dataDir, dataDir);
+    let other = false;
+    try {
+      statSync(child.dataDir);
+      other = !sameDirectory(child.dataDir, dataDir);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR' && child.pid !== null) {
+        throw new ContractError(`${children.path} names ${child.dataDir} for its child ${child.name}, with process ` +
+          `${child.pid}, and setup can't look at that directory (${code ?? (error as Error).message}), so it can't tell ` +
+          'whether that process is the original install\'s child, still running there, as after a copy, or this ' +
+          'install\'s own. Setup stopped before it bound the install. Make that directory searchable to this user, ' +
+          `and run setup again; or, if this install is a copy, remove ipc.sock and headless.pid from ${dataDir}, this ` +
+          `copy's directory for that child, then set that child's "pid" to null in ${children.path}, and run setup ` +
+          'again.');
+      }
+    }
     if (other) copied.push(dataDir);
     return other ? { ...child, dataDir, pid: null, bootId: null } : { ...child, dataDir };
   });
@@ -217,6 +233,16 @@ export function bindChildren(children: Children, mapping: Mapping): void {
       throw new ContractError(`${file} came with this copy from the original's child, and setup can't remove it ` +
         `(${(error as Error).message}), so the copy's fleet couldn't start that child there. Setup stopped before it ` +
         'bound the install. Remove it, and run setup again.');
+    }
+  }
+  for (const dataDir of copied) {
+    try {
+      syncDir(dataDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw new ContractError(`Setup removed what came with this copy in ${dataDir}, and can't sync that directory ` +
+        `(${(error as Error).message}), so a power loss could bring it back. Setup stopped before it bound the ` +
+        'install. Run setup again.');
     }
   }
   writeJsonAtomic(children.path, { ...children.value, children: bound, boundTo: mapping.to } satisfies ChildrenFile);
@@ -323,10 +349,25 @@ export function unfinishedWords(root: string): string | null {
       'so setup can\'t tell whether a trial or a Go back is unfinished there. Setup has changed nothing. Make it ' +
       'readable to this user, or put it right, and run setup again.';
   }
-  const trial = unfinishedTrial(lines, readCurrent(root));
+  const current = readCurrent(root);
+  const trial = unfinishedTrial(lines, current);
   if (trial !== null) return unfinishedTrialWords(trial);
   const goBack = pendingGoBack(lines);
-  return goBack === null ? null : unfinishedGoBackWords(goBack);
+  if (goBack !== null) return unfinishedGoBackWords(goBack);
+  const path = installPaths(root).mark;
+  let mark: Mark | null;
+  try {
+    mark = readRecord<Mark>(path, 'mark');
+  } catch (error) {
+    return `The mark at ${path} can't be read (${(error as Error).message.replace(/\.+$/, '')}), so setup can't tell ` +
+      'whether a Go back is asked for there. Setup has changed nothing. Make it readable to this user, or remove it, ' +
+      'which drops the request, and run setup again.';
+  }
+  if (mark === null || mark.why !== 'go-back' || markSpent(mark, lines, current)) return null;
+  return `A Go back is asked for: the mark at ${path} asks the next start to go back to ${mark.to}, and that start ` +
+    'goes back from what\'s listed here. Setup has changed nothing. Let that Go back run where the install was, by ' +
+    'starting it there, moving it back first if it was moved, and then move or copy it again. Or remove the mark ' +
+    'file, which drops the request.';
 }
 
 export interface MovedAside {
@@ -506,16 +547,20 @@ export function bindingCheckLines(said: string, allowSetup: boolean, release: st
     "  : bound !== null && !elsewhere ? recorded : now;",
     "const place = typeof recorded === 'string' && !inside && (bound === null || elsewhere) ? " +
       "` --place ${quoted(recorded)} ${quoted(now)}` : '';",
+    "const notHeld = `the setup of ${writer}, the release whose setup wrote this file, which this install's releases don't hold now: ` +",
+    "  `install exactly ${writer} in ${quoted(dirname(root))} first, as docs/DEPLOYMENTS.md shows, and run its setup by hand`;",
     "const byHand = served === null || writer === null ? 'its setup by hand again, as docs/DEPLOYMENTS.md shows'",
     "  : existsSync(ownSetup) ? `the setup of ${writer}, the release whose setup wrote this file: \\`cd ${quoted(dirname(root))} && ` +",
     "    `DATA_DIR=${quoted(served)} bun --no-env-file ${quoted(ownSetup)} --root ${quoted(root)}${place}\\``",
-    "  : `the setup of ${writer}, the release whose setup wrote this file, which this install's releases don't hold now: ` +",
-    "    `install exactly ${writer} in ${quoted(dirname(root))} first, as docs/DEPLOYMENTS.md shows, and run its setup by hand`;",
+    "  : notHeld;",
+    "const rewriteByHand = writer === null ? 'its setup by hand again, as docs/DEPLOYMENTS.md shows'",
+    "  : existsSync(ownSetup) ? `the setup of ${writer}, the release whose setup wrote this file, ${quoted(ownSetup)}, ` +",
+    "    'run by hand as docs/DEPLOYMENTS.md shows' : notHeld;",
     `if (damaged${allowSetup ? " && process.argv[2] !== 'setup'" : ''}) {`,
     `  ${report}(\`${said}: nothing runs in this install, since its record, \${join(root, 'install.json')}, holds a \` +`,
     "    '\"workingDir\" that isn\\'t an absolute path, so whether it was moved or copied here, and whose places its ' +",
     "    `record names, can't be told. Setup says how to write the record again: run \\`${quoted(join(root, 'connectome'))} setup discord\\`, ` +",
-    "    'or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows. A service that ' +",
+    "    `or, for an install set up by hand, ${rewriteByHand}. A service that ` +",
     "    'restarts the host will keep meeting this until the record is written again: stop it first, and start it again after.');",
     '  process.exit(1);',
     '}',

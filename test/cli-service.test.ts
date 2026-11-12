@@ -2597,3 +2597,27 @@ test('the shell daemon\'s state that systemd can\'t give before anything has sta
     'this run.');
   expect(f.systemd.starts).toEqual([]);
 });
+
+test('the wait counts the servers of the overlay that .env names in MCPL_AGENT_OVERLAY_FILE, not the default file\'s', async () => {
+  const at = install();
+  writeFileSync(join(at.work, '.env'), 'MCPL_AGENT_OVERLAY_FILE=elsewhere.json\n', { mode: 0o600 });
+  writeFileSync(join(at.work, 'elsewhere.json'), JSON.stringify({ mcplServers: { a: { command: 'a' }, b: { command: 'b' } } }));
+  writeFileSync(join(at.work, 'mcpl-servers.agent.json'), JSON.stringify({ mcplServers: { c: { command: 'c' } } }));
+  const f = fake(at, { ready: false });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.slept()).toBeGreaterThanOrEqual(241_756);
+  expect(f.slept()).toBeLessThan(243_756);
+  expect(f.err.join('\n')).toContain('no host said it was ready within 241 s');
+});
+
+test('a .env that setup\'s reader can\'t read leaves the wait counting the default overlay\'s servers', async () => {
+  const at = install();
+  writeFileSync(join(at.work, '.env'), 'MCPL_AGENT_OVERLAY_FILE=elsewhere.json\nnot a setting\n', { mode: 0o600 });
+  writeFileSync(join(at.work, 'elsewhere.json'), JSON.stringify({ mcplServers: { a: { command: 'a' }, b: { command: 'b' } } }));
+  writeFileSync(join(at.work, 'mcpl-servers.agent.json'), JSON.stringify({ mcplServers: { c: { command: 'c' } } }));
+  const f = fake(at, { ready: false });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.slept()).toBeGreaterThanOrEqual(151_756);
+  expect(f.slept()).toBeLessThan(153_756);
+  expect(f.err.join('\n')).toContain('no host said it was ready within 151 s');
+});
