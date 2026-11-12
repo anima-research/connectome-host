@@ -286,6 +286,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       }
     };
     const rootBefore = rootSeen();
+    const recordBefore = existsSync(join(root, 'install.json'));
     const emptied = rootBefore === 'empty';
     const lost = existsSync(root) && !emptied ? null
       : state?.finished !== undefined
@@ -353,7 +354,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
         `such as ${home === null || world.cwd === home ? 'an empty one' : 'your home directory'}.`);
       return 1;
     }
-    return await installAndStart(ctx, world, { dir, root, pkg, version, env, shell, stopped });
+    return await installAndStart(ctx, world, { dir, root, pkg, version, env, shell, stopped, recordBefore });
   } finally {
     lock?.release();
   }
@@ -431,9 +432,10 @@ function goOnAsOwnUser(out: (line: string) => void): void {
 async function installAndStart(
   ctx: CliContext & { root: string },
   world: SetupWorld,
-  { dir, root, pkg, version, env, shell, stopped }: {
+  { dir, root, pkg, version, env, shell, stopped, recordBefore }: {
     dir: string; root: string; pkg: PackageJson; version: string;
     env: Record<string, string | undefined>; shell: Record<string, string>; stopped: () => number;
+    recordBefore: boolean;
   },
 ): Promise<number> {
   const { out, err } = ctx;
@@ -502,6 +504,11 @@ async function installAndStart(
     } else {
       err(`${said}, and goes no further.`);
     }
+    return 1;
+  }
+  if (record === null && recordBefore) {
+    err(`The install record, ${join(root, 'install.json')}, was there when setup began and is gone now, so setup ` +
+      'stops rather than make a new install in its place. Run setup again: it says what it finds there.');
     return 1;
   }
   let recorded: { record: InstallRecord; binding: Binding } | null = null;
