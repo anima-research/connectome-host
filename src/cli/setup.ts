@@ -368,20 +368,44 @@ function adviseOwnUser(world: SetupWorld, out: (line: string) => void): void {
     `give it a user of its own. This line makes one, named ${OWN_USER}, unless a user by that name is there already, ` +
     'keeps its services running while it\'s logged out, and gives it Bun on its PATH. Run it where you can use sudo, ' +
     'and if a step fails, put right what it names and run the line again:');
-  // One line: with sudo's use_pty, lines pasted after a sudo line go to its command as input, and never run.
-  // bun.sh/install exits before adding Bun to PATH, or linking bunx, wherever a bun is on PATH already.
-  out(`  id -u ${OWN_USER} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash ${OWN_USER} && ` +
-    `sudo loginctl enable-linger ${OWN_USER} && ` +
-    `sudo -iu ${OWN_USER} env PATH=/usr/bin:/bin bash -c 'set -o pipefail; curl -fsSL https://bun.sh/install | bash'`);
-  const exists = world.userExists(OWN_USER);
+  out(`  ${OWN_USER_LINE}`);
+  const note = ownUserNote(world.userExists(OWN_USER));
+  if (note !== null) out(note);
+}
+
+// One line: with sudo's use_pty, lines pasted after a sudo line go to its command as input, and never run.
+// bun.sh/install exits before adding Bun to PATH, or linking bunx, wherever a bun is on PATH already.
+const OWN_USER_LINE = `id -u ${OWN_USER} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash ${OWN_USER} && ` +
+  `sudo loginctl enable-linger ${OWN_USER} && ` +
+  `sudo -iu ${OWN_USER} env PATH=/usr/bin:/bin bash -c 'set -o pipefail; curl -fsSL https://bun.sh/install | bash'`;
+
+function ownUserNote(exists: boolean | null): string | null {
   if (exists === true) {
-    out(`This machine already has a user named ${OWN_USER}. If an earlier line of setup's made it for the resident, ` +
+    return `This machine already has a user named ${OWN_USER}. If an earlier line of setup's made it for the resident, ` +
       `open a shell as ${OWN_USER} and run setup there. Otherwise, for a user of the resident's own, put a name no ` +
-      `account here has in place of ${OWN_USER}, in the line and in what setup says after it.`);
-  } else if (exists === null) {
-    out(`Setup couldn't check whether this machine already has a user named ${OWN_USER}. The line makes it only where ` +
-      'there\'s none: where there is one, the resident runs as that account.');
+      `account here has in place of ${OWN_USER}, in the line and in what setup says after it.`;
   }
+  if (exists === null) {
+    return `Setup couldn't check whether this machine already has a user named ${OWN_USER}. The line makes it only ` +
+      'where there\'s none: where there is one, the resident runs as that account.';
+  }
+  return null;
+}
+
+function lingerLine(world: SetupWorld): string {
+  return `${world.hasSudo ? 'sudo ' : ''}loginctl enable-linger ${world.user}`;
+}
+
+// The lines setup can show the person, for its agent to show again; each is left out where setup has none.
+function linesForAgent(world: SetupWorld, linger: boolean | null): Record<string, string> {
+  const lines: Record<string, string> = {};
+  if (offersOwnUser(world, linger)) {
+    lines.CONNECTOME_SETUP_OWN_USER_LINE = OWN_USER_LINE;
+    const note = ownUserNote(world.userExists(OWN_USER));
+    if (note !== null) lines.CONNECTOME_SETUP_OWN_USER_NOTE = note;
+  }
+  if (linger === false) lines.CONNECTOME_SETUP_LINGER_LINE = lingerLine(world);
+  return lines;
 }
 
 function goOnAsOwnUser(out: (line: string) => void): void {
@@ -415,7 +439,7 @@ async function installAndStart(
       'the resident\'s service can\'t be set up until it\'s on. One line turns it on, run once ' +
       `${world.hasSudo ? 'with sudo, by you if you can use sudo here or by whoever administers this machine'
         : 'as root, by you or by whoever administers this machine'}:`);
-    out(`  ${world.hasSudo ? 'sudo ' : ''}loginctl enable-linger ${world.user}`);
+    out(`  ${lingerLine(world)}`);
     const can = existsSync(join(root, 'install.json')) ||
       await yesNo(world, 'Can you run it, or have whoever administers this machine run it? (yes/no) ');
     if (can === null) return stopped();
@@ -768,6 +792,7 @@ async function installAndStart(
       CONNECTOME_SETUP_SURFACE: 'Discord',
       CONNECTOME_SETUP_GUIDE: join(host, 'docs', 'AGENT-ONBOARDING.md'),
       CONNECTOME_SETUP_USER: world.user,
+      ...linesForAgent(world, linger),
       CONNECTOME_SETUP_COMMAND: shellWord(join(root, INSTALL_COMMAND)),
       CONNECTOME_UPDATE_CHECK: '0',
     },
@@ -923,8 +948,8 @@ async function yesNo(world: SetupWorld, question: string, enter?: boolean): Prom
   }
 }
 
-function offersOwnUser(world: SetupWorld): boolean {
-  return world.platform === 'linux' && world.hasSudo && world.lingerOf(world.user) !== null && world.user !== OWN_USER;
+function offersOwnUser(world: SetupWorld, linger = world.lingerOf(world.user)): boolean {
+  return world.platform === 'linux' && world.hasSudo && linger !== null && world.user !== OWN_USER;
 }
 
 function addTrusted(file: string, names: string[]): { added: string[] } | { reason: string } {
