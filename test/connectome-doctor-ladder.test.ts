@@ -586,7 +586,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${records.join('\n')}\n`);
     const { out } = ladder(at);
     expect(out).toMatch(/recent failures in connectome-test\.service's journal:\n.*400 prompt is too long/);
-    expect(out).toMatch(/recent failures in .*failures\.log:\n(.*record [1-5].*\n){5}/);
+    expect(out).toMatch(/recent failures in .*failures\.log:\n(.*record [1-5].*\n){5} {2}and 1 more, older\n/);
     expect(out).not.toContain('record 0');
   });
 
@@ -1089,7 +1089,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s data directory', () => {
 });
 
 describe.skipIf(ladderUnrunnable)('what the ladder withholds', () => {
-  test('a value it\'s given to withhold is replaced where it reads it, before any line is cut short', async () => {
+  test('a value it\'s given to withhold is replaced in each line it cuts short, before the cut', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const secret = 'Zq9-SECRET-77';
     const long = `[inference-failed] ${'x'.repeat(125)}${secret} and the rest`;

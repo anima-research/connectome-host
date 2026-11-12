@@ -23,7 +23,7 @@ import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy, sentToken } from './disco
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { typedCommand } from './install-command.js';
 import { checkUnits, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
-import { machine, namedElsewhere, recipeHasShell, serviceCommands, serviceLines, type ServiceSystem } from './service.js';
+import { machine, namedElsewhere, recipeHasShell, serviceCommands, serviceLines, type ServiceCommands, type ServiceSystem } from './service.js';
 import {
   managerFor, readUnit, serviceUnits, systemdWorkingDirectory, type Manager, type ServiceUnits,
 } from './service-unit.js';
@@ -254,10 +254,10 @@ export async function doctor(
     envFiles = read === null ? [] : read.files;
     const given = { ...(manager === 'launchd' ? parts.launchdGives() : {}), ...managed };
     const built = serviceEnv(work, root, given, unit === null ? null : unit.env, parts.envLimitMs,
-      service?.bun ?? process.execPath, typed);
+      service?.bun ?? process.execPath, typed, unit === null ? [] : unit.unset);
     env = built.env;
     const refusedHere = service === null && read !== null
-      ? serviceEnv(work, root, given, read.env, parts.envLimitMs, process.execPath, typed) : null;
+      ? serviceEnv(work, root, given, read.env, parts.envLimitMs, process.execPath, typed, read.unset) : null;
     secrets = [...secrets, ...known(env, built.base), ...(refusedHere === null ? [] : known(refusedHere.env, refusedHere.base))]
       .flatMap(withSentForms)
       .filter((s, i, all) => all.findIndex((t) => t.name === s.name && t.value === s.value) === i);
@@ -312,6 +312,7 @@ export async function doctor(
   let serviceRuns = false;
   let unitElsewhere = false;
   let fitUnchecked = false;
+  let fitEstimated = false;
   let filesUnread = false;
   let pidUntold = false;
   let notTheService = false;
@@ -459,7 +460,7 @@ export async function doctor(
       const answer = await answering;
       if (answer === null) {
         report.problem(`The host didn't answer ${CHECKS[op]} within ${parts.hostLimitMs / 1000} s, or its connection ` +
-          'closed first.');
+          `closed first. Run ${typed} doctor again` + (commands === null ? '.' : `; \`${commands.log}\` follows the host's log.`));
         return null;
       }
       if (answer.ok !== true) {
@@ -514,6 +515,7 @@ export async function doctor(
         } else {
           report.ok(`It fits ${model}'s window.`);
           if ('why' in counted) {
+            if (counting !== null) fitEstimated = true;
             report.line(`The system prompt and tools the host sends weren't counted (${counted.why}), so this is the check the ` +
               'host makes at load, by estimate.');
           }
@@ -556,7 +558,7 @@ export async function doctor(
       await checked(report, 'The shell\'s call', async () => {
         const answer = await read<ShellCheck>('shell-check', asked('shell-check'));
         if (answer !== null) {
-          shellLines(report, answer.data);
+          shellLines(report, answer.data, commands);
           closedTabs = answer.data.closedTabs.length > 0;
           shellUnchecked = (answer.data.unchecked ?? []).length > 0;
         }
@@ -686,6 +688,7 @@ export async function doctor(
     ...(storedNames === null ? ['it couldn\'t check the stored secrets'] : []),
     ...(filesUnread ? ['the files its unit reads its environment from weren\'t read'] : []),
     ...(fitUnchecked ? ['the fit wasn\'t checked'] : []),
+    ...(fitEstimated ? ['the system prompt and tools weren\'t counted for the fit'] : []),
     ...(typeof closed === 'string' ? ['the channels the subscription GC closed couldn\'t be read'] : []),
     ...(typeof closed !== 'string' && closed.undecoded > 0
       ? ['a line naming a channel the subscription GC closed couldn\'t be read'] : []),
@@ -872,7 +875,7 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
       'model answers 404, and the endpoint count_tokens asks (Anthropic\'s API, or the one ANTHROPIC_BASE_URL names) ' +
       'may answer it for a model it doesn\'t serve: set COUNT_TOKENS_MODEL in ' +
       `${join(work, '.env')} to a current Claude model, and restart the service, since the host reads it when it starts. ` +
-      `${BEFORE_ENV}: where one sets it, set it there instead.`);
+      `${BEFORE_ENV}: where one sets it, set it there instead.`) + (passes(agent.source) ? PASSES : '');
     if (onAnthropic && agent.source === 'count_tokens_failed_401') report.problem(said);
     else report.line(said);
   }
@@ -893,11 +896,19 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
       (agent.source !== 'count_tokens' || agent.countModel !== agent.model || compression.model === agent.model ? ''
         : ', or leave it out to compress with the agent\'s model,') +
       ' and restart the service. The endpoint count_tokens asks (Anthropic\'s API, or the one ANTHROPIC_BASE_URL names) ' +
-      'may answer 404 for a model it doesn\'t serve too, and then the 404 doesn\'t mean it\'s retired.'));
+      'may answer 404 for a model it doesn\'t serve too, and then the 404 doesn\'t mean it\'s retired.') +
+      (passes(compression.source) ? PASSES : ''));
   }
 }
 
-function shellLines(report: Report, shell: ShellCheck): void {
+/** A count that timed out, or that count_tokens answered with 429 or a 5xx, can pass by itself. */
+function passes(source: string): boolean {
+  const status = Number(/^count_tokens_failed_(\d+)$/.exec(source)?.[1]);
+  return source === 'count_tokens_timeout' || status === 429 || (status >= 500 && status < 600);
+}
+const PASSES = ' That can pass by itself: run doctor again later.';
+
+function shellLines(report: Report, shell: ShellCheck, commands: ServiceCommands | null): void {
   for (const server of shell.notConnected) {
     report.problem(`The server ${server.id} isn't connected` + (server.refused !== null
       ? `: the host refuses its configuration: ${server.refused}.`
@@ -926,7 +937,10 @@ function shellLines(report: Report, shell: ShellCheck): void {
     } else if (row.error.includes('Connection lost') || row.error.includes('Connection timeout')) {
       report.problem(`${row.server} didn't reach its daemon: ${row.error}. On terminal-sessions 1.7.3, "Connection lost" ` +
         'is what a missing or wrong SESSION_SERVER_TOKEN in the server\'s env gives, and "Connection timeout" a daemon ' +
-        'that isn\'t running.');
+        'that isn\'t running.' + (row.error.includes('Connection lost')
+        ? ' Where setup stored SESSION_SERVER_TOKEN, the stored-secrets lines below say whether a server is given it. Once ' +
+          `the server's env names it, restart the service${commands === null ? '' : `: \`${commands.stop}\`, then \`${commands.start}\``}.`
+        : commands !== null && commands.units.length > 1 ? ` \`${commands.start}\` starts the shell daemon with the host.` : ''));
     } else {
       report.problem(`${row.server}'s listSessions call failed: ${row.error}.`);
     }
@@ -1162,12 +1176,12 @@ function shownWords(text: string): string[] {
 }
 
 function unitEnv(service: ServiceUnits, parts: DoctorParts):
-  { env: Record<string, string>; files: string[] } | { why: string; env?: Record<string, string> } {
+  { env: Record<string, string>; files: string[]; unset: string[] } | { why: string; env?: Record<string, string> } {
   const name = service.host.name;
   let ran: SpawnSyncReturns<string>;
   try {
     ran = service.manager === 'systemd-user'
-      ? spawnSync(parts.systemctl, ['--user', 'show', '--property=Environment', '--value', '--', name], {
+      ? spawnSync(parts.systemctl, ['--user', 'show', '--property=Environment', '--property=UnsetEnvironment', '--', name], {
         encoding: 'utf-8',
         timeout: parts.envLimitMs,
         env: { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}` },
@@ -1180,10 +1194,18 @@ function unitEnv(service: ServiceUnits, parts: DoctorParts):
   const failed = failure(ran, parts.envLimitMs);
   if (failed !== null) return { why: failed };
   if (service.manager === 'systemd-user') {
+    // systemd 257 prints each property as its own `Name=value` line, in its own order, whatever the order asked.
     const out: Record<string, string> = {};
-    for (const word of shownWords(ran.stdout.trim())) {
-      const at = word.indexOf('=');
-      if (at > 0) out[word.slice(0, at)] = word.slice(at + 1);
+    const unset: string[] = [];
+    for (const line of ran.stdout.split('\n')) {
+      const at = line.indexOf('=');
+      const words = at < 0 ? [] : shownWords(line.slice(at + 1).trim());
+      if (line.startsWith('Environment=')) {
+        for (const word of words) {
+          const eq = word.indexOf('=');
+          if (eq > 0) out[word.slice(0, eq)] = word.slice(eq + 1);
+        }
+      } else if (line.startsWith('UnsetEnvironment=')) unset.push(...words);
     }
     let listed: SpawnSyncReturns<string>;
     try {
@@ -1200,10 +1222,10 @@ function unitEnv(service: ServiceUnits, parts: DoctorParts):
     // systemd 257 prints each file on a line of its own, as `<path> (ignore_errors=no)`.
     const files = listed.stdout.split('\n').map((line) => line.replace(/ \(ignore_errors=(?:yes|no)\)$/, ''))
       .filter((line) => line !== '');
-    return { env: out, files };
+    return { env: out, files, unset };
   }
   try {
-    return { env: stringValues(JSON.parse(ran.stdout)), files: [] };
+    return { env: stringValues(JSON.parse(ran.stdout)), files: [], unset: [] };
   } catch {
     return { why: 'plutil\'s answer wasn\'t JSON' };
   }
@@ -1229,7 +1251,7 @@ function launchdGives(): Record<string, string> {
 /** Bun loads .env, .env.local and the like in the working directory itself, filling only what the process doesn't
  *  have (Bun 1.4.4), so the host's environment is asked of Bun. */
 function serviceEnv(work: string, root: string, manager: Record<string, string>, unit: Record<string, string> | null,
-  limitMs: number, bun: string, typed: string): { env: Record<string, string | undefined>; base: Record<string, string> } {
+  limitMs: number, bun: string, typed: string, unset: string[] = []): { env: Record<string, string | undefined>; base: Record<string, string> } {
   const base = { ...manager };
   if (unit !== null) Object.assign(base, unit);
   else {
@@ -1237,6 +1259,12 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
     try {
       base.DATA_DIR = dataDirOf(root);
     } catch {}
+  }
+  // UnsetEnvironment= takes a name, or one NAME=VALUE assignment, out of what the manager and the unit give, last.
+  for (const entry of unset) {
+    const eq = entry.indexOf('=');
+    if (eq < 0) delete base[entry];
+    else if (base[entry.slice(0, eq)] === entry.slice(eq + 1)) delete base[entry.slice(0, eq)];
   }
   const ran = spawnSync(bun, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], {
     cwd: work,
