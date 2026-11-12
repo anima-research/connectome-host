@@ -413,9 +413,14 @@ export class SetupModule implements Module {
   }
 
   private async afterAsked(work: () => Promise<ToolResult>): Promise<ToolResult> {
+    await this.noneAsked();
+    return work();
+  }
+
+  private async noneAsked(): Promise<void> {
     for (let asking = this.asking; ; asking = this.asking) {
       await asking;
-      if (asking === this.asking) return work();
+      if (asking === this.asking) return;
     }
   }
 
@@ -561,6 +566,7 @@ export class SetupModule implements Module {
       notes.push(`Its output was cut ${DRAIN_MS / 1000} s after it ended, since a process it started still ` +
         (stoppedAtLimit ? 'held the output open.' : 'holds the output open, and is still running.'));
     }
+    await this.noneAsked();
     let secrets: Secret[];
     let guessed: string[];
     try {
