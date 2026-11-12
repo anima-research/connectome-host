@@ -1630,6 +1630,8 @@ export function deprecatedConversationsNotices(conversations: RecipeConversation
 }
 
 export interface Recipe {
+  /** Local optional prototype; requires an AF main-refusal bridge, no dependency bump. */
+  mainRefusalReactions?: import('./refusal-reactions.js').RefusalReactionConfig;
   name: string;
   description?: string;
   version?: string;
@@ -2048,6 +2050,7 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
 }
 
 const RECIPE_KEYS = [
+  'mainRefusalReactions',
   'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
   'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'speech', 'tuneOut', 'dendrite', 'toolClassOverrides',
   'maintenanceIntervalMs', 'inferenceBounds', 'toolResultInlineMaxChars',

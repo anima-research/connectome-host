@@ -1,0 +1,1 @@
+- Add an explicitly opted-in local whole-framework main-refusal reaction policy with small Discord/Zulip public-tool drivers, frozen-origin targeting, ADD-only bounded dedup and fail-closed schema/suppression checks. Stock AF without the optional companion bridge remains usable with the option omitted and explicitly unsupported when selected. No package, dependency or lock bump.
