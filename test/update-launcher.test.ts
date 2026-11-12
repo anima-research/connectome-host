@@ -13,7 +13,7 @@ import {
 } from '../src/update/contract.js';
 import {
   CHILDREN_WAIT_MS, GO_BACK_LOCK_WAIT_MS, HOST_ENTRY, KEEP_DATA_FLAG, LAUNCHER, LockHeld, dataItems, decide,
-  goBackFromShell, goBackLine, goBackOffer, itemStagingDir, linuxMountPoints, machineMountPoints, machineOps,
+  goBackFromShell, goBackFromStart, goBackLine, goBackOffer, itemStagingDir, linuxMountPoints, machineMountPoints, machineOps,
   macMountPoints, shellWord, takeLock, type LauncherOps,
 } from '../src/update/launcher.js';
 import { copyTree, removeTree, spaceTaken } from '../src/update/data-swap.js';
@@ -2551,6 +2551,16 @@ describe('a Go back from a shell', () => {
     expect(reports.at(-1)).toMatch(/^\[update\] Nothing was asked for: this install's lock has been held for the last 60 s\. Another process holds this install's lock .*`\/update back`/);
     expect(reports.at(-1)).toContain("If it runs setup, it's binding an install: run this again once that setup has ended.");
     expect(reports.at(-1)).toEndWith('If that process is this install\'s own host, it goes back with `/update back`, which lets its turns end first, or stop the service, run this again, and start the service.');
+  });
+
+  test("start.js --go-back names the install's own command for a host that holds the lock, as connectome update back does", async () => {
+    await committedSwitch();
+    reports = [];
+    lockOf(4242);
+    alive.add(4242);
+    expect(await goBackFromStart(root, [], ops())).toBe(1);
+    expect(reports.at(-1)).toEndWith(`If that process is this install's own host, it goes back with \`${shellWord(join(root, 'connectome'))} ` +
+      'update back`, which lets its turns end first, or stop the service, run this again, and start the service.');
   });
 
   test('takes the lock a host that keeps exiting gives up, writes the mark with no servers recorded, gives the lock up, and the next start goes back', async () => {

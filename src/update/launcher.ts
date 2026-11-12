@@ -1115,6 +1115,10 @@ export function goBackLine(root: string, offer: { to: string; since: string }): 
     `back, restoring that copy and keeping what changed since aside, or with ${KEEP_DATA_FLAG} keeping the newer data.`;
 }
 
+export async function goBackFromStart(root: string, args: string[], ops: LauncherOps): Promise<number> {
+  return goBackFromShell(root, args, ops);
+}
+
 export function shellWord(word: string): string {
   return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
 }
@@ -1285,7 +1289,7 @@ export function machineOps(): LauncherOps {
 
 export async function launch(root: string, argv: string[]): Promise<never> {
   const ops = machineOps();
-  if (argv[0] === GO_BACK_FLAG) process.exit(goBackFromShell(root, argv.slice(1), ops));
+  if (argv[0] === GO_BACK_FLAG) process.exit(await goBackFromStart(root, argv.slice(1), ops));
   if (typeof process.execve !== 'function') {
     ops.report(`[update] Nothing started: this runtime has no process.execve, which the launcher needs to become the host (Bun ${process.versions.bun}).`);
     process.exit(1);
