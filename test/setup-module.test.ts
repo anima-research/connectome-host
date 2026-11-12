@@ -96,8 +96,8 @@ function heldOnChecks(module: SetupModule): Promise<void> {
   });
 }
 
-// For tests that read /proc or run setsid(1): macOS has neither, and a Linux container may not mount /proc.
-const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat'));
+// For tests that read /proc or run setsid(1): macOS has neither, and a Linux container may not mount /proc or have setsid.
+const linuxTest = test.skipIf(process.platform !== 'linux' || !existsSync('/proc/self/stat') || Bun.which('setsid') === null);
 
 const uptime = () => Number(readFileSync('/proc/uptime', 'utf-8').split(' ')[0]);
 
