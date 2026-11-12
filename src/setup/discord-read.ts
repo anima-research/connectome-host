@@ -2,6 +2,7 @@ import { DISCORD_API, discordUserAgent, hidden } from './discord-token.js';
 
 export const VIEW_CHANNEL = 1n << 10n;
 export const SEND_MESSAGES = 1n << 11n;
+export const TEXT_CHANNEL_TYPES = [0, 5];
 const ADMINISTRATOR = 1n << 3n;
 const EVERY_PERMISSION = (1n << 64n) - 1n;
 const GUILD_PAGE = 200;

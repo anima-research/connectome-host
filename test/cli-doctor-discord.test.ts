@@ -460,6 +460,24 @@ describe('doctor: Discord', () => {
     expect(scopeOf(r)).not.toMatch(/the bot is in no server/);
   });
 
+  test('a channel the scope names that the bot can see but can\'t send in is a problem, a whole server in the scope isn\'t, and the list marks every channel it can\'t send in', async () => {
+    const quiet: FakeGuild = {
+      ...HOME,
+      channels: [...HOME.channels,
+        { id: '106', name: 'announcements', type: 0, overwrites: [{ id: '100', type: 0, deny: SEND }] },
+        { id: '107', name: 'read-only', type: 0, overwrites: [{ id: '110', type: 0, deny: SEND }] }],
+    };
+    const discord = fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [quiet] });
+    const r = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100:101+106' }, discord);
+    expect(r.problems).toEqual(['The scope names 106, a channel of Home (100) the bot can see but can\'t send in: give the bot Send Messages in it.']);
+    expect(r.lines).toContain('    #announcements (106), where it can\'t send');
+    expect(r.lines).toContain('    #read-only (107), where it can\'t send');
+    expect(r.lines).toContain('    #general (101)');
+    expect(scopeOf(r)).toContain('Home (100): #general (101), #announcements (106)');
+    const wide = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100' }, discord);
+    expect(wide.problems).toEqual([]);
+  });
+
   test('a server a filters file names that the bot isn\'t in says to invite it, without DISCORD_GUILD_ID\'s separators', async () => {
     const dir = workdir();
     writeFileSync(join(dir, 'filters.json'), JSON.stringify({ guildIds: ['300'] }));

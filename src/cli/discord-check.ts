@@ -1,6 +1,9 @@
 import { readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { botGuilds, channelPermissions, DiscordFailed, discordReader, VIEW_CHANNEL, type Channel, type DiscordFailure } from '../setup/discord-read.js';
+import {
+  botGuilds, channelPermissions, DiscordFailed, discordReader, SEND_MESSAGES, TEXT_CHANNEL_TYPES, VIEW_CHANNEL, type Channel,
+  type DiscordFailure,
+} from '../setup/discord-read.js';
 import { checkDiscordToken } from '../setup/discord-token.js';
 
 const GATEWAY_MESSAGE_CONTENT = 1 << 18;
@@ -13,7 +16,7 @@ export interface DiscordCheck {
   problems: string[];
 }
 
-interface Guild { id: string; name: string; visible: Channel[]; ids: Set<string> }
+interface Guild { id: string; name: string; visible: Channel[]; ids: Set<string>; unsendable: Set<string> }
 interface Filters { guildIds: string[]; guildChannels: Record<string, string[]> }
 
 class DiscordAnswer extends Error {}
@@ -116,18 +119,25 @@ export async function checkDiscord(
         'its text. Turn it on in the Developer Portal, under Bot, Privileged Gateway Intents.');
     }
 
-    const guilds: Guild[] = (await botGuilds(reader, bot.id)).map((guild) => ({
-      id: guild.id,
-      name: guild.name,
-      visible: guild.channels.filter((c) => (channelPermissions(guild, bot.id, c) & VIEW_CHANNEL) !== 0n),
-      ids: new Set(guild.channels.map((c) => c.id)),
-    }));
+    const guilds: Guild[] = (await botGuilds(reader, bot.id)).map((guild) => {
+      const visible = guild.channels.filter((c) => (channelPermissions(guild, bot.id, c) & VIEW_CHANNEL) !== 0n);
+      return {
+        id: guild.id,
+        name: guild.name,
+        visible,
+        ids: new Set(guild.channels.map((c) => c.id)),
+        unsendable: new Set(visible.filter((c) => TEXT_CHANNEL_TYPES.includes(c.type)
+          && (channelPermissions(guild, bot.id, c) & SEND_MESSAGES) === 0n).map((c) => c.id)),
+      };
+    });
     lines.push(guilds.length === 0
       ? 'The bot is in no server, so it hears only DMs until it\'s invited to one.'
       : 'Channels the bot can see:');
     for (const guild of guilds) {
       lines.push(`  ${guild.name} (${guild.id})`);
-      for (const channel of guild.visible) lines.push(`    ${channelName(channel)}`);
+      for (const channel of guild.visible) {
+        lines.push(`    ${channelName(channel)}${guild.unsendable.has(channel.id) ? ', where it can\'t send' : ''}`);
+      }
     }
 
     for (const line of scopeLines(env, options.workingDir, guilds, problem)) lines.push(line);
@@ -245,6 +255,10 @@ function scopeLines(
     const unlisted: string[] = [];
     for (const channelId of wanted) {
       const channel = guild.visible.find((c) => c.id === channelId);
+      if (channel && guild.unsendable.has(channel.id)) {
+        problem(`The scope names ${channelId}, a channel of ${guild.name} (${guild.id}) the bot can see but can't send ` +
+          'in: give the bot Send Messages in it.');
+      }
       if (channel) named.push(channelName(channel));
       else if (guild.ids.has(channelId)) {
         problem(`The scope names ${channelId}, a channel of ${guild.name} (${guild.id}) the bot can't see: give the bot ` +
