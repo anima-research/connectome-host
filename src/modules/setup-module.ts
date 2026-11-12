@@ -12,8 +12,9 @@ import type {
   ToolResult,
 } from '@animalabs/agent-framework';
 import {
-  DISCORD_TOKEN, StoredSecrets, isSecretName, readEnvFile, redactWindow, secretNames, secretValues,
-  unwritableValue, withoutSecrets, writeEnvValue, DotenvTimeoutError, EnvFormError, EnvLinkError, envForm, envLink, type Secret,
+  DISCORD_TOKEN, StoredSecrets, addSecret, commandEnvOf, isSecretName, readEnvFile, readSecrets, redactWindow,
+  secretNames, secretValues, unwritableValue, writeEnvValue, DotenvTimeoutError, EnvFormError, EnvLinkError, envForm,
+  envLink, type Secret,
 } from '../setup/secrets.js';
 import { checkDiscordToken, type TokenCheck } from '../setup/discord-token.js';
 import { originOf } from '../setup/key-check.js';
@@ -249,10 +250,6 @@ function seenIn(dir: string): Seen {
   return seen;
 }
 
-function addSecret(secrets: Secret[], secret: Secret): void {
-  if (!secrets.some((had) => had.name === secret.name && had.value === secret.value)) secrets.push(secret);
-}
-
 export class SetupModule implements Module {
   readonly name = SETUP_MODULE;
   readonly storedSecrets: StoredSecrets;
@@ -425,22 +422,17 @@ export class SetupModule implements Module {
     const { names: current, guessed } = secretNames(join(this.config.dir, '.setup'), envFile);
     for (const name of current) this.seen.names.add(name);
     const names = [...this.seen.names];
-    for (let env = this.commandEnv(names, this.seen.values); ;) {
-      for (const read of secretValues(names, envFile, this.config.env, env)) addSecret(this.seen.values, read);
-      const next = this.commandEnv(names, this.seen.values);
-      if (Object.keys(next).length === Object.keys(env).length) break;
-      env = next;
-    }
+    readSecrets(names, envFile, this.config.env, this.seen.values, this.notForCommands());
     return { names, values: [...this.seen.values], guessed };
   }
 
-  private commandEnv(secrets: string[], values: Secret[] = []): Record<string, string> {
+  private notForCommands(): string[] {
     const own = Object.keys(this.config.env).filter((name) => name.startsWith('CONNECTOME_SETUP_'));
-    const env = withoutSecrets(this.config.env, [...secrets, 'BASH_ENV', 'DATA_DIR', 'CONNECTOME_UPDATE_CHECK', ...own]);
-    for (const [name, value] of Object.entries(env)) {
-      if (value !== '' && values.some((secret) => value === secret.value || value === secret.value.trim())) delete env[name];
-    }
-    return env;
+    return ['BASH_ENV', 'DATA_DIR', 'CONNECTOME_UPDATE_CHECK', ...own];
+  }
+
+  private commandEnv(secrets: string[], values: Secret[] = []): Record<string, string> {
+    return commandEnvOf(this.config.env, [...secrets, ...this.notForCommands()], values);
   }
 
   private damaged(error: unknown, what: string): ToolResult {
@@ -544,17 +536,6 @@ export class SetupModule implements Module {
         : `setup--run couldn't start bash: the install directory it runs commands in, ${this.config.dir}, isn't there ` +
           'now, so calling it again runs nothing until it is. Tell the person.');
     }
-    let secrets: Secret[];
-    let guessed: string[];
-    try {
-      ({ values: secrets, guessed } = this.secrets());
-    } catch (error) {
-      const what = `setup--run's command ended (exit ${ended.code ?? ended.signal}), and its output isn't shown`;
-      if (!(error instanceof DotenvTimeoutError)) return this.damaged(error, what);
-      return failed(`${what}: ${error.message}. It ran, so calling setup--run again with the same command runs it a ` +
-        'second time: to see what it did, run one that only reads what it changed. A slow disk can pass; if the read ' +
-        'runs out of time again, ask the person to look at the dotenv files there.');
-    }
     const notes: string[] = [];
     if (stoppedAtLimit) {
       notes.push(`It was still running at its ${limit} ms limit, so its process group was sent SIGTERM, and ` +
@@ -564,6 +545,19 @@ export class SetupModule implements Module {
     if (heldOpen) {
       notes.push(`Its output was cut ${DRAIN_MS / 1000} s after it ended, since a process it started still ` +
         (stoppedAtLimit ? 'held the output open.' : 'holds the output open, and is still running.'));
+    }
+    let secrets: Secret[];
+    let guessed: string[];
+    try {
+      ({ values: secrets, guessed } = this.secrets());
+    } catch (error) {
+      const ending = `setup--run's command ended (exit ${ended.code ?? ended.signal})`;
+      const what = notes.length > 0 ? `${ending}. ${notes.join(' ')} Its output isn't shown`
+        : `${ending}, and its output isn't shown`;
+      if (!(error instanceof DotenvTimeoutError)) return this.damaged(error, what);
+      return failed(`${what}: ${error.message}. It ran, so calling setup--run again with the same command runs it a ` +
+        'second time: to see what it did, run one that only reads what it changed. A slow disk can pass; if the read ' +
+        'runs out of time again, ask the person to look at the dotenv files there.');
     }
     const replaced = new Set<string>();
     const stdout = out.result(secrets, replaced);
@@ -874,13 +868,16 @@ function keyNote(name: string, asked: string, answer: ProviderAnswer<unknown>, a
           : ` It asks for ${waitAsked(after)}` +
             `${passing ? ', so when setup--check_model can check the key again isn\'t known' : ''}.`;
       return `, but it isn't known to work: ${asked} answered ${answer.status}` +
-        `${answer.said === null ? '' : `: ${answer.said}`}.${next}`;
+        `${answer.said === null ? '' : `: ${answer.said}`}.${next}${again && !passing ? ` ${CHECK_KEY_AGAIN}` : ''}`;
     }
     case 'unanswered':
       return `, but it isn't known to work: ${asked} couldn't be asked (${answer.why}).${again ? ` ${CHECK_KEY_AGAIN}` : ''}`;
-    case 'redirected': return `, but it isn't known to work: ${redirect(asked, answer)}${redirectRemedy(asked, name)}.`;
+    case 'redirected':
+      return `, but it isn't known to work: ${redirect(asked, answer)}${redirectRemedy(asked, name)}.` +
+        `${again ? ` ${CHECK_KEY_AGAIN}` : ''}`;
     case 'unrecognized':
-      return `, but it couldn't be checked: ${unrecognized(PROVIDER_KEYS[name]!.provider, answer.status)}. ${CONNECTION}`;
+      return `, but it couldn't be checked: ${unrecognized(PROVIDER_KEYS[name]!.provider, answer.status)}. ${CONNECTION}` +
+        `${again ? ` ${CHECK_KEY_AGAIN}` : ''}`;
     case 'unsendable': return ', but it can\'t be a key: it holds a character a request header can\'t carry.';
     default: return '';
   }
@@ -893,8 +890,10 @@ function tokenNote(token: TokenCheck): string {
       return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}. ` +
         ASK_TOKEN_AGAIN;
     case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}). ${ASK_TOKEN_AGAIN}`;
-    case 'redirected': return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}.`;
-    case 'unrecognized': return `, but it couldn't be checked: ${unrecognized('Discord', token.status)}. ${CONNECTION}`;
+    case 'redirected':
+      return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}. ${ASK_TOKEN_AGAIN}`;
+    case 'unrecognized':
+      return `, but it couldn't be checked: ${unrecognized('Discord', token.status)}. ${CONNECTION} ${ASK_TOKEN_AGAIN}`;
     default: return '';
   }
 }
@@ -922,7 +921,8 @@ function answererOf(name: string, env: ReadonlyMap<string, string>): string {
 function redirectRemedy(service: string, name?: string): string {
   const base = baseUrlOf(name);
   return base !== null ? `. If ${base} in .env is meant to lead to that server, ask the person for the base URL its ` +
-      `API is under, the one its own instructions give for ${base}, set ${base} to it, then call again`
+      `API is under, the one its own instructions give for ${base}, with setup--ask_secret as ${base}, since a base URL ` +
+      'can carry a credential, then call again'
     : `. Something between this machine and ${service} may have sent it, or ${service} itself: tell the person, and that ` +
       `if it wasn't ${service}, their connection is theirs to check`;
 }

@@ -292,16 +292,6 @@ function stillRunning(app: AppContext): CommandResult | null {
   };
 }
 
-/** How the command was given. `lineByLine`: by a mode that takes a command
- *  from one line (the readline and piped modes, where each line goes alone,
- *  except that, where stdin and stdout are both terminals and the terminal
- *  brackets a paste, a message of several lines pasted into readline mode
- *  goes to the agent as text), so an answer that gives a command back gives
- *  it on one line. `requester`: who
- *  gave it, as the framework's operator log records a branch move, a
- *  rollback, an undo, a redo or a nudge the command makes: the Web UI's
- *  user, a headless host's socket or a fleet parent; the host's console
- *  when not given. */
 export interface CommandInput {
   lineByLine?: boolean;
   requester?: OperatorRequester;
