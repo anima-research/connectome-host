@@ -276,6 +276,25 @@ test('where package.json doesn\'t name term-sessions-mcp in trustedDependencies,
   expect(text(fine.seen.out)).not.toContain('trustedDependencies');
 });
 
+test('a package.json that isn\'t a file, such as a named pipe, isn\'t waited on: the command says it can\'t be read, and goes by what node_modules holds', async () => {
+  const { dir, root } = installed();
+  const manifest = join(dir, 'package.json');
+  rmSync(manifest);
+  Bun.spawnSync(['mkfifo', manifest]);
+  declare(dir, 'term-sessions-mcp', '1.7.3', false);
+  // Where a read waits on the pipe, this writer gives it JSON, so the test ends either way.
+  const writer = Bun.spawn(['sh', '-c', 'while [ -p "$1" ]; do printf "{}" > "$1"; done', 'sh', manifest], { stdout: 'ignore', stderr: 'ignore' });
+  try {
+    const made = world(dir, { added: OK });
+    expect(await runShell(root, ['install'], made)).toBe(0);
+    expect(made.seen.out[0]).toBe(`${manifest} can't be read (it isn't a file), so Bun runs no install script of term-sessions-mcp's, and through a mirror or a company registry it may run none of the others', node-pty's among them. Setup tries to write that list each time it runs, and says so when it can't.`);
+    expect(made.seen.ran.some((argv) => args(argv)[0] === 'add')).toBe(false);
+    expect(made.seen.out).toContain(`term-sessions-mcp 1.7.3 is installed in ${dir}.`);
+  } finally {
+    writer.kill('SIGKILL');
+  }
+});
+
 test('the pty check opens node-pty where term-sessions-mcp\'s own resolution finds it, under a hoisted layout and under an isolated one', async () => {
   const { dir, root } = installed();
   const made = world(dir, { pty: [BROKEN, BROKEN] });

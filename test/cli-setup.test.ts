@@ -821,6 +821,24 @@ test('before its bun add, setup adds the packages whose install scripts the runn
   expect(shellLine).toBe(`In ${join(bunListed, 'package.json')}, setup added these to the packages that may run install scripts here: term-sessions-mcp, which gives the resident a shell if it gets one.`);
 });
 
+test('a package.json that isn\'t a file, such as a named pipe, isn\'t waited on or written over: setup says it couldn\'t add the trusted list, and goes on', async () => {
+  const dir = directory();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+  const manifest = join(dir, 'package.json');
+  Bun.spawnSync(['mkfifo', manifest]);
+  // Where a read waits on the pipe, this writer gives it JSON, so the test ends either way.
+  const writer = Bun.spawn(['sh', '-c', 'while [ -p "$1" ]; do printf "{}" > "$1"; done', 'sh', manifest], { stdout: 'ignore', stderr: 'ignore' });
+  try {
+    const made = world(dir, { answers: [''], secrets: [KEY], added: { status: 0, stdout: '', stderr: '' } });
+    expect(await runSetup(dir, ['discord'], made)).toBe(0);
+    expect(text(made.seen.out)).toContain(`Setup couldn't add the packages whose install scripts Bun runs by default to ${manifest} (${manifest} can't be read (it isn't a file)), so unless`);
+    expect(lstatSync(manifest).isFIFO()).toBe(true);
+  } finally {
+    writer.kill('SIGKILL');
+  }
+});
+
 test('where the running Bun\'s default trusted list can\'t be read whole, setup writes no field, and goes on', async () => {
   for (const trusted of [
     { status: 1, stdout: '', stderr: 'error: no such command\n' },
