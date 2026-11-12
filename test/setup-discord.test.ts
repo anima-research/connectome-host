@@ -438,4 +438,14 @@ describe('setup--discord', () => {
     const checked = await read(down.module);
     expect(checked.error).toStartWith('Discord answered 503 to GET /users/@me: down for <OPENAI_API_KEY>, so the read stopped there.');
   });
+
+  test('a server or application id that is a stored secret\'s value comes by its name, and an ordinary id as it is', async () => {
+    const discord = fakeDiscord([HOME, ADMIN]);
+    const held = install(discord, `DISCORD_TOKEN="${TOKEN}"\nOPENAI_API_KEY="100"\nANTHROPIC_API_KEY="901"\n`);
+    expect((await read(held.module, { server: '100', username: 'ada' })).data).toMatchObject({ server: '<OPENAI_API_KEY>' });
+    expect((await read(held.module, { server: '200', username: 'adam' })).data).toMatchObject({ server: '200' });
+    expect((await read(held.module)).data).toMatchObject({ application: { id: '<ANTHROPIC_API_KEY>' } });
+    const plain = install(discord);
+    expect((await read(plain.module)).data).toMatchObject({ application: { id: '901' } });
+  });
 });

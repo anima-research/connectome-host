@@ -958,7 +958,7 @@ export class SetupModule implements Module {
         const narrow = 'call setup--discord again with more of the username or nickname.';
         const most = found.length >= MEMBERS_ASKED;
         const answer = (shown: typeof members) => ({
-          server, username: redacted(username, hide), members: shown,
+          server: redacted(String(server), hide), username: redacted(username, hide), members: shown,
           ...(shown.length < members.length
             ? {
               note: `${shown.length} of the ${members.length} members that match${most ? ', the most Discord gives,' : ''} ` +
@@ -980,17 +980,18 @@ export class SetupModule implements Module {
         });
         return { success: true, data: answer(fitting(one.channels, answer, cap)) };
       }
-      const application = await reader.get<{ id: string }>('/applications/@me');
+      const { id: applicationId } = await reader.get<{ id: string }>('/applications/@me');
+      const application = { id: redacted(applicationId, hide) };
       const servers = [];
       for (const guild of await botGuilds(reader, bot.id)) {
         const { owner_id: ownerId } = await reader.get<{ owner_id: string }>(`/guilds/${guild.id}`);
         servers.push(redactedData(await serverOf(reader, guild, bot.id, ownerId), hide));
       }
-      const whole = { application: { id: application.id }, bot: botUser, servers };
+      const whole = { application, bot: botUser, servers };
       if (fits(whole, cap)) return { success: true, data: whole };
       const counted = servers.map(({ channels, ...each }) => ({ ...each, textChannels: channels.length }));
       const answer = (shown: typeof counted) => ({
-        application: { id: application.id }, bot: botUser, servers: shown,
+        application, bot: botUser, servers: shown,
         note: shown.length === counted.length
           ? 'Every server\'s channels together would pass what one answer can hold, so the servers come without them: ' +
             'call setup--discord with a server\'s id as server to read its channels.'
