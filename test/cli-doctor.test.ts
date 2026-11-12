@@ -608,7 +608,7 @@ describe('connectome doctor', () => {
     expect(r2.out).not.toMatch(/✗.*SESSION_SERVER_TOKEN/);
   });
 
-  test('a DISCORD_TOKEN in .env that setup didn\'t store is withheld too, from doctor\'s lines and the ladder\'s reads', async () => {
+  test('a DISCORD_TOKEN in .env that setup didn\'t store is withheld too: doctor hides it in its lines, and names it for the ladder to withhold where it cuts', async () => {
     const at = install({ stored: ['SESSION_SERVER_TOKEN'] });
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     const withheld = JSON.parse(readFileSync(join(at.work, 'withheld.json'), 'utf-8')) as Array<[string, string]>;
@@ -828,7 +828,7 @@ describe('connectome doctor', () => {
     expect(r.out).toMatch(/✓.*PORT_SECRET reaches extra/);
   });
 
-  test('a stored secret no file Bun reads for the service gives is a problem whether or not the recipe loads, a provider\'s credential included', async () => {
+  test('a stored secret that no file Bun reads for the service, its manager or its unit gives is a problem whether or not the recipe loads, a provider\'s credential included', async () => {
     const at = install({
       stored: ['ANTHROPIC_API_KEY', 'LONELY_SECRET'],
       drop: ['ANTHROPIC_API_KEY', 'LONELY_SECRET'],
