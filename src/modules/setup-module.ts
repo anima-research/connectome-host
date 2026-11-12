@@ -181,10 +181,10 @@ function shown(line: string): string {
 export const SETUP_MODULE = 'setup';
 
 export function commandsShownNote(dir: string): string {
-  return `Setup's agent runs each command in ${shown(dir)}, as you. You'll see each command whole before it runs, each ` +
-    'of its lines on a line of its own, any character a terminal would hide or act on shown as a code, such as \\u001b ' +
-    'for Escape, and each key or token setup knows of shown by its name in place of its value, such as ' +
-    '<ANTHROPIC_API_KEY>.';
+  return `Setup's agent runs each command in ${shown(dir)}, as you. You'll see each command whole as it starts. It ` +
+    'doesn\'t wait for you. Each of its lines is on a line of its own, any character a terminal would hide or act on is ' +
+    'shown as a code, such as \\u001b for Escape, and each key or token setup knows of is shown by its name in place of ' +
+    'its value, such as <ANTHROPIC_API_KEY>.';
 }
 
 export function openingMessage(held: boolean, after: 'start' | 'switch', finishedAt: string | null = null): string {
