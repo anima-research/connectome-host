@@ -475,7 +475,7 @@ export async function doctor(
     else {
       await checked(report, 'The counts of its model calls', async () => {
         const answer = await read<unknown>('health', calls);
-        if (answer !== null) callLines(report, agentCalls(answer.data), recipe?.agent.name);
+        if (answer !== null) callLines(report, agentCalls(answer.data), recipe?.agent.name, commands?.log ?? null);
       });
     }
 
@@ -708,7 +708,7 @@ function agentCalls(data: unknown): AgentCalls[] {
   });
 }
 
-function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | undefined): void {
+function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | undefined, log: string | null): void {
   const named = recipeAgent ?? agents[0]?.name;
   if (named !== undefined && !agents.some((agent) => agent.name === named)) {
     report.line(`The host's counts list no agent named ${named}.`);
@@ -718,7 +718,9 @@ function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | u
     if (agent.name !== named && agent.failures === 0 && refusals === null) continue;
     if (agent.failures > 0) {
       report.problem(`${agent.name}'s last turn's model call failed` +
-        `${agent.failedAt === undefined ? '' : ` at ${new Date(agent.failedAt).toISOString()}`}, ${agent.failures} in a row.`);
+        `${agent.failedAt === undefined ? '' : ` at ${new Date(agent.failedAt).toISOString()}`}, ${agent.failures} in a row. ` +
+        `Each failure's reason is in a line of the host's stderr that starts \`[inference-failed] agent=${agent.name}\`.` +
+        (log === null ? '' : ` The service keeps its host's stderr in its log: \`${log}\` follows it.`));
     } else {
       report.ok(`${agent.name}: no failed turns in a row, by the host's counts.`);
     }

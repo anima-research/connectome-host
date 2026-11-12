@@ -1332,7 +1332,9 @@ describe('connectome doctor', () => {
     const from = lines.indexOf('Model calls');
     expect(from).toBeGreaterThan(lines.indexOf('Token counts'));
     expect(lines.slice(from + 1, from + 4)).toEqual([
-      `  ✗ ember's last turn's model call failed at ${new Date(failedAt).toISOString()}, 2 in a row.`,
+      `  ✗ ember's last turn's model call failed at ${new Date(failedAt).toISOString()}, 2 in a row. Each failure's reason is in ` +
+        'a line of the host\'s stderr that starts `[inference-failed] agent=ember`. The service keeps its host\'s stderr in its ' +
+        'log: `journalctl --user -u connectome-test.service -f` follows it.',
       `  ember was refused 3 times since this host started or last switched session, the last at ${new Date(lastAt).toISOString()}, in the category cyber.`,
       '  ember\'s newest turn met a refusal, and the host\'s counts don\'t show whether a retry in that turn then answered.',
     ]);
