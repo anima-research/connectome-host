@@ -105,10 +105,16 @@ async function launch(tmpDir: string): Promise<Host> {
 }
 
 async function stopHost(host: Host): Promise<void> {
-  try { host.sock.write(JSON.stringify({ type: 'shutdown' }) + '\n'); } catch { }
-  await new Promise((r) => setTimeout(r, 500));
+  const exited = host.child.exitCode !== null || host.child.signalCode !== null
+    ? Promise.resolve()
+    : new Promise((done) => host.child.once('exit', done));
+  try {
+    host.sock.write(JSON.stringify({ type: 'shutdown' }) + '\n');
+  } catch {
+    host.child.kill('SIGKILL');
+  }
+  await exited;
   try { host.reader.stop(); host.sock.destroy(); } catch { }
-  try { if (host.child.exitCode === null) host.child.kill('SIGKILL'); } catch { }
   try { rmSync(host.tmpDir, { recursive: true, force: true }); } catch { }
 }
 

@@ -1315,6 +1315,23 @@ test('cancelling after a try left a child quiesced ends that quiesce', async () 
   expect(host.update.armedSwitch()).toBeNull();
 });
 
+test("a cancel whose ending of the switch's quiesce doesn't reach a child says so in check after it, as a dropped switch does", async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const { fleet } = fleetChild({ busy: true, resumes: false });
+  const host = residentHost({ root, fleet });
+  await host.armed();
+  await host.update.runArmed(alwaysQuiet);
+  expect(text(await host.call({ action: 'cancel' }))).toContain('Ending the switch\'s quiesce didn\'t reach every host');
+  expect(host.update.armedSwitch()).toBeNull();
+  const reason = host.update.status().armedDropped?.reason ?? '';
+  expect(reason).toContain('cancelled it.');
+  expect(reason).toContain('Ending the switch\'s quiesce didn\'t reach every host');
+  expect(reason).toContain('kid');
+  const check = text(await host.call({ action: 'check' }));
+  expect(check).toContain('Ending the switch\'s quiesce didn\'t reach every host');
+  expect(check).toContain('kid');
+});
+
 test('a plain restart pending on a host that doesn\'t grant lifecycle--restart is named, without a tool the agent lacks', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const state = new SelfRestartState();
@@ -1362,6 +1379,22 @@ test('a check whose registry read fails is refused, saying the read failed', asy
   const answer = await host.call({ action: 'check' });
   expect(answer.success).toBe(false);
   expect(text(answer)).toContain('Reading the registry failed at');
+});
+
+test("an agent whose check or install meets a registry error is told to tell the person who runs its host if it stays, and the person's own status isn't", async () => {
+  const { root } = installRunning0141();
+  const host = residentHost({ root, registryDown: true });
+  const line = 'That error is from your host\'s read of its registry. If a later check gives it again, tell the person ' +
+    'who runs your host.';
+  const check = await host.call({ action: 'check' });
+  expect(check.success).toBe(false);
+  expect(text(check)).toContain(`the registry is unreachable\n${line}`);
+  const install = await host.call({ action: 'install' });
+  expect(install.success).toBe(false);
+  expect(text(install)).toStartWith('Nothing was installed: ');
+  expect(text(install)).toContain(`the registry is unreachable\n${line}`);
+  expect(statusLines(host.update.status(), COMMAND_WAYS).join('\n')).not.toContain(line);
+  expect((await host.update.install()).lines.join('\n')).not.toContain(line);
 });
 
 test('an install begun while a restart is armed keeps the armed release, and the restart stays armed', async () => {

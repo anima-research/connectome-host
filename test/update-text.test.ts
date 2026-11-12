@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS, bannerOf, busyLines, commandFor, dialogStill, goBackLines, keptDismissal,
-  noticeLines, openWays, restartLines, shownBanner, statusLines,
+  noticeLines, openWays, pageRequest, restartLines, shownBanner, statusLines,
   type ReadCheck, type RestartState, type SwitchOutcome, type UpdateStatus,
 } from '../src/web/update-text.js';
 
@@ -345,7 +345,7 @@ describe('each way named as its caller names it', () => {
     expect(dialogStill('restart', null)).toBeNull();
   });
 
-  test('a page sends each way as its command, Restart and Go back naming the release it showed', () => {
+  test('a page sends each way as its command, marked as the page\'s, Restart and Go back naming the release it showed', () => {
     const shown: UpdateStatus = { ...base, installed: '0.13.0', goBack: { to: '0.12.0', since: 'then' } };
     expect(commandFor('restart', shown)).toBe('/update restart 0.13.0');
     expect(commandFor('keep', shown)).toBe('/update back keep 0.12.0');
@@ -355,6 +355,10 @@ describe('each way named as its caller names it', () => {
     expect(commandFor('check', shown)).toBe('/update');
     expect(commandFor('restart', base)).toBeNull();
     expect(commandFor('keep', base)).toBeNull();
+    for (const way of ['restart', 'keep', 'restore', 'install', 'now', 'check'] as const) {
+      expect(pageRequest(way, shown)).toEqual({ type: 'command', command: commandFor(way, shown)!, page: true });
+    }
+    expect(pageRequest('restart', base)).toBeNull();
   });
 
   test('both tables name the same ways', () => {

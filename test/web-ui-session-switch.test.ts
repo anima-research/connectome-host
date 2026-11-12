@@ -455,13 +455,14 @@ test("a host-quiesce over a switch's quiesce that no switch is still running is 
   expect(message).not.toContain('once the switch has gone ahead or ended');
 });
 
-test("a host-quiesce over a switch's quiesce on a host that can't tell whether the switch still runs is refused, naming Resume and what it costs", () => {
+test("a host-quiesce over a switch's quiesce on a host that can't tell whether the switch still runs is refused, naming the top bar's control that ends it there and what it costs", () => {
   const app = { framework: { getHostModeStatus: () => ({ quiesced: true, reason: switchQuiesceReason('0.15.0') }) } };
   const answer = switchQuiesceRefusalFor(app, { type: 'host-quiesce', corrId: 'quiesce', reason: 'maintenance' } as never, null);
   expect(answer).toMatchObject({ type: 'error', corrId: 'quiesce' });
   const message = String((answer as { message?: unknown }).message);
   expect(message).toStartWith('host-quiesce refused: ');
   expect(message).toContain('may still be under way or may have ended and left this quiesce behind');
-  expect(message).toContain('Resume ends it, and then quiesce again');
-  expect(message).toContain("though the switch then doesn't go ahead");
+  expect(message).toContain('clicking "⏸ quiesced" in the top bar ends it, and then quiesce again');
+  expect(message).toContain("That click also ends it while the switch is under way, though the switch then doesn't go ahead.");
+  expect(message).not.toContain('Resume');
 });

@@ -72,10 +72,11 @@ were cut. After that, events emitted while no client is connected are
 dropped, not buffered: a later client sends `describe` for a `snapshot`.
 
 **Shutdown.** Triggered by `{"type":"shutdown"}`, by `/quit` sent as a
-`command`, by SIGTERM or SIGINT, by `--exit-when-idle`, or by an agent's
+`command`, by SIGTERM or SIGINT, by `--exit-when-idle`, by an agent's
 armed self-restart (`modules.selfRestart`), which goes once the host has said
 `lifecycle:idle` (below) and nothing at all has been in flight for ≥500 ms, a
-running background script included. The child emits
+running background script included, or by an update's switch, whether a
+person asked for it or an agent armed it (`modules.selfUpdate`). The child emits
 `lifecycle:exiting`; from then on it starts no session switch, and one under
 way that hasn't installed its new framework stops at its next step, stopping a
 framework it has made rather than starting it (one already installing
@@ -86,7 +87,7 @@ extension's `register()`, or an MCPL server's tool listing under
 `requestTimeoutMs: 0`, isn't. Then it calls `framework.stop()`
 (which cancels in-flight streams rather than letting them finish), closes the
 server, unlinks the socket and pid file, and exits once `headless.log` has
-taken its last lines: 0 (75 for a self-restart), or 1 if `framework.stop()`, or stopping what the switch made, failed. It waits at
+taken its last lines: 0 (75 for a self-restart or an update's switch), or 1 if `framework.stop()`, or stopping what the switch made, failed. It waits at
 most 2 s, then exits anyway with a line on its stderr. What it writes
 through `process.stdout.write` and `process.stderr.write` once the log has
 ended goes to its stderr too; Bun's `console.*` writes to its stdout and

@@ -19,7 +19,7 @@ import { candidateOf, rangeOf, readReleases, registryOf, type Release } from './
 import { readTrialLog } from './trial-log.js';
 import {
   ARMED_RETRY, ASKS_NOBODY, COMMAND_WAYS, GO_BACK_UNREAD, LAST_SWITCH, PHASE, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName,
-  bunUpgrade, busyLines, cliWays, deprecatedLine, heldLines,
+  bunUpgrade, busyLines, cliWays, deprecatedLine, heldLines, registryPassOn,
   notAnInstall, noticeLines, notesUrl, personWay, restartName, toolWays, type ArmedSwitch, type Check, type HostQuiet, type ReadCheck,
   type RestartState,
   type SwitchOutcome, type UpdateStatus, type UpdateWays,
@@ -272,7 +272,7 @@ export class HostUpdate {
     } catch (error) {
       this.check = { at, ok: false, error: said(error) };
       this.installing = null;
-      return { refusal: refused(`Nothing was installed: ${said(error)}`) };
+      return { refusal: refused(`Nothing was installed: ${said(error)}`, ...registryPassOn(ways)) };
     }
     if (check.candidate === null) {
       this.installing = null;
@@ -415,7 +415,9 @@ export class HostUpdate {
         'it went ahead, and cancel disarms it if it didn\'t.');
     }
     this.disarm(by ? `${by} cancelled it` : 'it was cancelled');
+    const dropped = this.armedDropped!;
     const ended = await this.endLeftQuiesce();
+    if (ended !== null) dropped.reason += leftQuiesced(ended, false, this.hostWays());
     return done(`${armedName(armed)} is disarmed, and nothing restarts for it.` + (ended === null
       ? ' A switch\'s quiesce is being ended already, which also ends any quiesce an earlier try left.'
       : leftQuiesced(ended, false, ways)));
