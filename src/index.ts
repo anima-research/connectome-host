@@ -27,6 +27,7 @@
 
 // First, so its warning about an old Bun prints before the modules below run.
 import './bun-floor-check.js';
+import { assertRefusalBridgeAvailable, prepareRefusalReactions, installRefusalReactions } from './refusal-reactions.js';
 import { hostMembraneRetry } from './membrane-retry.js';
 import { frameworkErrorPolicy } from './framework-error-policy.js';
 import {
@@ -506,7 +507,11 @@ async function createFramework(
   // The framework's heartbeat (heartbeat-options.ts), with heartbeat-mcpl
   // left out beside it.
   const heartbeatOptions = heartbeatOptionsFor(modules.heartbeat, config.dataDir);
-  const mcplServers = heartbeatOptions ? withoutHeartbeatMcpl(finalServers, (line) => console.warn(line)) : finalServers;
+  const reactionServers = heartbeatOptions ? withoutHeartbeatMcpl(finalServers, (line) => console.warn(line)) : finalServers;
+
+  // Fail before connecting anything when stock AF lacks this optional feature.
+  if (recipe.mainRefusalReactions !== undefined) assertRefusalBridgeAvailable(AgentFramework.prototype);
+  const mcplServers = prepareRefusalReactions(recipe.mainRefusalReactions, reactionServers);
 
   const framework = await AgentFramework.create({
     storePath,
@@ -610,6 +615,10 @@ agents: [agentConfig],
     (framework as unknown as Record<symbol, WebUiModule>)[webUiModuleSymbol] = webUiModule;
   }
 
+  if (recipe.mainRefusalReactions !== undefined) {
+    try { installRefusalReactions(framework, recipe.mainRefusalReactions, mcplServers); }
+    catch (error) { await framework.stop(); throw error; }
+  }
   return framework;
 }
 
