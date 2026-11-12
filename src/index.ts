@@ -110,7 +110,7 @@ import {
   runningFit,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
-import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption, responsesTransportSettingsWarning } from './framework-agent-config.js';
+import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption, warnTransportSettings } from './framework-agent-config.js';
 import { probeAccountBinding } from './thinking-binding-probe.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
@@ -553,8 +553,6 @@ agents: [agentConfig],
 
   const autoContinueWarning = autoContinueSupportWarning(recipe, framework.getAgent(agentName) ?? undefined);
   if (autoContinueWarning) console.warn(autoContinueWarning);
-  const transportWarning = responsesTransportSettingsWarning(recipe);
-  if (transportWarning) console.warn(transportWarning);
 
   {
     const alarmCapable = strategy as unknown as {
@@ -871,6 +869,10 @@ async function main() {
   const provider = resolveProvider(recipe);
   const fit = runningFit(recipe, config.model);
   if (!fit.checked) console.log(fit.line);
+  // Once per process, before the runtimes own stderr, and into their logs:
+  // a session switch builds the framework again, and the warning depends on
+  // the recipe alone.
+  warnTransportSettings(recipe);
 
   if (provider === 'openrouter' && !config.openrouterApiKey) {
     console.error('Missing OPENROUTER_API_KEY for recipe provider "openrouter".');

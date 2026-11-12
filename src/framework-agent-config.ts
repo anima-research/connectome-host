@@ -1,4 +1,5 @@
 import { AgentFramework } from '@animalabs/agent-framework';
+import { noteRecipeWarning } from './recipe-warnings.js';
 import type { Recipe } from './recipe.js';
 import { DEFAULT_RECIPE_CLOCK, resolveProvider } from './recipe.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from './recipe-fit.js';
@@ -21,23 +22,46 @@ export function autoContinueSupportWarning(recipe: Recipe, agent: object | undef
 }
 
 /**
- * `agent.responses.serviceTier` and `compactThreshold` are API-key transport
- * settings: the host sends them on `openai-responses` only, so a Codex recipe
- * that sets them gets neither, with no other sign. Fast processing on Codex
- * is `agent.codex.fastMode`.
+ * The settings each OpenAI provider reads and the other drops: the host sends
+ * `agent.responses.serviceTier` and `compactThreshold` on `openai-responses`
+ * only, and reads `agent.codex` on `openai-codex` only. A recipe that moves
+ * between the two keeps the keys and loses their effect with no other sign,
+ * so the start names them, and, for a `priority` tier or `fastMode`, the
+ * other provider's way of asking for the same thing (R1-2, R1-3 of #645).
+ * Pure: `warnTransportSettings` emits it.
  */
 export function responsesTransportSettingsWarning(recipe: Recipe): string | undefined {
-  if (recipe.agent.provider !== 'openai-codex') return undefined;
-  const set = [
-    ...(recipe.agent.responses?.serviceTier !== undefined ? ['agent.responses.serviceTier'] : []),
-    ...(recipe.agent.responses?.compactThreshold !== undefined ? ['agent.responses.compactThreshold'] : []),
-  ];
-  if (set.length === 0) return undefined;
-  const fast = recipe.agent.responses?.serviceTier !== undefined
-    ? ' (fast processing on Codex is agent.codex.fastMode)' : '';
-  return `[agent-settings] ${set.join(' and ')} ${set.length === 1 ? 'is' : 'are'} API-key transport ` +
-    `setting${set.length === 1 ? '' : 's'} sent on provider "openai-responses" only: provider "openai-codex" doesn't send ` +
-    `${set.length === 1 ? 'it' : 'them'}${fast}.`;
+  const provider = resolveProvider(recipe);
+  if (provider === 'openai-codex') {
+    const set = [
+      ...(recipe.agent.responses?.serviceTier !== undefined ? ['agent.responses.serviceTier'] : []),
+      ...(recipe.agent.responses?.compactThreshold !== undefined ? ['agent.responses.compactThreshold'] : []),
+    ];
+    if (set.length === 0) return undefined;
+    const fast = recipe.agent.responses?.serviceTier === 'priority'
+      ? ' (priority processing on Codex is agent.codex.fastMode, or /fast on at runtime)' : '';
+    return `[agent-settings] ${set.join(' and ')} ${set.length === 1 ? 'is' : 'are'} sent on provider "openai-responses" only: ` +
+      `provider "openai-codex" doesn't send ${set.length === 1 ? 'it' : 'them'}${fast}.`;
+  }
+  if (recipe.agent.codex !== undefined) {
+    const priority = recipe.agent.codex.fastMode === true && provider === 'openai-responses'
+      ? ' (priority processing on openai-responses is agent.responses.serviceTier: "priority")' : '';
+    return `[agent-settings] agent.codex is read on provider "openai-codex" only: provider "${provider}" doesn't read it${priority}.`;
+  }
+  return undefined;
+}
+
+/** Says the warning at start, where the operator can see it: on stderr, and
+ *  in the recipe-warning queue the TUI and headless runtimes write to their
+ *  logs (`takeRecipeWarnings`), since the start's stderr is covered by the
+ *  TUI's alternate screen and isn't the runtimes' log. Returns what it said. */
+export function warnTransportSettings(recipe: Recipe): string | undefined {
+  const warning = responsesTransportSettingsWarning(recipe);
+  if (warning) {
+    console.warn(warning);
+    noteRecipeWarning(warning);
+  }
+  return warning;
 }
 
 export type FrameworkAgentConfig = AgentConfig & {
