@@ -66,6 +66,11 @@ function assignment(name: string, value: string): string {
 export function systemdUnit(description: string, work: string, argv: string[], env: Array<[string, string]>,
   wants: string | null): string {
   const named = `The working directory ${JSON.stringify(work)}`;
+  if (/[ \\]$/.test(work)) {
+    throw new Refusal(`${named} ends in a space or a backslash. systemd drops a space at the end of a unit's line and ` +
+      'joins a line that ends in a backslash to the next, so it can\'t go in a unit. Nothing was written. Set this ' +
+      'resident up again in a directory whose name ends in neither.');
+  }
   const unit = [`Description=${plain(description, named).replace(/%/g, '%%')}`,
     ...(wants === null ? [] : [`Wants=${wants}`, `After=${wants}`])];
   const service = [`WorkingDirectory=${plain(work, named).replace(/%/g, '%%')}`, `ExecStart=${argv.map(word).join(' ')}`,
@@ -117,6 +122,13 @@ export function plist(label: string, work: string, args: string[], env: Array<[s
 export interface UnitRead {
   argv: string[];
   workingDirectory: string;
+}
+
+/** The directory a systemd unit runs in, as systemd reads it: the last WorkingDirectory line, with the `-` that lets
+ *  it be missing dropped. Null where the unit sets none. */
+export function systemdWorkingDirectory(text: string): string | null {
+  const set = [...text.matchAll(/^WorkingDirectory=(.*)$/gm)].at(-1)?.[1]?.replace(/^-/, '').replace(/%%/g, '%');
+  return set === undefined || set === '' ? null : set;
 }
 
 export function readUnit(manager: Manager, text: string): UnitRead | { why: string } {

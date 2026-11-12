@@ -119,6 +119,7 @@ test('a host unit that runs in another directory fails, naming both', () => {
   const result = checkUnits(at.units, at.work, false, 'connectome', sys);
   expect(result.passed).toBe(false);
   expect(result.lines.join('\n')).toContain(`systemd runs ${at.units.host.name} in /somewhere/else, not ${at.work}.`);
+  expect(result.elsewhere).toBe(true);
 });
 
 test('under launchd a running host passes, one loaded but not running fails with its log file, and all unloaded is stopped', () => {
@@ -312,4 +313,13 @@ test('where the recipe didn\'t load, a shell unit that\'s installed is checked a
   expect(unlooked.passed).toBe(false);
   expect(unlooked.lines.join('\n')).toContain(`${looped.units.shell.file}, ${looped.units.shell.name}'s unit file, can't be looked at`);
   expect(unlooked.lines.join('\n')).not.toContain('The recipe names a shell');
+});
+
+test('a shell daemon\'s unit that is another install\'s isn\'t checked, nor said to go at the next install', () => {
+  const at = place('linux', ['host', 'shell']);
+  const { sys, asked } = system(at.home, { [`systemctl ${at.units.host.name}`]: activeHost(at.work) });
+  const result = checkUnits(at.units, at.work, 'other', 'connectome', sys);
+  expect(result.passed).toBe(true);
+  expect(result.lines.join('\n')).not.toContain(at.units.shell.name);
+  expect(asked.filter((call) => call.join(' ').includes(at.units.shell.name))).toEqual([]);
 });

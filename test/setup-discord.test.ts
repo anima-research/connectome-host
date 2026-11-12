@@ -150,7 +150,7 @@ describe('setup--discord', () => {
       .toEqual([{ id: '201', name: 'lobby', category: null, view: true, send: true }]);
   });
 
-  test('given a server and a username, it asks Discord for up to ten members whose username or nickname starts with it, and gives them', async () => {
+  test('given a server and a username, it asks Discord for up to 1,000 members, its most, whose username or nickname starts with it, and gives them', async () => {
     const discord = fakeDiscord([HOME]);
     const { module } = install(discord);
     const r = await read(module, { server: '100', username: 'ada' });
@@ -162,25 +162,34 @@ describe('setup--discord', () => {
         { id: '701', username: 'adam.k', displayName: 'Adam', nickname: null },
       ],
     });
-    expect(discord.asked).toContain('/guilds/100/members/search?query=ada&limit=11');
+    expect(discord.asked).toContain('/guilds/100/members/search?query=ada&limit=1000');
     const half = await read(module, { username: 'ada' });
     expect(half.success).toBe(false);
     expect(half.error).toContain('given both server');
   });
 
-  test('where more than ten members match, it gives ten and says more match, so a longer start can find the rest', async () => {
-    const many: FakeServer = {
+  test('where more members match than one answer holds, it gives the first that fit and says how many matched, so a longer start narrows them', async () => {
+    const matching = (count: number): FakeServer => ({
       ...HOME,
-      members: [...Array.from({ length: 11 }, (_, i) => ({ id: `${710 + i}`, username: `ada${i}` })), { id: '900', username: 'ember' }],
-    };
-    const r = await read(install(fakeDiscord([many])).module, { server: '100', username: 'ada' });
-    expect(r.success).toBe(true);
-    const data = r.data as { members: Array<{ username: string }>; note?: string };
-    expect(data.members.map((m) => m.username)).toEqual(Array.from({ length: 10 }, (_, i) => `ada${i}`));
-    expect(data.note).toBe('More members match: call setup--discord again with more of the username or nickname.');
-    const ten = await read(install(fakeDiscord([{ ...many, members: many.members.slice(1) }])).module, { server: '100', username: 'ada' });
-    expect((ten.data as { members: unknown[] }).members).toHaveLength(10);
-    expect(ten.data).not.toHaveProperty('note');
+      members: [...Array.from({ length: count }, (_, i) => ({ id: `${10_000 + i}`, username: `ada${i}`, global_name: `Ada the ${i}th`, nick: `ada of the garden ${i}` })), { id: '900', username: 'ember' }],
+    });
+    const capped = (module: SetupModule, resultMaxChars?: number) =>
+      module.handleToolCall({ id: 'd1', name: 'discord', input: { server: '100', username: 'ada' }, ...(resultMaxChars ? { resultMaxChars } : {}) } as ToolCall);
+    const thirty = install(fakeDiscord([matching(30)])).module;
+    const all = await capped(thirty);
+    expect((all.data as { members: unknown[] }).members).toHaveLength(30);
+    expect(all.data).not.toHaveProperty('note');
+    const cut = await capped(thirty, 1_000);
+    expect(JSON.stringify(cut.data).length).toBeLessThanOrEqual(1_000);
+    const data = cut.data as { members: Array<{ username: string }>; note: string };
+    expect(data.members.length).toBeGreaterThan(0);
+    expect(data.members.length).toBeLessThan(30);
+    expect(data.members.map((m) => m.username)).toEqual(Array.from({ length: data.members.length }, (_, i) => `ada${i}`));
+    expect(data.note).toBe(`${data.members.length} of the 30 members that match are shown, since one answer can't hold more: call setup--discord again with more of the username or nickname.`);
+    const most = await capped(install(fakeDiscord([matching(1_001)])).module);
+    const top = most.data as { members: unknown[]; note: string };
+    expect(JSON.stringify(top).length).toBeLessThanOrEqual(24_000);
+    expect(top.note).toBe(`${top.members.length} of the 1000 members that match, the most Discord gives, are shown, since one answer can't hold more, and more may match: call setup--discord again with more of the username or nickname.`);
   });
 
   test('given a server alone, it reads that one server as the full read gives it, without listing the others', async () => {
@@ -287,6 +296,27 @@ describe('setup--discord', () => {
     expect(notBot.error).toBe('Discord answered GET /users/@me with something other than the bot\'s user, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
   });
 
+  test('a 401 to a read after the token check is decided by its type before its body, as the token check decides one: typed JSON is a refusal, any other type isn\'t Discord\'s', async () => {
+    const REFUSED = 'Discord refused the bot token stored as DISCORD_TOKEN (401), so the read stopped there. Ask the person for the token again with setup--ask_secret.';
+    const typed = (type: string, body: BodyInit) => () => new Response(body, { status: 401, headers: { 'content-type': type } });
+    const page = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': typed('text/html', '{"message":"401: Unauthorized","code":0}') })).module);
+    expect(page.error).toBe('Discord answered 401 to GET /users/@me/guilds?limit=200 with something other than JSON, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
+    const json = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': typed('application/json', '<html>401</html>') })).module);
+    expect(json.error).toBe(REFUSED);
+    const stalled = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': typed('application/json', new ReadableStream({ start() {} })) })).module);
+    expect(stalled.error).toBe(REFUSED);
+  });
+
+  test('a 429 to the token check or a later read that gives no retry_after asks for Retry-After\'s seconds, whether or not its body is JSON', async () => {
+    const limited = (body: string, type: string) => () => new Response(body, { status: 429, headers: { 'content-type': type, 'retry-after': '300' } });
+    const token = await read(install(fakeDiscord([HOME], { '/users/@me': limited('<html>slow down</html>', 'text/html') })).module);
+    expect(token.error).toBe('Discord answered 429 to GET /users/@me with something other than JSON, so the read stopped there. It asks for 300 s: call setup--discord again once that has passed.');
+    const page = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': limited('<html>slow down</html>', 'text/html') })).module);
+    expect(page.error).toBe('Discord answered 429 to GET /users/@me/guilds?limit=200 with something other than JSON, so the read stopped there. It asks for 300 s: call setup--discord again once that has passed.');
+    const json = await read(install(fakeDiscord([HOME], { '/users/@me/guilds': limited('{"message":"You are being rate limited."}', 'application/json') })).module);
+    expect(json.error).toBe('Discord answered 429 to GET /users/@me/guilds?limit=200: You are being rate limited., so the read stopped there. It asks for 300 s: call setup--discord again once that has passed.');
+  });
+
   test('an answer in JSON that setup can\'t read the way it reads Discord\'s stops the read in setup\'s words, never with the token, rather than throwing', async () => {
     const shapes: Array<[Record<string, () => Response>, Record<string, unknown>]> = [
       [{ '/guilds/100/members/search': () => Response.json({ members: [] }) }, { server: '100', username: 'ada' }],
@@ -300,5 +330,85 @@ describe('setup--discord', () => {
       expect(r.error).toEndWith('). Tell the person: something between this machine and Discord may be answering in its place.');
       expect(r.error).not.toContain(TOKEN);
     }
+  });
+
+  test('a call outside setup--discord\'s shapes is refused naming the value it refused, a stored secret by its name', async () => {
+    const discord = fakeDiscord([HOME]);
+    const { module } = install(discord, `DISCORD_TOKEN="${TOKEN}"\nOPENAI_API_KEY="sk-test-secret-value"\n`);
+    const shapes = 'setup--discord searches members given both server, a server\'s id as it gives them, and username, ' +
+      'the start of a username or server nickname. Call it with server alone to read that server, or with neither to ' +
+      'read the servers and channels.';
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ server: 'general' }, 'server is "general", which isn\'t a server\'s id: one is digits, given as text.'],
+      [{ server: 100 }, 'server is 100, which isn\'t a server\'s id: one is digits, given as text.'],
+      [{ server: 'sk-test-secret-value' }, 'server is "<OPENAI_API_KEY>", which isn\'t a server\'s id: one is digits, given as text.'],
+      [{ username: 'ada' }, 'username is "ada", given without server, the server whose members to search.'],
+      [{ server: '100', username: '  ' }, 'username is "  ", which holds no start of a name to search for.'],
+      [{ server: '100', username: 7 }, 'username is 7, which holds no start of a name to search for.'],
+    ];
+    for (const [input, says] of cases) {
+      const r = await read(module, input);
+      expect([input, r.success, r.error]).toEqual([input, false, `${says} ${shapes}`]);
+    }
+    expect(discord.asked).toEqual([]);
+  });
+
+  test('a read asked for while a question is being asked waits for its answer: no line and no request to Discord come before it', async () => {
+    let answer!: (value: string) => void;
+    const typed = new Promise<string>((done) => { answer = done; });
+    const discord = fakeDiscord([HOME]);
+    const dir = mkdtempSync(join(tmpdir(), 'setup-discord-'));
+    dirs.push(dir);
+    writeFileSync(join(dir, '.env'), `DISCORD_TOKEN="${TOKEN}"\n`, { mode: 0o600 });
+    const shown: string[] = [];
+    const module = new SetupModule({
+      dir, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: dir }, asker: () => ({ ask: () => typed }),
+      show: (line) => shown.push(line), fetch: discord.fetch,
+    });
+    const asked = module.handleToolCall({ id: 'a1', name: 'ask_secret', input: { name: 'NEW_TOKEN', purpose: 'a test' } } as ToolCall);
+    await Bun.sleep(20);
+    const reading = read(module);
+    await Bun.sleep(50);
+    expect(shown.filter((line) => line.startsWith('Reading'))).toEqual([]);
+    expect(discord.asked).toEqual([]);
+    answer('a-typed-value');
+    await asked;
+    expect((await reading).success).toBe(true);
+    expect(shown).toContain('Reading the bot\'s servers and channels from Discord.');
+    expect(discord.asked.length).toBeGreaterThan(0);
+  });
+
+  test('a stored secret in what Discord gives back, or in the call\'s own username, comes in the answer by its name', async () => {
+    const named: FakeServer = { ...HOME, name: `Home ${TOKEN}`, members: [...HOME.members, { id: '702', username: 'sk-test-secret-value-fan' }] };
+    const env = `DISCORD_TOKEN="${TOKEN}"\nOPENAI_API_KEY="sk-test-secret-value"\n`;
+    const whole = await read(install(fakeDiscord([named]), env).module);
+    expect(whole.success).toBe(true);
+    expect(JSON.stringify(whole.data)).not.toContain(TOKEN);
+    expect((whole.data as { servers: Array<{ name: string }> }).servers[0]!.name).toBe('Home <DISCORD_TOKEN>');
+    const one = await read(install(fakeDiscord([named]), env).module, { server: '100' });
+    expect((one.data as { server: { name: string } }).server.name).toBe('Home <DISCORD_TOKEN>');
+    const found = await read(install(fakeDiscord([named]), env).module, { server: '100', username: 'sk-test-secret-value' });
+    expect(found.success).toBe(true);
+    expect(JSON.stringify(found.data)).not.toContain('sk-test-secret-value');
+    expect(found.data).toMatchObject({ username: '<OPENAI_API_KEY>', members: [{ id: '702', username: '<OPENAI_API_KEY>-fan' }] });
+  });
+
+  test('a call that carries the framework\'s lowest cap, 1,000, gets an answer that fits it, saying how many are shown; a call with none fits 24,000', async () => {
+    const discord = fakeDiscord([big('300', 50), big('400', 50)]);
+    const { module } = install(discord);
+    const capped = (input: Record<string, unknown>, resultMaxChars: number) =>
+      module.handleToolCall({ id: 'd1', name: 'discord', input, resultMaxChars } as ToolCall);
+    const free = await read(module, { server: '300' });
+    expect(JSON.stringify(free.data).length).toBeGreaterThan(1_000);
+    for (const [input, note] of [[{}, /^(Every server's channels together would pass|\d+ of 2 servers are shown)/], [{ server: '300' }, /^\d+ of 50 text and announcement channels are shown/]] as const) {
+      const r = await capped(input, 1_000);
+      expect([input, r.success]).toEqual([input, true]);
+      expect([input, JSON.stringify(r.data).length <= 1_000]).toEqual([input, true]);
+      expect((r.data as { note: string }).note).toMatch(note);
+    }
+    const whole = await read(module);
+    expect(JSON.stringify(whole.data).length).toBeLessThanOrEqual(24_000);
+    expect(whole.data).toMatchObject({ servers: [{ id: '300' }, { id: '400' }] });
+    expect((whole.data as { servers: Array<{ channels: unknown[] }> }).servers[0]!.channels.length).toBe(50);
   });
 });

@@ -92,8 +92,11 @@ function workdir(): string {
   return mkdtempSync(join(tmpdir(), 'chost-doctor-discord-'));
 }
 
-async function run(env: Record<string, string | undefined>, discord: ReturnType<typeof fakeDiscord>, dir = workdir(), requestLimitMs?: number) {
-  const result = await checkDiscord(env, { fetch: discord.fetch, workingDir: dir, ...(requestLimitMs ? { requestLimitMs } : {}) });
+async function run(
+  env: Record<string, string | undefined>, discord: ReturnType<typeof fakeDiscord>, dir = workdir(), requestLimitMs?: number,
+  command = 'connectome',
+) {
+  const result = await checkDiscord(env, { fetch: discord.fetch, workingDir: dir, command, ...(requestLimitMs ? { requestLimitMs } : {}) });
   return { ...result, text: result.lines.join('\n') };
 }
 
@@ -173,6 +176,19 @@ describe('doctor: Discord', () => {
     expect(refused.problems[0]).toStartWith('Discord refused the bot token the server is given as DISCORD_TOKEN (401)');
   });
 
+  test('a 429 that gives no retry_after says to run doctor again after Retry-After\'s seconds, to the token check and to a later read, whether or not its body is JSON', async () => {
+    const between = ' Something between this machine and Discord, such as a proxy, may be answering in its place.';
+    const wait = 'so the Discord checks after it weren\'t made: Discord asked for 300 s before the next request, so run connectome doctor again after that.';
+    const page = () => new Response('<html>slow down</html>', { status: 429, headers: { 'content-type': 'text/html', 'retry-after': '300' } });
+    const json = () => Response.json({ message: 'You are being rate limited.' }, { status: 429, headers: { 'retry-after': '300' } });
+    for (const path of ['/users/@me', '/applications/@me']) {
+      const unread = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { [path]: page } }));
+      expect(unread.problems).toEqual([`Discord answered 429 to GET ${path} with something other than JSON, ${wait}${between}`]);
+      const read = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { [path]: json } }));
+      expect(read.problems).toEqual([`Discord answered 429 to GET ${path}: You are being rate limited., ${wait}`]);
+    }
+  });
+
   test('a 403 or 404 to the bot\'s own user or application says what may be answering in Discord\'s place, and one to a server\'s read says what that read says', async () => {
     const between = ' Something between this machine and Discord, such as a proxy, may be answering in its place.';
     for (const status of [403, 404]) {
@@ -184,6 +200,27 @@ describe('doctor: Discord', () => {
     const server = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME], answers: { '/guilds/100/roles': () => Response.json({ message: 'Missing Access', code: 50001 }, { status: 403 }) } }));
     expect(server.problems).toEqual([expect.stringContaining('Discord listed that server for the bot a moment before')]);
     expect(server.problems[0]).not.toContain('Something between');
+  });
+
+  test('each remedy that tells the person to run a command names it as doctor was given it, for an install whose own connectome isn\'t first on PATH', async () => {
+    const typed = '/opt/chost/connectome';
+    const bare = /(^|[\s`])connectome (doctor|setup)/;
+    const limited = (retry?: number) => () => Response.json({ message: 'You are being rate limited.', ...(retry === undefined ? {} : { retry_after: retry }) }, { status: 429 });
+    const cases: Array<[string, Promise<{ lines: string[]; problems: string[] }>, string]> = [
+      ['no token', run({}, fakeDiscord({}), workdir(), undefined, typed), `\`${typed} setup discord\`, which keeps it in`],
+      ['whitespace after the token', run({ DISCORD_TOKEN: `${TOKEN}  ` }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }), workdir(), undefined, typed), `\`${typed} setup discord\` stores it trimmed in`],
+      ['a refused token', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ token: 'other' }), workdir(), undefined, typed), `\`${typed} setup discord\` stores it in`],
+      ['Discord busy', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: limited() }), workdir(), undefined, typed), `weren't made: run ${typed} doctor again`],
+      ['a wait asked for by the first request', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/users/@me': limited(2.5) } }), workdir(), undefined, typed), `so run ${typed} doctor again after that`],
+      ['a wait asked for by a later request', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/applications/@me': limited(2.5) } }), workdir(), undefined, typed), `so run ${typed} doctor again after that`],
+      ['Discord out of reach', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ fails: 'reject' }), workdir(), undefined, typed), `then run ${typed} doctor again`],
+      ['a server read refused', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME], answers: { '/guilds/100/roles': () => Response.json({ message: 'Missing Access', code: 50001 }, { status: 403 }) } }), workdir(), undefined, typed), `and otherwise run ${typed} doctor again.`],
+    ];
+    for (const [name, ran, says] of cases) {
+      const text = (await ran).lines.join('\n');
+      expect([name, text]).toEqual([name, expect.stringContaining(says)]);
+      expect([name, bare.test(text)]).toEqual([name, false]);
+    }
   });
 
   test('an answer that can change by itself, Discord busy or limiting the rate, says to run doctor again', async () => {
@@ -371,7 +408,7 @@ describe('doctor: Discord', () => {
     expect(r.problems).toEqual([]);
   });
 
-  test('the scope reads back by name, and a server the bot isn\'t in, or a channel it can\'t see, is a problem', async () => {
+  test('the scope reads back by name, and a server the bot isn\'t in, or a channel Discord lists that the bot can\'t see, is a problem', async () => {
     const discord = fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME, ELSEWHERE] });
     const ok = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100:101+104,200' }, discord);
     expect(ok.problems).toEqual([]);
@@ -486,11 +523,11 @@ describe('doctor: Discord', () => {
     expect(scopeOf(r)).not.toMatch(/the bot is in no server/);
   });
 
-  test('a channel the scope names that the bot can see but can\'t send in is a problem, a whole server in the scope isn\'t, and the list marks every text, announcement, voice or stage channel it can\'t send in', async () => {
+  test('a channel the scope names that the bot can see but can\'t send in is a problem, a whole server in the scope isn\'t, and the list marks every text or announcement channel it can\'t send in', async () => {
     const quiet: FakeGuild = {
       ...HOME,
       channels: [...HOME.channels,
-        { id: '106', name: 'announcements', type: 0, overwrites: [{ id: '100', type: 0, deny: SEND }] },
+        { id: '106', name: 'announcements', type: 5, overwrites: [{ id: '100', type: 0, deny: SEND }] },
         { id: '107', name: 'read-only', type: 0, overwrites: [{ id: '110', type: 0, deny: SEND }] }],
     };
     const discord = fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [quiet] });

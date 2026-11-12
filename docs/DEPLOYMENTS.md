@@ -92,7 +92,9 @@ to stop, `kickstart -k` to restart.) A service `connectome service install`
 writes is named after the install's working directory instead:
 `com.animalabs.connectome.<name>` / `connectome-<name>.service`, and for its
 shell daemon `com.animalabs.connectome.<name>.shell` /
-`connectome-<name>.shell.service`. `connectome` alone shows its own stop and
+`connectome-<name>.shell.service`, with `<name>` the directory's name in lower
+case, each run of characters other than `a` to `z` and `0` to `9` made one `-` and
+none at either end. `connectome` alone shows its own stop and
 start commands, and how to follow its log. A stop that runs past the
 platform's timeout is ended by SIGKILL, and what was still in flight is cut
 off: on macOS that timeout is the exit timeout `launchctl print
@@ -364,8 +366,9 @@ Give `--extra-state` for each place an MCPL server keeps its state outside
 the data directory, so each update copies it with the data.
 Then have the service start the host with `bun '<root>/start.js'`, followed by
 the arguments it gives the host now, and restart it. In a systemd unit,
-write each `%` in a path as `%%`, since systemd reads `%` as a specifier even
-between quotes. Setup says whether the
+write each `%` in a path as `%%` and each `$` as `$$`, since systemd reads `%`
+as a specifier, and `${...}` as a variable, even between quotes. Setup
+says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
 
@@ -386,7 +389,9 @@ says why; the person's own `/update` and buttons don't need the line.
 **Moving or copying an install.** Setup records the directory that holds the
 install root, and `start.js` and `connectome` refuse to run an install moved
 or copied away from it, since its record still names the places of the
-install it was. Run setup again in the new directory:
+install it was. After a move, a service `connectome service install` wrote
+goes first: take its units away, as said below, before setup's run, since
+setup refuses while the host runs. Run setup again in the new directory:
 `'<root>/connectome' setup discord` for an install `connectome setup` made, or
 for one set up by hand, the setup of the release the install runs, with the
 new `DATA_DIR`:
@@ -424,7 +429,10 @@ service that `connectome service install` wrote: its units, named after the
 old directory as under Start / stop / restart above, still name that
 directory. After a move, take them away: on Linux, run `systemctl --user
 disable --now` with each unit, remove its file in `~/.config/systemd/user`,
-and run `systemctl --user daemon-reload`; on macOS, run `launchctl bootout
+and run `systemctl --user daemon-reload`. `systemctl --user` finds this
+user's systemd through `XDG_RUNTIME_DIR`: in a session that doesn't set it,
+start each of those commands with `XDG_RUNTIME_DIR=/run/user/$(id -u)`. On
+macOS, run `launchctl bootout
 gui/$(id -u)` with each unit's plist in `~/Library/LaunchAgents`, and remove
 it. Then run `connectome service install <recipe>` in the new directory, which
 refuses while a unit of its name names the old directory. A copy can have a
@@ -464,7 +472,9 @@ directory, leaving any outside it, which may be another install's. Setup refuses
 a Go back is unfinished, since that trial's fallback restores from them, and
 the next start goes on with that Go back from them: let it end where the
 install was, moving it back first if it was moved, and then move or copy it
-again. Nothing
+again. It refuses too while a Go back is asked for and no start has begun
+it, since that start goes back from them: let it run there the same way, or
+remove the install root's `mark.json`, which drops the request. Nothing
 removes what's moved aside, and what a Go back kept holds newer data, so
 move out what you want of it rather than deleting it. Until the next update
 takes a new copy, `/update back restore` isn't there, and each update

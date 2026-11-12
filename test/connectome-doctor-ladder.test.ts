@@ -5,6 +5,9 @@ import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const LADDER = resolve(import.meta.dir, '..', 'scripts', 'connectome-doctor');
+// The ladder reads /proc and runs under python3 with GNU tools, so it's checked on Linux, where CI runs the suite.
+const ladderUnrunnable = process.platform !== 'linux' || (!Bun.which('python3') && !process.env.CI);
+if (ladderUnrunnable) console.warn('connectome-doctor-ladder: these tests need Linux and python3, so they are skipped');
 const dirs: string[] = [];
 const children: ChildProcess[] = [];
 afterEach(async () => {
@@ -95,6 +98,7 @@ async function install(opts: {
   const at = { work, bins, host, started: now - 60, now, mainPidNow: opts.mainPidNow };
   systemctl(at);
   const journal = join(work, 'journal.txt');
+  bin(bins, 'df', String.raw`printf 'Filesystem Size Used Avail Use%% Mounted on\n/dev/x 100G 10G 90G 10%% /\n'`);
   bin(bins, 'journalctl', opts.journalFails !== undefined
     ? `echo "${opts.journalFails}" >&2; exit 1`
     : [
@@ -139,7 +143,7 @@ async function settled(host: Host): Promise<void> {
   await waitFor(() => !alive(host) || lines(host.ticks) >= from + 2, 'two more turns of the stand-in host');
 }
 
-describe('the ladder, for a unit that logs to the journal', () => {
+describe.skipIf(ladderUnrunnable)('the ladder, for a unit that logs to the journal', () => {
   test('its failures, its delivery and its gate dump come from the journal, and logs/failures.log is read too', async () => {
     const at = await install({ listens: true });
     writeFileSync(join(at.work, 'logs', 'failures.log'),
@@ -298,7 +302,7 @@ describe('the ladder, for a unit that logs to the journal', () => {
   });
 });
 
-describe('where the ladder reads a unit\'s output', () => {
+describe.skipIf(ladderUnrunnable)('where the ladder reads a unit\'s output', () => {
   const failing = (what: string): string => `[inference-failed] ${what}\n`;
 
   test('a unit whose unit file sends its output to a file is read from that file', async () => {
@@ -379,7 +383,7 @@ describe('where the ladder reads a unit\'s output', () => {
   });
 });
 
-describe('the ladder\'s recent failures', () => {
+describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
   test('an inference failure a later successful call followed is said with when it was, and that whose call isn\'t known, as a line that doesn\'t count', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const call = (s: number, error?: string, kind = 'stream') => JSON.stringify({ timestamp: new Date(s * 1000).toISOString(),
@@ -600,7 +604,7 @@ describe('the ladder\'s recent failures', () => {
   });
 });
 
-describe('the ladder\'s gate dump', () => {
+describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
   test('a host that hasn\'t installed its SIGUSR2 listener yet isn\'t signalled, and says why and what to do, with a finding that doesn\'t count', async () => {
     const at = await install({ listens: false });
     const { out } = ladder(at);
@@ -708,7 +712,7 @@ describe('the ladder\'s gate dump', () => {
   });
 });
 
-describe('the start command', () => {
+describe.skipIf(ladderUnrunnable)('the start command', () => {
   test('a service that isn\'t active is told to start it with systemctl', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     systemctl(at, { active: 'inactive' });
@@ -716,7 +720,7 @@ describe('the start command', () => {
   });
 });
 
-describe('the ladder\'s recent start', () => {
+describe.skipIf(ladderUnrunnable)('the ladder\'s recent start', () => {
   const recent = /service started only .* recent restart\/crash\?/;
 
   test('a start in the last five minutes is called recent, and an older one isn\'t', async () => {
@@ -749,7 +753,7 @@ describe('the ladder\'s recent start', () => {
   });
 });
 
-describe('the ladder\'s inference stage', () => {
+describe.skipIf(ladderUnrunnable)('the ladder\'s inference stage', () => {
   const row = (s: number, kind: string, stop = 'end_turn') =>
     JSON.stringify({ timestamp: new Date(s * 1000).toISOString(), kind, rawResponse: { stop_reason: stop } });
   const STARTED = 'llm-calls.2026-11-12T11-02-38-066Z.jsonl';
@@ -763,7 +767,7 @@ describe('the ladder\'s inference stage', () => {
     expect(out).not.toContain('stop=');
   });
 
-  test('a turn\'s call is the stage, though calls that aren\'t a turn\'s came after it', async () => {
+  test('a streamed call is the stage, though calls that aren\'t streamed came after it', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'data', STARTED),
       [row(at.now - 30, 'stream'), row(at.now - 5, 'complete', 'max_tokens')].join('\n') + '\n');
@@ -797,7 +801,7 @@ describe('the ladder\'s inference stage', () => {
   });
 });
 
-describe('the ladder\'s data directory', () => {
+describe.skipIf(ladderUnrunnable)('the ladder\'s data directory', () => {
   test('--data-dir reads the data directory it names, not INSTALL_DIR/data', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const data = mkdtempSync(join(tmpdir(), 'chost-ladder-data-'));
@@ -846,7 +850,7 @@ describe('the ladder\'s data directory', () => {
     expect(status).toBe(1);
   });
 
-  test.skipIf(process.getuid?.() === 0)('a data directory that can\'t be looked at, or that\'s a file, is said to be so, not to be missing', async () => {
+  test.skipIf(process.getuid?.() === 0)('a data directory that can\'t be looked at is said to be so, not to be missing', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const locked = join(at.work, 'locked');
     const data = join(locked, 'data');
@@ -862,6 +866,10 @@ describe('the ladder\'s data directory', () => {
     } finally {
       chmodSync(locked, 0o755);
     }
+  });
+
+  test('a data directory that\'s a file is said to be so, not to be missing', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
     const file = join(at.work, 'data-file');
     writeFileSync(file, '');
     const { out } = ladder(at, ['--data-dir', file]);
@@ -1080,7 +1088,7 @@ describe('the ladder\'s data directory', () => {
   });
 });
 
-describe('what the ladder withholds', () => {
+describe.skipIf(ladderUnrunnable)('what the ladder withholds', () => {
   test('a value it\'s given to withhold is replaced where it reads it, before any line is cut short', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const secret = 'Zq9-SECRET-77';
@@ -1159,7 +1167,7 @@ describe('what the ladder withholds', () => {
   });
 });
 
-describe('the ladder run by doctor, with --findings-json', () => {
+describe.skipIf(ladderUnrunnable)('the ladder run by doctor, with --findings-json', () => {
   const findings = (out: string): { text: string; counts: boolean }[] => {
     const lines = out.split('\n').filter((line) => line.startsWith('connectome-doctor findings: '));
     expect(lines).toHaveLength(1);
@@ -1244,7 +1252,7 @@ describe('the ladder run by doctor, with --findings-json', () => {
   });
 });
 
-describe('the ladder, its round on the review of 3c6be0fd0', () => {
+describe.skipIf(ladderUnrunnable)('the ladder, its round on the review of 3c6be0fd0', () => {
   const exhausted = (at: Install, s: number) => writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({
     at: new Date(s * 1000).toISOString(), agent: 'resident', consecutive: 3, reason: '529 overloaded', kind: 'inference-exhausted' })}\n`);
   const row = (s: number, kind: string, rawResponse: unknown = { stop_reason: 'end_turn' }) =>

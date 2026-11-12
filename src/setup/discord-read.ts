@@ -1,4 +1,4 @@
-import { DISCORD_API, discordUserAgent, hidden } from './discord-token.js';
+import { DISCORD_API, discordUserAgent, hidden, refusedByType, retryWait } from './discord-token.js';
 
 export const VIEW_CHANNEL = 1n << 10n;
 export const SEND_MESSAGES = 1n << 11n;
@@ -11,7 +11,7 @@ const REQUEST_LIMIT_MS = 15_000;
 export type DiscordFailure =
   | { kind: 'unanswered'; path: string; timedOut: boolean; why: string }
   | { kind: 'redirected'; path: string; status: number }
-  | { kind: 'unrecognized'; path: string; status: number; ok: boolean }
+  | { kind: 'unrecognized'; path: string; status: number; ok: boolean; retryAfter?: number }
   | { kind: 'refused'; path: string }
   | { kind: 'answered'; path: string; status: number; said: string | null; code?: string; retryAfter?: number };
 
@@ -47,6 +47,9 @@ export function discordReader(token: string, options: { fetch: typeof fetch; lim
       throw unanswered(error);
     }
     if (res.status >= 300 && res.status < 400) throw new DiscordFailed({ kind: 'redirected', path, status: res.status });
+    if (res.status === 401) {
+      throw new DiscordFailed(refusedByType(res) ? { kind: 'refused', path } : { kind: 'unrecognized', path, status: 401, ok: false });
+    }
     let text: string;
     try {
       text = await res.text();
@@ -59,16 +62,16 @@ export function discordReader(token: string, options: { fetch: typeof fetch; lim
     } catch {
       body = undefined;
     }
-    if (body === undefined) throw new DiscordFailed({ kind: 'unrecognized', path, status: res.status, ok: res.ok });
-    if (res.status === 401) throw new DiscordFailed({ kind: 'refused', path });
+    const wait = retryWait(res, body);
+    const after = wait === undefined ? {} : { retryAfter: wait };
+    if (body === undefined) throw new DiscordFailed({ kind: 'unrecognized', path, status: res.status, ok: res.ok, ...after });
     if (!res.ok) {
-      const said = body as { message?: unknown; code?: unknown; retry_after?: unknown } | null;
-      const wait = said?.retry_after;
+      const said = body as { message?: unknown; code?: unknown } | null;
       throw new DiscordFailed({
         kind: 'answered', path, status: res.status,
         said: typeof said?.message === 'string' ? hidden(said.message, token) : null,
         ...(said?.code !== undefined ? { code: hidden(String(said.code), token) } : {}),
-        ...(res.status === 429 && typeof wait === 'number' && Number.isFinite(wait) ? { retryAfter: wait } : {}),
+        ...after,
       });
     }
     return body as T;

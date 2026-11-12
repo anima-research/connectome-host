@@ -171,12 +171,12 @@ interface AppContext {
   credentials: CredentialMonitor | null;
   subscriptionUnmetered: boolean;
   /**
-   * Headless only: the framework's traces from create() on, held until
+   * Headless and piped: the framework's traces from create() on, held until
    * runHeadless attaches the sink that feeds the agent tree, the socket and
-   * the host's idle. create() replays its early traces (registry restore,
-   * work a stop cut off, resumed tune-out epochs) only to a listener
-   * attached before start(), and runHeadless runs after start(); this is
-   * that listener (src/boot-traces.ts).
+   * the host's idle, or runPiped attaches its turns and output. create()
+   * replays its early traces (registry restore, work a stop cut off, resumed
+   * tune-out epochs) only to a listener attached before start(), and both
+   * run after start(); this is that listener (src/boot-traces.ts).
    */
   bootTraces?: BootTraceHold;
   stopping?: boolean;
@@ -742,13 +742,20 @@ async function runPiped(app: AppContext) {
   }, failureHint(app.recipe, process.env, app.credentials), app.recipe.modules?.setup === true ? showsItself : undefined,
   () => { answeredUnwaited(); });
   onHostLineTakenIn(() => turns.takenIn());
-  const traces = traceFollower((event) => {
+  const onEvent = (event: unknown): void => {
     const e = event as { type: string; [key: string]: unknown };
     turns.onTrace(e);
     if (e.type === 'ops:alert') onAlert?.(e);
     if (e.type === 'inference:completed' && e.agentName === app.agentName) onCompleted?.();
-  });
-  traces.follow(app.framework);
+  };
+  const traces = traceFollower(onEvent);
+  let fromBoot = app.bootTraces !== undefined;
+  if (app.bootTraces) {
+    const { lostStarts } = app.bootTraces.handOver((event) => { if (fromBoot) onEvent(event); });
+    for (const start of lostStarts) turns.onTrace(start as unknown as { type: string; [key: string]: unknown });
+  } else {
+    traces.follow(app.framework);
+  }
   let afterSwitch = async (_switched: boolean): Promise<void> => {};
   // agent-framework starts a turn for an event it pops while the agent is idle; events that come while a turn runs
   // are answered together, in the turn after it.
@@ -817,7 +824,7 @@ async function runPiped(app: AppContext) {
         await inOrder(async () => {
           app.switching = false;
           const switched = await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework,
-            () => turns.switched());
+            () => { fromBoot = false; turns.switched(); });
           console.log(switched ? 'Session switched.' : switchLeftForStop(app.sessionManager.getActiveSession()));
           await afterSwitch(switched);
         });
@@ -1388,10 +1395,10 @@ async function main() {
     };
   }
 
-  // The headless sink attaches inside runHeadless, after start() has
-  // dropped the traces create() replays; hold them from here (see
-  // AppContext.bootTraces), before startFramework calls start().
-  if (headless) app.bootTraces = holdBootTraces(framework);
+  // The headless and piped sinks attach inside runHeadless and runPiped,
+  // after start() has dropped the traces create() replays; hold them from
+  // here (see AppContext.bootTraces), before startFramework calls start().
+  if (headless || noTui) app.bootTraces = holdBootTraces(framework);
   await startFramework(framework, installHere, {
     dataDir: config.dataDir,
     activeStore: storePath,

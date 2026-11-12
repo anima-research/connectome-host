@@ -319,3 +319,38 @@ test('the makeup gives count_tokens_error, and no total, for a count answered 20
     restore('ANTHROPIC_AUTH_TOKEN', prior.token);
   }
 });
+
+test('the makeup asks its count with a deadline, and gives count_tokens_timeout, and no total, where that deadline runs out', async () => {
+  const realFetch = globalThis.fetch;
+  const prior = { model: process.env.COUNT_TOKENS_MODEL, key: process.env.ANTHROPIC_API_KEY, token: process.env.ANTHROPIC_AUTH_TOKEN };
+  const restore = (name: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  };
+  const signals: unknown[] = [];
+  globalThis.fetch = (async (_url: unknown, init?: { signal?: unknown }) => {
+    signals.push(init?.signal);
+    throw new DOMException('The operation timed out.', 'TimeoutError');
+  }) as unknown as typeof fetch;
+  try {
+    process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
+    process.env.ANTHROPIC_API_KEY = 'sk-makeup-test';
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    const app = {
+      recipe: { agent: { name: 'agent' } },
+      framework: {
+        getAgent: () => ({ model: 'claude-haiku-4-5', getContextManager: () => cmWith(null, true) }),
+        previewActivation: async () => ({ messages: [{ participant: 'Lari', content: [{ type: 'text', text: 'hi' }] }] }),
+      },
+    } as unknown as PanelAppRef;
+    const makeup = await buildContextMakeup(app, 'agent');
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect([makeup.countSource, makeup.exactTotalTokens]).toEqual(['count_tokens_timeout', null]);
+  } finally {
+    globalThis.fetch = realFetch;
+    restore('COUNT_TOKENS_MODEL', prior.model);
+    restore('ANTHROPIC_API_KEY', prior.key);
+    restore('ANTHROPIC_AUTH_TOKEN', prior.token);
+  }
+});
