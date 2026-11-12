@@ -213,7 +213,7 @@ describe('the opening\'s steps, in the order the person meets them', () => {
       readBack: first(/"The read-back"/),
       goingLive: first(/"Going live"/),
       setupMd: first(/"SETUP\.md"/),
-      hello: first(/\bhello\b/),
+      hello: first(/^\d+\. The person's own hello/),
       backups: first(/"Backups"/),
       finished: first(/`setup--finished`/),
     };
