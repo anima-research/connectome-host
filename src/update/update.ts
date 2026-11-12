@@ -369,14 +369,14 @@ export class HostUpdate {
     return this.arm({ to: offer.to, why: 'go-back', keepData }, by, ways);
   }
 
-  async cancelArmed(ways: UpdateWays = TOOL_WAYS): Promise<UpdateAnswer> {
+  async cancelArmed(by: string | null = null, ways: UpdateWays = TOOL_WAYS): Promise<UpdateAnswer> {
     const armed = this.armed;
     if (armed === null) return done('Nothing was armed with lifecycle--update, so there was nothing to cancel.');
     if (this.trying) {
       return refused(`${armedName(armed)} is being tried now. Once the try has answered, ${ways.check} shows whether ` +
         'it went ahead, and cancel disarms it if it didn\'t.');
     }
-    this.armed = null;
+    this.disarm(by ? `${by} cancelled it` : 'it was cancelled');
     const ended = await this.endLeftQuiesce();
     return done(`${armedName(armed)} is disarmed, and nothing restarts for it.` + (ended === null
       ? ' A switch\'s quiesce is being ended already, which also ends any quiesce an earlier try left.'

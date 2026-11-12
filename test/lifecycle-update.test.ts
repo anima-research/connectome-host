@@ -940,17 +940,22 @@ test('back needs the data kept or restored, and goes back the way it was asked',
   }
 });
 
-test('cancel disarms an armed restart, so nothing restarts and check shows nothing armed', async () => {
+test('cancel disarms an armed restart, so nothing restarts, check shows nothing armed, and it says who cancelled it, whoever armed it', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const host = residentHost({ root });
   await host.armed();
-  const cancelled = await host.call({ action: 'cancel' });
+  const since = host.update.armedSwitch()!.since;
+  const cancelled = await host.module.handleToolCall({ id: 'call-other', name: 'update', input: { action: 'cancel' }, callerAgentName: 'other' });
   expect(cancelled.success).toBe(true);
   expect(host.update.armedSwitch()).toBeNull();
   await host.update.runArmed(alwaysQuiet);
   expect(readMark(root)).toBeNull();
   expect(host.stops).toEqual([]);
-  expect(text(await host.call({ action: 'check' }))).not.toContain('armed');
+  const check = text(await host.call({ action: 'check' }));
+  expect(check).not.toContain('is armed since');
+  const record = `A restart onto 0.15.0 armed at ${since} didn't go ahead at 2026-10-26T20:00:00.000Z: other cancelled it.`;
+  expect(check).toContain(record);
+  expect(statusLines(host.update.status(), COMMAND_WAYS).join('\n')).toContain(record);
   expect(text(await host.call({ action: 'cancel' }))).toContain('nothing');
 });
 

@@ -391,7 +391,7 @@ export class LifecycleModule implements Module {
         break;
       case 'cancel': {
         const armed = this.update.armedSwitch() !== null;
-        answer = await this.update.cancelArmed(ways);
+        answer = await this.update.cancelArmed(call.callerAgentName ?? null, ways);
         const pending = this.state.armedRequest();
         if (!armed && pending !== null) answer = { done: true, lines: [...answer.lines, capital(plainRestart(pending))] };
         break;
