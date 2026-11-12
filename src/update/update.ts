@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bunBelowFloor } from '../bun-floor.js';
 import {
-  ContractError, installPaths, isSwitchQuiesce, readCurrent, readJournal, readWithoutWaiting, releaseDir, SUPERVISED_ENV,
+  ContractError, askedBy, installPaths, isSwitchQuiesce, readCurrent, readJournal, readWithoutWaiting, releaseDir, SUPERVISED_ENV,
   unsyncedText, writeMark, writeTextAtomic,
 } from './contract.js';
 import type { ReleaseHere } from './host.js';
@@ -730,7 +730,9 @@ export class HostUpdate {
     let unsynced: Error | null;
     try {
       const connected = this.quiescedFramework!.listMcplServers().filter((server) => server.connected).map((server) => server.id);
-      ({ unsynced } = writeMark(setup.here!.root, { to: restart.to, why: restart.why, keepData: restart.keepData, connected }, this.now()));
+      ({ unsynced } = writeMark(setup.here!.root, {
+        to: restart.to, why: restart.why, keepData: restart.keepData, connected, by: this.armed?.by ?? undefined,
+      }, this.now()));
     } catch (error) {
       return this.callOff(`its mark couldn't be written: ${said(error)}`, ways);
     }
@@ -862,7 +864,11 @@ export function lastSwitchOf(root: string, problems: string[] = []): SwitchOutco
   const lines = readJournal(root);
   for (let at = lines.length - 1; at >= 0; at--) {
     const line = lines[at]!;
-    if (line.step === 'commit' && line.outcome === 'ok') return { outcome: 'committed', from: line.from, to: line.to, at: line.at };
+    if (line.step === 'commit' && line.outcome === 'ok') {
+      let trial = at - 1;
+      while (trial >= 0 && !(lines[trial]!.step === 'trial-start' && lines[trial]!.outcome === 'ok')) trial--;
+      return { outcome: 'committed', from: line.from, to: line.to, at: line.at, ...askedBy(lines[trial]?.by) };
+    }
     if (line.step === 'fallback' && line.outcome === 'ok') {
       let trialLog: string[] | null = null;
       try {
@@ -872,10 +878,14 @@ export function lastSwitchOf(root: string, problems: string[] = []): SwitchOutco
       }
       return {
         outcome: 'fell-back', from: line.to, to: line.from, at: line.at, reason: line.reason ?? 'it gave no reason', trialLog,
+        ...askedBy(line.by),
       };
     }
     if (line.outcome !== 'ok') {
-      return { outcome: 'refused', step: line.step, from: line.from, to: line.to, at: line.at, reason: line.reason ?? 'it gave no reason' };
+      return {
+        outcome: 'refused', step: line.step, from: line.from, to: line.to, at: line.at, reason: line.reason ?? 'it gave no reason',
+        ...askedBy(line.by),
+      };
     }
   }
   return null;

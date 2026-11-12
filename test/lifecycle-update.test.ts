@@ -1138,6 +1138,19 @@ test('arming again clears the line saying an earlier restart didn\'t go ahead', 
   expect(text(await host.call({ action: 'check' }))).not.toContain('didn\'t go ahead');
 });
 
+test('the mark an armed switch writes names the agent that armed it, and a person\'s restart names none', async () => {
+  const armed = installRunning0141(['0.15.0']);
+  const host = residentHost({ root: armed.root });
+  await host.armed();
+  await host.update.runArmed(alwaysQuiet);
+  expect(readMark(armed.root)).toMatchObject({ to: '0.15.0', why: 'update', by: 'resident' });
+  const asked = installRunning0141(['0.15.0']);
+  const person = residentHost({ root: asked.root });
+  await person.update.restartToInstalled();
+  expect(readMark(asked.root)).toMatchObject({ to: '0.15.0', why: 'update' });
+  expect(readMark(asked.root)).not.toHaveProperty('by');
+});
+
 test('cancelling after a try left a child quiesced ends that quiesce', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const state = { busy: true, resumes: false };

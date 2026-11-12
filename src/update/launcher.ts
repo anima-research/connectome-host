@@ -4,7 +4,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import {
-  ContractError, ENTRY_POINT, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, appendJournal, childrenFilePath,
+  ContractError, ENTRY_POINT, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, appendJournal, askedBy, childrenFilePath,
   connectedWhenMarked, copyItemName, copyLabelPath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir, lastCopy,
   pendingGoBack, readCurrent, readGoBackList, readJournal, readMark, readRecord, realOrResolved, releaseDir, setAsideDir,
   unfinishedTrial, unsyncedText, writeJsonAtomic, writeMark,
@@ -660,7 +660,7 @@ function line(ops: LauncherOps, fields: Omit<JournalLine, 'v' | 'at'>): Omit<Jou
 
 function refuse(root: string, ops: LauncherOps, step: JournalLine['step'], current: string, mark: Mark, reason: string,
   outcome: 'refused' | 'failed' = 'refused'): Start {
-  appendJournal(root, line(ops, { step, from: current, to: mark.to, outcome, reason, mark: mark.id }));
+  appendJournal(root, line(ops, { step, from: current, to: mark.to, outcome, reason, mark: mark.id, ...askedBy(mark.by) }));
   const what = mark.why === 'go-back' ? 'Go back' : 'switch';
   const { mark: markPath } = installPaths(root);
   const again = mark.why === 'go-back' ? `/update back, or \`${GO_BACK_FLAG}\` from a shell` : '/update restart';
@@ -743,8 +743,8 @@ async function switchTo(root: string, record: InstallRecord, mark: Mark, current
     dropUnfinishedCopy(root, ops);
     return refuse(root, ops, 'copy', current, mark, `the copy failed: ${errorText(error)}`, 'failed');
   }
-  appendJournal(root, line(ops, { step: 'copy', from: current, to: mark.to, outcome: 'ok', mark: mark.id }));
-  appendJournal(root, line(ops, { step: 'trial-start', from: current, to: mark.to, outcome: 'ok', mark: mark.id }));
+  appendJournal(root, line(ops, { step: 'copy', from: current, to: mark.to, outcome: 'ok', mark: mark.id, ...askedBy(mark.by) }));
+  appendJournal(root, line(ops, { step: 'trial-start', from: current, to: mark.to, outcome: 'ok', mark: mark.id, ...askedBy(mark.by) }));
   const asked = connectedWhenMarked(mark);
   const commits = asked === null ? 'opened its stores and connected its servers, closed tabs aside'
     : asked.length === 0 ? `opened its stores, since ${current} had no server connected when it stopped`
@@ -920,7 +920,9 @@ async function goBack(root: string, record: InstallRecord, mark: Mark, current: 
     clearGoBack(root, mark.id, ops);
     return refuse(root, ops, 'go-back', current, mark, `preparing it failed: ${errorText(error)}`, 'failed');
   }
-  const goBackLine = line(ops, { step: 'go-back', from: current, to: mark.to, outcome: 'ok', mark: mark.id, keptData: Boolean(mark.keepData) });
+  const goBackLine = line(ops, {
+    step: 'go-back', from: current, to: mark.to, outcome: 'ok', mark: mark.id, keptData: Boolean(mark.keepData), ...askedBy(mark.by),
+  });
   appendJournal(root, goBackLine);
   return finishGoBack(root, record, { v: 1, ...goBackLine }, current, ops);
 }
@@ -942,10 +944,12 @@ async function finishGoBack(root: string, record: InstallRecord, goBackLine: Jou
     }
     await checkRelease(root, goBackLine.to, ops);
   } catch (error) {
-    appendJournal(root, line(ops, { step: 'trial-start', from: current, to: goBackLine.to, outcome: 'refused', reason: errorText(error), mark: markId }));
+    appendJournal(root, line(ops, {
+      step: 'trial-start', from: current, to: goBackLine.to, outcome: 'refused', reason: errorText(error), mark: markId, ...askedBy(goBackLine.by),
+    }));
     return fallBackGoBack(root, goBackLine, current, `${goBackLine.to} couldn't start: ${errorText(error)}`, ops);
   }
-  appendJournal(root, line(ops, { step: 'trial-start', from: current, to: goBackLine.to, outcome: 'ok', mark: markId }));
+  appendJournal(root, line(ops, { step: 'trial-start', from: current, to: goBackLine.to, outcome: 'ok', mark: markId, ...askedBy(goBackLine.by) }));
   ops.report(`[update] Starting ${goBackLine.to} on trial, going back from ${current}` +
     (goBackLine.keptData
       ? ' with the newer data kept'
@@ -960,13 +964,15 @@ function fallBackGoBack(root: string, goBackLine: JournalLine, current: string, 
     try {
       putBack(root, markId, ops);
     } catch (error) {
-      appendJournal(root, line(ops, { step: 'fallback', from: goBackLine.to, to: current, outcome: 'failed', reason: errorText(error), mark: markId }));
+      appendJournal(root, line(ops, {
+        step: 'fallback', from: goBackLine.to, to: current, outcome: 'failed', reason: errorText(error), mark: markId, ...askedBy(goBackLine.by),
+      }));
       throw new ContractError(`The Go back to ${goBackLine.to} couldn't go on (${why}), and putting ${current}'s data back ` +
         `failed too (${errorText(error)}), so nothing starts: a release started now would run on data that's partly each. ` +
         'Each start tries again, going on with the Go back.');
     }
   }
-  appendJournal(root, line(ops, { step: 'fallback', from: goBackLine.to, to: current, outcome: 'ok', reason: why, mark: markId }));
+  appendJournal(root, line(ops, { step: 'fallback', from: goBackLine.to, to: current, outcome: 'ok', reason: why, mark: markId, ...askedBy(goBackLine.by) }));
   if (goBackLine.keptData) clearGoBack(root, markId, ops);
   ops.report(`[update] The Go back to ${goBackLine.to} didn't go ahead (${why}), so ` +
     (goBackLine.keptData ? `${current} starts on its data as it was.` : `${current}'s data is back and it starts.`));
@@ -995,11 +1001,14 @@ function fallBackTrial(root: string, record: InstallRecord, trial: JournalLine, 
       for (const place of copyTargets(copy, label)) restorePlace(root, copy, place, place.target, markId, ops);
     }
   } catch (error) {
-    appendJournal(root, line(ops, { step: 'fallback', from: trial.to, to: current, outcome: 'failed', reason: errorText(error), ...(typeof markId === 'string' ? { mark: markId } : {}) }));
+    appendJournal(root, line(ops, {
+      step: 'fallback', from: trial.to, to: current, outcome: 'failed', reason: errorText(error),
+      ...(typeof markId === 'string' ? { mark: markId } : {}), ...askedBy(trial.by),
+    }));
     throw new ContractError(`${why}, and going back to ${current} and its data failed: ${errorText(error)}. Nothing starts, ` +
       `since ${current} would run on ${trial.to}'s data. Each start tries the fallback again.`);
   }
-  appendJournal(root, line(ops, { step: 'fallback', from: trial.to, to: current, outcome: 'ok', reason: why, mark: markId }));
+  appendJournal(root, line(ops, { step: 'fallback', from: trial.to, to: current, outcome: 'ok', reason: why, mark: markId, ...askedBy(trial.by) }));
   const kept = wasGoBack
     ? `inside each directory the update copies, in ${ITEM_UPDATE_DIR}/staging/${markId}, and its files under ` +
       `${join(setAsideDir(root, markId!), 'put-back', 'kept')}`

@@ -282,6 +282,15 @@ export interface Mark {
    *  before this field wrote none; then every server the release on trial is
    *  configured with holds its commit, closed tabs aside. */
   connected?: string[];
+  /** The agent whose update tool armed this request, by name; none for a
+   *  person's, or for the launcher's Go back from a shell. A launcher copies
+   *  it onto each journal line it writes for the request (JournalLine.by). */
+  by?: string;
+}
+
+/** `by` as a line or outcome carries it: only a name that's there. */
+export function askedBy(by: unknown): { by?: string } {
+  return typeof by === 'string' && by !== '' ? { by } : {};
 }
 
 export function connectedWhenMarked(mark: Mark): string[] | null {
@@ -325,6 +334,9 @@ export interface JournalLine {
    *  that resumes the Go back reads it here, since it goes on whatever the
    *  mark file holds. */
   keptData?: boolean;
+  /** The agent that asked for the request this line acts on, as its mark
+   *  names it (Mark.by), on each line a launcher writes from that mark. */
+  by?: string;
 }
 
 /** lock.json, written by the launcher. Its holder is gone when its pid isn't
@@ -804,12 +816,13 @@ export function readMark(root: string): Mark | null {
  *  request, so the release that ran starts and ends the switch's quiesce, or
  *  the request this one replaced. */
 export function writeMark(
-  root: string, request: Pick<Mark, 'to' | 'why' | 'keepData' | 'connected'>, now: Date = new Date(), write = writeJsonAtomic,
+  root: string, request: Pick<Mark, 'to' | 'why' | 'keepData' | 'connected' | 'by'>, now: Date = new Date(), write = writeJsonAtomic,
 ): { mark: Mark; unsynced: Error | null } {
   const mark: Mark = {
     v: 1, id: randomUUID(), to: segment(request.to, 'release'), why: request.why, at: now.toISOString(),
     ...(request.keepData ? { keepData: true } : {}),
     ...(request.connected !== undefined ? { connected: [...request.connected] } : {}),
+    ...(request.by ? { by: request.by } : {}),
   };
   const path = installPaths(root).mark;
   try {
