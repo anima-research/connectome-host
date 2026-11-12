@@ -233,6 +233,16 @@ export function bindChildren(children: Children, mapping: Mapping): void {
         'bound the install. Remove it, and run setup again.');
     }
   }
+  for (const dataDir of copied) {
+    try {
+      syncDir(dataDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw new ContractError(`Setup removed what came with this copy in ${dataDir}, and can't sync that directory ` +
+        `(${(error as Error).message}), so a power loss could bring it back. Setup stopped before it bound the ` +
+        'install. Run setup again.');
+    }
+  }
   writeJsonAtomic(children.path, { ...children.value, children: bound, boundTo: mapping.to } satisfies ChildrenFile);
 }
 
