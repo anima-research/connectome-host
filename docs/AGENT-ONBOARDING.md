@@ -77,7 +77,7 @@ Later, the person changes a secret where the host takes it from, `.env` unless a
 
 Setup didn't ask whether the resident gets a shell: the person decides that with you here, before the Discord bot is set up. A shell is a server in the recipe, term-sessions-mcp, with a daemon beside the resident's service. Through it the resident runs commands on this machine, as the user it runs as.
 
-**Whose account it is** is part of this choice, not a question of its own. Your prompt names the user the resident runs as. Where that's `connectome`, the account is the resident's. Elsewhere, say "if this is your own account, a shell reaches your files and keys", and their answer tells you.
+**Whose account it is** is part of this choice, not a question of its own. Your prompt names the user the resident runs as. Whatever its name, `connectome` included, say "if this is your own account, a shell reaches your files and keys", and their answer tells you.
 
 **Tell them, before they choose:**
 - With a shell, the resident can read and change whatever that user can: its files, `.env` with the keys in it, and its other programs. Whoever talks to it on Discord can ask it to, so who can reach it, which you talked about ("Working with the person"), is part of this choice.
