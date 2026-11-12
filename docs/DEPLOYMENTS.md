@@ -261,6 +261,8 @@ With either solver, a compile can reach a floor above the budget: context-manage
 
 ### Crossed summaries: auditing and repairing a store
 
+An audit refusal from an earlier release names this section as §11.8 of AGENT-ONBOARDING.md.
+
 Since context-manager 0.12.0, every load audits the summaries for crossed ownership: a summary whose messages aren't one contiguous run in store order, as merges across eras, restores and branches interleaving, or hand surgery can leave. Under the default topology policy, `reject`, the open throws `StoreTopologyError` and the resident doesn't start; the store keeps its history. Under `report`, it logs the crossings and opens, and `/healthz` shows them as `compressionDebt.<agent>.topologyViolations`, with `state: critical`. A `kvUnified` block with `preserveGapBearingSummaries` or `treeifyNonContiguousSummaries` set to `true` defaults to `report`. This host doesn't pass a `strategy.topologyPolicy` key on, and doesn't warn about it, so the error's "set topologyPolicy: 'report'" can't be followed from a recipe: repair a copy of the store instead, as below. Separately, a merge that would make a crossed summary is refused into the merge quarantine (`compressionDebt.<agent>.topologyRefusals`).
 
 **Before any update** that brings a context-manager of 0.12.0 or later, run the host's store audit after the copy, as "Updating an install" and "Updating checkouts" do. It opens each store as a start would, under each resident's own policy.

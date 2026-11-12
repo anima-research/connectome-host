@@ -225,7 +225,6 @@ files, its filters among them, and the Web UI's `observers.json`. Otherwise don'
 the resident already has a history of its own, and this method seeds only a first start.
 
 ```js
-// One-shot: seed.json → chronicle.  Remove the data/store an earlier run made before re-running.
 //   cd /home/<agent>/<agent>-cm && node scripts/ingest-seed.mjs seed.json [--dry-run]
 import { ContextManager, AutobiographicalStrategy } from '@animalabs/context-manager';
 import { lstatSync, readFileSync } from 'node:fs';

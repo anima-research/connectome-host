@@ -562,7 +562,8 @@ provider and [docs/subscription-transport.md](docs/subscription-transport.md).
 ### Anthropic effort
 
 For Anthropic streaming turns, `agent.thinking.effort` sets the recipe's
-baseline effort, whether or not `agent.thinking.enabled` is on. An effort set
+baseline effort, whether or not `agent.thinking.enabled` is on. `enabled` is
+still required and can be `false`. An effort set
 explicitly with `agent_settings` (in the agent's built-in `settings` toolset,
 or its tool list if its `allowedTools` doesn't permit both `toolsets--open`
 and `toolsets--act`) overrides it until reset, from the point where it was
