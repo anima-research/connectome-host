@@ -247,7 +247,8 @@ function shownCommand(command: string, secrets: Secret[]): string[] {
   return redacted(command, secrets).split('\n').map(shown);
 }
 
-// Discord's most for a member search; it takes no page after it.
+// Discord's most for a member search; it takes no page after it
+// (https://discord.com/developers/docs/resources/guild#search-guild-members).
 const MEMBERS_ASKED = 1000;
 
 interface DiscordMember { user: { id: string; username: string; global_name?: string | null }; nick?: string | null }
