@@ -1480,7 +1480,7 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
     });
     const first = await askSecret(answered.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
     expect(String(first.data)).toBe(`stored as DISCORD_TOKEN in ${join(answered.dir, '.env')}, but it isn't known to work: Discord answered 503: Service Unavailable. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
-    expect(answered.shown).toEqual(['Checking it with Discord.', 'Discord didn\'t say whether it works: it answered 503 (Service Unavailable).']);
+    expect(answered.shown).toEqual(['Checking it with Discord.', 'Discord didn\'t say whether it works: it answered 503 (Service Unavailable).', 'It\'s stored as DISCORD_TOKEN, though whether it works isn\'t known.']);
     expect(readEnvFile(join(answered.dir, '.env')).get('DISCORD_TOKEN')).toBe('token-one');
     const unasked = install({
       asker: typed('token-two'),
@@ -1488,7 +1488,7 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
     });
     const second = await askSecret(unasked.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
     expect(String(second.data)).toBe(`stored as DISCORD_TOKEN in ${join(unasked.dir, '.env')}, but it isn't known to work: Discord couldn't be asked (connect ECONNREFUSED, sending Bot <DISCORD_TOKEN>). Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
-    expect(unasked.shown).toEqual(['Checking it with Discord.', 'Discord couldn\'t be asked whether it works (connect ECONNREFUSED, sending Bot <DISCORD_TOKEN>).']);
+    expect(unasked.shown).toEqual(['Checking it with Discord.', 'Discord couldn\'t be asked whether it works (connect ECONNREFUSED, sending Bot <DISCORD_TOKEN>).', 'It\'s stored as DISCORD_TOKEN, though whether it works isn\'t known.']);
     expect(readEnvFile(join(unasked.dir, '.env')).get('DISCORD_TOKEN')).toBe('token-two');
     expect(said(unasked, second)).not.toContain('token-two');
     const trimmed = install({
@@ -2778,6 +2778,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     const first = await askSecret(answered.module, { name: 'ANTHROPIC_API_KEY', purpose: 'a key' });
     expect(String(first.data)).toBe(`stored as ANTHROPIC_API_KEY in ${join(answered.dir, '.env')}, but it isn't known to work: Anthropic answered 529: overloaded. Call setup--check_model in a minute, to check the key again.`);
     expect(readEnvFile(join(answered.dir, '.env')).get('ANTHROPIC_API_KEY')).toBe('key-one');
+    expect(answered.shown.at(-1)).toBe('It\'s stored as ANTHROPIC_API_KEY, though whether it works isn\'t known.');
     const unasked = install({
       asker: typed('key-two'),
       fetch: (async () => { throw new Error('connect ECONNREFUSED, sending Bearer key-two'); }) as unknown as typeof fetch,
@@ -2850,7 +2851,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       const made = install({ asker: typed('sk-openai-key'), fetch: (async () => new Response(body)) as unknown as typeof fetch });
       const result = await askSecret(made.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
       expect(String(result.data), body).toBe(`stored as OPENAI_API_KEY in ${join(made.dir, '.env')}, but it isn't known to work: OpenAI answered 200. Check it again with setup--check_model, or go on with it unchecked.`);
-      expect(made.shown, body).toEqual(['Checking it with OpenAI.', 'OpenAI didn\'t say whether it works: it answered 200.']);
+      expect(made.shown, body).toEqual(['Checking it with OpenAI.', 'OpenAI didn\'t say whether it works: it answered 200.', 'It\'s stored as OPENAI_API_KEY, though whether it works isn\'t known.']);
     }
   });
 
