@@ -189,8 +189,6 @@ test('a PATH entry that leads to the root through a link counts as the root on P
   expect(writeInstallCommand(root, `/usr/bin:${join(work, 'linked-root')}`).pathLine).toBeNull();
 });
 
-/** Writes the host unit service install would write for this install, in a home of the test's own, and gives the
- *  environment that has a command look there. */
 function serviceUnit(root: string, work = dirname(root)): { env: Record<string, string>; name: string; file: string; start: string } {
   const home = join(dirname(root), 'home');
   const units = serviceUnits(root, process.platform, home)!;
@@ -220,7 +218,7 @@ test('bare shows the service manager\'s own lines for the unit service install w
   const { path } = writeInstallCommand(root, '');
   const none = await run(path, [], root, undefined, undefined, { HOME: join(work, 'no-units') });
   expect(none.status).toBe(0);
-  expect(none.out).toContain(`No service is set up for it here: \`${path} service install <recipe>\` sets one up.`);
+  expect(none.out).toContain(`\`service install\` hasn't set up a service for it here: \`${path} service install <recipe>\` sets one up.`);
   const unit = serviceUnit(root);
   const ran = await run(path, [], root, undefined, undefined, unit.env);
   expect(ran.status).toBe(0);
@@ -262,7 +260,7 @@ test('bare in a copy, whose unit of its name runs the original, names no unit an
   const { path } = writeInstallCommand(root, '');
   const unit = serviceUnit(root, join('/srv/original', basename(dirname(root))));
   const ran = await run(path, [], root, undefined, undefined, unit.env);
-  expect(ran.out).toContain(`No service is set up for it here: \`${path} service install <recipe>\` sets one up.`);
+  expect(ran.out).toContain(`\`service install\` hasn't set up a service for it here: \`${path} service install <recipe>\` sets one up.`);
   expect(ran.out).toContain(`If no host is running, have its service start it with \`${process.execPath} ${join(root, 'start.js')}\``);
   expect(ran.out + ran.err).not.toContain(unit.name);
 });
@@ -278,15 +276,40 @@ test('bare whose host can\'t be looked for still shows the service\'s lines, and
   expectServiceLines(ran.out, unit);
 });
 
-test('bare writes the service\'s lines through the context it\'s given', async () => {
+test('bare writes its service line through the context it\'s given', async () => {
   const { root } = install();
   const out: string[] = [];
   const status = await bare({ root, argv: [], out: (line) => out.push(line), err: (line) => out.push(line) }, 300);
   expect(status).toBe(0);
-  expect(out.join('\n')).toContain('No service is set up for it here: ');
+  expect(out.join('\n')).toContain('`service install` hasn\'t set up a service for it here: ');
 });
 
-test('bare whose current release can\'t be read still shows the service\'s lines, and exits 1', async () => {
+test('bare in a directory whose name gives no service name says service install hasn\'t set one up, and offers none', async () => {
+  const { root } = install('---');
+  const out: string[] = [];
+  expect(await bare({ root, argv: [], out: (line) => out.push(line), err: (line) => out.push(line) }, 300)).toBe(0);
+  expect(out.join('\n')).toContain('`service install` hasn\'t set up a service for it here.');
+  expect(out.join('\n')).not.toContain('sets one up');
+});
+
+test('bare from a directory that\'s gone still writes its service line', async () => {
+  const { root } = install();
+  const out: string[] = [];
+  const cwd = process.cwd;
+  process.cwd = () => {
+    throw Object.assign(new Error('ENOENT: process.cwd failed'), { code: 'ENOENT' });
+  };
+  let status: number;
+  try {
+    status = await bare({ root, argv: [], out: (line) => out.push(line), err: (line) => out.push(line) }, 300);
+  } finally {
+    process.cwd = cwd;
+  }
+  expect(status).toBe(0);
+  expect(out.join('\n')).toContain('`service install` hasn\'t set up a service for it here: ');
+});
+
+test('bare whose current release can\'t be read still writes its service line, and exits 1', async () => {
   const { root } = install();
   rmSync(installPaths(root).current, { force: true });
   writeFileSync(installPaths(root).current, 'not a link');
@@ -295,7 +318,7 @@ test('bare whose current release can\'t be read still shows the service\'s lines
   const status = await bare({ root, argv: [], out: (line) => out.push(line), err: (line) => err.push(line) }, 300);
   expect(status).toBe(1);
   expect(err.join('\n')).toContain('current release can\'t be read');
-  expect(out.join('\n')).toContain('No service is set up for it here: ');
+  expect(out.join('\n')).toContain('`service install` hasn\'t set up a service for it here: ');
 });
 
 test('an install\'s own command, or a link to it, runs the release its current names, with the words given', async () => {

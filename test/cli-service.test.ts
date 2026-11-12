@@ -70,7 +70,7 @@ function plistFields(args: string[], fields: Record<string, string | number>, co
   if (args[0] === '-convert') return converts ? ok(JSON.stringify(fields))
     : { status: 1, stdout: 'invalid object in plist for destination format\n', stderr: '' };
   if (args[0] === '-lint') return ok('fixture: OK\n');
-  const value = fields[args[1]!];
+  const value = fields[args[1]!] ?? fields[args[1]!.split('.').at(-1)!];
   if (value === undefined) return { status: 1, stdout: 'No value at that key path\n', stderr: '' };
   if (args[0] === '-type') return ok((typeof value === 'string' ? 'string' : 'integer') + '\n');
   return ok(String(value) + '\n');
@@ -110,7 +110,8 @@ const STARTED_AT = 1793000000;
  *  - `stop`, `start` and `restart` each take several units, and `start` leaves a unit that's running as it is;
  *  - `show` gives an enabled unit's UnitFileState as enabled, and another loaded unit's as disabled;
  *  - a unit that has failed keeps its last InvocationID;
- *  - as the store's lock does, a second host started from one working directory exits at once. */
+ *  - a second host started from one working directory exits at once, standing in for the store's lock, which is per
+ *    data directory: each install here has a data directory of its own. */
 
 class FakeSystemd {
   loaded = new Map<string, Loaded>();
@@ -146,6 +147,15 @@ class FakeSystemd {
   pidFor(unit: string): number {
     if (!this.pids.has(unit)) this.pids.set(unit, unit === this.primary ? 4242 : 5000 + this.pids.size);
     return this.pids.get(unit)!;
+  }
+
+  private startCount = new Map<string, number>();
+
+  newPid(unit: string): number {
+    const started = this.startCount.get(unit) ?? 0;
+    this.startCount.set(unit, started + 1);
+    if (started > 0) this.pids.set(unit, this.pidFor(unit) + 100);
+    return this.pidFor(unit);
   }
 
   constructor(private readonly home: string) {}
@@ -240,7 +250,10 @@ class FakeSystemd {
     const locked = host(loaded) && [...this.running.keys()].some((other) => other !== unit &&
       host(this.loaded.get(other)) && this.loaded.get(other)!.workingDirectory === loaded.workingDirectory);
     if (this.exiting.has(unit) || locked) this.running.delete(unit);
-    else this.running.set(unit, invocation);
+    else {
+      this.running.set(unit, invocation);
+      this.newPid(unit);
+    }
     this.latest.set(unit, invocation);
     this.starts.push({ unit, environment: loaded.environment, execStart: loaded.execStart });
   }
@@ -326,7 +339,7 @@ class FakeSystemd {
       const label = basename(file!).replace(/\.plist$/, '');
       if (this.agents.has(label)) return { status: 5, stdout: '', stderr: 'Bootstrap failed: 5: Input/output error' };
       this.bootstraps.push(label);
-      this.agents.set(label, { pid: this.agentsExit ? null : this.pidFor(label) });
+      this.agents.set(label, { pid: this.agentsExit ? null : this.newPid(label) });
       return ok();
     }
     if (verb === 'bootout') {
@@ -338,7 +351,7 @@ class FakeSystemd {
     if (verb === 'kickstart') {
       const agent = this.agents.get(target!.split('/').at(-1)!);
       if (agent === undefined) return { status: 113, stdout: '', stderr: 'Could not find service in domain for port' };
-      if (!this.agentsExit) agent.pid = this.pidFor(target!.split('/').at(-1)!);
+      if (!this.agentsExit) agent.pid = this.newPid(target!.split('/').at(-1)!);
       return ok();
     }
     return { status: 1, stdout: '', stderr: `unknown launchctl verb ${verb}` };
@@ -388,6 +401,7 @@ function fake(at: Install, options: {
   cgroup?: string;
   other?: number;
   silent?: boolean;
+  owner?: number;
 } = {}): Fake {
   const systemd = new FakeSystemd(at.home);
   const hostOf = (root: string) => (options.platform === 'darwin' ? 'com.animalabs.connectome.' : 'connectome-') +
@@ -410,6 +424,7 @@ function fake(at: Install, options: {
     cwd: options.cwd ?? at.work,
     env: options.env ?? { PATH: `${at.root}:/usr/bin:/bin` },
     bun: '/opt/bun/bin/bun',
+    owner: () => options.owner ?? 1001,
     cgroup: () => options.cgroup ?? null,
     which: (name) => (name === 'node' ? (options.node === undefined ? '/opt/node/bin/node' : options.node) : null),
     run: (command, args, env) => systemd.run(command, args, env),
@@ -460,14 +475,14 @@ function nothingWritten(at: Install, unitFile = hostUnit(at)): void {
   expect(existsSync(join(at.work, '.setup', 'stored-secrets.json'))).toBe(false);
 }
 
-test('the host unit runs start.js with the recipe from the working directory, with an explicit PATH', async () => {
+test('the host unit runs start.js with the recipe from the working directory, with a PATH of bun\'s and node\'s directories, then install\'s own PATH but its relative entries, then the system\'s', async () => {
   const at = install();
-  const f = fake(at);
+  const f = fake(at, { env: { PATH: `${at.root}:bin::/usr/bin:/opt/tools/bin` } });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   const text = readFileSync(hostUnit(at), 'utf-8');
   expect(text).toContain(`WorkingDirectory=${at.work}\n`);
   expect(text).toContain(`ExecStart="/opt/bun/bin/bun" "${at.root}/start.js" "${at.recipe}" "--headless"\n`);
-  expect(text).toContain('Environment="PATH=/opt/bun/bin:/opt/node/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"\n');
+  expect(text).toContain(`Environment="PATH=/opt/bun/bin:/opt/node/bin:${at.root}:/usr/bin:/opt/tools/bin:/usr/local/bin:/bin:/usr/sbin:/sbin"\n`);
   expect(text).toContain('Restart=on-failure\n');
   expect(text).toContain('WantedBy=default.target\n');
   expect(statSync(hostUnit(at)).mode & 0o777).toBe(0o600);
@@ -653,7 +668,7 @@ test('on macOS the host gets a launch agent with KeepAlive on failure, the line,
   expect(text).toContain(`<key>WorkingDirectory</key>\n  <string>${at.work}</string>`);
   expect(text).toContain('<key>CONNECTOME_SUPERVISED</key>\n    <string>1</string>');
   expect(text).toContain(`<key>DATA_DIR</key>\n    <string>${at.data}</string>`);
-  expect(text).toContain('<key>PATH</key>\n    <string>/opt/bun/bin:/opt/node/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>');
+  expect(text).toContain(`<key>PATH</key>\n    <string>/opt/bun/bin:/opt/node/bin:${at.root}:/usr/bin:/bin:/usr/local/bin:/usr/sbin:/sbin</string>`);
   expect(text).toContain('<key>KeepAlive</key>\n  <dict>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>');
   expect(text).toContain(`<string>${at.work}/logs/agent.log</string>`);
   expect(f.systemd.calls).toContain(`launchctl bootstrap gui/1001 ${agentPlist(at)}`);
@@ -997,8 +1012,8 @@ test('a host unit that systemd shows with another working directory, once writte
   expect(existsSync(hostUnit(at))).toBe(true);
   expect(readFileSync(hostUnit(at), 'utf-8')).not.toContain('CONNECTOME_SUPERVISED');
   expect(f.systemd.starts).toEqual([]);
-  expect(f.err.join('\n')).toContain(`systemd didn't load ${HOST} from ${hostUnit(at)} with ${at.work} as its working ` +
-    'directory (it shows loaded, in /srv/elsewhere)');
+  expect(f.err.join('\n')).toContain(`systemd doesn't show ${HOST} loaded with ${at.work} as its working directory ` +
+    '(it shows loaded, in /srv/elsewhere)');
 });
 
 test('a running host whose restart check fails keeps running, and the next run that passes restarts it', async () => {
@@ -1194,8 +1209,8 @@ test('a run that rewrote the unit but couldn\'t restart the host leaves the next
   f.systemd.failOnce.set(`restart ${HOST}`, 'Job for connectome-my-resident.service failed.');
   const startsBefore = f.systemd.starts.length;
   expect(await installService(f.ctx(['install', second]), f.system)).toBe(1);
-  expect(f.err.join('\n')).toContain(`restart ${HOST} failed: Job for connectome-my-resident.service failed. Run ` +
-    'connectome service install again once that\'s put right.');
+  expect(f.err.join('\n')).toContain(`restart ${HOST} failed: Job for connectome-my-resident.service failed. Once ` +
+    'that\'s put right, repeat this service install command with the same recipe.');
   expect(f.systemd.starts.length).toBe(startsBefore);
   expect(await installService(f.ctx(['install', second]), f.system)).toBe(0);
   expect(f.systemd.starts.slice(startsBefore).map((start) => start.unit)).toEqual([HOST]);
@@ -1235,7 +1250,14 @@ test('on macOS install sets the earlier log aside before it loads the agent', as
   mkdirSync(dirname(log), { recursive: true });
   writeFileSync(log, 'Fatal error: an earlier load\n');
   const f = fake(at, { platform: 'darwin', linger: null });
+  const run = f.system.run;
+  let logAtLoad: boolean | undefined;
+  f.system.run = (command, args, env) => {
+    if (command === 'launchctl' && args[0] === 'bootstrap' && args[2] === agentPlist(at)) logAtLoad = existsSync(log);
+    return run(command, args, env);
+  };
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(logAtLoad).toBe(false);
   expect(readFileSync(`${log}.previous`, 'utf-8')).toContain('an earlier load');
   expect(existsSync(log)).toBe(false);
 });
@@ -1727,7 +1749,7 @@ test('an install without a recipe is a usage error, every time', async () => {
   expect(f.err.join('\n')).toContain('connectome service install <recipe>');
 });
 
-test('a recipe given as a URL is read from there and written into the unit as given', async () => {
+test('a recipe given as a URL goes to the recipe reader as given, and into the unit as given', async () => {
   const at = install();
   const f = fake(at);
   expect(await installService(f.ctx(['install', 'https://example.com/resident.json']), f.system)).toBe(0);
@@ -1777,7 +1799,7 @@ test('a shell client named only through an environment reference gets no daemon,
   const f = fake(at, { env: { PATH: `${at.root}:/usr/bin:/bin`, CLIENT_COMMAND: '/opt/bin/term-sessions-mcp' } });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(existsSync(shellUnit(at))).toBe(false);
-  expect(f.out).toContain('No shell daemon is set up: the recipe names no shell client or shell setting.');
+  expect(f.out).toContain('This run sets up no shell daemon: the recipe names no shell client or shell setting.');
 });
 
 test('a shell setting named only in a server URL gets the resident a shell daemon', async () => {
@@ -1813,7 +1835,7 @@ test('a recipe requesting a shell without the package gets an explanation and ke
   expect(existsSync(shellUnit(at))).toBe(false);
   expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(before);
   expect(f.out.join('\n')).toContain("term-sessions-mcp isn't installed");
-  expect(f.out.join('\n')).toContain('so no shell daemon was set up');
+  expect(f.out.join('\n')).toContain('so this run sets up no shell daemon');
 });
 
 test('serviceLines names the unit and its file, and gives systemd\'s own lines to follow its log, stop it and start it', async () => {
@@ -1920,14 +1942,14 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' a host th
   expect(f.systemd.bootstraps).toEqual([]);
 });
 
-for (const platform of ['linux', 'darwin'] as const) test(platform + ' a re-run whose own host answers on the socket goes on', async () => {
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' a re-run whose own host answers on the socket goes on, and waits for the host its restart started', async () => {
   const at = install('My Resident', { shell: true });
   const f = fake(at, { platform });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   f.out.length = f.err.length = 0;
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(f.err).toEqual([]);
-  expect(f.out.join('\n')).toContain('Its host answers: pid 4242');
+  expect(f.out.join('\n')).toContain('Its host answers: pid 4342');
 });
 
 test('a socket that takes the connection but has no host say it\'s ready is refused, since whether a host serves the data directory can\'t be told', async () => {
@@ -1968,7 +1990,7 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' a recipe 
     expect(f.systemd.enabled.has(SHELL)).toBe(false);
   }
   expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(env);
-  expect(f.out).toContain('No shell daemon is set up: the recipe names no shell client or shell setting.');
+  expect(f.out).toContain('This run sets up no shell daemon: the recipe names no shell client or shell setting.');
   expect(f.out).toContain(`Stopped and removed ${name}: this install has no shell daemon now. Its settings stay in ` +
     `${join(at.work, '.env')}.`);
 });
@@ -1986,6 +2008,7 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' an instal
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(readFileSync(unit, 'utf-8')).toBe(text);
   expect(f.out.join('\n')).not.toContain('Stopped and removed');
+  expect(JSON.stringify(serviceLines(at.root, f.system))).not.toContain(platform === 'darwin' ? `${label}.shell` : SHELL);
   expect(f.systemd.calls.filter((call) => !call.startsWith('plutil ') &&
     call.includes(platform === 'darwin' ? `${label}.shell` : SHELL))).toEqual([]);
 });
@@ -2030,6 +2053,79 @@ test.skipIf(process.getuid?.() === 0)('a host unit file this user can\'t read st
   }
 });
 
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' a stored port another process holds is refused, though this install\'s shell daemon runs on another one', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const envFile = join(at.work, '.env');
+  writeFileSync(envFile, readFileSync(envFile, 'utf-8').replace(/^SESSION_SERVER_PORT=.*$/m, 'SESSION_SERVER_PORT=3200'));
+  const unit = platform === 'darwin' ? agentPlist(at, 'com.animalabs.connectome.my-resident.shell') : shellUnit(at);
+  const before = readFileSync(unit, 'utf-8');
+  f.system.portFree = async (port) => port !== 3200;
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain(`SESSION_SERVER_PORT in ${envFile} is 3200, and something other than this install's`);
+  expect(readFileSync(unit, 'utf-8')).toBe(before);
+});
+
+test('a run as a user other than the one who owns the directory, as under sudo, is refused before anything is written', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { owner: 1000 });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain(`${at.work} belongs to uid 1000, and this runs as resident (uid 1001)`);
+  nothingWritten(at);
+  expect(f.systemd.calls).toEqual([]);
+});
+
+test('a no-shell run whose host isn\'t ready leaves the shell daemon\'s unit as it is', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const plain = join(at.work, 'plain.json');
+  writeFileSync(plain, '{}');
+  const text = readFileSync(shellUnit(at), 'utf-8');
+  f.systemd.exiting.add(HOST);
+  expect(await installService(f.ctx(['install', plain]), f.system)).toBe(1);
+  expect(readFileSync(shellUnit(at), 'utf-8')).toBe(text);
+  expect(f.systemd.calls.filter((call) => call.includes('disable') && call.includes(SHELL))).toEqual([]);
+});
+
+test('a unit that runs this directory from a file outside the user\'s own unit directory is named with no line that removes that file', async () => {
+  const at = install();
+  const f = fake(at);
+  f.systemd.otherUnits.push({ id: 'vendor@resident.service', workingDirectory: at.work,
+    fragment: '/usr/lib/systemd/user/vendor@.service' });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  const said = f.err.join('\n');
+  expect(said).toContain('disable vendor@resident.service');
+  expect(said).not.toContain('remove /usr/lib/systemd/user/vendor@.service');
+});
+
+test('a control character in the data directory is refused before .env or any unit is written', async () => {
+  const at = install('My Resident', { shell: true });
+  writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: `${at.data}\nx`, extraState: [] }));
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('DATA_DIR holds a line break or another control character');
+  nothingWritten(at);
+});
+
+test.skipIf(process.getuid?.() === 0)('a recipe whose directory can\'t be searched is refused with why, not as missing', async () => {
+  const at = install();
+  const dir = join(at.work, 'locked');
+  mkdirSync(dir);
+  const recipe = join(dir, 'resident.json');
+  writeFileSync(recipe, '{}');
+  chmodSync(dir, 0o000);
+  try {
+    const f = fake(at);
+    expect(await installService(f.ctx(['install', recipe]), f.system)).toBe(1);
+    expect(f.err.join('\n')).toContain(`the recipe at ${recipe} can't be read:`);
+    expect(f.err.join('\n')).not.toContain('there\'s no recipe');
+  } finally {
+    chmodSync(dir, 0o755);
+  }
+});
+
 test('serviceCommands is null until the host\'s unit file is there, and names the shell daemon only while its file is', async () => {
   const at = install('My Resident', { shell: true });
   const f = fake(at, { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: '/run/user/1001' } });
@@ -2045,6 +2141,7 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' a host th
   const f = fake(at, { platform, ready: false });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain('no host said it was ready within 60 s');
+  expect(f.err.join('\n')).toContain('It may still be starting: connectome alone says whether its host answers.');
   const log = platform === 'darwin' ? `tail -f '${join(at.work, 'logs', 'agent.log')}'` : `journalctl --user -u ${HOST} -f`;
   expect(f.out).toContain(`Its log shows what happened: ${log}. Put that right, then run connectome service install ` +
     `'${at.recipe}' again. Until then ${platform === 'darwin'
@@ -2105,7 +2202,7 @@ test('a recipe that names a shell, without the shell\'s package here, gets the c
   const f = fake(at);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(f.out).toContain("The recipe names a shell client or setting, but term-sessions-mcp isn't installed in this " +
-    'directory, so no shell daemon was set up. To set one up, run connectome shell install, then this service install ' +
+    'directory, so this run sets up no shell daemon. To set one up, run connectome shell install, then this service install ' +
     'command again with the same recipe.');
 });
 

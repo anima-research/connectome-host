@@ -1,8 +1,10 @@
 import { randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from 'node:fs';
+import {
+  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, type Stats,
+} from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { ContractError, RESTART_EXIT_CODE, SUPERVISED_ENV, realOrResolved, writeTextAtomic } from '../update/contract.js';
 import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/setup.js';
 import { shellWord } from '../update/launcher.js';
@@ -12,7 +14,7 @@ import { readRecipeDocument } from '../recipe-document.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
-import { Refusal, plain, plist, serviceUnits, systemdUnit, type Manager, type ServiceUnit, type ServiceUnits } from './service-unit.js';
+import { Refusal, plain, plist, serviceUnits, systemdUnit, type Manager, type ServiceUnit } from './service-unit.js';
 import { shownToPerson } from './shown.js';
 
 const SHELL_PACKAGE = 'term-sessions-mcp';
@@ -42,6 +44,7 @@ export interface ServiceSystem {
   cwd: string;
   env: Record<string, string | undefined>;
   bun: string;
+  owner(path: string): number;
   cgroup(): string | null;
   which(name: string): string | null;
   run(command: string, args: string[], env: Record<string, string>): Ran;
@@ -54,15 +57,19 @@ export interface ServiceSystem {
 }
 
 export function machine(): ServiceSystem {
-  const me = userInfo();
   return {
     platform: process.platform,
-    user: me.username,
-    uid: me.uid,
+    get user() {
+      return userInfo().username;
+    },
+    uid: process.getuid?.() ?? -1,
     home: homedir(),
-    cwd: process.cwd(),
+    get cwd() {
+      return process.cwd();
+    },
     env: process.env,
     bun: process.execPath,
+    owner: (path) => statSync(path).uid,
     cgroup: () => {
       try {
         return readFileSync('/proc/self/cgroup', 'utf-8');
@@ -157,7 +164,23 @@ interface ShellPlan {
 async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe: string, cmd: string): Promise<number> {
   plain(recipe, 'the recipe');
   const work = dirname(root);
-  if (!/^https?:\/\//.test(recipe) && !isFile(recipe)) throw new Refusal(`there's no recipe at ${recipe}.`);
+  if (!/^https?:\/\//.test(recipe)) {
+    let stat: Stats | undefined;
+    try {
+      stat = statSync(recipe);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Refusal(`the recipe at ${recipe} can't be read: ${errorText(error)}. Nothing was written.`);
+      }
+    }
+    if (stat === undefined || !stat.isFile()) throw new Refusal(`there's no recipe at ${recipe}.`);
+  }
+  const owner = sys.owner(work);
+  if (owner !== sys.uid) {
+    throw new Refusal(`${work} belongs to uid ${owner}, and this runs as ${sys.user} (uid ${sys.uid}), so its service ` +
+      `would run the resident as ${sys.user}, under ${sys.user}'s service manager. Run this command as the user who owns ` +
+      `${work}, without sudo. Nothing was written.`);
+  }
   const manager = managerOf(sys);
   const names = serviceUnits(root, sys.platform, sys.home);
   if (names === null) {
@@ -183,7 +206,8 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   if (shellBin !== null) envWritable(envFile);
   const shell = shellBin === null ? null : await shellPlan(sys, work, shellBin);
   if (shell !== null) {
-    if (!shell.newPort && !(await sys.portFree(Number(shell.port))) && !shellRunning(sys, manager, env, names.shell)) {
+    if (!shell.newPort && !(await sys.portFree(Number(shell.port))) &&
+      !(shellRunning(sys, manager, env, names.shell) && shellPortOf(sys, manager, env, names.shell) === shell.port)) {
       throw new Refusal(`SESSION_SERVER_PORT in ${envFile} is ${shell.port}, and something other than this install's ` +
         `shell daemon, ${names.shell.name}, is listening on it, as a copied install's original daemon would be. This ` +
         `install's shell clients would reach that process, with ${shell.newToken ? 'a new' : 'the stored'} token. Give ` +
@@ -197,21 +221,36 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     }
   } else if (wantsShell) {
     ctx.out("The recipe names a shell client or setting, but term-sessions-mcp isn't installed in this directory, " +
-      `so no shell daemon was set up. To set one up, run ${cmd} shell install, then this service install command ` +
+      `so this run sets up no shell daemon. To set one up, run ${cmd} shell install, then this service install command ` +
       'again with the same recipe.');
   } else {
-    ctx.out('No shell daemon is set up: the recipe names no shell client or shell setting.');
+    ctx.out('This run sets up no shell daemon: the recipe names no shell client or shell setting.');
   }
 
   const node = sys.which('node');
-  const path = [...new Set([dirname(sys.bun), ...(node ? [dirname(node)] : []), '/usr/local/bin', '/usr/bin', '/bin',
-    '/usr/sbin', '/sbin'])].join(':');
+  const path = [...new Set([dirname(sys.bun), ...(node ? [dirname(node)] : []),
+    ...(sys.env.PATH ?? '').split(':').filter((entry) => isAbsolute(entry)),
+    '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])].join(':');
   const logPath = join(work, 'logs', 'agent.log');
   const hostVars: Array<[string, string]> = [['PATH', path], ['DATA_DIR', dataDir]];
   const hostArgv = [sys.bun, join(root, 'start.js'), recipe, '--headless'];
   const shellArgv = shell === null ? [] : [node!, shell.bin, '--host', 'localhost', '--headless'];
   const shellVars: Array<[string, string]> = shell === null ? []
     : [['PATH', path], ['SESSION_SERVER_PORT', shell.port], ['SESSION_SERVER_TOKEN', shell.token]];
+  const wants = shell === null ? null : names.shell.name;
+  const texts = manager === 'systemd-user'
+    ? {
+      shell: shell === null ? null
+        : systemdUnit(`connectome-host resident's shell daemon in ${work}`, work, shellArgv, shellVars, null),
+      host: systemdUnit(`connectome-host resident in ${work}`, work, hostArgv, hostVars, wants),
+      supervised: systemdUnit(`connectome-host resident in ${work}`, work, hostArgv,
+        [...hostVars, [SUPERVISED_ENV, '1']], wants),
+    }
+    : {
+      shell: shell === null ? null : plist(names.shell.name, work, shellArgv, shellVars, join(work, 'logs', 'shell.log')),
+      host: plist(names.host.name, work, hostArgv, [...hostVars, [SUPERVISED_ENV, '1']], logPath),
+      supervised: '',
+    };
   const writeUnit = (unit: ServiceUnit, text: string) => {
     try {
       writeText(unit.file, text);
@@ -223,19 +262,17 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const shellLive = () => ctx.out(`With a shell, the resident can read and change whatever ${sys.user} can, and ` +
     'whoever talks to it on Discord can ask it to.');
   if (manager === 'systemd-user') {
-    const wants = shell === null ? null : names.shell.name;
-    if (shell !== null) {
-      writeUnit(names.shell, systemdUnit(`connectome-host resident's shell daemon in ${work}`, work, shellArgv, shellVars,
-        null));
+    if (texts.shell !== null) {
+      writeUnit(names.shell, texts.shell);
       ctx.out(`Wrote ${names.shell.file}, the resident's shell daemon's unit.`);
     }
-    writeUnit(names.host, systemdUnit(`connectome-host resident in ${work}`, work, hostArgv, hostVars, wants));
-    systemctl(sys, env, cmd, ['daemon-reload']);
+    writeUnit(names.host, texts.host);
+    systemctl(sys, env, ['daemon-reload']);
     const loaded = showUnit(sys, env, names.host.name, ['LoadState', 'WorkingDirectory', RESTART_PROPERTIES]);
     if (typeof loaded === 'string') throw new Refusal(`${loaded}. Nothing was started.`);
     if (loaded.get('LoadState') !== 'loaded' || !runsHere(runsFrom(loaded.get('WorkingDirectory') ?? '', sys.home), work)) {
-      throw new Refusal(`systemd didn't load ${names.host.name} from ${names.host.file} with ${work} as its working ` +
-        `directory (it shows ${loaded.get('LoadState') || 'no load state'}, in ` +
+      throw new Refusal(`systemd doesn't show ${names.host.name} loaded with ${work} as its working directory ` +
+        `(it shows ${loaded.get('LoadState') || 'no load state'}, in ` +
         `${loaded.get('WorkingDirectory') || 'no set directory'}), so whether it restarts the host can't be checked. ` +
         'Nothing was started.');
     }
@@ -251,30 +288,27 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
         `restarts the host on ${RESTART_EXIT_CODE} and 1, repeat this service install command with the same recipe, ` +
         'which sets the line.');
     }
-    writeUnit(names.host, systemdUnit(`connectome-host resident in ${work}`, work, hostArgv,
-      [...hostVars, [SUPERVISED_ENV, '1']], wants));
-    systemctl(sys, env, cmd, ['daemon-reload']);
+    writeUnit(names.host, texts.supervised);
+    systemctl(sys, env, ['daemon-reload']);
     ctx.out(`Wrote ${names.host.file}. systemd restarts it when the host exits with ${RESTART_EXIT_CODE} and with 1 ` +
       `(${policy.settings}), so its unit sets ${SUPERVISED_ENV}=1.`);
-    systemctl(sys, env, cmd, ['enable', ...units.map((unit) => unit.name)]);
+    systemctl(sys, env, ['enable', ...units.map((unit) => unit.name)]);
     ctx.out(`Enabled ${units.map((unit) => unit.name).join(' and ')}, so systemd starts ` +
       `${units.length === 1 ? 'it' : 'them'} at boot.`);
-    systemctl(sys, env, cmd, ['reset-failed', ...units.map((unit) => unit.name)]);
+    systemctl(sys, env, ['reset-failed', ...units.map((unit) => unit.name)]);
     for (const unit of units) {
       const shown = showUnit(sys, env, unit.name, ['ActiveState']);
       if (typeof shown === 'string') throw new Refusal(`${shown}. The units' files are written and enabled.`);
       const running = RUNNING.has(shown.get('ActiveState') ?? '');
-      systemctl(sys, env, cmd, ['restart', unit.name]);
+      systemctl(sys, env, ['restart', unit.name]);
       ctx.out(running ? `Restarted ${unit.name}.` : `Started ${unit.name}.`);
       if (unit === names.shell) shellLive();
     }
   } else {
     mkdirSync(dirname(logPath), { recursive: true });
     chmodSync(dirname(logPath), 0o700);
-    if (shell !== null) {
-      writeUnit(names.shell, plist(names.shell.name, work, shellArgv, shellVars, join(work, 'logs', 'shell.log')));
-    }
-    writeUnit(names.host, plist(names.host.name, work, hostArgv, [...hostVars, [SUPERVISED_ENV, '1']], logPath));
+    if (texts.shell !== null) writeUnit(names.shell, texts.shell);
+    writeUnit(names.host, texts.host);
     ctx.out(`KeepAlive restarts the host whenever it exits other than with 0, so its launch agent sets ${SUPERVISED_ENV}=1.`);
     for (const unit of units) {
       const stateBefore = agentState(sys, env, unit);
@@ -316,7 +350,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       : 'launchd starts the host again each time it exits other than with 0, while it has its agent loaded'}.`);
   } else {
     ctx.out(`Its host answers: pid ${ready.pid}, recipe ${ready.recipe}.`);
-    if (shellBin === null) await removeShell(ctx, sys, env, manager, names.shell, work, cmd);
+    if (shellBin === null) await removeShell(ctx, sys, env, manager, names.shell, work);
   }
   for (const line of serviceLines(root, sys) ?? []) ctx.out(line);
   return typeof ready === 'string' ? 1 : 0;
@@ -385,8 +419,9 @@ export interface ServiceCommands {
 
 export function serviceCommands(root: string, sys: ServiceSystem = machine()): ServiceCommands | null {
   const names = serviceUnits(root, sys.platform, sys.home);
-  if (names === null || !isFile(names.host.file) || !mayRunHere(sys, names)) return null;
-  const units = isFile(names.shell.file) ? [names.shell, names.host] : [names.host];
+  if (names === null || !isFile(names.host.file) || !mayRunHere(sys, names.manager, names.host, names.work)) return null;
+  const units = isFile(names.shell.file) && mayRunHere(sys, names.manager, names.shell, names.work)
+    ? [names.shell, names.host] : [names.host];
   if (names.manager === 'systemd-user') {
     const ids = units.map((unit) => unit.name).join(' ');
     return { manager: names.manager, units, log: `journalctl --user -u ${names.host.name} -f`,
@@ -460,7 +495,10 @@ async function awaitReady(root: string, manager: Manager, unit: ServiceUnit, sys
       }
       if (invocation !== first) return `systemd restarted ${name} before its host answered: ${last}.`;
     }
-    if (sys.now() >= until) return `no host said it was ready within ${READY_WAIT_MS / 1000} s: ${last}.`;
+    if (sys.now() >= until) {
+      return `no host said it was ready within ${READY_WAIT_MS / 1000} s: ${last}. It may still be starting: ` +
+        `${typedCommand(root, sys.env.PATH)} alone says whether its host answers.`;
+    }
     await sys.sleep(1_000);
   }
 }
@@ -499,9 +537,12 @@ function noOtherUnit(ctx: CliContext, work: string, names: { host: ServiceUnit; 
       const ids = (units: typeof these) => units.map((unit) => shellWord(unit.id)).join(' ');
       const line = (args: string) => (scope === 'user' ? systemctlLine(sys, args) : `systemctl ${args}`);
       const filed = these.filter((unit) => unit.file !== '');
+      const own = scope === 'user' ? join(sys.home, '.config', 'systemd', 'user') : '/etc/systemd/system';
+      const removable = filed.filter((unit) => dirname(unit.file) === own);
       return [`${scope === 'system' ? 'as root, ' : ''}${line(`stop ${ids(these)}`)}, ` +
-        `${filed.length > 0 ? `${line(`disable ${ids(filed)}`)}, remove ${filed.map((unit) => shellWord(unit.file))
-          .join(' and ')}, ` : ''}then ${line('daemon-reload')}`];
+        `${filed.length > 0 ? `${line(`disable ${ids(filed)}`)}, ` : ''}` +
+        `${removable.length > 0 ? `remove ${removable.map((unit) => shellWord(unit.file)).join(' and ')}, ` : ''}` +
+        `then ${line('daemon-reload')}`];
     });
     const statuses = (['user', 'system'] as const).flatMap((scope) => {
       const ids = others.filter((unit) => unit.scope === scope).map((unit) => shellWord(unit.id)).join(' ');
@@ -536,13 +577,13 @@ function noOtherUnit(ctx: CliContext, work: string, names: { host: ServiceUnit; 
 }
 
 async function removeShell(ctx: CliContext, sys: ServiceSystem, env: Record<string, string>, manager: Manager,
-  unit: ServiceUnit, work: string, cmd: string): Promise<void> {
+  unit: ServiceUnit, work: string): Promise<void> {
   const text = readOr(unit.file);
   if (text === null || !runsHere(fileDirectory(sys, env, manager, unit, text), work)) return;
   if (manager === 'systemd-user') {
-    systemctl(sys, env, cmd, ['disable', '--now', unit.name]);
+    systemctl(sys, env, ['disable', '--now', unit.name]);
     rmSync(unit.file, { force: true });
-    systemctl(sys, env, cmd, ['daemon-reload']);
+    systemctl(sys, env, ['daemon-reload']);
   } else {
     const state = agentState(sys, env, unit);
     if (state.kind === 'unknown') {
@@ -604,13 +645,26 @@ function loadAgent(sys: ServiceSystem, env: Record<string, string>, unit: Servic
   return sys.run('launchctl', ['bootstrap', `gui/${sys.uid}`, unit.file], env);
 }
 
-function mayRunHere(sys: ServiceSystem, names: ServiceUnits): boolean {
+function mayRunHere(sys: ServiceSystem, manager: Manager, unit: ServiceUnit, work: string): boolean {
   try {
-    const text = readOr(names.host.file);
-    return text === null || runsHere(fileDirectory(sys, childEnv(sys), names.manager, names.host, text), names.work);
+    const text = readOr(unit.file);
+    return text === null || runsHere(fileDirectory(sys, childEnv(sys), manager, unit, text), work);
   } catch {
     return true;
   }
+}
+
+function shellPortOf(sys: ServiceSystem, manager: Manager, env: Record<string, string>, unit: ServiceUnit): string | null {
+  if (manager === 'launchd') {
+    try {
+      return plistField(sys, env, unit.file, 'EnvironmentVariables.SESSION_SERVER_PORT');
+    } catch {
+      return null;
+    }
+  }
+  const shown = showUnit(sys, env, unit.name, ['Environment']);
+  if (typeof shown === 'string') return null;
+  return /(?:^|\s)SESSION_SERVER_PORT=(\d+)(?:\s|$)/.exec(shown.get('Environment') ?? '')?.[1] ?? null;
 }
 
 function fileDirectory(sys: ServiceSystem, env: Record<string, string>, manager: Manager,
@@ -857,11 +911,11 @@ function systemctlLine(sys: Pick<ServiceSystem, 'env' | 'uid'>, args: string): s
   return `${sys.env.XDG_RUNTIME_DIR ? '' : `XDG_RUNTIME_DIR=/run/user/${sys.uid} `}systemctl --user ${args}`;
 }
 
-function systemctl(sys: ServiceSystem, env: Record<string, string>, cmd: string, args: string[]): void {
+function systemctl(sys: ServiceSystem, env: Record<string, string>, args: string[]): void {
   const ran = sys.run('systemctl', ['--user', ...args], env);
   if (ran.status !== 0) {
-    throw new Refusal(`systemctl --user ${args.join(' ')} failed: ${stderrOf(ran)}. Run ` +
-      `${cmd} service install again once that's put right.`);
+    throw new Refusal(`systemctl --user ${args.join(' ')} failed: ${stderrOf(ran)}. Once that's put right, repeat ` +
+      'this service install command with the same recipe.');
   }
 }
 
