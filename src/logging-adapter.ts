@@ -64,7 +64,11 @@ import { appendFileSync } from 'node:fs';
 import { parseLoggedCall, summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
 import { describeErrorObject } from './logging-error-fields.js';
 import { MAX_RECORD_BYTES, serializeRecordOutcome, type RecordKept } from './logging-record.js';
-import { prepareRecoveredThinking, resendWithoutRecoveredThinking } from './recovered-thinking.js';
+import {
+  confirmRecoveredThinkingRefusal,
+  prepareRecoveredThinking,
+  resendWithoutRecoveredThinking,
+} from './recovered-thinking.js';
 
 export type ReasoningGetter = () => {
   enabled: boolean;
@@ -908,7 +912,9 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
               ...head,
               ...ids,
               requestSummary: summary,
-              rawRequest: this.retainedRawRequest(outcome.response, rawRequest, anomaly),
+              // A refusal answered by a resend without recovered thinking
+              // keeps no full-context copy: the resend's row is the outcome.
+              rawRequest: resent ? undefined : this.retainedRawRequest(outcome.response, rawRequest, anomaly),
               rawResponse: (outcome.response as { raw?: unknown }).raw ?? null,
               ...(anomaly ? { anomaly } : {}),
             }
@@ -943,8 +949,18 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     request: ProviderRequest,
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
+    return this.completeGuarded(request, options, false);
+  }
+
+  /** `withoutBlocks`: the one resend of a request refused for its recovered
+   *  thinking, whose outcome decides whether the model is marked. */
+  private async completeGuarded(
+    request: ProviderRequest,
+    options: ProviderRequestOptions | undefined,
+    withoutBlocks: boolean,
+  ): Promise<ProviderResponse> {
     const t0 = Date.now();
-    const prepared = prepareRecoveredThinking(request);
+    const prepared = prepareRecoveredThinking(request, withoutBlocks);
     const effective = this.withOAuthIdentity(this.withReasoning(prepared.request));
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
@@ -955,9 +971,10 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       this.recordCall('complete', request, t0, sink.rawRequest, { error: err });
       throw err;
     }
-    const resend = resendWithoutRecoveredThinking(request.model, prepared.carried, response);
+    if (withoutBlocks) confirmRecoveredThinkingRefusal(request.model, response);
+    const resend = resendWithoutRecoveredThinking(prepared.carried, response);
     this.recordCall('complete', request, t0, sink.rawRequest, { response }, resend);
-    if (resend) return this.complete(request, options);
+    if (resend) return this.completeGuarded(request, options, true);
     return response;
   }
 
@@ -966,11 +983,20 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     callbacks: StreamCallbacks,
     options?: ProviderRequestOptions,
   ): Promise<ProviderResponse> {
+    return this.streamGuarded(request, callbacks, options, false);
+  }
+
+  private async streamGuarded(
+    request: ProviderRequest,
+    callbacks: StreamCallbacks,
+    options: ProviderRequestOptions | undefined,
+    withoutBlocks: boolean,
+  ): Promise<ProviderResponse> {
     const t0 = Date.now();
     // What the request was shaped by: a refusal is answered from this, not from
     // a verdict another agent's refusal changed while this one was out.
     const sentWithoutControl = accountBinding(request.model) === 'shows';
-    const prepared = prepareRecoveredThinking(request);
+    const prepared = prepareRecoveredThinking(request, withoutBlocks);
     const effective = this.withOAuthIdentity(this.withEffort(this.withProgressNotes(this.withBinding(this.withReasoning(prepared.request)))));
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
@@ -1004,11 +1030,12 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
         `[thinking-binding] ${request.model}: a signed thinking block whose earlier conversation changed was refused, ` +
         'though the account was found at start to show such blocks; the drop control goes with every request from now on.',
       );
-      return this.stream(request, callbacks, options);
+      return this.streamGuarded(request, callbacks, options, withoutBlocks);
     }
-    const resend = resendWithoutRecoveredThinking(request.model, prepared.carried, response, delivered);
+    if (withoutBlocks) confirmRecoveredThinkingRefusal(request.model, response);
+    const resend = resendWithoutRecoveredThinking(prepared.carried, response, delivered);
     this.recordCall('stream', request, t0, sink.rawRequest, { response }, resend);
-    if (resend) return this.stream(request, callbacks, options);
+    if (resend) return this.streamGuarded(request, callbacks, options, true);
     return response;
   }
 }

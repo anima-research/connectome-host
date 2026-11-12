@@ -427,10 +427,12 @@ blocks will be rejected. Options, in order of preference:
    surface for the refusal class in §5 — historical reasoning rendered as text is
    exactly what a "reasoning extraction" classifier looks for. Prefer option 1 unless
    the reasoning is the point. Since 2026-11-09 Opus 5, Opus 5.5 and Fable refuse
-   this shape outright, even an empty tag. The host learns this per model and then
-   leaves the wrapped thinking out of that model's requests (`src/recovered-thinking.ts`):
-   a whole text block of this shape, and each complete tagged span inside other
-   text, which is replaced by `[earlier thinking left out]`. A lone mention of the
+   this shape outright, even an empty tag. The host learns this per model (a refused
+   request is sent once without the blocks, and the model is marked only if that resend
+   isn't refused too) and then leaves the wrapped thinking out of that model's requests
+   for the life of the process (`src/recovered-thinking.ts`): a whole text block of this
+   shape, and each complete tagged span inside other text, string content or
+   `tool_result` text, which is replaced by `[earlier thinking left out]`. A lone mention of the
    tag with no closing tag, the system prompt and tool definitions are not rewritten.
 
 Never modify a turn's *shape* around a retained signed block (split it, reorder it,

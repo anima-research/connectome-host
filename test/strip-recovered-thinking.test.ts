@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JsStore } from '@animalabs/chronicle';
@@ -68,6 +69,19 @@ describe('strip-recovered-thinking', () => {
     store.close?.();
     return messages;
   };
+  /** Every file under the store, with a hash of its bytes. */
+  const snapshot = (storePath: string): Record<string, string> => {
+    const out: Record<string, string> = {};
+    const walk = (d: string) => {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const p = join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else out[p.slice(storePath.length)] = createHash('sha256').update(readFileSync(p)).digest('hex');
+      }
+    };
+    walk(storePath);
+    return out;
+  };
   const run = (storePath: string, ...extra: string[]) =>
     Bun.spawnSync(['bun', 'scripts/strip-recovered-thinking.ts', storePath, ...extra], {
       cwd: join(import.meta.dir, '..'),
@@ -77,11 +91,14 @@ describe('strip-recovered-thinking', () => {
     const dir = mkdtempSync(join(tmpdir(), 'strip-rt-'));
     try {
       const storePath = await makeStore(dir);
-      const before = await readStore(storePath);
+      // R1-5: a dry run writes nothing at all to the store, not just no message edits.
+      const filesBefore = snapshot(storePath);
       const dry = run(storePath);
       expect(dry.exitCode).toBe(0);
       expect(dry.stdout.toString()).toContain('Messages to edit: 2');
-      expect(await readStore(storePath)).toEqual(before);
+      expect(dry.stdout.toString()).toContain('Branch: ');
+      expect(snapshot(storePath)).toEqual(filesBefore);
+      const before = await readStore(storePath);
 
       const applied = run(storePath, '--apply');
       expect(applied.exitCode).toBe(0);

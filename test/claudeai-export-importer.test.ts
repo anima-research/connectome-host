@@ -116,7 +116,8 @@ describe('transformContent', () => {
     const msg = mkMsg({ uuid: 'x', sender: 'assistant', content: [{ type: 'thinking', thinking: 'only a thought' }] });
     expect(transformContent(msg, { dropThinking: true })).toEqual([{ type: 'text', text: '[earlier thinking left out]' }]);
     const empty = mkMsg({ uuid: 'y', sender: 'assistant', content: [{ type: 'thinking', thinking: '' }] });
-    expect(transformContent(empty)).toEqual([{ type: 'text', text: '[earlier thinking left out]' }]);
+    // R1-12: empty thinking left nothing out, so the marker doesn't say it did.
+    expect(transformContent(empty)).toEqual([{ type: 'text', text: '[empty turn]' }]);
     // A human turn with nothing to import stays empty, as before.
     expect(transformContent(mkMsg({ uuid: 'z', sender: 'human', content: [] }))).toEqual([]);
   });

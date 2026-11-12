@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AnthropicAdapter } from '@animalabs/membrane';
@@ -12,6 +12,7 @@ import {
   recoveredThinkingRefused,
   resetRecoveredThinkingRefusals,
   stripRecoveredThinking,
+  withRecoveredThinkingGuard,
 } from '../src/recovered-thinking.js';
 
 const TAG = '<recovered_thinking>\nThe user is greeting me.\n</recovered_thinking>';
@@ -95,6 +96,37 @@ describe('stripRecoveredThinking', () => {
     ]) as Array<{ content: string }>;
     expect(out[0]!.content).toBe('[earlier thinking left out]');
     expect(out[1]!.content).toBe('[earlier thinking left out]\n\nHello!');
+  });
+
+  test('R1-7: string content with a span at each end keeps the text between them', () => {
+    const out = stripRecoveredThinking([{ role: 'assistant', content: `${TAG}\nreply\n${TAG}` }]) as Array<{ content: unknown }>;
+    expect(out[0]!.content).toBe('[earlier thinking left out]\nreply\n[earlier thinking left out]');
+  });
+
+  test('R1-4: spans inside tool_result content are left out, string or text blocks', () => {
+    const messages = [{ role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 't1', content: `history:\n${TAG}\nHello!` },
+      { type: 'tool_result', tool_use_id: 't2', content: [{ type: 'text', text: TAG }, { type: 'image', source: {} }] },
+    ] }];
+    const out = stripRecoveredThinking(messages) as Array<{ content: Array<{ content: unknown }> }>;
+    expect(out).not.toBe(messages);
+    expect(out[0]!.content[0]!.content).toBe('history:\n[earlier thinking left out]\nHello!');
+    expect(out[0]!.content[1]!.content).toEqual([{ type: 'text', text: '[earlier thinking left out]' }, { type: 'image', source: {} }]);
+  });
+
+  test('R1-8: a removed block\'s cache marker skips thinking blocks and keeps the longer TTL', () => {
+    const one = stripRecoveredThinking([{ role: 'assistant', content: [
+      { type: 'text', text: 'before' },
+      { type: 'thinking', thinking: 'x', signature: 's' },
+      { type: 'text', text: TAG, cache_control: { type: 'ephemeral', ttl: '1h' } },
+    ] }]) as Array<{ content: Array<Record<string, unknown>> }>;
+    expect(one[0]!.content[0]!.cache_control).toEqual({ type: 'ephemeral', ttl: '1h' });
+    expect(one[0]!.content[1]!.cache_control).toBeUndefined();
+    const two = stripRecoveredThinking([{ role: 'assistant', content: [
+      { type: 'text', text: TAG, cache_control: { type: 'ephemeral', ttl: '1h' } },
+      { type: 'text', text: 'after', cache_control: { type: 'ephemeral' } },
+    ] }]) as Array<{ content: Array<Record<string, unknown>> }>;
+    expect(two[0]!.content).toEqual([{ type: 'text', text: 'after', cache_control: { type: 'ephemeral', ttl: '1h' } }]);
   });
 
   test('a message with only thinking keeps a short placeholder', () => {
@@ -213,7 +245,7 @@ describe('the adapter learns which models refuse it', () => {
     expect(sent).toHaveLength(4);
   });
 
-  test('a refusal after part of the stream reached the caller is passed on, and still marks the model', async () => {
+  test('a refusal after part of the stream reached the caller is passed on, and marks nothing', async () => {
     proto.stream = async (req, cb) => {
       sent.push(req as never);
       (cb as { onChunk: (c: string) => void }).onChunk('Hel');
@@ -224,7 +256,7 @@ describe('the adapter learns which models refuse it', () => {
     expect(r.stopReason).toBe('refusal');
     expect(sent).toHaveLength(1);
     expect(chunks).toEqual(['Hel']);
-    expect(recoveredThinkingRefused('claude-opus-5-5')).toBe(true);
+    expect(recoveredThinkingRefused('claude-opus-5-5')).toBe(false);
   });
 
   test('a refusal that is sent again raises no off-path refusal alert; one that is not, does', async () => {
@@ -238,6 +270,38 @@ describe('the adapter learns which models refuse it', () => {
     proto.complete = async (req) => { sent.push(req as never); return refusal(); };
     await a.complete(request('claude-opus-5-5') as never);
     expect(alerts).toHaveLength(1);
+  });
+
+  test('R1-1: a refusal the resend without the blocks gets too marks nothing', async () => {
+    proto.complete = async (req) => { sent.push(req as never); return refusal(); };
+    proto.stream = async (req) => { sent.push(req as never); return refusal(); };
+    const a = adapter();
+    const r = await a.stream(request('claude-sonnet-5-5') as never, { onChunk() {} } as never) as { stopReason: string };
+    expect(r.stopReason).toBe('refusal');
+    expect(sent).toHaveLength(2);
+    expect(JSON.stringify(sent[1]!.messages)).not.toContain('<recovered_thinking>');
+    expect(recoveredThinkingRefused('claude-sonnet-5-5')).toBe(false);
+    await a.complete(request('claude-sonnet-5-5') as never);
+    expect(sent).toHaveLength(4);
+    expect(JSON.stringify(sent[2]!.messages)).toContain('<recovered_thinking>');
+    expect(recoveredThinkingRefused('claude-sonnet-5-5')).toBe(false);
+  });
+
+  test('R1-10: a dated snapshot or [1m] suffix shares its model\'s mark', async () => {
+    await adapter().complete(request('claude-opus-5-5') as never);
+    expect(recoveredThinkingRefused('claude-opus-5-5-20261001')).toBe(true);
+    expect(recoveredThinkingRefused('claude-opus-5-5[1m]')).toBe(true);
+    expect(recoveredThinkingRefused('us.anthropic.claude-opus-5-5-20261001-v1:0')).toBe(true);
+    expect(recoveredThinkingRefused('claude-opus-5')).toBe(false);
+  });
+
+  test('R1-6: the refused call that was resent keeps no raw request copy', async () => {
+    const log = join(dir, 'llm.jsonl');
+    const a = new LoggingAnthropicAdapter({ apiKey: 'test-key' }, log, () => ({ enabled: false, budgetTokens: 0 }));
+    await a.complete(request('claude-opus-5-5') as never);
+    const rows = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((r) => r.type === 'call');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].rawRequest ?? null).toBeNull();
   });
 
   test('spans inside a compression-style transcript are learned and left out', async () => {
@@ -281,6 +345,17 @@ describe('the provider-agnostic decorator learns it too', () => {
     expect((await w.complete(req as never)).stopReason).toBe('end_turn');
     expect(sent).toHaveLength(3);
     expect(JSON.stringify(sent[2]!.messages)).not.toContain('<recovered_thinking>');
+  });
+
+  test('R1-2: the guard wrapped around a bare adapter (warmup) learns it too', async () => {
+    const sent: Array<{ messages: unknown[] }> = [];
+    const bare = inner(sent);
+    const guarded = withRecoveredThinkingGuard(bare);
+    expect(guarded.name).toBe('fake');
+    const req = { model: 'claude-opus-5', maxTokens: 100, messages: chat() };
+    expect((await guarded.complete(req as never)).stopReason).toBe('end_turn');
+    expect(sent).toHaveLength(2);
+    expect(recoveredThinkingRefused('claude-opus-5')).toBe(true);
   });
 
   test('a model already marked never gets the blocks', async () => {

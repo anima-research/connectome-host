@@ -51,6 +51,9 @@ import { ContextManager } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
 import { SessionManager } from '../src/session-manager.js';
 import { LEFT_OUT } from '../src/recovered-thinking.js';
+
+/** What an assistant turn of empty thinking alone keeps: nothing was left out. */
+export const EMPTY_TURN = '[empty turn]';
 import { createLineReader } from './lib/line-reader.js';
 
 interface Opts {
@@ -334,8 +337,15 @@ export function transformContent(
   // An assistant turn of thinking alone, with its thinking left out, keeps a
   // short marker: dropping the turn would put two user turns side by side and
   // leave the next turn's originalParent pointing at a turn never imported.
+  // When every thought in it was empty, nothing was left out, and the marker
+  // says only that the turn was empty.
   if (out.length === 0 && msg.sender === 'assistant' && msg.content?.some((b) => b?.type === 'thinking')) {
-    out.push({ type: 'text', text: LEFT_OUT });
+    const anyThought = msg.content.some((b) => {
+      if (b?.type !== 'thinking') return false;
+      const raw = (b as { thinking?: unknown }).thinking;
+      return typeof raw === 'string' ? raw.trim() !== '' : raw != null;
+    });
+    out.push({ type: 'text', text: anyThought ? LEFT_OUT : EMPTY_TURN });
   }
 
   return out;

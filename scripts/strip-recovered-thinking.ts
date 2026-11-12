@@ -22,8 +22,15 @@
  * Edits go through ContextManager.editMessage() (event-sourced; the original
  * stays in history).
  *
- * DRY-RUN BY DEFAULT: prints what it would change. Run with the agent STOPPED,
- * on a copy of the store first. Expect a one-time cache re-warm.
+ * DRY-RUN BY DEFAULT: prints what it would change. A dry run reads a
+ * throwaway copy of the store, so it writes nothing to the store itself
+ * (opening a store registers strategy state and takes its lock). Run --apply
+ * with the agent STOPPED, on a copy of the store first. Expect a one-time
+ * cache re-warm.
+ *
+ * Only the store's current branch is read and edited. Other branches (see
+ * /branches) keep their blocks; the summary says how many there are. Switch
+ * to one with /checkout and run the script again to edit it.
  *
  * Run it from a checkout of a host that has src/recovered-thinking.ts (the
  * release that brought the per-model filter, or later); the store it edits can
@@ -40,7 +47,9 @@
  * bodyGroup shards: the summary says which), 1 on bad arguments or failure.
  */
 
-import { existsSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ContextManager, AutobiographicalStrategy } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
 import { classifyRecoveredThinking, LEFT_OUT, type RecoveredThinkingVerdict } from '../src/recovered-thinking.js';
@@ -105,8 +114,12 @@ async function main(): Promise<void> {
     recentWindowTokens: 0,
     autoTickOnNewMessage: false,
   });
+  // A dry run promises no writes: it opens a copy, removed afterwards.
+  const scratch = apply ? undefined : mkdtempSync(join(tmpdir(), 'strip-recovered-thinking-'));
+  const openPath = scratch ? join(scratch, 'store') : storePath;
+  if (scratch) cpSync(storePath, openPath, { recursive: true });
   const manager = await ContextManager.open({
-    path: storePath,
+    path: openPath,
     strategy,
     membrane: { complete: async () => ({ content: [{ type: 'text', text: '' }] }) },
   } as never);
@@ -147,8 +160,15 @@ async function main(): Promise<void> {
   const left = skippedShards > 0 || mixedBlocks > 0;
   if (skippedShards > 0) console.log(`bodyGroup shards left alone: ${skippedShards}. These still carry the tag.`);
   if (mixedBlocks > 0) console.log(`Mixed blocks left alone: ${mixedBlocks}. These still carry the tag.`);
-  if (!apply && edited > 0) console.log('Dry-run only: re-run with --apply to edit.');
+  const branches = manager.listBranches();
+  const current = manager.currentBranch();
+  console.log(`Branch: ${current.name} (only this branch was ${apply ? 'edited' : 'read'})`);
+  if (branches.length > 1) {
+    console.log(`Other branches not ${apply ? 'edited' : 'read'}: ${branches.length - 1}. Switch to one with /checkout and run again to cover it.`);
+  }
+  if (!apply && edited > 0) console.log('Dry-run only (on a copy; the store was not written): re-run with --apply to edit.');
   manager.close();
+  if (scratch) rmSync(scratch, { recursive: true, force: true });
   if (left) process.exitCode = 2;
 }
 
