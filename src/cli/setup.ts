@@ -770,8 +770,8 @@ async function installAndStart(
   }
   const inEnv = oauth.filter((name) => held.get(name));
   if (inEnv.length > 0) {
-    out(`${envFile} holds ${inEnv.join(' and ')}, so a host started in ${dir} ${throughOAuth} Take ` +
-      `${inEnv.length === 1 ? 'it' : 'them'} out of ${envFile}, for such a host to use the key.`);
+    out(`${envFile} holds ${inEnv.join(' and ')}, so a host that takes ${inEnv.length === 1 ? 'it' : 'them'} from there ` +
+      `${throughOAuth} Take ${inEnv.length === 1 ? 'it' : 'them'} out of ${envFile}, for such a host to use the key.`);
   }
   out(costLine(model, baseUrl !== undefined));
 
