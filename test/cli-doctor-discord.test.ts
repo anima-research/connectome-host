@@ -7,6 +7,7 @@ import { DISCORD_API, discordUserAgent } from '../src/setup/discord-token.js';
 
 const TOKEN = 'MTEx.fake-token-value.abc';
 const VIEW = 1 << 10;
+const SEND = 1 << 11;
 const GATEWAY_MESSAGE_CONTENT = 1 << 18;
 const GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19;
 
@@ -71,7 +72,7 @@ function fakeDiscord(opts: {
 const HOME: FakeGuild = {
   id: '100',
   name: 'Home',
-  everyone: VIEW,
+  everyone: VIEW | SEND,
   roles: [{ id: '110', permissions: 0 }],
   botRoles: ['110'],
   channels: [
@@ -312,7 +313,7 @@ describe('doctor: Discord', () => {
 
   test('a bot in more servers than one page of Discord\'s list holds sees the scoped server on a later page', async () => {
     const many: FakeGuild[] = Array.from({ length: 201 }, (_, i) => ({
-      id: String(1000 + i), name: `server-${i}`, everyone: VIEW, roles: [], botRoles: [], channels: [{ id: String(5000 + i), name: 'general', type: 0 }],
+      id: String(1000 + i), name: `server-${i}`, everyone: VIEW | SEND, roles: [], botRoles: [], channels: [{ id: String(5000 + i), name: 'general', type: 0 }],
     }));
     const r = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '1200' }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: many }));
     expect(r.problems).toEqual([]);
@@ -457,6 +458,24 @@ describe('doctor: Discord', () => {
     expect(scopeOf(r)).toContain('Home (100): all its channels');
     expect(scopeOf(r)).not.toContain('Elsewhere');
     expect(scopeOf(r)).not.toMatch(/the bot is in no server/);
+  });
+
+  test('a channel the scope names that the bot can see but can\'t send in is a problem, a whole server in the scope isn\'t, and the list marks every channel it can\'t send in', async () => {
+    const quiet: FakeGuild = {
+      ...HOME,
+      channels: [...HOME.channels,
+        { id: '106', name: 'announcements', type: 0, overwrites: [{ id: '100', type: 0, deny: SEND }] },
+        { id: '107', name: 'read-only', type: 0, overwrites: [{ id: '110', type: 0, deny: SEND }] }],
+    };
+    const discord = fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [quiet] });
+    const r = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100:101+106' }, discord);
+    expect(r.problems).toEqual(['The scope names 106, a channel of Home (100) the bot can see but can\'t send in: give the bot Send Messages in it.']);
+    expect(r.lines).toContain('    #announcements (106), where it can\'t send');
+    expect(r.lines).toContain('    #read-only (107), where it can\'t send');
+    expect(r.lines).toContain('    #general (101)');
+    expect(scopeOf(r)).toContain('Home (100): #general (101), #announcements (106)');
+    const wide = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100' }, discord);
+    expect(wide.problems).toEqual([]);
   });
 
   test('a server a filters file names that the bot isn\'t in says to invite it, without DISCORD_GUILD_ID\'s separators', async () => {

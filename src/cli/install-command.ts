@@ -2,6 +2,7 @@ import { accessSync, constants, realpathSync, statSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { writeTextAtomic } from '../update/contract.js';
 import { shellWord } from '../update/launcher.js';
+import { SHOWN_FILE } from './shown.js';
 
 export const INSTALL_COMMAND = 'connectome';
 
@@ -11,15 +12,27 @@ export function installCommandText(): string {
   return [
     '#!/usr/bin/env bun',
     '// Written by this install\'s setup. Link to it rather than move it: it runs the install it sits in.',
-    "import { existsSync, realpathSync } from 'node:fs';",
+    "import { appendFileSync, existsSync, realpathSync } from 'node:fs';",
     "import { dirname, join } from 'node:path';",
     "import { fileURLToPath } from 'node:url';",
     '',
     'const root = dirname(realpathSync(fileURLToPath(import.meta.url)));',
     "const word = (path) => /^[\\w@%+=:,./-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\\\''`)}'`;",
     `const cli = join(root, 'current', ${CLI_IN_RELEASE.map((part) => `'${part}'`).join(', ')});`,
+    'const refuse = (line) => {',
+    '  console.error(line);',
+    `  const file = process.env.${SHOWN_FILE};`,
+    '  if (!file) return;',
+    '  try {',
+    '    appendFileSync(file, `${line}\\n`);',
+    '  } catch (error) {',
+    "    console.error(`connectome: setup's agent named ${file} for what this command prints to reach the person's ` +",
+    "      `screen, and it can't be written (${error instanceof Error ? error.message : error}), so the person sees ` +",
+    "      'neither the line above nor what it prints after it: tell them what it says.');",
+    '  }',
+    '};',
     "if (!existsSync(join(root, 'current'))) {",
-    "  console.error(`connectome: ${root} has no current release: run setup again in ${dirname(root)}, which says how ` +",
+    "  refuse(`connectome: ${root} has no current release: run setup again in ${dirname(root)}, which says how ` +",
     "    'to put it right.');",
     '  process.exit(1);',
     '}',
@@ -28,7 +41,7 @@ export function installCommandText(): string {
     '  ({ main } = await import(cli));',
     "  if (typeof main !== 'function') throw new Error('it has no main to call');",
     '} catch (error) {',
-    "  console.error(`connectome: the release this install runs has no connectome command that loads (${cli}): ` +",
+    "  refuse(`connectome: the release this install runs has no connectome command that loads (${cli}): ` +",
     "    `${error instanceof Error ? error.message : error}. If its host still starts, its /update, in the TUI or ` +",
     "    `the Web UI, updates it. If this release is broken, \\`bun ${word(join(root, 'start.js'))} --go-back\\` asks ` +",
     "    'the next start to go back, when a Go back is offered.');",
