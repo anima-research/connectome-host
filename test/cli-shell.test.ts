@@ -29,10 +29,9 @@ function directory(): string {
   return dir;
 }
 
-function installed(): { dir: string; root: string; line: string } {
-  const dir = directory();
+function installed(dir = directory()): { dir: string; root: string; line: string } {
   const root = join(dir, 'connectome-host');
-  mkdirSync(root);
+  mkdirSync(root, { recursive: true });
   writeInstallCommand(root, '');
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ trustedDependencies: ['node-pty', 'puppeteer', 'term-sessions-mcp'] }));
   return { dir, root, line: `${shellWord(join(root, 'connectome'))} shell install` };
@@ -381,6 +380,30 @@ test('an install again of node-pty that finishes but leaves one that still doesn
   expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
 });
 
+test('a node-pty that loads from outside the directory, through a link or from a directory above it, isn\'t repaired: shell install says where it loads from, stops, and leaves it as it is', async () => {
+  const placed = {
+    'linked from a store': (dir: string, store: string) => {
+      mkdirSync(join(dir, 'node_modules'), { recursive: true });
+      symlinkSync(join(store, 'node-pty'), join(dir, 'node_modules', 'node-pty'));
+    },
+    'in a directory above it': () => {},
+  };
+  for (const [layout, place] of Object.entries(placed)) {
+    const above = directory();
+    const store = layout === 'in a directory above it' ? join(above, 'node_modules') : directory();
+    mkdirSync(join(store, 'node-pty'), { recursive: true });
+    writeFileSync(join(store, 'node-pty', 'package.json'), '{"name":"node-pty"}\n');
+    writeFileSync(join(store, 'node-pty', 'pty.node'), 'another project\'s copy');
+    const { dir, root } = installed(join(above, 'resident'));
+    const made = world(dir, { pty: [BROKEN], atAdd: (cwd) => place(cwd, store) });
+    expect(await runShell(root, ['install'], made)).toBe(1);
+    expect(readFileSync(join(store, 'node-pty', 'pty.node'), 'utf-8')).toBe('another project\'s copy');
+    expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
+    expect(made.seen.ran.some((argv) => args(argv)[0] === 'install')).toBe(false);
+    expect(made.seen.err).toEqual([`The resident's shell runs on node-pty, and here it doesn't work: Failed to load native module: pty.node, checked: build/Release. node-pty loads from ${realpathSync(join(store, 'node-pty'))}, which is outside ${dir}, so this command leaves it as it is. A resident without a shell needs none of this.`]);
+  }
+});
+
 test('a repair that finds a copy a stopped repair set aside keeps that copy, and puts it back when its own install fails', async () => {
   const { dir, root } = installed();
   const made = world(dir, {
@@ -584,7 +607,7 @@ modeTest('on macOS, a prebuilds directory the command can\'t list is named in th
   expect(text(made.seen.err)).toContain(`here it doesn't work: posix_spawnp failed. On macOS, node-pty runs from binaries it ships prebuilt, whose spawn-helper has to be executable, and ${shut} couldn't be read (EACCES: permission denied, scandir '${shut}'). Run \`${line}\` again once that's put right, which installs node-pty again. A resident without a shell needs none of this.`);
 });
 
-test('on macOS, a prebuilt binary with no spawn-helper is named in the stop as not there, with what to do', async () => {
+test('on macOS, a prebuilt binary with no spawn-helper is named in the stop as not there, with what to do, and the other prebuilt binaries\' spawn-helpers are still made executable', async () => {
   const { dir, root, line } = installed();
   const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
   let missing = '';
@@ -593,6 +616,7 @@ test('on macOS, a prebuilt binary with no spawn-helper is named in the stop as n
     atAdd: (cwd) => { [missing] = shipNodePty(cwd); rmSync(missing); },
   }, { platform: 'darwin' });
   expect(await runShell(root, ['install'], made)).toBe(1);
+  expect(statSync(join(dir, 'node_modules', 'node-pty', 'prebuilds', 'darwin-x64', 'spawn-helper')).mode & 0o777).toBe(0o755);
   expect(text(made.seen.err)).toContain(`here it doesn't work: posix_spawnp failed. On macOS, node-pty runs from binaries it ships prebuilt, whose spawn-helper has to be executable, and ${missing} isn't there. Run \`${line}\` again once that's put right, which installs node-pty again. A resident without a shell needs none of this.`);
 });
 
@@ -623,6 +647,7 @@ test('where setup\'s agent runs it, an add that fails says setup\'s agent has Bu
   const env = { PATH: '/usr/bin:/bin', HOME: dir, [SHOWN_FILE]: said };
   const failed = world(dir, { added: { status: 1, stdout: '', stderr: 'error: install script from "node-pty" exited with 1\n' } }, { env });
   expect(await runShell(root, ['install'], failed)).toBe(1);
+  expect(failed.seen.options[failed.seen.ran.findIndex((argv) => args(argv)[0] === 'add')]!.show).toBe(true);
   expect(failed.seen.err).toEqual([`\`bun --no-env-file add term-sessions-mcp@^1\` didn't finish (exit 1), so the resident's shell isn't installed. Setup's agent has Bun's own lines, which say why. Once that's put right, run \`${line}\` again.`]);
 });
 

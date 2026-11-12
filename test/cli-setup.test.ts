@@ -751,7 +751,7 @@ test('a key from .env tried again after a dotenv file became unreadable isn\'t c
   expect(text(made.seen.err)).toContain(`connectome setup: ${join(dir, '.env.local')} can't be read (it isn't a file). The ANTHROPIC_API_KEY in ${join(dir, '.env')} wasn't checked. Put that right, then run setup again.`);
 });
 
-test('a dotenv file that became unreadable before the key question stops setup with nothing asked, and setup says to put it right', async () => {
+test('a dotenv file that became unreadable before the key question stops setup before it asks for the key or checks one, and setup says to put it right', async () => {
   const dir = directory();
   mkdirSync(join(dir, '.setup'));
   writeFileSync(join(dir, '.setup', 'setup.lock'), '');
