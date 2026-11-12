@@ -20,12 +20,12 @@ import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 import { commandsShownNote } from '../modules/setup-module.js';
 import { askHidden as askHiddenOn } from '../setup/terminal-secret.js';
 import {
-  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, releaseDir,
-  writeJsonAtomic, writeTextAtomic, type InstallRecord,
+  ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, realOrResolved,
+  releaseDir, writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, isUnder, shellWord } from '../update/launcher.js';
 import {
-  MOVED_ASIDE_AFTERWARDS, bindingOf, keptAccount, keptInRoot, mapPath, moveAsideByHand, movesPlaces, movingAside,
+  MOVED_ASIDE_AFTERWARDS, bindingOf, childPathsOf, keptAccount, keptInRoot, mapPath, moveAsideByHand, movesPlaces, movingAside,
   unfinishedWords, type Binding, type KeptInRoot, type Place,
 } from '../update/rebind.js';
 import type { CliContext } from './connectome.js';
@@ -864,7 +864,9 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
           'where that is: type the whole path.');
         continue;
       }
-      const given = path === '' ? place.path : resolve(dirname(root), tilde && home !== null ? join(home, path.slice(1)) : path);
+      const typedPlace = path === '' ? place.path
+        : resolve(dirname(root), tilde && home !== null ? join(home, path.slice(1)) : path);
+      const given = realOrResolved(typedPlace);
       if (place.data) {
         const data = mapPath(record.dataDir, { from: null, to, places: [{ from: place.path, to: given }] })!;
         if (!existsSync(data) || !statSync(data).isDirectory()) {
@@ -872,6 +874,18 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
             'install\'s data is, or put it there first.');
           continue;
         }
+      }
+      const rootReal = realOrResolved(root);
+      const nested = [record.dataDir, ...Array.isArray(record.extraState) ? record.extraState : [], ...childPathsOf(asking)]
+        .filter((was): was is string => typeof was === 'string' && isUnder(was, place.path))
+        .map((was) => ({ was, put: mapPath(was, { from: null, to, places: [{ from: place.path, to: typedPlace }] })! }))
+        .map((one) => ({ ...one, real: realOrResolved(one.put) }))
+        .find(({ real }) => isUnder(rootReal, real) || isUnder(real, rootReal));
+      if (nested !== undefined) {
+        out(`The binding would put ${nested.was} at ${nested.put}, and ${nested.real === nested.put ? 'that'
+          : `that, which is ${nested.real} once its links are followed,`} and the install root ${rootReal} are one ` +
+          'inside the other, so a copy of the data would hold the copy itself: type a place apart from the root.');
+        continue;
       }
       places.push({ from: place.path, to: given });
       break;

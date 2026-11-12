@@ -18,7 +18,7 @@ export function installCommandText(release: string | null = null): string {
     '#!/usr/bin/env bun',
     '// Written by this install\'s setup. Link to it rather than move it: it runs the install it sits in.',
     "import { appendFileSync, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';",
-    "import { basename, dirname, join } from 'node:path';",
+    "import { basename, dirname, isAbsolute, join } from 'node:path';",
     "import { fileURLToPath } from 'node:url';",
     '',
     'const root = dirname(realpathSync(fileURLToPath(import.meta.url)));',

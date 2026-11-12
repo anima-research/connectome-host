@@ -41,6 +41,8 @@ export function boundHere(record: InstallRecord, root: string): boolean {
 
 const CHILDREN_FILE = "fleet's children file";
 
+class BoundElsewhere extends ContractError {}
+
 export interface Children {
   path: string;
   value: ChildrenFile;
@@ -70,7 +72,7 @@ export function childrenIn(dataDir: string, from: string | null, to: string): Ch
   }
   const bound = boundTo !== undefined && !(from !== null && (boundTo === from || sameDirectory(boundTo, from)));
   if (bound && !sameDirectory(boundTo, to)) {
-    throw new ContractError(`The fleet's children file, ${path}, is bound to ${boundTo} by a setup run there, and this ` +
+    throw new BoundElsewhere(`The fleet's children file, ${path}, is bound to ${boundTo} by a setup run there, and this ` +
       'install\'s record doesn\'t say it was bound there: that run was cut off before it wrote the record, or the ' +
       'record was written again without its directory after that run, by the setup of a release from before this ' +
       `one after a Go back, or by hand. The install is in ${to} now, so the places that file names are ${boundTo}'s. ` +
@@ -146,13 +148,20 @@ export function childPathsOf(binding: Bind): string[] {
 }
 
 export function bindingOf(root: string, record: InstallRecord, placed: Moved[] = []): Binding {
-  if (record.workingDir !== undefined && typeof record.workingDir !== 'string') {
-    throw new ContractError(`This install's record (${installPaths(root).install}) holds a "workingDir" that isn't a ` +
-      `path (${JSON.stringify(record.workingDir)}), so setup can't tell whether the install was moved or copied here, ` +
-      `or whose places its record names. Setup has changed nothing. ${WRITE_RECORD_AGAIN}`);
+  if (record.workingDir !== undefined && (typeof record.workingDir !== 'string' || !isAbsolute(record.workingDir))) {
+    throw new ContractError(`This install's record (${installPaths(root).install}) holds a "workingDir" that isn't an ` +
+      `absolute path (${JSON.stringify(record.workingDir)}), so setup can't tell whether the install was moved or ` +
+      `copied here, or whose places its record names. Setup has changed nothing. ${WRITE_RECORD_AGAIN}`);
   }
   const to = workingDirOf(root);
-  if (boundHere(record, root)) return { kind: 'bound', to };
+  if (boundHere(record, root)) {
+    try {
+      childrenIn(record.dataDir, record.workingDir ?? null, to);
+    } catch (error) {
+      if (error instanceof BoundElsewhere) throw error;
+    }
+    return { kind: 'bound', to };
+  }
   const from = typeof record.workingDir === 'string' ? record.workingDir : null;
   const dataKept = from === null ? keptHere(record.dataDir, to, basename(root)) : null;
   const served = mapPath(record.dataDir,
@@ -191,20 +200,28 @@ export function childrenRewrite(children: Children | null, mapping: Mapping): bo
 }
 
 export function bindChildren(children: Children, mapping: Mapping): void {
-  writeJsonAtomic(children.path, {
-    ...children.value,
-    children: children.value.children.map((child) => {
-      if (!isChildEntry(child)) return child;
-      const dataDir = mapPath(child.dataDir, mapping);
-      if (dataDir === null) {
-        throw new ContractError(`${children.path} names ${child.dataDir}, which this binding gives no place, so setup ` +
-          'can\'t bind it.');
-      }
-      const other = existsSync(child.dataDir) && !sameDirectory(child.dataDir, dataDir);
-      return other ? { ...child, dataDir, pid: null, bootId: null } : { ...child, dataDir };
-    }),
-    boundTo: mapping.to,
-  } satisfies ChildrenFile);
+  const copied: string[] = [];
+  const bound = children.value.children.map((child) => {
+    if (!isChildEntry(child)) return child;
+    const dataDir = mapPath(child.dataDir, mapping);
+    if (dataDir === null) {
+      throw new ContractError(`${children.path} names ${child.dataDir}, which this binding gives no place, so setup ` +
+        'can\'t bind it.');
+    }
+    const other = existsSync(child.dataDir) && !sameDirectory(child.dataDir, dataDir);
+    if (other) copied.push(dataDir);
+    return other ? { ...child, dataDir, pid: null, bootId: null } : { ...child, dataDir };
+  });
+  for (const file of copied.flatMap((dataDir) => [join(dataDir, 'ipc.sock'), join(dataDir, 'headless.pid')])) {
+    try {
+      rmSync(file, { force: true });
+    } catch (error) {
+      throw new ContractError(`${file} came with this copy from the original's child, and setup can't remove it ` +
+        `(${(error as Error).message}), so the copy's fleet couldn't start that child there. Setup stopped before it ` +
+        'bound the install. Remove it, and run setup again.');
+    }
+  }
+  writeJsonAtomic(children.path, { ...children.value, children: bound, boundTo: mapping.to } satisfies ChildrenFile);
 }
 
 export function movesPlaces(binding: Bind, places: Moved[]): boolean {
@@ -473,7 +490,8 @@ export function bindingCheckLines(said: string, allowSetup: boolean, release: st
     '  }',
     '};',
     "const record = readJson(join(root, 'install.json'));",
-    "const bound = record?.v === 1 && typeof record.workingDir === 'string' ? record.workingDir : null;",
+    "const bound = record?.v === 1 && typeof record.workingDir === 'string' && isAbsolute(record.workingDir)",
+    '  ? record.workingDir : null;',
     "const damaged = record?.v === 1 && record.workingDir !== undefined && bound === null;",
     "const recorded = record?.v === 1 ? record.dataDir : null;",
     "const under = bound === null || bound.endsWith('/') ? bound : `${bound}/`;",
@@ -500,8 +518,8 @@ export function bindingCheckLines(said: string, allowSetup: boolean, release: st
     "    `install exactly ${writer} in ${quoted(dirname(root))} first, as docs/DEPLOYMENTS.md shows, and run its setup by hand`;",
     `if (damaged${allowSetup ? " && process.argv[2] !== 'setup'" : ''}) {`,
     `  ${report}(\`${said}: nothing runs in this install, since its record, \${join(root, 'install.json')}, holds a \` +`,
-    "    '\"workingDir\" that isn\\'t a path, so whether it was moved or copied here, and whose places its record names, ' +",
-    "    `can't be told. Setup says how to write the record again: run \\`${quoted(join(root, 'connectome'))} setup discord\\`, ` +",
+    "    '\"workingDir\" that isn\\'t an absolute path, so whether it was moved or copied here, and whose places its ' +",
+    "    `record names, can't be told. Setup says how to write the record again: run \\`${quoted(join(root, 'connectome'))} setup discord\\`, ` +",
     "    'or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows. A service that ' +",
     "    'restarts the host will keep meeting this until the record is written again: stop it first, and start it again after.');",
     '  process.exit(1);',
