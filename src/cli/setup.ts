@@ -210,13 +210,13 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   if (!ours && entries.length > 0) {
     const what = holds(dir, entries, home);
     if (movedFrom !== null) {
-      err(`connectome setup: ${movedFrom}, and ${what} and no connectome-host install, so setup won't put its own in ` +
-        'either. Make an empty directory for the resident, named as you\'d like its service, and run this same version ' +
-        'of setup in it:');
+      err(`connectome setup: ${movedFrom}, and ${what} and no connectome-host install record, so setup won't put its ` +
+        'own in either. Make an empty directory for the resident, named as you\'d like its service, and run this same ' +
+        'version of setup in it:');
     } else {
-      err(`connectome setup: ${what}, and no connectome-host install, so setup won't put its own there. Make a new ` +
-        'directory for the resident where you can write, and run this same version of setup there. Its service takes ' +
-        'the directory\'s name:');
+      err(`connectome setup: ${what}, and no connectome-host install record, so setup won't put its own there. Make a ` +
+        'new directory for the resident where you can write, and run this same version of setup there. Its service ' +
+        'takes the directory\'s name:');
     }
     err(`  ${firstLine()}`);
     return 1;
