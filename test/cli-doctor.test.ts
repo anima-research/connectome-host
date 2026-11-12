@@ -2382,7 +2382,7 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
       'it runs in, which is what to stop.');
   });
 
-  test('a host the service\'s pid matches only once, or found while a service read as stopped starts, is said as changed, with no kill', async () => {
+  test('a host the service\'s pid matches only once, or found while a service read as stopped starts or its pid can\'t be read, is said as changed, with no kill', async () => {
     const at = install();
     for (const second of ['4242', '6161']) {
       let asked = 0;
@@ -2393,10 +2393,10 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
       expect(r.out).not.toContain('kill 4242');
       expect(r.out).not.toContain('✗ A host answers');
     }
-    for (const pid of ['4242', '6161']) {
+    for (const answer of [{ pid: '4242' }, { pid: '6161' }, { why: 'systemctl --user show connectome-test.service failed' }]) {
       const started = await withHost(at, HEALTHY_HOST, () => run(at, {
         checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
-        servicePid: async () => ({ pid }),
+        servicePid: async () => answer,
       }));
       expect(started.out).toContain('but the service\'s host changed during the check');
       expect(started.out).not.toContain('though the service is stopped');

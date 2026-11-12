@@ -338,7 +338,7 @@ export async function doctor(
       };
       if (stopped) {
         const now = await ownPid();
-        if (now !== null && 'pid' in now && now.pid !== '0') changed();
+        if (now !== null && (!('pid' in now) || now.pid !== '0' || !open)) changed();
         else {
           report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, though the service ` +
             'is stopped, so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below ' +
