@@ -138,6 +138,7 @@ class FakeSystemd {
   agents = new Map<string, { pid: number | null }>();
   agentsExit = false;
   unloadPolls = 0;
+  exitTimeout: number | null = null;
   unloading = new Map<string, number>();
   bootstraps: string[] = [];
   primary = '';
@@ -328,7 +329,8 @@ class FakeSystemd {
       const agent = this.agents.get(label);
       return agent === undefined
         ? { status: 113, stdout: '', stderr: `Could not find service "${label}" in domain for user gui` }
-        : ok(`state = ${remaining === undefined ? 'running' : 'SIGTERMed'}\npid = ${agent.pid}`);
+        : ok(`\tstate = ${remaining === undefined ? 'running' : 'SIGTERMed'}\n` +
+          `${this.exitTimeout === null ? '' : `\texit timeout = ${this.exitTimeout}\n`}\tpid = ${agent.pid}\n`);
     }
     if (verb === 'list') {
       const agent = this.agents.get(target!);
@@ -1099,8 +1101,9 @@ for (const platform of ['linux', 'darwin'] as const) test('readiness refuses an 
   expect(f.out.join('\n')).not.toContain('Its host answers:');
 });
 
-test('a host systemd keeps restarting ends the wait for it at once, not after the minute', async () => {
+test('a host systemd keeps restarting ends the wait for it at once, not at the wait\'s bound', async () => {
   const at = install();
+  writeFileSync(at.recipe, JSON.stringify({ mcpServers: { a: { command: 'a' } } }));
   const f = fake(at, { ready: false });
   f.systemd.crashing.add(HOST);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
@@ -1119,6 +1122,7 @@ test('a host whose unit stops ends the wait for it at once, saying how systemd s
 
 test('the wait goes on while the host isn\'t ready yet, and ends once it answers', async () => {
   const at = install();
+  writeFileSync(at.recipe, JSON.stringify({ mcpServers: { a: { command: 'a' } } }));
   const f = fake(at, { answersAfter: 3 });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(f.slept()).toBeGreaterThan(0);
@@ -1126,13 +1130,24 @@ test('the wait goes on while the host isn\'t ready yet, and ends once it answers
   expect(f.out.join('\n')).toContain('Its host answers: pid 4242');
 });
 
-test('a host that never answers while its unit stays active is waited for a minute', async () => {
+test('a host that never answers while its unit stays active, on a recipe that names no server, is waited for 1.011 s', async () => {
   const at = install();
   const f = fake(at, { ready: false });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.slept()).toBeGreaterThanOrEqual(60_000);
-  expect(f.slept()).toBeLessThan(62_000);
-  expect(f.err.join('\n')).toContain('no host said it was ready within 60 s');
+  expect(f.slept()).toBeGreaterThanOrEqual(1_011);
+  expect(f.slept()).toBeLessThan(3_011);
+  expect(f.err.join('\n')).toContain('no host said it was ready within 1 s');
+});
+
+test('each server the recipe or the agent overlay names adds 90 s to the wait for a host that never answers', async () => {
+  const at = install();
+  writeFileSync(at.recipe, JSON.stringify({ mcpServers: { a: { command: 'a' } } }));
+  writeFileSync(join(at.work, 'mcpl-servers.agent.json'), JSON.stringify({ mcplServers: { b: { command: 'b' } } }));
+  const f = fake(at, { ready: false });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.slept()).toBeGreaterThanOrEqual(181_011);
+  expect(f.slept()).toBeLessThan(183_011);
+  expect(f.err.join('\n')).toContain('no host said it was ready within 181 s');
 });
 
 test('a copy whose original\'s host answers on its socket is refused, naming that pid, before anything is written', async () => {
@@ -1358,18 +1373,30 @@ test('on macOS a reinstall waits for each old agent to disappear before loading 
   expect(f.systemd.bootstraps).toHaveLength(4);
 });
 
-test('on macOS an agent that stays in teardown gets a bounded, specific reinstall failure', async () => {
+test('on macOS an agent that stays in teardown past the exit timeout launchctl shows, plus one poll, gets a specific reinstall failure', async () => {
+  const at = install();
+  const f = fake(at, { platform: 'darwin', linger: null });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  f.systemd.unloadPolls = Infinity;
+  f.systemd.exitTimeout = 7;
+  const before = f.slept();
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.slept() - before).toBe(7_100);
+  expect(f.err.join('\n')).toContain("com.animalabs.connectome.my-resident hasn't finished unloading after 7.1 s.");
+  expect(f.err.join('\n')).toContain('service install command with the same recipe');
+  expect(f.systemd.bootstraps).toHaveLength(1);
+  expect(f.systemd.agents.has('com.animalabs.connectome.my-resident')).toBe(true);
+});
+
+test('on macOS an agent whose print shows no exit timeout is waited for 5 s, plus one poll', async () => {
   const at = install();
   const f = fake(at, { platform: 'darwin', linger: null });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   f.systemd.unloadPolls = Infinity;
   const before = f.slept();
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.slept() - before).toBe(60_000);
-  expect(f.err.join('\n')).toContain("hasn't finished unloading");
-  expect(f.err.join('\n')).toContain('service install command with the same recipe');
-  expect(f.systemd.bootstraps).toHaveLength(1);
-  expect(f.systemd.agents.has('com.animalabs.connectome.my-resident')).toBe(true);
+  expect(f.slept() - before).toBe(5_100);
+  expect(f.err.join('\n')).toContain("com.animalabs.connectome.my-resident hasn't finished unloading after 5.1 s.");
 });
 
 test('on macOS a failed teardown query explains the failure without launchctl root advice', async () => {
@@ -2204,7 +2231,7 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' a host th
   const at = install();
   const f = fake(at, { platform, ready: false });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.err.join('\n')).toContain('no host said it was ready within 60 s');
+  expect(f.err.join('\n')).toContain('no host said it was ready within 1 s');
   expect(f.err.join('\n')).toContain('It may still be starting: connectome alone says whether its host answers.');
   const log = platform === 'darwin' ? `tail -f '${join(at.work, 'logs', 'agent.log')}'` : `journalctl --user -u ${HOST} -f`;
   expect(f.out).toContain(`Its log shows what happened: ${log}. Put that right, then run connectome service install ` +

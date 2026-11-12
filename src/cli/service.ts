@@ -11,6 +11,8 @@ import { shellWord } from '../update/launcher.js';
 import { lingerOf } from '../setup/linger.js';
 import { StoredSecrets, envForm, readEnvFile, writeEnvValue } from '../setup/secrets.js';
 import { readRecipeDocument } from '../recipe-document.js';
+import { parseHandWrittenJson } from '../hand-written-json.js';
+import { AGENT_OVERLAY_FILE_NAME } from '../update/agent-overlay-path.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
@@ -25,7 +27,17 @@ const SHELL_BIN = 'session-server';
 const SHELL_PORTS = { first: 3100, last: 32767 };
 const SHELL_CLIENT = /(?:^|[/\\\s])(?:terminal-sessions-mcp|term-sessions-mcp)(?:$|[@/\\\s])/;
 const SHELL_SETTINGS = ['SESSION_SERVER_TOKEN', 'SESSION_SERVER_PORT'];
-const READY_WAIT_MS = 60_000;
+// The longest start of 60 measured, from the host's spawn to its socket's lifecycle:ready, on Linux and macOS with Bun's
+// transpiler cache on and off, on setup's boot-check recipe, which names no server.
+const HOST_START_MS = 1_011;
+// agent-framework 0.33.0 connects each server in turn before the host's socket answers (src/framework.ts), and none of
+// these bounds is exported. A legacy WebSocket server can take the longest: its open, 15 s (src/mcpl/transport.ts),
+// initialize, 30 s (src/mcpl/server-connection.ts), the initial policy request, 15 s (server-connection.ts), and, when
+// a refusal of that policy closes it, the close, which waits for ws's closeTimeout, 30 s (ws 8.21.3, lib/constants.js).
+const SERVER_START_MS = 90_000;
+// launchctl print shows `exit timeout = 5` for an agent plist() writes, on macOS 26.
+const EXIT_TIMEOUT_S = 5;
+const UNLOAD_POLL_MS = 100;
 const serviceUsage = (cmd: string) => `${cmd} service install <recipe>`;
 const RUNNING = new Set(['active', 'activating', 'reloading']);
 const STOPPING = new Set([...RUNNING, 'deactivating']);
@@ -339,7 +351,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       `${units.length === 1 ? 'it' : 'them'}, each time ${sys.user} logs in to the Mac's graphical session.`);
   }
 
-  const ready = await awaitReady(root, manager, names.host, sys, env);
+  const ready = await awaitReady(root, manager, names.host, sys, env, HOST_START_MS + SERVER_START_MS * serversIn(raw, work));
   const commands = serviceCommands(root, sys);
   if (typeof ready === 'string') {
     ctx.err(`connectome: ${ready}`);
@@ -454,9 +466,22 @@ export function serviceLines(root: string, sys: ServiceSystem = machine()): stri
   ];
 }
 
+function serversIn(raw: unknown, work: string): number {
+  const named = (raw as { mcpServers?: unknown } | null)?.mcpServers;
+  let added: unknown;
+  try {
+    added = (parseHandWrittenJson(readFileSync(join(work, AGENT_OVERLAY_FILE_NAME), 'utf-8')) as
+      { mcplServers?: unknown } | null)?.mcplServers;
+  } catch {
+    added = undefined;
+  }
+  return [named, added].reduce<number>((count, servers) =>
+    count + (servers !== null && typeof servers === 'object' ? Object.keys(servers).length : 0), 0);
+}
+
 async function awaitReady(root: string, manager: Manager, unit: ServiceUnit, sys: ServiceSystem,
-  env: Record<string, string>): Promise<HostReady | string> {
-  const until = sys.now() + READY_WAIT_MS;
+  env: Record<string, string>, waitMs: number): Promise<HostReady | string> {
+  const until = sys.now() + waitMs;
   const name = unit.name;
   let first: string | undefined;
   let last = 'nothing answered';
@@ -498,7 +523,7 @@ async function awaitReady(root: string, manager: Manager, unit: ServiceUnit, sys
       if (invocation !== first) return `systemd restarted ${name} before its host answered: ${last}.`;
     }
     if (sys.now() >= until) {
-      return `no host said it was ready within ${READY_WAIT_MS / 1000} s: ${last}. It may still be starting: ` +
+      return `no host said it was ready within ${Math.floor(waitMs / 1000)} s: ${last}. It may still be starting: ` +
         `${typedCommand(root, sys.env.PATH)} alone says whether its host answers.`;
     }
     await sys.sleep(1_000);
@@ -778,13 +803,16 @@ function configConflict(unit: ServiceUnit, from: string, runsIn: string | null, 
 async function bootout(ctx: CliContext, sys: ServiceSystem, env: Record<string, string>, unit: ServiceUnit,
   next: string): Promise<void> {
   const target = 'gui/' + sys.uid + '/' + unit.name;
+  const before = sys.run('launchctl', ['print', target], env);
+  const exitTimeout = /^\s*exit timeout = (\d+)\s*$/m.exec(before.status === 0 ? before.stdout : '')?.[1];
+  const unloadMs = Number(exitTimeout ?? EXIT_TIMEOUT_S) * 1000 + UNLOAD_POLL_MS;
   const ran = sys.run('launchctl', ['bootout', target], env);
   if (ran.status !== 0) {
     throw new Refusal('launchctl bootout ' + target + ' failed: ' + launchctlFailure(ran) + '. ' +
       next);
   }
   const started = sys.now();
-  const until = started + READY_WAIT_MS;
+  const until = started + unloadMs;
   let waiting = false;
   for (;;) {
     const shown = sys.run('launchctl', ['print', target], env);
@@ -794,14 +822,14 @@ async function bootout(ctx: CliContext, sys: ServiceSystem, env: Record<string, 
         '. Its stop was requested, but whether ' + unit.name + ' finished unloading cannot be told. ' + next);
     }
     if (sys.now() >= until) {
-      throw new Refusal(unit.name + " hasn't finished unloading after " + READY_WAIT_MS / 1000 +
+      throw new Refusal(unit.name + " hasn't finished unloading after " + unloadMs / 1000 +
         ' s. Its stop was requested, but launchd still shows it. ' + next);
     }
     if (!waiting && sys.now() - started >= 1_000) {
       ctx.out('Waiting for ' + unit.name + ' to finish stopping.');
       waiting = true;
     }
-    await sys.sleep(100);
+    await sys.sleep(UNLOAD_POLL_MS);
   }
 }
 
