@@ -199,7 +199,8 @@ function serviceUnit(root: string, work = dirname(root)): { env: Record<string, 
     : systemdUnit('connectome-host resident', work, argv, [], null));
   const uid = process.getuid!();
   return { env: { HOME: home, XDG_RUNTIME_DIR: `/run/user/${uid}` }, name: units.host.name, file: units.host.file,
-    start: process.platform === 'darwin' ? `launchctl bootstrap gui/${uid} ${shellWord(units.host.file)}`
+    start: process.platform === 'darwin'
+      ? `launchctl kickstart gui/${uid}/${units.host.name} 2>/dev/null || launchctl bootstrap gui/${uid} ${shellWord(units.host.file)}`
       : `systemctl --user start ${units.host.name}` };
 }
 

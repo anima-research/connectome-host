@@ -676,7 +676,8 @@ test('on macOS the host gets a launch agent with KeepAlive on failure, the line,
     `Its service is the launch agent com.animalabs.connectome.my-resident, in ${agentPlist(at)}.`,
     `  follow its log: tail -f '${join(at.work, 'logs', 'agent.log')}'`,
     `  stop it until the next login: launchctl bootout gui/1001 ${agentPlist(at)}`,
-    `  start it: launchctl bootstrap gui/1001 ${agentPlist(at)}`]);
+    `  start it: launchctl kickstart gui/1001/com.animalabs.connectome.my-resident 2>/dev/null || launchctl bootstrap ` +
+      `gui/1001 ${agentPlist(at)}`]);
 });
 
 test('on macOS the agents\' log directory is readable by its user alone', async () => {
@@ -1891,7 +1892,9 @@ test('on macOS with a shell agent, serviceLines stops and starts it with the hos
   const shell = agentPlist(at, 'com.animalabs.connectome.my-resident.shell');
   expect(serviceLines(at.root, f.system)!.slice(2)).toEqual([
     `  stop it and its shell daemon until the next login: launchctl bootout gui/1001 ${shell} ${agentPlist(at)}`,
-    `  start it and its shell daemon: launchctl bootstrap gui/1001 ${shell} ${agentPlist(at)}`]);
+    `  start it and its shell daemon: launchctl kickstart gui/1001/com.animalabs.connectome.my-resident.shell 2>/dev/null || ` +
+      `launchctl bootstrap gui/1001 ${shell}; launchctl kickstart gui/1001/com.animalabs.connectome.my-resident 2>/dev/null ` +
+      `|| launchctl bootstrap gui/1001 ${agentPlist(at)}`]);
 });
 
 test('anything but install with one recipe is a usage error, and stop and start are no longer words of it', async () => {

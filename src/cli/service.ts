@@ -428,8 +428,10 @@ export function serviceCommands(root: string, sys: ServiceSystem = machine()): S
       stop: systemctlLine(sys, `stop ${ids}`), start: systemctlLine(sys, `start ${ids}`) };
   }
   const files = units.map((unit) => shellWord(unit.file)).join(' ');
+  const start = units.map((unit) => `launchctl kickstart gui/${sys.uid}/${unit.name} 2>/dev/null || ` +
+    `launchctl bootstrap gui/${sys.uid} ${shellWord(unit.file)}`).join('; ');
   return { manager: names.manager, units, log: `tail -f ${shellWord(join(names.work, 'logs', 'agent.log'))}`,
-    stop: `launchctl bootout gui/${sys.uid} ${files}`, start: `launchctl bootstrap gui/${sys.uid} ${files}` };
+    stop: `launchctl bootout gui/${sys.uid} ${files}`, start };
 }
 
 export function serviceLines(root: string, sys: ServiceSystem = machine()): string[] | null {
