@@ -332,10 +332,12 @@ below says. A clone updates by hand.
 `DATA_DIR` as the service gives the host:
 
 ```bash
-DATA_DIR=... bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--root DIR] [--extra-state PATH]...
+DATA_DIR='...' bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--root 'DIR'] [--extra-state 'PATH']... [--place 'PATH' 'PLACE']... [--move-aside]
 ```
 
-It copies the install as the first release of an install root,
+Here, and in the service's, moving and Go back commands below, each path goes
+between single quotes, so the shell passes it as it is, an apostrophe in it
+written `'\''`. It copies the install as the first release of an install root,
 `./connectome-host` unless `--root` names another, and writes the entry point
 `start.js` there, with the install's own command, `connectome`, beside it.
 That command's `connectome setup` works in the directory that holds the
@@ -345,8 +347,10 @@ working directory, it sets up the root's parent instead: to use it, keep the
 root directly in the working directory, as the default root is.
 Give `--extra-state` for each place an MCPL server keeps its state outside
 the data directory, so each update copies it with the data.
-Then have the service start the host with `bun <root>/start.js`, followed by
-the arguments it gives the host now, and restart it. Setup says whether the
+Then have the service start the host with `bun '<root>/start.js'`, followed by
+the arguments it gives the host now, and restart it. In a systemd unit,
+write each `%` in a path as `%%`, since systemd reads `%` as a specifier even
+between quotes. Setup says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
 
@@ -363,6 +367,98 @@ a service, and sets the line only for one that restarts the host on both. A
 service written by hand needs the line and both restarts. A host without
 the line, or run in a terminal, refuses the agent's restart and Go back and
 says why; the person's own `/update` and buttons don't need the line.
+
+**Moving or copying an install.** Setup records the directory that holds the
+install root, and `start.js` and `connectome` refuse to run an install moved
+or copied away from it, since its record still names the places of the
+install it was. Run setup again in the new directory:
+`'<root>/connectome' setup discord` for an install `connectome setup` made, or
+for one set up by hand, the setup of the release the install runs, with the
+new `DATA_DIR`:
+
+```bash
+DATA_DIR='<data directory>' bun '<root>/current/node_modules/@animalabs/connectome-host/src/update/setup.ts' --root '<root>'
+```
+
+with `<root>` the install root's absolute path where it is now, and
+`<data directory>` the new `DATA_DIR`. Add `--place 'PATH' 'PLACE'` for each
+place setup names, as below, and `--extra-state 'PATH'`, as when setting it
+up, only to give the places of state kept outside the data directory anew.
+After a Go back to a release from before this one, the release the install
+runs is that older one, whose setup doesn't bind the install: run with the
+old `DATA_DIR`, it leaves the copy's record and the fleet's children file
+naming the original's places, so the copy runs on the original's data. Run
+instead
+the setup of the release whose setup wrote its `start.js`,
+`'<root>/releases/<that release>/node_modules/@animalabs/connectome-host/src/update/setup.ts'`,
+which the refusal names while the install's releases hold it. An update
+installs each release in the install root and leaves the package in the
+directory as it was, so after one, that package's setup is an older
+release's, which may not bind the install. Setup binds the install there:
+each place under the old directory becomes the same place under the new
+one, in the record and in the fleet's children file in the data directory
+(`fleet-children.json`). It doesn't bind `.env` or the service's
+environment, so an absolute `MCPL_AGENT_OVERLAY_FILE` set in either still
+names the original's overlay: change it to the new place before the copy's
+next start. Nor does it change a recipe: a fleet child that a recipe starts
+with an absolute `dataDir` has that directory, the original's, in a copy
+too, so the copy's autostart can start that child there. Give such a child a
+`dataDir` relative to the directory the host runs in, or change the copy's
+recipe to name its own, before the copy's first start. A binding of an
+install moved or copied from the directory its record names, one that gives
+any place another place, or one that rewrites the fleet's children file
+takes the install's lock, so it needs the host stopped, and refuses while it
+runs, saying so. Each place outside the
+old directory needs its place in this install: `connectome setup` asks, and
+by hand setup names each one and takes it as `--place PATH PLACE`, with
+`PLACE` the same path after a move, or the copy's own after a copy; a
+place inside another goes with it. An
+install set up before setup recorded its directory is checked for a move or
+a copy only after setup next runs there. That run takes each place under the
+directory that holds the install root as this install's, unless another
+install's root lies between, and asks the same of every other place it
+names. A run given `--extra-state` binds the places it gives, in place of
+the record's. What updates and Go backs keep in the install root, the copy
+(`copy`, and `copy.prev` after a cut) and each Go back's list
+(`set-aside/<mark>`, with that mark's areas in `.connectome-update` inside
+each directory an update copies), names the old directory's places, and
+restoring from it would write them. So where the install was moved or
+copied from the directory its record names, or a binding gives any place of
+the install another place, setup refuses while any of these is in the root,
+naming each. `connectome setup` then asks whether to move them aside, and by
+hand `--move-aside` does: it moves each into `<root>/moved-aside/<time>/`,
+and each area a Go back kept that lies under the new directory once its
+links are followed into its place's `.connectome-update/moved-aside/<time>/`,
+saying each move, and it names an area that lies outside the new directory
+and leaves it. It refuses before it moves anything where a place's
+`.connectome-update/moved-aside` leads outside that place. It looks for
+areas in each place the record and the children
+file name, and in each place a Go back's own list names. Or move them out of
+the root yourself, with each mark's areas in a place under the new
+directory, leaving any outside it, which may be another install's. Setup refuses while a trial or
+a Go back is unfinished, since that trial's fallback restores from them, and
+the next start goes on with that Go back from them: let it end where the
+install was, moving it back first if it was moved, and then move or copy it
+again. Nothing
+removes what's moved aside, and what a Go back kept holds newer data, so
+move out what you want of it rather than deleting it. Until the next update
+takes a new copy, `/update back restore` isn't there, and each update
+removes no older release. A record with no `workingDir`, from before this
+release or written again by hand, doesn't say where the install was, so
+where none of its places is given another place, setup binds it without
+that refusal. If
+such an install was moved or copied with every recorded place outside its
+directory, its copy still names the old directory's `mcpl-servers.json`
+and agent overlay, which `/update back restore` would write: move `copy`,
+`copy.prev` and `set-aside` out of the root yourself, with each mark's
+areas in a place under its directory, leaving any outside it, which may be
+another install's. A Go back to a release from before
+this one keeps the refusal of `start.js` and `connectome` only until that
+release's own setup runs there, since that setup writes `start.js`, and
+`connectome` where it has one, without it, and the record without
+`workingDir`. Such a Go back on a copy made while a fleet child ran can
+adopt the original's child, since a release from before this one doesn't
+check where the copy keeps a child its store names.
 
 **Updating.** Update, Restart with its three ways on when turns don't end,
 and Go back are each an `/update` command and, in the Web UI, a button.
@@ -459,7 +555,7 @@ reasons unless the grant holds `ops` too.
   puts the newer release and its data back by itself, and restoring the
   copy is the way from there.
 - **When the new release keeps exiting after its commit,** it's never up to
-  ask. Each start's log names the command instead: `bun <root>/start.js
+  ask. Each start's log names the command instead: `bun '<root>/start.js'
   --go-back`, with `--keep-data` to keep the newer data. It waits up to a
   minute for the host to give up the install's lock, which one that keeps
   exiting does between starts, writes the request, and the service's next

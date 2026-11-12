@@ -4,9 +4,9 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import {
-  ContractError, ENTRY_POINT, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, appendJournal, childrenFilePath, connectedWhenMarked,
-  copyItemName, copyLabelPath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir, lastCopy, pendingGoBack,
-  readCurrent, readGoBackList, readJournal, readMark, readRecord, realOrResolved, releaseDir, setAsideDir,
+  ContractError, ENTRY_POINT, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, appendJournal, childrenFilePath,
+  connectedWhenMarked, copyItemName, copyLabelPath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir, lastCopy,
+  pendingGoBack, readCurrent, readGoBackList, readJournal, readMark, readRecord, realOrResolved, releaseDir, setAsideDir,
   unfinishedTrial, unsyncedText, writeJsonAtomic, writeMark,
   type ChildrenFile, type CopyLabel, type GoBackList, type InstallRecord, type JournalLine, type LockRecord, type Mark,
   type PlaceKind,
@@ -153,6 +153,11 @@ function unwritableDirectory(dirs: string[]): string | null {
 
 export class LockHeld extends ContractError {}
 
+export function lockLive(holder: LockRecord, ops: LauncherOps): boolean {
+  const bootId = ops.bootId();
+  return ops.pidAlive(holder.pid) && (holder.bootId === null || bootId === null || holder.bootId === bootId);
+}
+
 export function takeLock(root: string, ops: LauncherOps): void {
   const { lock } = installPaths(root);
   const bootId = ops.bootId();
@@ -175,11 +180,19 @@ export function takeLock(root: string, ops: LauncherOps): void {
         syncPath(dirname(lock));
         return;
       }
-      if (ops.pidAlive(holder.pid) && (holder.bootId === null || bootId === null || holder.bootId === bootId)) {
+      if (lockLive(holder, ops)) {
         throw new LockHeld(
-          `Another start of this install holds its lock (${lock}): process ${holder.pid}, since ${holder.at}. ` +
-          'An install runs one host at a time. If that process is this install\'s host, stop it first; if it\'s ' +
-          'something else that reused the number, remove the lock file.',
+          `Another process holds this install's lock (${lock}): process ${holder.pid}, since ${holder.at}. ` +
+          `An install runs one host at a time, and \`ps -o args= -p ${holder.pid}\` shows what that process runs. ` +
+          `If it runs the start.js, or a release in the releases directory, of an install root that is this one, ` +
+          `${root}, by any name, it's this install's host: stop it first. \`test ROOT -ef ${shellWord(root)}\`, with ` +
+          'ROOT the directory that holds that start.js or releases directory, succeeds when the two are one directory. ' +
+          'If it runs setup, it\'s binding an install: run this again once that setup has ended. ' +
+          'If it runs another install\'s start.js or a release in another install\'s releases, this install is a copy ' +
+          'made while that host ran, and the lock came ' +
+          'with the copy: run setup here first, which binds the copy to its own places and removes a lock it can show ' +
+          `came with it, and then, if the lock file still names process ${holder.pid} since ${holder.at}, remove it. ` +
+          'If it\'s something else that reused the number, remove the lock file.',
         );
       }
       if (attempt > 0) {
@@ -1135,8 +1148,9 @@ export function goBackFromShell(root: string, args: string[], ops: LauncherOps, 
       }
       if (ops.now().getTime() >= until) {
         ops.report(`[update] Nothing was asked for: this install's lock has been held for the last ` +
-          `${GO_BACK_LOCK_WAIT_MS / 1000} s. ${errorText(error)} A host that's up goes back with \`${back}\`, ` +
-          'which lets its turns end first. Otherwise stop the service, run this again, and start the service.');
+          `${GO_BACK_LOCK_WAIT_MS / 1000} s. ${errorText(error)} If that process is this install's own host, it goes ` +
+          `back with \`${back}\`, which lets its turns end first, or stop the service, run this again, and start the ` +
+          'service.');
         return 1;
       }
       if (!waiting) {
@@ -1186,7 +1200,7 @@ export function goBackFromShell(root: string, args: string[], ops: LauncherOps, 
   }
 }
 
-function releaseLock(root: string): void {
+export function releaseLock(root: string): void {
   const { lock } = installPaths(root);
   try {
     if (readRecord<LockRecord>(lock, 'lock')?.pid === process.pid) rmSync(lock, { force: true });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as childProcess from 'node:child_process';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -899,6 +899,19 @@ describe("the fleet's children file", () => {
     expect(listed(childrenFile)[1]).toEqual(earlier);
   });
 
+  test("a write keeps the stamp a binding left as it found it, one this release can't read included, so a binding still reads what was there", async () => {
+    for (const boundTo of ['/srv/resident', 5]) {
+      const parentData = parentDataDir();
+      const childrenFile = childrenFilePath(parentData);
+      writeFileSync(childrenFile, JSON.stringify({ v: 1, children: [], boundTo }));
+      const { fleet, input } = await startedFleet({ childrenFile });
+      expect((await launch(fleet, input())).success).toBe(true);
+      const written = JSON.parse(readFileSync(childrenFile, 'utf-8'));
+      expect(written.children.map((c: { name: string }) => c.name)).toEqual(['leaf']);
+      expect(written.boundTo).toBe(boundTo);
+    }
+  });
+
   test("a children file this release can't read is left as it is, and a launch whose child it can't list fails, saying why", async () => {
     for (const [kind, text] of [['not JSON', 'not json'], ['no list of children', JSON.stringify({ v: 1 })]] as const) {
       const childrenFile = childrenFilePath(parentDataDir());
@@ -1260,5 +1273,116 @@ describe("a fleet child and the install's root", () => {
     })).success).toBe(true);
     const [row] = readFileSync(join(input().dataDir, 'launches.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     expect(row).toMatchObject({ sentinel: 'env reached the child', installRoot: null });
+  });
+});
+
+describe("a fleet's adoption of the children its store names, after its install was copied or moved", () => {
+  async function logging<T>(body: () => Promise<T>): Promise<{ result: T; logged: string[] }> {
+    const logged: string[] = [];
+    const log = spyOn(console, 'error').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); });
+    try {
+      return { result: await body(), logged };
+    } finally {
+      log.mockRestore();
+    }
+  }
+
+  test("a copy's host doesn't adopt a child its store names at the original's data directory, which the children file doesn't name: it isn't in the copy's record or file, isn't connected to, and the host says why", async () => {
+    const first = await startedFleet({ childrenFile: childrenFilePath(parentDataDir()) });
+    const connections = join(first.dir, 'connections');
+    writeFileSync(first.input().recipe, JSON.stringify({ connections }));
+    expect((await launch(first.fleet, first.input('leaf'))).success).toBe(true);
+    const connected = readFileSync(connections, 'utf8');
+    expect(connected).not.toBe('');
+    const pid = first.fleet.getChildren().get('leaf')!.pid!;
+    const copyData = parentDataDir();
+    const copied = join(copyData, 'leaf');
+    mkdirSync(copied);
+    const childrenFile = childrenFilePath(copyData);
+    writeFileSync(childrenFile, JSON.stringify({ v: 1, children: [{ name: 'leaf', pid: null, bootId: null, dataDir: copied }] }));
+    const { result: next, logged } = await logging(() => startedFleet({ childrenFile }, { record: first.record() }));
+    expect(next.fleet.getChildren().has('leaf')).toBe(false);
+    expect((next.record() as Record_).children).toEqual({});
+    expect(listed(childrenFile)).toEqual([{ name: 'leaf', pid: null, bootId: null, dataDir: copied }]);
+    expect(logged.filter((line) => line.includes(first.input('leaf').dataDir) && line.includes(copied))).toHaveLength(1);
+    expect(readFileSync(connections, 'utf8')).toBe(connected);
+    expect(isAlive(pid)).toBe(true);
+  });
+
+  test("an install whose fleet wrote no children file, as before the file existed, adopts its recipe's child, which runs where the recipe keeps it", async () => {
+    const first = await startedFleet();
+    expect((await launch(first.fleet, first.input('leaf'))).success).toBe(true);
+    const childrenFile = childrenFilePath(parentDataDir());
+    const next = await startedFleet({
+      childrenFile, autoStart: [{ name: 'leaf', recipe: first.input().recipe, dataDir: first.input('leaf').dataDir }],
+    }, { record: first.record() });
+    expect(next.fleet.getChildren().get('leaf')?.adopted).toBe(true);
+  });
+
+  test("a child neither the children file nor a recipe directory that's there names, as when its recipe names a directory that isn't there, is adopted where its store names it", async () => {
+    const first = await startedFleet();
+    expect((await launch(first.fleet, first.input('leaf'))).success).toBe(true);
+    const { result: next, logged } = await logging(() => startedFleet({
+      childrenFile: childrenFilePath(parentDataDir()),
+      autoStart: [{ name: 'leaf', recipe: first.input().recipe, dataDir: join(first.dir, 'not-there') }],
+    }, { record: first.record() }));
+    expect(next.fleet.getChildren().get('leaf')?.adopted).toBe(true);
+    expect(logged.filter((line) => line.includes('isn\'t adopted'))).toEqual([]);
+  });
+
+  test("a copy of an install whose fleet wrote no children file doesn't adopt a child its store names at the original's data directory, since its recipe keeps that child in the copy", async () => {
+    const first = await startedFleet();
+    expect((await launch(first.fleet, first.input('leaf'))).success).toBe(true);
+    const copied = join(parentDataDir(), 'leaf');
+    mkdirSync(copied);
+    const { result: next, logged } = await logging(() => startedFleet({
+      childrenFile: childrenFilePath(parentDataDir()), autoStart: [{ name: 'leaf', recipe: first.input().recipe, dataDir: copied }],
+    }, { record: first.record() }));
+    expect(next.fleet.getChildren().has('leaf')).toBe(false);
+    expect((next.record() as Record_).children).toEqual({});
+    expect(logged.filter((line) => line.includes(first.input('leaf').dataDir) && line.includes(copied))).toHaveLength(1);
+  });
+
+  test("a child the children file names by another spelling of its data directory, through a link, is adopted", async () => {
+    const childrenFile = childrenFilePath(parentDataDir());
+    const first = await startedFleet({ childrenFile });
+    expect((await launch(first.fleet, first.input('leaf'))).success).toBe(true);
+    const spelling = join(first.dir, 'another-spelling');
+    symlinkSync(first.input('leaf').dataDir, spelling);
+    writeFileSync(childrenFile, JSON.stringify({ v: 1, children: [{ name: 'leaf', pid: null, bootId: null, dataDir: spelling }] }));
+    const next = await startedFleet({ childrenFile }, { record: first.record() });
+    expect(next.fleet.getChildren().get('leaf')?.adopted).toBe(true);
+  });
+
+  test("a moved install's child, whose data directory moved with it, is left as today: while its pid is in use, it's starting", async () => {
+    const childrenFile = childrenFilePath(parentDataDir());
+    const first = await startedFleet({ childrenFile });
+    expect((await launch(first.fleet, first.input('leaf'))).success).toBe(true);
+    const pid = first.fleet.getChildren().get('leaf')!.pid!;
+    const moved = join(first.dir, 'moved-leaf');
+    renameSync(first.input('leaf').dataDir, moved);
+    writeFileSync(childrenFile, JSON.stringify({ v: 1, children: [{ name: 'leaf', pid, bootId: machineBootId(), dataDir: moved }] }));
+    const next = await startedFleet({ childrenFile }, { record: first.record() });
+    expect(next.fleet.getChildren().get('leaf')).toMatchObject({ status: 'starting', pid, dataDir: first.input('leaf').dataDir });
+  });
+
+  test("a child whose recipe entry names another data directory than the one it runs in, as when the recipe was edited while it ran, is adopted, since the children file names where it runs", async () => {
+    const childrenFile = childrenFilePath(parentDataDir());
+    const first = await startedFleet({ childrenFile });
+    expect((await launch(first.fleet, first.input('leaf'))).success).toBe(true);
+    mkdirSync(join(first.dir, 'edited-leaf'));
+    const next = await startedFleet({
+      childrenFile, autoStart: [{ name: 'leaf', recipe: first.input().recipe, dataDir: join(first.dir, 'edited-leaf') }],
+    }, { record: first.record() });
+    expect(next.fleet.getChildren().get('leaf')?.adopted).toBe(true);
+  });
+
+  test("a host given no children file, which isn't an install's and is never bound, adopts its child as today, whatever its recipe now names", async () => {
+    const first = await startedFleet();
+    expect((await launch(first.fleet, first.input('leaf'))).success).toBe(true);
+    const next = await startedFleet({
+      autoStart: [{ name: 'leaf', recipe: first.input().recipe, dataDir: join(first.dir, 'edited-leaf') }],
+    }, { record: first.record() });
+    expect(next.fleet.getChildren().get('leaf')?.adopted).toBe(true);
   });
 });

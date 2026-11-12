@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -110,7 +110,12 @@ function setup(config: FleetModuleConfig = {}) {
     };
     const reply = async (content: string) => {
       replies += 1;
-      writeFileSync(join(dir, `reply-${replies}`), content);
+      // The mock child takes reply-N the moment it exists, and writeFileSync
+      // creates the file before its content lands, so the text goes to
+      // reply-N.tmp and the rename makes reply-N appear only whole.
+      const file = join(dir, `reply-${replies}`);
+      writeFileSync(`${file}.tmp`, content);
+      renameSync(`${file}.tmp`, file);
       await until(() => child.events.some((e) => e.type === 'inference:speech' && e.content === content), 'the reply');
     };
     const marker = async () => {
