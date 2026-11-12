@@ -81,7 +81,7 @@ Setup didn't ask whether the resident gets a shell: the person decides that with
 
 **Tell them, before they choose:**
 - With a shell, the resident can read and change whatever that user can: its files, `.env` with the keys in it, and its other programs. Whoever talks to it on Discord can ask it to, so who can reach it is part of this choice. That's settled next ("Discord"): its channel, and who may DM it.
-- Without one, it can't run commands on this machine. It acts through its tools alone, such as Discord's and its workspace's, whose files stay in its memory until it writes them out to `<dir>/output`.
+- Without one, it can't run commands on this machine, unless a server kept in the agent overlay from before, which loads beside the recipe's ("The recipe's servers"), runs them. It acts through its tools alone, such as Discord's and its workspace's, whose files stay in its memory until it writes them out to `<dir>/output`.
 - They can change it later, either way, as `SETUP.md` will say ("SETUP.md").
 
 **What to recommend.** In an account made for the resident: a shell, if they want it to act on this machine, and none if they don't. In the person's own account: say plainly what a shell would reach there, their own files, keys and programs, for anyone who talks to the resident. Then offer no shell, a shell there with that said, or, where your prompt gives the line that makes a user of its own, starting over as one.
