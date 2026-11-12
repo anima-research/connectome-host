@@ -321,7 +321,7 @@ test('a directory setup is given that holds other files and no install is refuse
     const made = world(dir, {}, over);
     expect(await runSetup(dir, ['discord'], made), JSON.stringify(over)).toBe(1);
     expect(made.seen.err, JSON.stringify(over)).toEqual([
-      `connectome setup: ${dir} is your home directory, and no connectome-host install, so setup won't put its own there. Make a new directory for the resident where you can write, and run this same version of setup there. Its service takes the directory's name:`,
+      `connectome setup: ${dir} is your home directory, and no connectome-host install record, so setup won't put its own there. Make a new directory for the resident where you can write, and run this same version of setup there. Its service takes the directory's name:`,
       `  bunx @animalabs/connectome-host@${VERSION} setup discord`,
     ]);
     expect(made.seen.out).toEqual([]);
@@ -403,7 +403,7 @@ test('where ~/resident holds other files and no install, setup says so with what
   const made = world(home);
   expect(await setup({ root: join(resident, 'connectome-host'), argv: ['discord'], out: (line) => { made.seen.out.push(line); }, err: (line) => { made.seen.err.push(line); } }, made.world)).toBe(1);
   expect(made.seen.err).toEqual([
-    `connectome setup: ${home} is your home directory, and ${resident} holds other files and no connectome-host install, so setup won't put its own in either. Make an empty directory for the resident, named as you'd like its service, and run this same version of setup in it:`,
+    `connectome setup: ${home} is your home directory, and ${resident} holds other files and no connectome-host install record, so setup won't put its own in either. Make an empty directory for the resident, named as you'd like its service, and run this same version of setup in it:`,
     `  bunx @animalabs/connectome-host@${VERSION} setup discord`,
   ]);
   expect(made.seen.asked).toEqual([]);
@@ -431,7 +431,7 @@ test('a .setup directory that isn\'t setup\'s, holding neither its lock nor its 
   writeFileSync(join(dir, 'package.json'), '{"name":"mine"}\n');
   const made = world(dir, {}, { hasSudo: false, env: { PATH: '/usr/bin:/bin', HOME: directory() } });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
-  expect(text(made.seen.err)).toContain(`connectome setup: ${dir} holds other files, and no connectome-host install, so setup won't put its own there.`);
+  expect(text(made.seen.err)).toContain(`connectome setup: ${dir} holds other files, and no connectome-host install record, so setup won't put its own there.`);
   expect(made.seen.asked).toEqual([]);
   expect(readdirSync(dir).sort()).toEqual(['.setup', 'package.json']);
   expect(readdirSync(join(dir, '.setup'))).toEqual(['config.yml']);
@@ -635,7 +635,7 @@ test('where HOME isn\'t an absolute path to a directory, setup makes no director
     const made = world(dir, { answers: ['no', '2', ''] }, { env: { PATH: '/usr/bin:/bin', ...(home === undefined ? {} : { HOME: home }) } });
     expect(await runSetup(dir, ['discord'], made), String(home)).toBe(1);
     expect(made.seen.asked, String(home)).toEqual([]);
-    expect(text(made.seen.err)).toContain(`connectome setup: ${dir} holds other files, and no connectome-host install, so setup won't put its own there. Make a new directory for the resident where you can write, and run this same version of setup there. Its service takes the directory's name:\n  bunx @animalabs/connectome-host@${VERSION} setup discord`);
+    expect(text(made.seen.err)).toContain(`connectome setup: ${dir} holds other files, and no connectome-host install record, so setup won't put its own there. Make a new directory for the resident where you can write, and run this same version of setup there. Its service takes the directory's name:\n  bunx @animalabs/connectome-host@${VERSION} setup discord`);
     expect(text(made.seen.err)).not.toContain('~/');
     expect(readdirSync(dir)).toEqual(['notes.txt']);
   }
@@ -653,12 +653,12 @@ test('setup names what a directory not its own holds: your home, hidden files al
   writeFileSync(join(hidden, '.bashrc'), '# mine\n');
   const hiddenRun = world(hidden, { answers: [] }, { env: { PATH: '/usr/bin:/bin', HOME: directory() } });
   await runSetup(hidden, ['discord'], hiddenRun);
-  expect(text(hiddenRun.seen.err)).toContain(`connectome setup: ${hidden} holds hidden files, such as .bashrc, and no connectome-host install, so setup won't put its own there.`);
+  expect(text(hiddenRun.seen.err)).toContain(`connectome setup: ${hidden} holds hidden files, such as .bashrc, and no connectome-host install record, so setup won't put its own there.`);
   const other = directory();
   writeFileSync(join(other, 'notes.txt'), 'mine\n');
   const otherRun = world(other, { answers: [] }, { env: { PATH: '/usr/bin:/bin', HOME: directory() } });
   await runSetup(other, ['discord'], otherRun);
-  expect(text(otherRun.seen.err)).toContain(`connectome setup: ${other} holds other files, and no connectome-host install, so setup won't put its own there.`);
+  expect(text(otherRun.seen.err)).toContain(`connectome setup: ${other} holds other files, and no connectome-host install record, so setup won't put its own there.`);
   expect(text(otherRun.seen.err)).not.toContain('home directory');
 });
 
