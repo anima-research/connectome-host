@@ -1,0 +1,3 @@
+- `bun start.js --go-back`, when the install's host holds its lock for the whole wait, names the install's own `connectome update back` as the host's way back, where it named `/update back`, which only the host's own terminal takes.
+- With no release newer than the running one installed, `/update restart`, `connectome update restart` and the Web UI's Restart say that their own install way installs one first, where each named the Web UI's Update.
+- The `[update]` notice the host logs when a newer release is offered, written while the installed releases couldn't be read, ends by saying so, why, and that the release offered may be installed already, where it only said to install it and then restart.
