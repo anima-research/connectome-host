@@ -396,7 +396,7 @@ linux('setup--ask_secret takes a token pasted in a bracketed paste with its own 
     const dir = mkdtempSync(join(tmpdir(), 'readline-paste-secret-'));
     dirs.push(dir);
     const pasted = startHost(dir, { setup: true }, asks, ['setup--ask_secret']);
-    await until(() => pasted.seen.output.includes('TEST_SECRET (a test secret), typed hidden (Enter alone gives none)'), 60_000,
+    await until(() => pasted.seen.output.includes('TEST_SECRET (a test secret), typed hidden (Enter alone stores nothing)'), 60_000,
       `the hidden question (output: ${pasted.seen.output.slice(-1500)})`);
     hosts.at(-1)!.stdin!.write('\x1b[200~the-pasted.value-1\r\x1b[201~');
     await until(() => pasted.bodies.length >= 2, 30_000, `the turn's next request (output: ${pasted.seen.output.slice(-1500)})`);

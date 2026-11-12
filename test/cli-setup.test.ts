@@ -368,14 +368,14 @@ test('from a directory it can\'t use, setup says before its first question that 
 
   const declined = world(home, { answers: ['no'] });
   expect(await runAt(declined)).toBe(0);
-  expect(declined.seen.out[0]).toBe(`The resident will live in ${resident}, which setup makes, since ${home} is your home directory. Its service is named after resident.`);
+  expect(declined.seen.out[0]).toBe(`The resident will live in ${resident}, which setup makes, since ${home} is your home directory. Its service will be named after the directory's name, resident.`);
   expect(declined.seen.out[1]).toBe(ADVICE);
   expect(existsSync(resident)).toBe(false);
   expect(readdirSync(home)).toEqual(['.bashrc']);
 
   const made = world(home, { answers: [''], secrets: [KEY] });
   expect(await runAt(made)).toBe(0);
-  expect(made.seen.out[0]).toBe(`The resident will live in ${resident}, which setup makes, since ${home} is your home directory. Its service is named after resident.`);
+  expect(made.seen.out[0]).toBe(`The resident will live in ${resident}, which setup makes, since ${home} is your home directory. Its service will be named after the directory's name, resident.`);
   expect(made.seen.asked[0]).toBe(CONTINUE);
   expect(made.seen.launched!.cwd).toBe(join(resident, '.setup'));
   expect(existsSync(join(resident, 'connectome-host', 'install.json'))).toBe(true);
@@ -391,7 +391,7 @@ test('from a directory it can\'t use, setup says before its first question that 
   mkdirSync(there);
   const thereRun = world(other, { answers: ['no'] }, { env: { PATH: '/usr/bin:/bin', HOME: dirname(there) } });
   expect(await setup({ root: join(there, 'connectome-host'), argv: ['discord'], out: (line) => { thereRun.seen.out.push(line); }, err: (line) => { thereRun.seen.err.push(line); } }, thereRun.world)).toBe(0);
-  expect(thereRun.seen.out[0]).toBe(`The resident will live in ${there}, since ${other} holds other files. Its service is named after resident.`);
+  expect(thereRun.seen.out[0]).toBe(`The resident will live in ${there}, since ${other} holds other files. Its service will be named after the directory's name, resident.`);
 });
 
 test('where ~/resident holds other files and no install, setup says so with what to do, and asks nothing', async () => {
@@ -456,7 +456,8 @@ test('the check for a user by that name runs getent with no variable but PATH, s
   expect(names.filter((name) => name !== 'PWD' && name !== 'SHLVL' && name !== '_')).toEqual(['PATH']);
 });
 
-const CONTINUE = 'Continue with current installation (yes/no) [yes] ';
+const CONTINUE = 'Go on as alice? (yes/no) [yes] ';
+const NO_TAKES = 'To give it that user, answer no: setup then says how to go on there.';
 const OWN_LINE = 'id -u connectome >/dev/null 2>&1 || sudo useradd -m -s /bin/bash connectome && sudo loginctl enable-linger connectome && sudo -iu connectome env PATH=/usr/bin:/bin bash -c \'set -o pipefail; curl -fsSL https://bun.sh/install | bash\'';
 const ADVICE = 'The resident runs as the user that runs setup, here alice, and changing that later means starting over as another user. Later, with setup\'s agent, you decide what the resident may do, such as whether it gets a shell to run commands on this machine. With a shell, the resident can read and change whatever alice can, and whoever talks to it on Discord can ask it to. So if this is your own account and the resident may get a shell, give it a user of its own. This line makes one, named connectome, unless a user by that name is there already, keeps its services running while it\'s logged out, and gives it Bun on its PATH. Run it where you can use sudo, and if a step fails, put right what it names and run the line again:';
 const AS_OWN_USER = [
@@ -469,15 +470,15 @@ test('where a user named connectome is here already, or setup can\'t tell, it sa
   const there = directory();
   const thereRun = world(there, { answers: ['no'] }, { userExists: (user: string) => user === 'connectome' });
   expect(await runSetup(there, ['discord'], thereRun)).toBe(0);
-  expect(text(thereRun.seen.out)).toContain(`  ${OWN_LINE}\nThis machine already has a user named connectome. If an earlier line of setup's made it for the resident, open a shell as connectome and run setup there. Otherwise, for a user of the resident's own, put a name no account here has in place of connectome, in the line and in what setup says after it.\n`);
+  expect(text(thereRun.seen.out)).toContain(`  ${OWN_LINE}\nThis machine already has a user named connectome. If an earlier line of setup's made it for the resident, open a shell as connectome and run setup there. Otherwise, for a user of the resident's own, put a name no account here has in place of connectome, in the line and in what setup says after it.\n${NO_TAKES}\n${AS_OWN_USER[0]}`);
   const unknown = directory();
   const unknownRun = world(unknown, { answers: ['no'] }, { userExists: () => null });
   expect(await runSetup(unknown, ['discord'], unknownRun)).toBe(0);
-  expect(text(unknownRun.seen.out)).toContain(`  ${OWN_LINE}\nSetup couldn't check whether this machine already has a user named connectome. The line makes it only where there's none: where there is one, the resident runs as that account.\n`);
+  expect(text(unknownRun.seen.out)).toContain(`  ${OWN_LINE}\nSetup couldn't check whether this machine already has a user named connectome. The line makes it only where there's none: where there is one, the resident runs as that account.\n${NO_TAKES}\n${AS_OWN_USER[0]}`);
   const none = directory();
   const noneRun = world(none, { answers: ['no'] });
   expect(await runSetup(none, ['discord'], noneRun)).toBe(0);
-  expect(text(noneRun.seen.out)).toContain(`  ${OWN_LINE}\n${AS_OWN_USER[0]}`);
+  expect(text(noneRun.seen.out)).toContain(`  ${OWN_LINE}\n${NO_TAKES}\n${AS_OWN_USER[0]}`);
 });
 
 test('where setup can\'t offer a user of its own, or runs as the user its line makes, it skips that step: no advice, no line and no question before it installs', async () => {
@@ -502,10 +503,11 @@ test('where setup can offer a user of its own, it says first what it does, then 
     return ask(question);
   };
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  const opening = made.seen.out.indexOf(`The resident will live in ${dir}. Its service is named after ${basename(dir)}.`);
+  const opening = made.seen.out.indexOf(`The resident will live in ${dir}. Its service will be named after the directory's name, ${basename(dir)}.`);
   expect(opening).toBe(0);
+  expect(made.seen.out).toContain(`Setting up ${join(dir, 'connectome-host')}, the folder the resident's host runs from, which later updates install into. It starts as a copy of what was just installed here.`);
   expect(made.seen.out).toContain(`With the install's own copy of it, made next, setup takes about 0.8 GB of disk here. Installing @animalabs/connectome-host@${VERSION}, @animalabs/discord-mcpl in ${dir}, with Bun:`);
-  expect(made.seen.out.slice(opening + 1, outAtFirstQuestion)).toEqual([ADVICE, `  ${OWN_LINE}`]);
+  expect(made.seen.out.slice(opening + 1, outAtFirstQuestion)).toEqual([ADVICE, `  ${OWN_LINE}`, NO_TAKES]);
   expect(made.seen.asked).toEqual([CONTINUE, 'An Anthropic API key, from console.anthropic.com\'s API keys, typed hidden (Enter alone stops setup)']);
   expect(made.seen.launched).not.toBeNull();
   const again = world(dir);
@@ -540,7 +542,7 @@ test('on a no, setup says how to go on as the user its line makes, runs nothing,
   expect(made.seen.asked).toEqual([CONTINUE]);
   const at = made.seen.out.indexOf(`  ${OWN_LINE}`);
   expect(at).toBeGreaterThan(0);
-  expect(made.seen.out.slice(at + 1)).toEqual([...AS_OWN_USER, 'Nothing was installed here.']);
+  expect(made.seen.out.slice(at + 1)).toEqual([NO_TAKES, ...AS_OWN_USER, 'Nothing was installed here.']);
   expect(made.seen.ran).toEqual([]);
   expect(made.seen.launched).toBeNull();
   expect(readdirSync(dir)).toEqual([]);
@@ -766,14 +768,29 @@ test('before its bun add, setup adds the packages whose install scripts the runn
   expect(listed).toBeLessThan(added);
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as { trustedDependencies: string[] };
   expect(manifest.trustedDependencies).toEqual(['their-own-server', 'node-pty', 'puppeteer', 'term-sessions-mcp']);
-  expect(text(made.seen.out)).toContain(`Setup added 1 name from Bun's default trusted list and term-sessions-mcp to trustedDependencies in ${join(dir, 'package.json')}: Bun runs a package\'s install scripts only where that field names it, or, with no field, for its default list from npm\'s own registry alone.`);
+  expect(text(made.seen.out)).toContain(`In ${join(dir, 'package.json')}, setup added these to the packages that may run install scripts here: the rest of those Bun allows by default, and term-sessions-mcp, which gives the resident a shell if it gets one. Without that list, Bun runs the install scripts of its default packages only when they come from npm's own registry.`);
   const named = directory();
   writeFileSync(join(named, 'package.json'), JSON.stringify({ trustedDependencies: ['node-pty', 'puppeteer', 'term-sessions-mcp'] }));
   mkdirSync(join(named, '.setup'));
   writeFileSync(join(named, '.setup', 'setup.lock'), '');
   const unchanged = world(named, { answers: [''], secrets: [KEY] });
   expect(await runSetup(named, ['discord'], unchanged)).toBe(0);
-  expect(text(unchanged.seen.out)).not.toContain('to trustedDependencies in');
+  expect(text(unchanged.seen.out)).not.toContain('to the packages that may run install scripts');
+  const shellListed = directory();
+  writeFileSync(join(shellListed, 'package.json'), JSON.stringify({ trustedDependencies: ['term-sessions-mcp'] }));
+  mkdirSync(join(shellListed, '.setup'));
+  writeFileSync(join(shellListed, '.setup', 'setup.lock'), '');
+  const bunOnly = world(shellListed, { answers: [''], secrets: [KEY] });
+  expect(await runSetup(shellListed, ['discord'], bunOnly)).toBe(0);
+  expect(text(bunOnly.seen.out)).toContain(`In ${join(shellListed, 'package.json')}, setup added these to the packages that may run install scripts here: those Bun allows by default. Without that list, Bun runs the install scripts of its default packages only when they come from npm's own registry.`);
+  const bunListed = directory();
+  writeFileSync(join(bunListed, 'package.json'), JSON.stringify({ trustedDependencies: ['node-pty', 'puppeteer'] }));
+  mkdirSync(join(bunListed, '.setup'));
+  writeFileSync(join(bunListed, '.setup', 'setup.lock'), '');
+  const shellOnly = world(bunListed, { answers: [''], secrets: [KEY] });
+  expect(await runSetup(bunListed, ['discord'], shellOnly)).toBe(0);
+  const shellLine = shellOnly.seen.out.find((line) => line.includes('to the packages that may run install scripts'));
+  expect(shellLine).toBe(`In ${join(bunListed, 'package.json')}, setup added these to the packages that may run install scripts here: term-sessions-mcp, which gives the resident a shell if it gets one.`);
 });
 
 test('where the running Bun\'s default trusted list can\'t be read whole, setup writes no field, and goes on', async () => {
@@ -822,7 +839,7 @@ test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies 
   expect(atAdd).toEqual(['node-pty', 'puppeteer', 'term-sessions-mcp']);
   const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as { trustedDependencies: string[] };
   expect(manifest.trustedDependencies).toEqual(['node-pty', 'puppeteer', 'term-sessions-mcp']);
-  expect(text(made.seen.out)).toContain(`Setup added 2 names from Bun's default trusted list and term-sessions-mcp to trustedDependencies in ${join(dir, 'package.json')}: Bun runs a package\'s install scripts only where that field names it, or, with no field, for its default list from npm\'s own registry alone.`);
+  expect(text(made.seen.out)).toContain(`In ${join(dir, 'package.json')}, setup added these to the packages that may run install scripts here: those Bun allows by default, and term-sessions-mcp, which gives the resident a shell if it gets one. Without that list, Bun runs the install scripts of its default packages only when they come from npm's own registry.`);
   expect(made.seen.ran.some((argv) => args(argv)[0] === 'pm' && args(argv)[1] === 'untrusted')).toBe(false);
   expect(text(made.seen.out)).not.toContain('Blocked');
 });
@@ -831,7 +848,7 @@ test('on macOS, setup says the service stops when the user logs out of the Mac\'
   const dir = directory();
   const made = world(dir, { answers: [], secrets: [KEY] }, { platform: 'darwin' });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.out).toContain('On macOS, a service of alice\'s stops when alice logs out of the Mac\'s graphical session, not when an ssh session ends, and launchd starts it only while alice is logged in there, so over ssh with no one logged in to the Mac, it can\'t start until they are.');
+  expect(made.seen.out).toContain('On macOS, a service of alice\'s stops when alice logs out of the Mac\'s graphical session, not when an ssh session ends, and launchd starts it only while alice is logged in there, so over ssh with no one logged in to the Mac, it can\'t start until they are. `who` lists alice on console while alice is logged in there.');
 });
 
 test('setup installs the host and discord-mcpl alone: it adds no shell, checks no node-pty, and a Node above 24 doesn\'t stop it, whose words name that ceiling as the shell\'s', async () => {
@@ -1489,7 +1506,7 @@ test('just before its agent starts, setup says once how each command the agent r
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   const notes = made.seen.out.filter((said) => said.startsWith('Setup\'s agent runs each command'));
   expect(notes).toEqual([
-    `Setup's agent runs each command in ${dir}, as you. You'll see each command whole before it runs, each of its lines on a line of its own, any character a terminal would hide or act on shown as a code, such as \\u001b for Escape, and each key or token setup knows of shown by its name in place of its value, such as <ANTHROPIC_API_KEY>.`,
+    `Setup's agent runs each command in ${dir}, as you. You'll see each command whole as it starts. It doesn't wait for you. Each of its lines is on a line of its own, any character a terminal would hide or act on is shown as a code, such as \\u001b for Escape, and each key or token setup knows of is shown by its name in place of its value, such as <ANTHROPIC_API_KEY>.`,
   ]);
   expect(made.seen.out.indexOf(notes[0]!)).toBe(made.seen.outAtLaunch! - 2);
   const launchLine = made.seen.out[made.seen.outAtLaunch! - 1]!;
@@ -2988,7 +3005,7 @@ test('a boot that doesn\'t finish within 60 s is stopped there, and said so', as
   const made = world(dir, { answers: [''], secrets: [KEY], boot: { status: null, stdout: '', stderr: '', timedOut: true } });
   expect(await runSetup(dir, ['discord'], made)).toBe(1);
   expect(made.seen.boot!.timeoutMs).toBe(60_000);
-  expect(text(made.seen.err)).toContain('didn\'t finish booting on a mock recipe in batch mode within 60 s');
+  expect(text(made.seen.err)).toContain('didn\'t finish booting with a test setup that calls no model, in batch mode, within 60 s');
 });
 
 test('where the install\'s own setup fails, setup shows its lines and says to run setup again once they\'re put right', async () => {
@@ -3209,12 +3226,12 @@ const LATER_RUN = [
   'Setup began in <dir> before, as this user, alice, and the resident runs as alice. Setup\'s agent picks up where it stopped, and can change with you what it set up.',
   'Checking the install at <dir>/connectome-host.',
   `The install at <dir>/connectome-host serves <dir>/data and runs ${VERSION}, as before.`,
-  'Starting the installed host once, on a mock recipe, to see that it starts.',
+  'Starting the installed host once, with a test setup that calls no model, to see that it starts.',
   `The installed host (${VERSION}) starts.`,
   'Checking the ANTHROPIC_API_KEY in <dir>/.env: one call at https://api.anthropic.com to claude-opus-5-5, the model setup\'s agent runs on, which the key\'s account has to be able to use.',
   'The key works, and it\'s in <dir>/.env.',
   costLine('claude-opus-5-5', false),
-  'Setup\'s agent runs each command in <dir>, as you. You\'ll see each command whole before it runs, each of its lines on a line of its own, any character a terminal would hide or act on shown as a code, such as \\u001b for Escape, and each key or token setup knows of shown by its name in place of its value, such as <ANTHROPIC_API_KEY>.',
+  'Setup\'s agent runs each command in <dir>, as you. You\'ll see each command whole as it starts. It doesn\'t wait for you. Each of its lines is on a line of its own, any character a terminal would hide or act on is shown as a code, such as \\u001b for Escape, and each key or token setup knows of is shown by its name in place of its value, such as <ANTHROPIC_API_KEY>.',
   'Starting setup\'s agent. It speaks first. /quit leaves the conversation, and `<dir>/connectome-host/connectome setup discord` picks it up where it stopped.',
   'To go on with setup where it stopped: `<dir>/connectome-host/connectome setup discord`.',
 ];

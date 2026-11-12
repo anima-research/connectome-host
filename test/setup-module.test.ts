@@ -232,7 +232,7 @@ describe('setup--run', () => {
     expect(second.stdout.text).toBe(`unset in ${dir}\n`);
   });
 
-  test('shows the person each command whole before it runs, with a stored secret\'s value as its name and what a terminal would act on as its escape', async () => {
+  test('shows the person each command whole as it starts, with a stored secret\'s value as its name and what a terminal would act on as its escape', async () => {
     const dir = scratch();
     writeFileSync(join(dir, '.env'), 'DISCORD_TOKEN="shown-secret-value"\n', { mode: 0o600 });
     const shown: Array<[string, boolean]> = [];
@@ -254,7 +254,7 @@ describe('setup--run', () => {
 
   test('shows a provider credential\'s value as its name under the lead alone, and setup\'s note on how commands are shown names the directory with what a terminal would act on as its escape', async () => {
     const dir = join(scratch(), 'in\u202e\tthere');
-    expect(commandsShownNote(dir)).toBe(`Setup's agent runs each command in ${dir.replace('\u202e\t', '\\u202e\\u0009')}, as you. You'll see each command whole before it runs, each of its lines on a line of its own, any character a terminal would hide or act on shown as a code, such as \\u001b for Escape, and each key or token setup knows of shown by its name in place of its value, such as <ANTHROPIC_API_KEY>.`);
+    expect(commandsShownNote(dir)).toBe(`Setup's agent runs each command in ${dir.replace('\u202e\t', '\\u202e\\u0009')}, as you. You'll see each command whole as it starts. It doesn't wait for you. Each of its lines is on a line of its own, any character a terminal would hide or act on is shown as a code, such as \\u001b for Escape, and each key or token setup knows of is shown by its name in place of its value, such as <ANTHROPIC_API_KEY>.`);
     mkdirSync(dir);
     const { module, shown } = install({ dir, env: { ANTHROPIC_API_KEY: 'sk-ant-shown-provider-value' } });
     expect((await run(module, 'echo sk-ant-shown-provider-value > /dev/null')).exitCode).toBe(0);
