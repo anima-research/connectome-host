@@ -34,7 +34,7 @@ export function installCommandText(release: string | null = null): string {
     "      'neither the line above nor what it prints after it: tell them what it says.');",
     '  }',
     '};',
-    ...bindingCheckLines('connectome', true, release),
+    ...bindingCheckLines('connectome', true, release, 'refuse'),
     `const fromPackage = process.argv[2] === 'setup' && !existsSync(join(root, 'current', ${parts(SETUP_RECIPE.split(sep))}));`,
     `const cli = join(fromPackage ? dirname(root) : join(root, 'current'), ${parts(CLI_IN_RELEASE)});`,
     "if (!fromPackage && !existsSync(join(root, 'current'))) {",

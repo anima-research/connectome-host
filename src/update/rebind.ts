@@ -459,7 +459,7 @@ function setAsideCopied(lock: string, holder: LockRecord): void {
   syncDir(dirname(lock));
 }
 
-export function bindingCheckLines(said: string, allowSetup: boolean, release: string | null): string[] {
+export function bindingCheckLines(said: string, allowSetup: boolean, release: string | null, report = 'console.error'): string[] {
   const setupInRelease = [...RELEASE_HOST.split(sep), 'src', 'update', 'setup.ts'].map((part) => `'${part}'`).join(', ');
   return [
     "const quoted = (path) => /^[\\w@%+=:,./-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\\\''`)}'`;",
@@ -499,7 +499,7 @@ export function bindingCheckLines(said: string, allowSetup: boolean, release: st
     "  : `the setup of ${writer}, the release whose setup wrote this file, which this install's releases don't hold now: ` +",
     "    `install exactly ${writer} in ${quoted(dirname(root))} first, as docs/DEPLOYMENTS.md shows, and run its setup by hand`;",
     `if (damaged${allowSetup ? " && process.argv[2] !== 'setup'" : ''}) {`,
-    `  console.error(\`${said}: nothing runs in this install, since its record, \${join(root, 'install.json')}, holds a \` +`,
+    `  ${report}(\`${said}: nothing runs in this install, since its record, \${join(root, 'install.json')}, holds a \` +`,
     "    '\"workingDir\" that isn\\'t a path, so whether it was moved or copied here, and whose places its record names, ' +",
     "    `can't be told. Setup says how to write the record again: run \\`${quoted(join(root, 'connectome'))} setup discord\\`, ` +",
     "    'or, for an install set up by hand, its setup by hand again, as docs/DEPLOYMENTS.md shows. A service that ' +",
@@ -507,7 +507,7 @@ export function bindingCheckLines(said: string, allowSetup: boolean, release: st
     '  process.exit(1);',
     '}',
     `if (elsewhere${allowSetup ? " && process.argv[2] !== 'setup'" : ''}) {`,
-    `  console.error(\`${said}: nothing runs in this install, since its record is bound to \${bound}, and it's in \` +`,
+    `  ${report}(\`${said}: nothing runs in this install, since its record is bound to \${bound}, and it's in \` +`,
     "    `${dirname(root)}, so it was moved or copied here, and the places its record names may be another install's. ` +",
     "    `Setup binds it to this directory, asking about any place outside ${bound}: run ` +",
     "    `\\`${quoted(join(root, 'connectome'))} setup discord\\`, or, for an install set up by hand, ${byHand}. A ` +",

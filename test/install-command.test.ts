@@ -5,6 +5,7 @@ import {
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { CLI_IN_RELEASE, installCommandOf, typedCommand, writeInstallCommand } from '../src/cli/install-command.js';
+import { SHOWN_FILE } from '../src/cli/shown.js';
 
 const SETUP_RECIPE = join('node_modules', '@animalabs', 'connectome-host', 'recipes', 'setup.json');
 
@@ -168,4 +169,37 @@ test('setup\'s line that puts the install\'s directory on PATH is shown exactly 
   expect(installCommandOf(root, pathOf(root)).pathLine).toBeNull();
   expect(installCommandOf(root, pathOf('/usr/bin')).pathLine).toBe(line);
   expect(installCommandOf(root, pathOf(other, root)).pathLine).toBe(line);
+});
+
+test('where setup\'s agent names a file for the person, the refusals before any CLI loads go there too: a moved install, an unreadable binding, and a setup with none to run', () => {
+  const said = join(realpathSync(mkdtempSync(join(tmpdir(), 'install-command-said-'))), 'said');
+  dirs.push(dirname(said));
+  process.env[SHOWN_FILE] = said;
+  try {
+    const moved = withCommands(true);
+    const elsewhere = join(dirname(moved.dir), 'elsewhere');
+    writeFileSync(join(moved.root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(elsewhere, 'data'), extraState: [], workingDir: elsewhere }));
+    writeFileSync(said, '');
+    const refusedMoved = moved.run('update');
+    expect(refusedMoved.exitCode).toBe(1);
+    expect(refusedMoved.stderr).toContain('nothing runs in this install, since its record is bound to');
+    expect(readFileSync(said, 'utf-8')).toBe(refusedMoved.stderr);
+
+    const unreadable = withCommands(true);
+    writeFileSync(join(unreadable.root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(unreadable.dir, 'data'), extraState: [], workingDir: 7 }));
+    writeFileSync(said, '');
+    const refusedUnreadable = unreadable.run('update');
+    expect(refusedUnreadable.exitCode).toBe(1);
+    expect(refusedUnreadable.stderr).toContain('holds a "workingDir" that isn\'t a path');
+    expect(readFileSync(said, 'utf-8')).toBe(refusedUnreadable.stderr);
+
+    const none = withCommands(false, false);
+    writeFileSync(said, '');
+    const refusedSetup = none.run('setup', 'discord');
+    expect(refusedSetup.exitCode).toBe(1);
+    expect(refusedSetup.stderr).toContain('the release this install runs has no setup');
+    expect(readFileSync(said, 'utf-8')).toBe(refusedSetup.stderr);
+  } finally {
+    delete process.env[SHOWN_FILE];
+  }
 });
