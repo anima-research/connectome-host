@@ -1431,6 +1431,14 @@ describe('connectome doctor', () => {
     expect(r.status).toBe(1);
   });
 
+  test('the Discord check\'s remedies name the install\'s command as doctor\'s own lines do, for an install whose own connectome isn\'t first on PATH', async () => {
+    const at = install();
+    const refusing = (async () => Response.json({ message: '401: Unauthorized', code: 0 }, { status: 401 })) as unknown as typeof fetch;
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { fetch: refusing }));
+    expect(r.out).toContain(`\`${join(at.root, 'connectome')} setup discord\` stores it in`);
+    expect(r.out).not.toMatch(/`connectome setup discord`/);
+  });
+
   test('a 401 for a server mcpl-servers.json gives "${DISCORD_TOKEN}" as written says so in its own words', async () => {
     const at = install({ recipe: { ...RECIPE(''), mcpServers: { discord: {}, shell: RECIPE('').mcpServers.shell } } });
     writeFileSync(join(at.work, 'mcpl-servers.json'), JSON.stringify({ mcplServers: { discord: {

@@ -92,8 +92,11 @@ function workdir(): string {
   return mkdtempSync(join(tmpdir(), 'chost-doctor-discord-'));
 }
 
-async function run(env: Record<string, string | undefined>, discord: ReturnType<typeof fakeDiscord>, dir = workdir(), requestLimitMs?: number) {
-  const result = await checkDiscord(env, { fetch: discord.fetch, workingDir: dir, ...(requestLimitMs ? { requestLimitMs } : {}) });
+async function run(
+  env: Record<string, string | undefined>, discord: ReturnType<typeof fakeDiscord>, dir = workdir(), requestLimitMs?: number,
+  command = 'connectome',
+) {
+  const result = await checkDiscord(env, { fetch: discord.fetch, workingDir: dir, command, ...(requestLimitMs ? { requestLimitMs } : {}) });
   return { ...result, text: result.lines.join('\n') };
 }
 
@@ -184,6 +187,27 @@ describe('doctor: Discord', () => {
     const server = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME], answers: { '/guilds/100/roles': () => Response.json({ message: 'Missing Access', code: 50001 }, { status: 403 }) } }));
     expect(server.problems).toEqual([expect.stringContaining('Discord listed that server for the bot a moment before')]);
     expect(server.problems[0]).not.toContain('Something between');
+  });
+
+  test('each remedy that tells the person to run a command names it as doctor was given it, for an install whose own connectome isn\'t first on PATH', async () => {
+    const typed = '/opt/chost/connectome';
+    const bare = /(^|[\s`])connectome (doctor|setup)/;
+    const limited = (retry?: number) => () => Response.json({ message: 'You are being rate limited.', ...(retry === undefined ? {} : { retry_after: retry }) }, { status: 429 });
+    const cases: Array<[string, Promise<{ lines: string[]; problems: string[] }>, string]> = [
+      ['no token', run({}, fakeDiscord({}), workdir(), undefined, typed), `\`${typed} setup discord\`, which keeps it in`],
+      ['whitespace after the token', run({ DISCORD_TOKEN: `${TOKEN}  ` }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }), workdir(), undefined, typed), `\`${typed} setup discord\` stores it trimmed in`],
+      ['a refused token', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ token: 'other' }), workdir(), undefined, typed), `\`${typed} setup discord\` stores it in`],
+      ['Discord busy', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: limited() }), workdir(), undefined, typed), `weren't made: run ${typed} doctor again`],
+      ['a wait asked for by the first request', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/users/@me': limited(2.5) } }), workdir(), undefined, typed), `so run ${typed} doctor again after that`],
+      ['a wait asked for by a later request', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/applications/@me': limited(2.5) } }), workdir(), undefined, typed), `so run ${typed} doctor again after that`],
+      ['Discord out of reach', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ fails: 'reject' }), workdir(), undefined, typed), `then run ${typed} doctor again`],
+      ['a server read refused', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME], answers: { '/guilds/100/roles': () => Response.json({ message: 'Missing Access', code: 50001 }, { status: 403 }) } }), workdir(), undefined, typed), `and otherwise run ${typed} doctor again.`],
+    ];
+    for (const [name, ran, says] of cases) {
+      const text = (await ran).lines.join('\n');
+      expect([name, text]).toEqual([name, expect.stringContaining(says)]);
+      expect([name, bare.test(text)]).toEqual([name, false]);
+    }
   });
 
   test('an answer that can change by itself, Discord busy or limiting the rate, says to run doctor again', async () => {
