@@ -46,6 +46,7 @@ function mockFramework(body: () => Promise<void>) {
     getModule: () => undefined,
     getAgent: () => undefined,
     getAllAgents: () => [{ name: 'agent' }],
+    getHostModeStatus: () => ({ quiesced: false, drained: true, activeTurnAgents: [] }),
     puppetToolCall: async () => {
       commandStarted();
       await stopUnderWay;
