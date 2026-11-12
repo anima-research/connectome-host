@@ -83,6 +83,9 @@ function fakeHost(at: Install, answers: Record<string, unknown>, opts: { closeOn
         tails.set(socket, frames.pop()!);
         for (const line of frames.filter(Boolean)) {
           const msg = JSON.parse(line) as { type: string; op?: string; corrId?: string };
+          if (msg.type === 'describe' && answers !== SILENT) {
+            socket.write(JSON.stringify({ type: 'snapshot', corrId: msg.corrId, child: { pid: 4242, recipe: 'Ember' } }) + '\n');
+          }
           if (msg.type !== 'panel-request') continue;
           received.push(msg.op!);
           if (opts.closeOnRequest) {
@@ -2477,7 +2480,6 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
       checkService: async () => ({ passed: true, lines: ['connectome-test.service is stopped: systemd shows it inactive (dead).'], stopped: true }),
       servicePid: async () => {
         host.stop();
-        await Bun.sleep(100);
         return { pid: '0' };
       },
     }));
@@ -2713,5 +2715,21 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     const rootOwned = await withHost(at, HEALTHY_HOST, () => run(at, { uid: 0, owner: () => 0 }));
     expect(rootOwned.err).toBe('');
     expect(rootOwned.out).toContain('connectome doctor: the install at');
+  });
+
+  test('a host whose connection closes during a manager read that holds the event loop is said as changed, not as another\'s to kill', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, (host) => run(at, {
+      servicePid: () => {
+        host.stop();
+        Bun.sleepSync(300);
+        return { pid: '777' };
+      },
+    }));
+    expect(r.out).toContain('but the service\'s host changed during the check');
+    expect(r.out).not.toContain('`kill 4242` stops it');
+    const alive = install();
+    const still = await withHost(alive, HEALTHY_HOST, () => run(alive, { servicePid: () => ({ pid: '777' }) }));
+    expect(still.out).toContain('`kill 4242` stops it');
   });
 });

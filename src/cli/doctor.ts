@@ -360,6 +360,10 @@ export async function doctor(
           return { why: errorText(error) };
         }
       };
+      // A close that comes while a synchronous read of the manager holds the event loop isn't seen until the loop
+      // turns, so before a host is said to be another's, it has to answer once more.
+      const stillAnswers = async (): Promise<boolean> =>
+        open && await answering.request({ type: 'describe' }, parts.hostLimitMs) !== null;
       const changed = () => {
         report.line(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, but the service's host ` +
           'changed during the check, so whether it\'s the service\'s can\'t be told: run doctor again.');
@@ -367,7 +371,7 @@ export async function doctor(
       };
       if (stopped) {
         const now = await ownPid();
-        if (now !== null && (!('pid' in now) || now.pid !== '0' || !open)) changed();
+        if (now !== null && (!('pid' in now) || now.pid !== '0' || !(await stillAnswers()))) changed();
         else {
           report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, though the service ` +
             'is stopped, so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below ' +
@@ -378,7 +382,7 @@ export async function doctor(
         const own = await ownPid();
         if (own !== null && 'pid' in own && own.pid !== String(answering.ready.pid)) {
           const again = await ownPid();
-          if (again === null || !('pid' in again) || again.pid !== own.pid || !open) changed();
+          if (again === null || !('pid' in again) || again.pid !== own.pid || !(await stillAnswers())) changed();
           else {
             report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, but ` +
               `${own.pid === '0' ? `${service!.units.host.name} has no main process` : `${service!.units.host.name}'s main process is ${own.pid}`}, ` +
