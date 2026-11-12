@@ -2150,7 +2150,7 @@ test('an ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE exported in th
   }
 });
 
-test('an ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE that .env holds is named, since a host started in the directory signs in through OAuth; setup\'s agent gets neither', async () => {
+test('an ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE that .env holds is named, since a host that takes it from .env signs in through OAuth; setup\'s agent gets neither', async () => {
   for (const names of [['ANTHROPIC_AUTH_TOKEN'], ['ANTHROPIC_OAUTH_CREDENTIALS_FILE'], ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE']]) {
     const dir = directory();
     const envFile = join(dir, '.env');
@@ -2161,7 +2161,7 @@ test('an ANTHROPIC_AUTH_TOKEN or ANTHROPIC_OAUTH_CREDENTIALS_FILE that .env hold
     const made = world(dir, { answers: [''] }, { env: { PATH: '/usr/bin:/bin', HOME: dir, ...fromEnv } });
     expect(await runSetup(dir, ['discord'], made), names.join()).toBe(0);
     const lines = made.seen.out.filter((line) => line.startsWith(`${envFile} holds`));
-    expect(lines, names.join()).toEqual([`${envFile} holds ${names.join(' and ')}, so a host started in ${dir} signs in through OAuth, not with an ANTHROPIC_API_KEY, though setup's agent uses the key. Take ${names.length === 1 ? 'it' : 'them'} out of ${envFile}, for such a host to use the key.`]);
+    expect(lines, names.join()).toEqual([`${envFile} holds ${names.join(' and ')}, so a host that takes ${names.length === 1 ? 'it' : 'them'} from there signs in through OAuth, not with an ANTHROPIC_API_KEY, though setup's agent uses the key. Take ${names.length === 1 ? 'it' : 'them'} out of ${envFile}, for such a host to use the key.`]);
     expect(made.seen.out.some((line) => line.includes('exported in this shell, so a host started from it')), names.join()).toBe(false);
     for (const name of names) expect(made.seen.launched!.env[name], name).toBeUndefined();
     expect(made.seen.launched!.argv).toContain('--no-env-file');
