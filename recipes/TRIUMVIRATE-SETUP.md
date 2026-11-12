@@ -48,12 +48,12 @@ You should see a TUI with a generic assistant. Type `/quit` to exit. If this did
 
 ## Step 2: Install the Zulip MCP server
 
-Two of the three specialists (miner, clerk) talk to Zulip. They do that through a small adapter called `zulip_mcp`. The MCPL-addendum work has merged into upstream `main` ([PR #3](https://github.com/antra-tess/zulip_mcp/pull/3)) so the install is just clone + build:
+Two of the three specialists (miner, clerk) talk to Zulip. They do that through a small adapter called `zulip_mcp`. The MCPL-addendum work has merged into upstream `main` ([PR #3](https://github.com/anima-research/zulip_mcp/pull/3)) so the install is just clone + build:
 
 ```bash
 # From inside the connectome-host directory:
 cd ..
-git clone https://github.com/antra-tess/zulip_mcp.git
+git clone https://github.com/anima-research/zulip_mcp.git
 cd zulip_mcp
 npm install
 npm run build
