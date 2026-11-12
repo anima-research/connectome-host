@@ -944,10 +944,15 @@ describe('connectome doctor', () => {
     const at = install();
     const other = install();
     writeUnit(at, join(other.work, 'recipe.json'), other.work);
+    for (const name of ['recipe.json', '.env']) {
+      rmSync(join(other.work, name), { force: true });
+      mkdirSync(join(other.work, name));
+    }
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).toContain(`✗ ${at.unit} names ${realpathSync(other.work)} as the directory it runs in, not this install's, ${at.work}: ` +
       'it\'s another install\'s, or this one\'s from before it moved, and doctor reads nothing in that directory.');
     expect(r.out).not.toContain(join(other.work, 'recipe.json'));
+    expect(r.out).not.toMatch(/EISDIR|illegal operation on a directory/);
     expect(r.status).toBe(1);
   });
 
