@@ -435,28 +435,11 @@ async function installAndStart(
       'when it exits with 75 or 1, as docs/DEPLOYMENTS.md in the host\'s package says.');
   }
   if (linger === false) {
-    out(`Linger is off for ${world.user}, so a service of ${world.user}'s would stop when ${world.user} logs out, and ` +
-      'the resident\'s service can\'t be set up until it\'s on. One line turns it on, run once ' +
-      `${world.hasSudo ? 'with sudo, by you if you can use sudo here or by whoever administers this machine'
-        : 'as root, by you or by whoever administers this machine'}:`);
+    out(`Linger is off for ${world.user}, so a service of ${world.user}'s stops when ${world.user} logs out. One line ` +
+      `turns it on, run once ${world.hasSudo ? 'with sudo. You can run it if you can use sudo here, or whoever ' +
+        'administers this machine can.' : 'as root. You or whoever administers this machine can run it.'} It can run ` +
+      'at any time before the resident goes live, and setup goes on meanwhile:');
     out(`  ${lingerLine(world)}`);
-    const can = existsSync(join(root, 'install.json')) ||
-      await yesNo(world, 'Can you run it, or have whoever administers this machine run it? (yes/no) ');
-    if (can === null) return stopped();
-    if (can) {
-      out('Run it any time before the resident\'s service is set up, in a second terminal or by whoever runs it for ' +
-        'you; setup goes on here meanwhile.');
-    } else {
-      out('Without it, the resident can\'t go live as a service. Setup\'s agent can still set up the rest with you, and ' +
-        'the service waits until linger is on.');
-      const go = await yesNo(world, 'Go on without it? (yes/no) ');
-      if (go === null) return stopped();
-      if (!go) {
-        out('Setup stopped before installing anything, and keeps your answers. Once linger is on, run this same version ' +
-          `of setup again here: \`${firstLine()}\`.`);
-        return 0;
-      }
-    }
   } else if (world.platform === 'darwin') {
     out(`On macOS, a service of ${world.user}'s stops when ${world.user} logs out of the Mac's graphical session, not ` +
       `when an ssh session ends, and launchd starts it only while ${world.user} is logged in there, so over ssh with no ` +

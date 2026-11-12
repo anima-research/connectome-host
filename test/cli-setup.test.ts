@@ -1758,8 +1758,8 @@ test('setup hands its agent the line that makes a user of its own, what it said 
     ['linux', {}, [''], [OWN_LINE, undefined, undefined]],
     ['a user named connectome', { userExists: (user: string) => user === 'connectome' }, [''], [OWN_LINE, EXISTS, undefined]],
     ['no getent answer', { userExists: () => null }, [''], [OWN_LINE, UNKNOWN, undefined]],
-    ['linger off', { lingerOf: offOnly }, ['', 'yes'], [OWN_LINE, undefined, 'sudo loginctl enable-linger alice']],
-    ['linger off, no sudo', { lingerOf: offOnly, hasSudo: false }, ['yes'], [undefined, undefined, 'loginctl enable-linger alice']],
+    ['linger off', { lingerOf: offOnly }, [''], [OWN_LINE, undefined, 'sudo loginctl enable-linger alice']],
+    ['linger off, no sudo', { lingerOf: offOnly, hasSudo: false }, [], [undefined, undefined, 'loginctl enable-linger alice']],
     ['a Mac', { platform: 'darwin', lingerOf: () => null }, [], [undefined, undefined, undefined]],
     ['no systemd', { lingerOf: () => null }, [], [undefined, undefined, undefined]],
     ['run as connectome', { user: 'connectome' }, [], [undefined, undefined, undefined]],
@@ -1779,7 +1779,7 @@ test('setup hands its agent the line that makes a user of its own, what it said 
   const bare = await promptOf(none.seen.launched!);
   expect(bare).toContain('Setup gives you the lines it shows the person, each "none" where it has none to show. Show one exactly as it is here, on a line of its own:\n- The line that makes the resident a user of its own: none\n- What setup says beside that line: none\n- The root line that turns linger on for alice: none');
   expect(bare).not.toContain('${');
-  const all = world(directory(), { answers: ['', 'yes'], secrets: [KEY] }, { lingerOf: offOnly, userExists: () => null });
+  const all = world(directory(), { answers: [''], secrets: [KEY] }, { lingerOf: offOnly, userExists: () => null });
   expect(await runSetup(all.world.cwd, ['discord'], all)).toBe(0);
   const full = await promptOf(all.seen.launched!);
   expect(full).toContain(`\n- The line that makes the resident a user of its own: ${OWN_LINE}\n- What setup says beside that line: ${UNKNOWN}\n- The root line that turns linger on for alice: sudo loginctl enable-linger alice`);
@@ -2320,7 +2320,7 @@ test('run again beside another version of the host, setup adds its own version',
 
 test('without sudo, the line that turns linger on is one for root to run', async () => {
   const dir = directory();
-  const made = world(dir, { answers: ['yes'], secrets: [KEY] }, { hasSudo: false, lingerOf: () => false });
+  const made = world(dir, { secrets: [KEY] }, { hasSudo: false, lingerOf: () => false });
   expect(await runSetup(dir, ['discord'], made)).toBe(0);
   const out = text(made.seen.out);
   expect(out).toContain('Linger is off for alice, so a service of alice\'s stops when alice logs out. One line turns it on, run once as root. You or whoever administers this machine can run it. It can run at any time before the resident goes live, and setup goes on meanwhile:\n  loginctl enable-linger alice\n');
