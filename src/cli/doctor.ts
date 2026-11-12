@@ -1,8 +1,8 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
@@ -58,6 +58,8 @@ export interface DoctorParts {
   servicePid: (units: ServiceUnits) => Promise<{ pid: string } | { why: string }> | { pid: string } | { why: string };
   platform: NodeJS.Platform;
   home: string;
+  uid: number;
+  owner: (path: string) => number;
 }
 
 type Server = {
@@ -108,6 +110,8 @@ export async function doctor(
     servicePid: (units) => servicePid(units, machine()),
     platform: process.platform,
     home: homedir(),
+    uid: process.getuid?.() ?? -1,
+    owner: (path) => statSync(path).uid,
   },
 ): Promise<number> {
   if (ctx.argv.length > 0) {
@@ -118,6 +122,20 @@ export async function doctor(
   const typed = typedCommand(root);
 
   const units = serviceUnits(root, parts.platform, parts.home);
+  if (parts.uid === 0) {
+    const dir = dirname(root);
+    let owner: number | null = null;
+    try {
+      owner = parts.owner(dir);
+    } catch {
+      owner = null;
+    }
+    if (owner !== null && owner !== 0) {
+      ctx.err(`connectome: ${dir} belongs to uid ${owner}, and doctor runs as root, so it would read root's service and ` +
+        `service manager, not those of the user the resident runs as. Run doctor as the user who owns ${dir}, without sudo.`);
+      return 1;
+    }
+  }
   let service: { units: ServiceUnits; recipe: string; work: string; bun: string } | null = null;
   let serviceError: string | null = null;
   let elsewhere = false;

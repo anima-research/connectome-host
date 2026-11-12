@@ -251,6 +251,8 @@ async function run(at: Install, parts: Partial<DoctorParts> = {}, argv: string[]
     servicePid: async () => ({ pid: '4242' }),
     platform: at.platform,
     home: at.home,
+    uid: 1000,
+    owner: () => 1000,
     ...parts,
   });
   return { status, out: out.join('\n'), err: err.join('\n') };
@@ -2698,5 +2700,18 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
       Object.entries(unitEnvironment(at)), null));
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).toContain(`✗ ${at.unit} doesn't run start.js right after its Bun, with a recipe after it, as the one service install writes does.`);
+  });
+
+  test('as root, on an install another user owns, doctor stops at once and says to run it as that user, as install does', async () => {
+    const at = install();
+    const { status, out, err } = await run(at, { uid: 0, owner: () => 1001 });
+    expect(err).toBe(`connectome: ${at.work} belongs to uid 1001, and doctor runs as root, so it would read root's ` +
+      `service and service manager, not those of the user the resident runs as. Run doctor as the user who owns ${at.work}, ` +
+      'without sudo.');
+    expect(out).toBe('');
+    expect(status).toBe(1);
+    const rootOwned = await withHost(at, HEALTHY_HOST, () => run(at, { uid: 0, owner: () => 0 }));
+    expect(rootOwned.err).toBe('');
+    expect(rootOwned.out).toContain('connectome doctor: the install at');
   });
 });
