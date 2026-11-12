@@ -191,13 +191,77 @@ action.
   look before ending the turn.
 - **`wake_remove_rule`** `{ name }` — removes a rule (a pending debounce batch is
   delivered first) and says whether anything was removed.
-- **`channel-mode--set_channel_mode`** `{ channelId, mode, debounceMs? }` — present
+- **`channel-mode--set_channel_mode`** `{ channelId, mode, debounceMs?, serverId? }` — present
   by default whenever the gate is on. One step flips a channel between
   `"mentions"` (closed; only addressed messages reach you) and `"debounced"`
   (opens the channel, prepends a rule debouncing its `chat:ambient` traffic —
   default 180000 ms — and pins the channel so it isn't auto-closed for being
-  chatty). Pass the id as events carry it (`discord:<guildId>:<channelId>`), or
-  the rule never matches. Each channel gets its own rule, so its own timer.
+  chatty). Pass the exact id as events carry it (for example `zulip:backend`,
+  `slack:<conversationId>` such as `slack:C0123ABCD`, or
+  `discord:<guildId>:<channelId>`), not a raw
+  platform id. Open, gate source, and close use the owning MCPL server. An
+  optional tool-call `serverId` selects a known server or registry owner when
+  multiple servers register the same id; ambiguity errors name those servers.
+  Debounced mode refuses a named server that does not own a registered channel,
+  with the registry's hint, before changing the rule, pin, or lifecycle state.
+
+  Ownership resolution and cleanup:
+  1. Read module state from the current Chronicle branch on each call. A saved
+     live debounced owner binds **both modes**. Without an explicit `serverId`,
+     it takes precedence over fresh inference, including after restart. A branch
+     move can forget owner bindings while leaving the host-wide rule and open
+     channel in place; bindings do not protect owner changes across rollbacks.
+  2. Without a saved owner or explicit selection, prefer the channel registry.
+     For an unregistered id, use a prefix before the first `:` when it names a
+     known server, even if disconnected. `modules.channelMode.serverId` is the
+     legacy fallback (default `discord`) only for bare ids with no `:` or ids
+     in that fallback's own namespace. Unknown namespaces such as `teams:x`
+     never route to a different fallback. Registry ownership overrides prefixes.
+  3. Debounced mode refuses unknown, disconnected, ambiguous, or wrong explicit
+     ownership before any effects. Owners are saved only after open and rule
+     installation both succeed. While the saved owner still registers the
+     channel, a different explicit owner is refused in either mode until mentions
+     cleanup completes. One mode/rule is kept per exact channel id; switching
+     server is not an implicit migration.
+  4. Mentions removes the rule and unpins, even when ownership cannot be resolved.
+     It closes a known owner even when disconnected: when the channel still
+     has a registry entry, the framework records the close for re-registration.
+     If the saved owner is still configured, a missing channel entry is
+     inconclusive (threads/DMs may register on their next message): plain mentions
+     keeps the binding and says to retry the close after registration. Debounced
+     refuses without effects and asks to retry once connected and registered.
+     For a still-registered owner, a successful or
+     durably recorded close plus successful rule removal deletes the matching
+     owner record. Unpin failures are reported separately and do not retain that
+     record. If subscription GC
+     is absent (`modules.subscriptionGc: false`, or removed after a successful
+     debounced setup), pin and unpin are successful no-ops: nothing auto-closes
+     the channel, and there is no pin to release, respectively. This does not
+     edit saved GC state: re-adding subscription GC later restores any pin
+     persisted earlier. With GC present again, call mentions to unpin if needed.
+     Only a sole
+     answered close failure suppresses the tool's generic retry advice; the
+     registry explains deferred closes. Skipped, failed, or unanswered steps are reported individually.
+  5. For a missing channel entry, mentions releases the saved binding only if
+     the owner is no longer configured or an explicit `serverId` names that
+     saved owner (never closing a replacement), and only after successful rule
+     removal and unpin (absent GC counts as nothing to unpin), even if close is
+     unconfirmed; failures remain reported, and this does not clear the old
+     registry's desired-open state or guarantee a remote close.
+
+  New distinct debounced ids are refused before effects at 1024 live owners
+  (including in-flight opens). Complete mentions cleanup for a tracked channel
+  to free capacity, using the unregistered-owner cleanup above if needed.
+  Existing ids can still be reapplied. Owners are never evicted: legacy state
+  already above the limit must be drained through cleanup before adding ids.
+  Previously saved rules with the wrong source are replaced on the next debounced
+  call or removed on the next mentions call; reapply the mode on affected channels.
+  Each channel gets its own rule, so its own timer. This does not change the
+  framework's open/close semantics.
+
+  Subscription GC remains scoped to `modules.subscriptionGc.serverId` (default
+  `discord`): it ignores other servers' incoming and push events rather than
+  closing them on the wrong server. Configure it separately when needed.
 - **Your shell** — edit the file on disk. The gate notices a changed file (by
   mtime) when it evaluates the next event, checking at most once a second. A
   file that fails to parse or validate is ignored: the previous rules stay in
