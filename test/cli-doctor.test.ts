@@ -2752,8 +2752,8 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     const at = install();
     const { status, out, err } = await run(at, { uid: 0, owner: () => 1001 });
     expect(err).toBe(`connectome: ${at.work} belongs to uid 1001, and doctor runs as root, so it would read root's ` +
-      `service and service manager, not those of the user the resident runs as. Run doctor as the user who owns ${at.work}, ` +
-      'without sudo.');
+      `service and service manager, not those of the user the resident runs as. Run \`${join(at.root, 'connectome')} doctor\` as the ` +
+      `user who owns ${at.work}, without sudo.`);
     expect(out).toBe('');
     expect(status).toBe(1);
     const rootOwned = await withHost(at, HEALTHY_HOST, () => run(at, { uid: 0, owner: () => 0 }));

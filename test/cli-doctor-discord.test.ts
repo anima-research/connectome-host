@@ -523,7 +523,7 @@ describe('doctor: Discord', () => {
     expect(scopeOf(r)).not.toMatch(/the bot is in no server/);
   });
 
-  test('a channel the scope names that the bot can see but can\'t send in is a problem, a whole server in the scope isn\'t, and the list marks every text, announcement, voice or stage channel it can\'t send in', async () => {
+  test('a channel the scope names that the bot can see but can\'t send in is a problem, a whole server in the scope isn\'t, and the list marks every text or announcement channel it can\'t send in', async () => {
     const quiet: FakeGuild = {
       ...HOME,
       channels: [...HOME.channels,

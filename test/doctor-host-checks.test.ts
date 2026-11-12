@@ -478,8 +478,6 @@ describe('count-check, with a stand-in for the framework', () => {
     });
     try {
       setEnv({ COUNT_TOKENS_MODEL: undefined, ANTHROPIC_API_KEY: 'sk-count-test', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}` });
-      // Asked one after the other, the first count waits on the second for good, so a limit long enough for a slow
-      // machine still fails that, and costs nothing when the counts go together.
       const check = await buildCountCheck(appWith('claude-agent-test', { type: 'autobiographical', compressionModel: 'claude-compress-test' }), 10_000);
       expect(check.agent.source).toBe('count_tokens');
       expect(check.compression?.source).toBe('count_tokens');

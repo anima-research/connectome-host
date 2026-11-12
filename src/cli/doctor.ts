@@ -132,7 +132,7 @@ export async function doctor(
     }
     if (owner !== null && owner !== 0) {
       ctx.err(`connectome: ${dir} belongs to uid ${owner}, and doctor runs as root, so it would read root's service and ` +
-        `service manager, not those of the user the resident runs as. Run doctor as the user who owns ${dir}, without sudo.`);
+        `service manager, not those of the user the resident runs as. Run \`${typed} doctor\` as the user who owns ${dir}, without sudo.`);
       return 1;
     }
   }
@@ -379,7 +379,7 @@ export async function doctor(
         }
       };
       // A close that comes while a synchronous read of the manager holds the event loop isn't seen until the loop
-      // turns, so before a host is said to be another's, it has to answer once more.
+      // turns.
       const stillAnswers = async (): Promise<boolean> =>
         open && await answering.request({ type: 'describe' }, parts.hostLimitMs) !== null;
       const changed = () => {
@@ -1327,8 +1327,6 @@ function shellOfAnother(units: ServiceUnits, home: string): string | null {
   return runsIn === null || runsHere(runsIn, units.work) ? null : namesElsewhere(units.shell.file, runsIn, units.work);
 }
 
-/** The directory a unit runs in, read as install reads it to tell its own unit from another install's. On systemd
- *  that reading doesn't need the rest of the unit to be what install writes, so the two agree on whose unit it is. */
 function unitRunsIn(manager: Manager, text: string, read: UnitRead | { why: string }, home: string): string | null {
   const set = manager === 'systemd-user' ? systemdWorkingDirectory(text) : 'why' in read ? null : read.workingDirectory;
   return set === '~' ? home : set;

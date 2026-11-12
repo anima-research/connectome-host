@@ -3035,6 +3035,18 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     }
   });
 
+  test('a token Discord may be busy with tells the person to run doctor by the install command setup started its host with, and by connectome without one', async () => {
+    const busy = (async () => new Response('<html>busy</html>', { status: 503, headers: { 'content-type': 'text/html' } })) as unknown as typeof fetch;
+    const page = (async () => Response.json({ message: 'Service Unavailable' }, { status: 503 })) as unknown as typeof fetch;
+    for (const [env, command] of [[{ CONNECTOME_SETUP_COMMAND: "'/srv/a b/connectome-host/connectome'" }, "'/srv/a b/connectome-host/connectome'"], [{}, 'connectome']] as const) {
+      for (const answer of [busy, page]) {
+        const token = install({ asker: typed('a-busy-token'), fetch: answer, env });
+        await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+        expect(token.shown.join('\n'), command).toContain(` It may be busy: \`${command} doctor\` checks the token again when it runs.`);
+      }
+    }
+  });
+
   test('a token answered 429 with a Retry-After of seconds and no retry_after in its body tells the agent that wait, whether or not the body is JSON', async () => {
     const WAIT = ' It asks for 300 s: call setup--discord once that has passed, which checks the stored token first.';
     const bodies = [new Response('<html>slow down</html>', { status: 429, headers: { 'content-type': 'text/html', 'retry-after': '300' } }),
