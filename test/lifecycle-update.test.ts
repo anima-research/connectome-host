@@ -235,8 +235,17 @@ for (const [what, options, says] of [
   });
 }
 
-const toolDescription = (host: ReturnType<typeof residentHost>): string =>
-  (host.module.getTools().find((tool) => tool.name === 'update')?.description ?? '').replace(/\s+/g, ' ');
+const rawDescription = (host: ReturnType<typeof residentHost>): string =>
+  host.module.getTools().find((tool) => tool.name === 'update')?.description ?? '';
+
+const toolDescription = (host: ReturnType<typeof residentHost>): string => rawDescription(host).replace(/\s+/g, ' ');
+
+const actionItems = (description: string): Record<string, string> => Object.fromEntries(
+  description.split('\n- ').slice(1).map((item) => {
+    const line = item.split('\n')[0]!;
+    return [line.slice(0, line.indexOf(':')), line.slice(line.indexOf(':') + 1)];
+  }),
+);
 
 const HEADLESS_COMMANDS = 'They type it in a shell, as the user your host runs as: check is `connectome update check`, ' +
   'install is `connectome update install`, restart is `connectome update restart`, and back is `connectome update back`, ' +
@@ -258,16 +267,23 @@ for (const [kind, options, command] of [
 ] as const) {
   test(`on a host ${kind}, the update tool's description holds what choosing an action needs, in at most 1,600 characters plus the install's own command`, () => {
     const root = 'root' in options ? null : installRunning0141(['0.15.0']).root;
-    const description = toolDescription(residentHost({ ...options, root }));
+    const host = residentHost({ ...options, root });
+    const raw = rawDescription(host);
+    const description = toolDescription(host);
     if (command !== '') expect(description).toContain(`their own command is \`${command} update\``);
-    expect(description.length).toBeLessThanOrEqual(1_600 + command.length);
-    for (const words of ['- check:', '- notes:', '- install:', '- restart:', '- back:', '- cancel:',
-      'so you lose nothing, where that release can read it; otherwise its start comes back to the release you run by itself, and restore is the way',
-      'set aside, not deleted', '`version`', 'CONNECTOME_SUPERVISED=1', 'nothing tells you it happened: check says',
-      'The person who runs your host can\'t call this tool',
-      'your turn ends as it would, as does every other agent\'s on this host and its fleet children',
-      'everything you have lived since is set aside, not deleted; on a host with fleet children, restore is the person\'s',
-      'before it begins, whoever armed it']) {
+    expect(raw.length).toBeLessThanOrEqual(1_600 + command.length);
+    const items = actionItems(raw);
+    expect(Object.keys(items)).toEqual(['check', 'notes', 'install', 'restart', 'back', 'cancel']);
+    for (const [action, words] of [
+      ['restart', 'your turn ends as it would, as does every other agent\'s on this host and its fleet children'],
+      ['back', 'so you lose nothing, where that release can read it; otherwise its start comes back to the release you run by itself, and restore is the way'],
+      ['back', 'everything you have lived since is set aside, not deleted; on a host with fleet children, restore is the person\'s'],
+      ['cancel', 'before it begins, whoever armed it'],
+    ] as const) {
+      expect({ action, says: items[action]?.includes(words) }).toEqual({ action, says: true });
+    }
+    for (const words of ['`version`', 'CONNECTOME_SUPERVISED=1', 'nothing tells you it happened: check says',
+      'The person who runs your host can\'t call this tool']) {
       expect(description).toContain(words);
     }
     for (const words of ['SIGKILL', '2 min', 'operator\'s work or credential action']) expect(description).not.toContain(words);
