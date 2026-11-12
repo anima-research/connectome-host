@@ -819,9 +819,8 @@ describe('connectome doctor', () => {
     expect(r.out).toMatch(/✗ The recipe's agent\.strategy\.compressionModel is empty.*, and restart the service\./);
 
     const asked = install({ recipe });
-    const r2 = await withHost(asked, { ...HEALTHY_HOST, 'count-check': { ...COUNTED, compression: { model: '', countModel: null, source: 'count_tokens_unsupported_model' } } },
-      async (host) => ({ ...(await run(asked)), received: host.received }));
-    expect(r2.received).toContain('count-check');
+    const r2 = await withHost(asked, { ...HEALTHY_HOST, 'count-check': { ...COUNTED, compression: { model: '', countModel: null, source: 'count_tokens_unsupported_model' } } }, () => run(asked));
+    expect(r2.out).toContain('✓ count_tokens counts with claude-small-window.');
     expect(r2.out.match(/compressionModel is empty/g)).toHaveLength(1);
   });
 
