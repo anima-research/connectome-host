@@ -265,13 +265,13 @@ describe('the resident\'s shell is decided with the person', () => {
 });
 
 describe('SETUP.md\'s lines', () => {
-  it('run `connectome service install` with the recipe, which it takes on every run', () => {
+  it('run `connectome service install` with the recipe by its whole path, which works from any directory', () => {
     const setupMd = PIECES.find((piece) => piece.heading === 'SETUP.md')!.text;
     const installs = [...setupMd.matchAll(SPAN)].map((match) => match[1]!)
       .filter((span) => span.startsWith('connectome service install'));
     expect(installs.length).toBeGreaterThan(0);
     for (const span of installs) {
-      expect({ span, recipe: span === "connectome service install '<name>.json'" }).toEqual({ span, recipe: true });
+      expect({ span, recipe: span === "connectome service install '<dir>/<name>.json'" }).toEqual({ span, recipe: true });
     }
   });
 });
