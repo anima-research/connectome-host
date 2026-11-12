@@ -16,6 +16,8 @@ interface Bridge {
   takeOwnership(handler: (refusal: Refusal) => Promise<void>): () => void;
   isCurrent(refusal: Refusal): boolean;
   serverBinding(id: string): string | undefined;
+  /** Config OBJECT + connection OBJECT identity, not transportEpoch/child PID.
+   * Automatic in-place reconnect preserves it; not executable/realm attestation. */
   serverEpoch(id: string): string | undefined;
 }
 export const DISCORD_REFUSAL_MARKERS: Readonly<Record<string, string>> = Object.freeze({
@@ -131,7 +133,13 @@ function payload(result: ToolResult): Record<string, unknown> | undefined {
 }
 
 /** ADD only. Bounded in-memory turn dedup; attempts, including unknown acks, are
- * consumed BEFORE I/O. No retry, deletion, new inference, or persistent guarantee. */
+ * consumed BEFORE I/O. No retry, deletion, new inference, or persistent guarantee.
+ * V1 snapshots config/connection OBJECT identity, not transport reconnects.
+ * Object replacement fails closed with ownership retained (no legacy fallback).
+ * Host startup discards this disposer and offers no runtime reinstall/rearm API:
+ * selected connector replacement/restart/deploy requires a fresh full Host
+ * process restart with normal config prepare/install. An issued ADD cannot be
+ * undone. This lifetime limitation is not a liveness fix. */
 export function installRefusalReactions(framework: Surface, config: RefusalReactionConfig, prepared: McplServerConfig[],
   diagnostic: (status: string) => void = status => console.error(`[refusal-reaction] ${status}`),
 ): () => void {

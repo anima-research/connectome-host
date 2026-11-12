@@ -78,8 +78,31 @@ capabilities. Calls use existing `executeToolCall` with the captured agent, so
 ordinary tool authorization still applies. There is no second manager, private
 field access, general executor, grant change, filter-list change, autojoin,
 subscription, DM policy, or permission change. Selected in-memory child configs
-are frozen. Replacing the config/connection invalidates the captured process-local
-epoch and needs a new install/preflight, never retargeting an old effect.
+are frozen.
+
+## V1 lifetime: object replacement requires a full Host process restart
+
+The AF facet's `serverEpoch` name means process-local **config object plus
+connection object identity**, not `transportEpoch`, child PID, reconnect
+detection, or security/realm/executable attestation. An automatic **in-place
+crash/reconnect** keeps the objects and identity, even with a fresh child PID and
+changed transport epoch. It does not by itself invalidate V1; the usual
+per-signal binding/schema/suppression checks still apply.
+
+By contrast, native `restartMcplServer(selected)` creates a new connection object,
+including the Host admin deploy/restart paths. Config replacement or
+disconnect+connect also invalidates the install-time snapshot. All subsequent
+reactions on that selected server fail closed with a local status only
+(`stale-or-unsupported-server`); whole-framework ownership remains held and
+**there is no legacy fallback**. An already issued ADD cannot be undone.
+
+A **fresh full HOST PROCESS restart with normal config prepare/install is
+necessary after selected connector object replacement/restart/deploy**. The Host
+startup wiring discards the install disposer; no operator runtime reinstall or
+rearm API is provided, and another install while ownership is held throws.
+Re-preparing config alone does not recover the running process. This is the
+existing conservative V1 behavior, **not a liveness fix**; replacement/newConfig
+must not be silently trusted or accepted without the normal startup preflight.
 
 ## Effects and diagnostics
 
@@ -108,7 +131,14 @@ only their pure schema/ID/filter modules, and tests fake reaction echoes.
 `LOCAL_AF_SOURCE_ROOT=<AF-candidate> bun test test/refusal-framework-integration.test.ts`
 requires a **coherent temporary local dependency profile**, described in the
 worker evidence report. It uses only a fresh offline stdio fixture, no platform
-SDK/API or bot, and tests omission/explicit handover without doubles. Those
+SDK/API or bot, and tests omission/explicit handover without doubles, plus real
+connection-object replacement, fail-closed effects and rejected reinstall.
+AF's existing offline reconnect fixture checks the distinct in-place identity
+contract. These are regression/counterprobe checks of existing behavior, not
+liveness recovery tests. Public Host `createFramework` wiring (pre-connect
+assert/prepare/install and stop on install failure) is source-reviewed, not
+behavior-tested by these manually wired integration tests. Auxiliary completion
+exclusion is likewise source-reviewed, not behavior-proven by a mock call. Those
 optional tests skip without the profile/cache. The normal global
 `HOST_LOG_TAGS` catalog regression also covers the new `refusal-reaction` prefix.
 
