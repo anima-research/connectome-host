@@ -242,8 +242,9 @@ const HEADLESS_COMMANDS = 'They type it in a shell, as the user your host runs a
   'then `connectome update back keep` or `connectome update back restore`. Their restart and back begin at once, ' +
   'without waiting for a quiet moment: new turns are held, turns in progress get up to 2 min to end, and if any don\'t, ' +
   'their command says who is still busy and how to wait longer, stop now or call it off. notes and cancel have no ' +
-  'command of theirs: their check gives them a link to the notes, and only your cancel disarms a restart or Go back you asked for, though their own restart or back ' +
-  'goes ahead in its place.';
+  'command of theirs: their check gives them a link to the notes, and this tool\'s cancel is the one call that disarms a ' +
+  'restart or Go back before it begins without replacing it or stopping the host: their own restart or back goes ahead in ' +
+  'its place.';
 
 // A host whose own command isn't first on the PATH names it by its path.
 const LONG_COMMAND = '/home/alice/resident/connectome-host/connectome';
@@ -262,7 +263,10 @@ for (const [kind, options, command] of [
     for (const words of ['- check:', '- notes:', '- install:', '- restart:', '- back:', '- cancel:',
       'so you lose nothing, where that release can read it; otherwise its start comes back to the release you run by itself, and restore is the way',
       'set aside, not deleted', '`version`', 'CONNECTOME_SUPERVISED=1', 'nothing tells you it happened: check says',
-      'The person who runs your host can\'t call this tool']) {
+      'The person who runs your host can\'t call this tool',
+      'your turn ends as it would, as does every other agent\'s on this host and its fleet children',
+      'everything you and every other agent on this host and its fleet children have lived since is set aside',
+      'before it begins, whoever armed it']) {
       expect(description).toContain(words);
     }
     for (const words of ['SIGKILL', '2 min', 'operator\'s work or credential action']) expect(description).not.toContain(words);
@@ -303,8 +307,8 @@ test('on a host run in a terminal, the update tool names the person\'s /update, 
     'for a quiet moment: new turns are held, turns in progress get up to 2 min to end, and if any don\'t, its answer says ' +
     'who is still busy and how to wait longer, stop now or call it off. Once it stops, they start the host again ' +
     'themselves, and that start switches. notes and cancel have no command of theirs: their check gives them a link ' +
-    'to the notes, and only your cancel disarms a ' +
-    'restart or Go back you asked for, though their own restart or back goes ahead in its place.');
+    'to the notes, and this tool\'s cancel is the one call that disarms a restart or Go back before it begins without ' +
+    'replacing it or stopping the host: their own restart or back goes ahead in its place.');
 });
 
 test('on a host started from an install, the update tool and check name the person\'s commands by the install\'s own command', async () => {

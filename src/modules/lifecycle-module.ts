@@ -68,22 +68,22 @@ const TOOL_DESCRIPTION =
 const UPDATE_ACTIONS = ['check', 'notes', 'install', 'restart', 'back', 'cancel'] as const;
 
 const UPDATE_DESCRIPTION =
-  'Update your own host to a newer connectome-host release, or go back to the one before, with nobody\'s hands needed. ' +
+  'Update your own host to a newer connectome-host release, or go back to the one before. ' +
   '`action`:\n' +
-  '- check: what is out and what it costs, the release you run, an install under way, an armed restart, and how the ' +
-  'last switch ended.\n' +
-  '- notes: the notes of the releases after yours up to the one installed; with `version`, one release\'s.\n' +
-  '- install: installs the newest release beside the one you run, which runs on; check shows when it is done.\n' +
+  '- check: what is out and its cost, what you run, and where an install, an armed switch and the last switch stand.\n' +
+  '- notes: the release notes up to the one installed; with `version`, one release\'s.\n' +
+  '- install: installs the newest release beside yours, which runs on.\n' +
   '- restart: arms a restart onto the newest release installed. It begins at the host\'s first quiet moment and asks ' +
-  'nobody: your turn ends as it would.\n' +
+  'nobody: your turn ends as it would, as does every other agent\'s on this host and its fleet children.\n' +
   '- back: arms a Go back to the release whose data the copy holds, the same way, with `data`: keep runs it on your ' +
   'data as it is now, so you lose nothing, where that release can read it; otherwise its start comes back to the ' +
-  'release you run by itself, and restore is the way; restore puts back the copy taken at the last switch, so everything you ' +
-  'have lived since is set aside, not deleted.\n' +
-  '- cancel: disarms an armed restart or Go back before it begins.\n' +
-  '`version`, with restart or back, is the release you looked at: if they would go to another by then, nothing is ' +
-  'armed. Restart and back need a headless host started with `CONNECTOME_SUPERVISED=1`; elsewhere they refuse and ' +
-  'say why. After a restart nothing tells you it happened: check says what you run now and how the switch went. ' +
+  'release you run by itself, and restore is the way; restore puts back the copy taken at the last switch, so ' +
+  'everything you and every other agent on this host and its fleet children have lived since is set aside, not ' +
+  'deleted.\n' +
+  '- cancel: disarms an armed restart or Go back before it begins, whoever armed it.\n' +
+  '`version`, with restart or back, is the release you looked at: if they\'d go to another by then, nothing is armed. ' +
+  'Restart and back need a headless host started with `CONNECTOME_SUPERVISED=1`; elsewhere they refuse and ' +
+  'say why. After a restart nothing tells you it happened: check says what you run now. ' +
   'The person who runs your host can\'t call this tool, ';
 
 const personWord = (headless: boolean, command: string | null): string =>
@@ -103,7 +103,8 @@ const THEIRS_GO_AT_ONCE = 'Their restart and back begin at once, without waiting
   'turns in progress get up to 2 min to end, and if any don\'t,';
 
 const NO_NOTES_OR_CANCEL = 'notes and cancel have no command of theirs: their check gives them a link to the notes, and ' +
-  'only your cancel disarms a restart or Go back you asked for, though their own restart or back goes ahead in its place.';
+  'this tool\'s cancel is the one call that disarms a restart or Go back before it begins without replacing it or ' +
+  'stopping the host: their own restart or back goes ahead in its place.';
 
 const personHeadless = (command: string): string =>
   'The person who runs your host updates it with their own command, not this tool. They type it in a shell, as the ' +
