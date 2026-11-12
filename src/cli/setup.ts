@@ -92,7 +92,6 @@ function entriesOf(dir: string): string[] {
   }
 }
 
-// A directory is setup's once it holds setup's lock or kept answers, or an install record.
 function setupsOwn(dir: string, root: string): boolean {
   return existsSync(join(dir, '.setup', 'setup.lock')) || existsSync(join(dir, '.setup', 'setup-state.json')) ||
     existsSync(join(root, 'install.json'));
@@ -106,8 +105,6 @@ function takes(dir: string): boolean {
   }
 }
 
-// Where setup works when the package's own command runs it: the directory it starts in where that is empty or
-// setup's, and ~/resident otherwise. With no home directory, the start directory, which setup then refuses.
 export function setupDirectory(cwd: string, home: string | undefined): string {
   if (takes(cwd)) return cwd;
   const at = homeDirectory(home);
@@ -410,7 +407,6 @@ function lingerLine(world: SetupWorld): string {
   return `${world.hasSudo ? 'sudo ' : ''}loginctl enable-linger ${world.user}`;
 }
 
-// The lines setup can show the person, for its agent to show again; each is left out where setup has none.
 function linesForAgent(world: SetupWorld, linger: boolean | null): Record<string, string> {
   const lines: Record<string, string> = {};
   if (offersOwnUser(world, linger)) {

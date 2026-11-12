@@ -23,8 +23,6 @@ export function workingDirOf(root: string): string {
   return dirname(realpathSync(root));
 }
 
-/** Whether two paths name one directory, by device and inode, so another spelling of it (its case on a volume that
- *  ignores case, a link, a bind mount) names it too. A path that can't be looked at names none. */
 export function sameDirectory(a: string, b: string): boolean {
   try {
     const one = statSync(a, { bigint: true });
@@ -316,9 +314,6 @@ function unfinishedGoBackWords(goBack: JournalLine): string {
     'move or copy it again.';
 }
 
-/** What a binding that moves aside what the root keeps must wait for: a trial its journal leaves unfinished, whose
- *  fallback restores from that, or a Go back it leaves unfinished, which the next start goes on with from it; or a
- *  journal it can't read, which can't show either. */
 export function unfinishedWords(root: string): string | null {
   let lines: JournalLine[];
   try {
