@@ -83,6 +83,6 @@ export async function checkDiscordToken(
 }
 
 // Its ASCII letters in any case, since a server that puts the token in a URL's host gives it back lowercased.
-function hidden(words: string, token: string): string {
+export function hidden(words: string, token: string): string {
   return shownByName(words, [{ name: DISCORD_TOKEN, value: token }]);
 }
