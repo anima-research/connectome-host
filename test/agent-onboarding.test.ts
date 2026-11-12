@@ -318,13 +318,16 @@ describe('the backups\' commands', () => {
     for (const span of greps) expect(span).toBe("2>&1 | grep -v '): opens$'");
   });
 
-  it('have root start the schedule only once it has made the repository with init', () => {
+  it('have root start the schedule, in each bullet that starts one, only once it has made the repository with init', () => {
     const root = PIECES.find((piece) => piece.heading === 'Backups run by root')!.text;
-    const init = root.indexOf('`init`');
-    expect(init).toBeGreaterThanOrEqual(0);
-    for (const start of ['systemctl enable --now', 'launchctl bootstrap system']) {
-      const at = root.indexOf(start);
-      expect({ start, at: at >= 0, afterInit: at > init }).toEqual({ start, at: true, afterInit: true });
+    const bullets = root.split('\n').filter((line) => line.startsWith('- '));
+    for (const start of ['systemctl enable --now', 'launchctl bootstrap system', "root's own scheduler runs"]) {
+      const starting = bullets.filter((bullet) => bullet.includes(start));
+      expect({ start, bullets: starting.length > 0 }).toEqual({ start, bullets: true });
+      for (const bullet of starting) {
+        const init = bullet.indexOf('`init`');
+        expect({ start, init: init >= 0, afterInit: bullet.indexOf(start) > init }).toEqual({ start, init: true, afterInit: true });
+      }
     }
   });
 
