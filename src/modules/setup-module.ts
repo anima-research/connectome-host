@@ -247,7 +247,8 @@ function shownCommand(command: string, secrets: Secret[]): string[] {
   return redacted(command, secrets).split('\n').map(shown);
 }
 
-const MEMBERS_SHOWN = 10;
+// Discord's most for a member search; it takes no page after it.
+const MEMBERS_ASKED = 1000;
 
 interface DiscordMember { user: { id: string; username: string; global_name?: string | null }; nick?: string | null }
 
@@ -473,8 +474,8 @@ export class SetupModule implements Module {
           'its owner; and each server\'s text and announcement channels under their categories, each with whether the ' +
           'bot can view it and send there. From November 16, 2026, Discord lists the bot only the channels it can view. ' +
           'Given server alone, it reads that one server the same way. Given server and username, it gives instead the ' +
-          'members of that server whose Discord username or server nickname starts with username, up to ten, and says ' +
-          'when more match: Discord matches no display name. An answer too long for you to read whole gives what fits, ' +
+          'members of that server whose Discord username or server nickname starts with username, of the up to 1,000 ' +
+          'Discord gives, and says how many match: Discord matches no display name. An answer too long for you to read whole gives what fits, ' +
           'says how many of how many, and how to read the rest, or, for one server\'s channels, how the person can ' +
           'copy the id of one not shown. The token\'s value is never shown.',
         inputSchema: {
@@ -948,18 +949,20 @@ export class SetupModule implements Module {
     try {
       if (typeof username === 'string') {
         const found = await reader.get<DiscordMember[]>(
-          `/guilds/${server}/members/search?query=${encodeURIComponent(username)}&limit=${MEMBERS_SHOWN + 1}`);
-        // The ten aren't measured against the call's cap: at their longest they come to about 1,500 characters, which
-        // pass only a cap between the framework's lowest, 1,000, and that figure, and no recipe that ships sets one.
-        const members = redactedData(found.slice(0, MEMBERS_SHOWN).map(memberOf), hide);
-        return {
-          success: true,
-          data: {
-            server, username: redacted(username, hide), members,
-            ...(found.length > MEMBERS_SHOWN
-              ? { note: 'More members match: call setup--discord again with more of the username or nickname.' } : {}),
-          },
-        };
+          `/guilds/${server}/members/search?query=${encodeURIComponent(username)}&limit=${MEMBERS_ASKED}`);
+        const members = redactedData(found.map(memberOf), hide);
+        const narrow = 'call setup--discord again with more of the username or nickname.';
+        const most = found.length >= MEMBERS_ASKED;
+        const answer = (shown: typeof members) => ({
+          server, username: redacted(username, hide), members: shown,
+          ...(shown.length < members.length
+            ? {
+              note: `${shown.length} of the ${members.length} members that match${most ? ', the most Discord gives,' : ''} ` +
+                `are shown, since one answer can't hold more${most ? ', and more may match' : ''}: ${narrow}`,
+            }
+            : most ? { note: `All ${members.length} members that match, the most Discord gives, are shown, and more may match: ${narrow}` } : {}),
+        });
+        return { success: true, data: answer(fitting(members, answer, cap)) };
       }
       if (typeof server === 'string') {
         const { name, owner_id: ownerId } = await reader.get<{ name: string; owner_id: string }>(`/guilds/${server}`);
