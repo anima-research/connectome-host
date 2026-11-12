@@ -1996,7 +1996,7 @@ describe('connectome doctor\'s Discord check, where Discord or the way to it ans
       fetch: answering('/guilds/100/roles', () => Response.json({ message: 'You are being rate limited.', retry_after: 2.5, global: false }, { status: 429 })),
     }));
     expect(r.out).toContain('Discord answered 429 to GET /guilds/100/roles: You are being rate limited., so the Discord checks after it ' +
-      'weren\'t made: Discord asked for 3 s before the next request, so run connectome doctor again after that.');
+      `weren't made: Discord asked for 3 s before the next request, so run ${join(at.root, 'connectome')} doctor again after that.`);
   });
 
   test('a request that can\'t reach Discord says to check this machine can reach discord.com', async () => {
@@ -2005,7 +2005,7 @@ describe('connectome doctor\'s Discord check, where Discord or the way to it ans
       fetch: answering('/applications/@me', () => { throw new TypeError('getaddrinfo ENOTFOUND discord.com'); }),
     }));
     expect(r.out).toContain('Discord couldn\'t be asked GET /applications/@me: getaddrinfo ENOTFOUND discord.com, so the Discord checks ' +
-      'after it weren\'t made: check that this machine can resolve and reach discord.com, then run connectome doctor again.');
+      `after it weren't made: check that this machine can resolve and reach discord.com, then run ${join(at.root, 'connectome')} doctor again.`);
   });
 
   test('a redirect or an answer that isn\'t JSON says something between this machine and Discord may be answering', async () => {
@@ -2256,13 +2256,13 @@ describe('connectome doctor\'s Discord check, in its round on the review of 4a79
       fetch: answering('/users/@me', () => Response.json({ message: 'You are being rate limited.', retry_after: 119.2, global: false }, { status: 429 })),
     }));
     expect(r.out).toContain('Discord answered 429 to GET /users/@me: You are being rate limited., so the Discord checks after it ' +
-      'weren\'t made: Discord asked for 120 s before the next request, so run connectome doctor again after that.');
+      `weren't made: Discord asked for 120 s before the next request, so run ${join(at.root, 'connectome')} doctor again after that.`);
   });
 
   test('a 403 or 404 to a server\'s own reads says Discord listed that server a moment before, and what to do', async () => {
     const at = install();
     const after = 'Discord listed that server for the bot a moment before, so if the bot has been removed from it since, ' +
-      'invite it again, and otherwise run connectome doctor again.';
+      `invite it again, and otherwise run ${join(at.root, 'connectome')} doctor again.`;
     for (const [on, status] of [['/guilds/100/roles', 403], ['/guilds/100/members/900', 404], ['/guilds/100/channels', 403]] as const) {
       const r = await withHost(at, HEALTHY_HOST, () => run(at, {
         fetch: answering(on, () => Response.json({ message: 'Missing Access', code: 50001 }, { status })),

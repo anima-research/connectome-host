@@ -517,7 +517,7 @@ export async function doctor(
       for (const server of discord) {
         if (discord.length > 1) report.line(`The entry ${server.id}:`);
         try {
-          const checked = await checkDiscord(childEnv(server, env), { fetch: parts.fetch, workingDir: work });
+          const checked = await checkDiscord(childEnv(server, env), { fetch: parts.fetch, workingDir: work, command: typed });
           for (const line of checked.lines) report.line(line);
           report.problems += checked.problems.length;
         } catch (error) {

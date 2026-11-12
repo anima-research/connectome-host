@@ -25,11 +25,11 @@ class DiscordAnswer extends Error {}
 export const BEFORE_ENV_FILE = 'another of the files Bun reads there, such as .env.local or .env.development, or the ' +
   'service\'s own environment, comes before .env where it sets the name';
 
-const LISTED = 'Discord listed that server for the bot a moment before, so if the bot has been removed from it since, ' +
-  'invite it again, and otherwise run connectome doctor again.';
+const listed = (command: string): string => 'Discord listed that server for the bot a moment before, so if the bot ' +
+  `has been removed from it since, invite it again, and otherwise run ${command} doctor again.`;
 
-const waited = (unchecked: string, seconds: number): string =>
-  `${unchecked}: Discord asked for ${Math.ceil(seconds)} s before the next request, so run connectome doctor again after that`;
+const waited = (unchecked: string, seconds: number, command: string): string =>
+  `${unchecked}: Discord asked for ${Math.ceil(seconds)} s before the next request, so run ${command} doctor again after that`;
 
 export function sentToken(given: string): string {
   return given.replace(/^(Bot|Bearer)\s*/i, '');
@@ -37,8 +37,15 @@ export function sentToken(given: string): string {
 
 export async function checkDiscord(
   env: Record<string, string | undefined>,
-  options: { fetch: typeof fetch; workingDir: string; requestLimitMs?: number },
+  options: {
+    fetch: typeof fetch;
+    workingDir: string;
+    /** The command that runs this install, as the person types it: doctor's `typedCommand` answer. */
+    command: string;
+    requestLimitMs?: number;
+  },
 ): Promise<DiscordCheck> {
+  const { command } = options;
   const lines: string[] = [];
   const problems: string[] = [];
   const problem = (text: string): void => {
@@ -51,7 +58,7 @@ export async function checkDiscord(
   const token = sentToken(given);
   if (token.trim() === '') {
     problem('The Discord server\'s env has no DISCORD_TOKEN, or an empty one, so discord-mcpl can\'t log in. If .env doesn\'t hold the ' +
-      `bot token yet, store it with \`connectome setup discord\`, which keeps it in ${join(options.workingDir, '.env')}. ` +
+      `bot token yet, store it with \`${command} setup discord\`, which keeps it in ${join(options.workingDir, '.env')}. ` +
       mappingRemedy('DISCORD_TOKEN', true));
     return { lines, problems };
   }
@@ -63,17 +70,17 @@ export async function checkDiscord(
     lines.push('DISCORD_TOKEN ends with whitespace. Discord\'s REST API, which doctor asks, doesn\'t see it, since it ' +
       'isn\'t part of a header\'s value, but discord.js sends the token as it is when it logs in to the gateway, which ' +
       'doctor can\'t check. Store it without the whitespace where the server\'s value comes from. ' +
-      `\`connectome setup discord\` stores it trimmed in ${join(options.workingDir, '.env')}, which is that place unless ` +
+      `\`${command} setup discord\` stores it trimmed in ${join(options.workingDir, '.env')}, which is that place unless ` +
       `the server's entry gives DISCORD_TOKEN a value itself, or ${BEFORE_ENV_FILE}.`);
   }
   const limitMs = options.requestLimitMs ?? REQUEST_LIMIT_MS;
   const unchecked = 'so the Discord checks after it weren\'t made';
-  const again = `${unchecked}: run connectome doctor again`;
-  const reach = `${unchecked}: check that this machine can resolve and reach discord.com, then run connectome doctor again`;
+  const again = `${unchecked}: run ${command} doctor again`;
+  const reach = `${unchecked}: check that this machine can resolve and reach discord.com, then run ${command} doctor again`;
   const between = 'Something between this machine and Discord, such as a proxy, may be answering in its place.';
   const source = 'Where the recipe alone defines the server and maps "${DISCORD_TOKEN}" in its env, or the server is handed ' +
     'the host\'s whole environment ("inheritEnv": true, in the recipe or mcpl-servers.json) with no DISCORD_TOKEN ' +
-    'of its own, the token is the service\'s DISCORD_TOKEN. `connectome setup discord` stores it in ' +
+    `of its own, the token is the service's DISCORD_TOKEN. \`${command} setup discord\` stores it in ` +
     `${join(options.workingDir, '.env')}, and ${BEFORE_ENV_FILE}: a token reset on ` +
     'the Developer Portal\'s Bot page has to be stored again in whichever gives the service its value. Where the ' +
     'entry that defines the server gives DISCORD_TOKEN a value itself, that value is the one to replace: ' +
@@ -97,19 +104,19 @@ export async function checkDiscord(
       case 'refused':
         return refused;
       case 'answered': {
-        const wait = failure.retryAfter === undefined ? undefined : waited(unchecked, failure.retryAfter);
+        const wait = failure.retryAfter === undefined ? undefined : waited(unchecked, failure.retryAfter, command);
         return `Discord answered ${failure.status} to GET ${path}` +
           (failure.said !== null ? `: ${failure.said}${failure.code !== undefined ? ` (code ${failure.code})` : ''}` : ', with no message') +
           `, ${wait ?? (failure.status === 429 || failure.status >= 500 ? again : unchecked)}.` +
           (failure.status === 403 || failure.status === 404
-            ? path.startsWith('/guilds/') ? ` ${LISTED}` : path === '/applications/@me' ? ` ${between}` : ''
+            ? path.startsWith('/guilds/') ? ` ${listed(command)}` : path === '/applications/@me' ? ` ${between}` : ''
             : '');
       }
     }
   };
 
   try {
-    const bot = await whoseToken(token, { fetch: options.fetch, limitMs }, { unchecked, again, reach, between, refused, source });
+    const bot = await whoseToken(token, { fetch: options.fetch, limitMs }, { unchecked, again, reach, between, refused, source, command });
     lines.push(`✓ The token in DISCORD_TOKEN works: the bot is ${bot.name} (${bot.id}).`);
 
     const app = await reader.get<{ flags?: number }>('/applications/@me');
@@ -153,7 +160,7 @@ export async function checkDiscord(
 async function whoseToken(
   token: string,
   options: { fetch: typeof fetch; limitMs: number },
-  words: { unchecked: string; again: string; reach: string; between: string; refused: string; source: string },
+  words: { unchecked: string; again: string; reach: string; between: string; refused: string; source: string; command: string },
 ): Promise<{ name: string; id: string }> {
   const path = '/users/@me';
   const check = await checkDiscordToken(token, options);
@@ -179,7 +186,7 @@ async function whoseToken(
       }
       throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}` +
         (check.said === null ? ', with no message' : `: ${check.said}`) +
-        `, ${check.retryAfter !== undefined ? waited(words.unchecked, check.retryAfter)
+        `, ${check.retryAfter !== undefined ? waited(words.unchecked, check.retryAfter, words.command)
           : check.status === 429 || check.status >= 500 ? words.again : words.unchecked}.` +
         (check.status === 403 || check.status === 404 ? ` ${words.between}` : ''));
   }
