@@ -2645,7 +2645,7 @@ describe('a host on trial, before its commit', () => {
     expect(message).toContain(`\n${stores[1]} (agents/agent): refused: store topology rejected: `);
     expect(message).toContain(`\n${child.stores[0]} (agents/agent): refused: store topology rejected: `);
     expect(message).toContain(`\n${farLine}\n`);
-    expect(message).toEndWith('To take this release, do what each line says, or, where a line names only what failed, correct that, and update again; or stay on 0.10.2 until a release opens every store.');
+    expect(message).toEndWith('To take this release, do what each line says and correct each failure it names, then update again; or stay on 0.10.2 until a release opens every store.');
   }, 90_000);
 
   test("opens no store when it can't tell which places its fallback undoes, or when no trial is under way, and says why", async () => {

@@ -5,6 +5,7 @@ import { COMMANDS } from '../src/cli/connectome.ts';
 import { slugOf } from '../src/cli/service-unit.ts';
 import { parseHandWrittenJson } from '../src/hand-written-json.ts';
 import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, WHOLE_OUTPUT_BYTES } from '../src/modules/setup-module.ts';
+import { AUDIT_STORES_FLAG } from '../src/update/audit-stores.ts';
 
 const ROOT = join(import.meta.dir, '..');
 const GUIDE = readFileSync(join(ROOT, 'docs', 'AGENT-ONBOARDING.md'), 'utf-8');
@@ -23,6 +24,7 @@ const OPENING = PIECES[0]!.text;
 const HEADINGS = PIECES.slice(1).map((piece) => piece.heading!);
 const SPAN = /`([^`\n]+)`/g;
 const SCRIPT_RUN = String.raw`bun (?:--[\w-]+ )*'?<host>\/(scripts\/[\w.-]+)'?`;
+const PACKAGE = String.raw`(?:<host>|<dir>\/connectome-host\/current\/node_modules\/@animalabs\/connectome-host)`;
 const SPANS = [...GUIDE.matchAll(SPAN)].map((match) => match[1]!);
 
 describe('the setup agent reads the guide through setup--run', () => {
@@ -55,12 +57,18 @@ describe('what the guide names ships, or is the install\'s own', () => {
   const alwaysPacked = ['README.md', 'package.json'];
 
   it('names files in the host\'s package that are there and that the package carries', () => {
-    const named = [...new Set([...GUIDE.matchAll(/<host>\/([\w./-]+[\w])/g)].map((match) => match[1]!))];
+    const named = [...new Set([...GUIDE.matchAll(new RegExp(String.raw`${PACKAGE}\/([\w./-]+[\w])`, 'g'))].map((match) => match[1]!))];
     expect(named.length).toBeGreaterThan(0);
     for (const path of named) {
       const carried = alwaysPacked.includes(path) || pkg.files.some((entry) => path === entry || path.startsWith(`${entry}/`));
       expect({ path, there: existsSync(join(ROOT, path)), carried }).toEqual({ path, there: true, carried: true });
     }
+  });
+
+  it('runs the host\'s entry only as its store audit, with the flag the entry reads first', () => {
+    const runs = [...GUIDE.matchAll(new RegExp(String.raw`${PACKAGE}\/src\/index\.ts'? +(\S+)`, 'g'))].map((match) => match[1]!);
+    expect(runs.length).toBeGreaterThan(0);
+    for (const first of runs) expect(first).toBe(AUDIT_STORES_FLAG);
   });
 
   it('runs only connectome commands the install\'s command has, each word one its usage takes or, where the usage takes a value, a word that holds a <placeholder> and isn\'t an option', () => {
