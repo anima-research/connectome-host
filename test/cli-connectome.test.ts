@@ -255,14 +255,18 @@ test('with the service\'s unit there and no host running, bare, send and update 
   expect(asked.err).toContain(`If no host is running, start its service with \`${unit.start}\`, then ask again.`);
 });
 
-test('bare in a copy, whose unit of its name runs the original, names no unit and gives the host\'s own start line', async () => {
+test('bare in a copy, whose unit of its name runs the original, says that unit\'s file names the original, offers no service install, and gives the host\'s own start line', async () => {
   const { root } = install();
   const { path } = writeInstallCommand(root, '');
-  const unit = serviceUnit(root, join('/srv/original', basename(dirname(root))));
+  const original = join('/srv/original', basename(dirname(root)));
+  const unit = serviceUnit(root, original);
   const ran = await run(path, [], root, undefined, undefined, unit.env);
-  expect(ran.out).toContain(`\`service install\` hasn't set up a service for it here: \`${path} service install <recipe>\` sets one up.`);
+  expect(ran.out).toContain('`service install` hasn\'t set up a service for it here, and a name it would give one is ' +
+    `taken: ${unit.file}, the file of ${unit.name}, names ${original} as its working directory.`);
+  expect(ran.out).not.toContain('sets one up');
   expect(ran.out).toContain(`If no host is running, have its service start it with \`${process.execPath} ${join(root, 'start.js')}\``);
-  expect(ran.out + ran.err).not.toContain(unit.name);
+  expect(ran.out + ran.err).not.toContain(`stop ${unit.name}`);
+  expect(ran.out + ran.err).not.toContain(unit.start);
 });
 
 test('bare whose host can\'t be looked for still shows the service\'s lines, and exits 1', async () => {

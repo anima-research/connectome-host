@@ -7,7 +7,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import {
-  installService, portFree, recipeHasShell, runService, serviceCommands, serviceLines, type ServiceSystem,
+  installService, portFree, recipeHasShell, runService, serviceCommands, serviceLines, unitElsewhere, type ServiceSystem,
 } from '../src/cli/service.js';
 import { slugOf } from '../src/cli/service-unit.js';
 import { SHOWN_FILE } from '../src/cli/shown.js';
@@ -2025,8 +2025,33 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' a unit of
   const g = fake(copy, { platform });
   expect(serviceCommands(copy.root, g.system)).toBeNull();
   expect(serviceLines(copy.root, g.system)).toBeNull();
+  expect(unitElsewhere(copy.root, g.system)).toEqual({
+    unit: platform === 'darwin' ? { name: 'com.animalabs.connectome.my-resident', file: agentPlist(copy) }
+      : { name: HOST, file: hostUnit(copy) },
+    runsIn: realpathSync(original.work),
+  });
   expect(serviceLines(original.root, g.system)![0]).toContain(platform === 'darwin'
     ? 'com.animalabs.connectome.my-resident' : HOST);
+  expect(unitElsewhere(original.root, f.system)).toBeNull();
+});
+
+test('with no host unit of its name, a shell unit of its name that names another working directory, or names none, is the one named', async () => {
+  const at = install();
+  const f = fake(at);
+  mkdirSync(unitsDir(at), { recursive: true });
+  writeFileSync(shellUnit(at), '[Service]\nWorkingDirectory=/srv/elsewhere\n');
+  expect(unitElsewhere(at.root, f.system)).toEqual({ unit: { name: SHELL, file: shellUnit(at) }, runsIn: '/srv/elsewhere' });
+  writeFileSync(shellUnit(at), '[Service]\nExecStart=/bin/true\n');
+  expect(unitElsewhere(at.root, f.system)).toEqual({ unit: { name: SHELL, file: shellUnit(at) }, runsIn: null });
+});
+
+test('with no host unit of its name, a shell unit of its name that runs this directory names nothing', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  rmSync(hostUnit(at));
+  expect(serviceLines(at.root, f.system)).toBeNull();
+  expect(unitElsewhere(at.root, f.system)).toBeNull();
 });
 
 test('a launch agent whose working directory plutil can\'t read still gives its lines, with no throw', async () => {
@@ -2067,13 +2092,42 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' a stored 
   expect(readFileSync(unit, 'utf-8')).toBe(before);
 });
 
-test('a run as a user other than the one who owns the directory, as under sudo, is refused before anything is written', async () => {
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' a re-run while this install\'s shell daemon holds its stored port goes through', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { platform });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const port = Number(readEnvFile(join(at.work, '.env')).get('SESSION_SERVER_PORT'));
+  f.system.portFree = async (each) => each !== port;
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.err).toEqual([]);
+});
+
+test('a run as root on a directory another account owns, as under sudo, is refused before anything is written, and needs no user name', async () => {
   const at = install('My Resident', { shell: true });
   const f = fake(at, { owner: 1000 });
+  f.system.uid = 0;
+  Object.defineProperty(f.system, 'user', { get: () => { throw new Error('user id 0 has no passwd entry'); } });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.err.join('\n')).toContain(`${at.work} belongs to uid 1000, and this runs as resident (uid 1001)`);
+  expect(f.err).toEqual([`connectome: ${at.work} belongs to uid 1000, and this runs as root, so its service would run ` +
+    `the resident as root on files uid 1000 can change. Run this command as the user who owns ${at.work}, without sudo. ` +
+    'Nothing was written.']);
   nothingWritten(at);
   expect(f.systemd.calls).toEqual([]);
+});
+
+test('a run as a user other than the directory\'s owner, not as root, goes on', async () => {
+  const at = install();
+  const f = fake(at, { owner: 1000 });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.err).toEqual([]);
+});
+
+test('a run as root on a directory root owns goes on', async () => {
+  const at = install();
+  const f = fake(at, { owner: 0 });
+  f.system.uid = 0;
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(f.err).toEqual([]);
 });
 
 test('a no-shell run whose host isn\'t ready leaves the shell daemon\'s unit as it is', async () => {

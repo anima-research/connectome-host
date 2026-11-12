@@ -176,10 +176,10 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     if (stat === undefined || !stat.isFile()) throw new Refusal(`there's no recipe at ${recipe}.`);
   }
   const owner = sys.owner(work);
-  if (owner !== sys.uid) {
-    throw new Refusal(`${work} belongs to uid ${owner}, and this runs as ${sys.user} (uid ${sys.uid}), so its service ` +
-      `would run the resident as ${sys.user}, under ${sys.user}'s service manager. Run this command as the user who owns ` +
-      `${work}, without sudo. Nothing was written.`);
+  if (sys.uid === 0 && owner !== 0) {
+    throw new Refusal(`${work} belongs to uid ${owner}, and this runs as root, so its service would run the resident as ` +
+      `root on files uid ${owner} can change. Run this command as the user who owns ${work}, without sudo. Nothing was ` +
+      'written.');
   }
   const manager = managerOf(sys);
   const names = serviceUnits(root, sys.platform, sys.home);
@@ -646,12 +646,29 @@ function loadAgent(sys: ServiceSystem, env: Record<string, string>, unit: Servic
 }
 
 function mayRunHere(sys: ServiceSystem, manager: Manager, unit: ServiceUnit, work: string): boolean {
+  return namedElsewhere(sys, manager, unit, work) === undefined;
+}
+
+function namedElsewhere(sys: ServiceSystem, manager: Manager, unit: ServiceUnit,
+  work: string): { runsIn: string | null } | undefined {
   try {
     const text = readOr(unit.file);
-    return text === null || runsHere(fileDirectory(sys, childEnv(sys), manager, unit, text), work);
+    if (text === null) return undefined;
+    const runsIn = fileDirectory(sys, childEnv(sys), manager, unit, text);
+    return runsHere(runsIn, work) ? undefined : { runsIn };
   } catch {
-    return true;
+    return undefined;
   }
+}
+
+export function unitElsewhere(root: string, sys: ServiceSystem = machine()): { unit: ServiceUnit; runsIn: string | null } | null {
+  const names = serviceUnits(root, sys.platform, sys.home);
+  if (names === null) return null;
+  for (const unit of [names.host, names.shell]) {
+    const named = namedElsewhere(sys, names.manager, unit, names.work);
+    if (named !== undefined) return { unit, runsIn: named.runsIn };
+  }
+  return null;
 }
 
 function shellPortOf(sys: ServiceSystem, manager: Manager, env: Record<string, string>, unit: ServiceUnit): string | null {
