@@ -2637,7 +2637,7 @@ test('the package\'s bin, from a directory setup can\'t use, runs its own setup 
   const home = directory();
   writeFileSync(join(home, '.bashrc'), '# mine\n');
   const resident = join(home, 'resident');
-  const env = { ...process.env, HOME: home };
+  const env = { ...process.env, HOME: home, BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0' };
   const bare = Bun.spawnSync([process.execPath, BIN, 'setup', 'discord'], { cwd: home, env, stdin: Buffer.from('') });
   expect(bare.exitCode).toBe(1);
   expect(bare.stderr.toString()).toContain('connectome setup needs a person at a terminal');
