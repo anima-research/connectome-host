@@ -1090,7 +1090,7 @@ test('setup doesn\'t repeat the list of the state kept outside the data director
   expect(said(broken)).toEqual([resumeLine(dir), `${notListed}${record}, the install record, can't be read: The install record at ${record} isn't JSON, so this release can't read it.`]);
 });
 
-test('a setup whose install kept no state outside the data directory says so once its agent has ended, where the record gained a place meanwhile', async () => {
+test('a setup whose install kept no state outside the data directory, where the record gained a place during the conversation, says once its agent has ended that the places changed and the record holds them', async () => {
   const dir = directory();
   const record = join(dir, 'connectome-host', 'install.json');
   const none = [
