@@ -32,6 +32,9 @@ function system(home: string, answers: Record<string, string | { status: number;
     platform: 'linux', user: 'person', uid: 1000, home, cwd: home, env: {}, bun: '/bin/bun',
     run(command: string, args: string[]) {
       asked.push([command, ...args]);
+      if ((command === 'systemctl' && (args[0] !== '--user' || args[1] !== 'show')) || (command === 'launchctl' && args[0] !== 'list')) {
+        return { status: 1, stdout: '', stderr: `the stand-in answers only systemctl --user show and launchctl list, not ${command} ${args.join(' ')}` };
+      }
       const key = `${command} ${args[args.length - 1]}`;
       const answer = answers[key];
       if (answer === undefined) return { status: 1, stdout: '', stderr: `no stand-in for ${key}` };
