@@ -300,6 +300,21 @@ describe('each way named as its caller names it', () => {
     for (const lastSwitch of [null, ...others]) expect(said({ ...base, lastSwitch }).some(told)).toBe(false);
   });
 
+  test("the agent is told that a failed install's remedy is the person's, right after it, and a person isn't", () => {
+    const error = 'releases/0.13.0 is there, but its package.json names 0.12.0, so it isn\'t the release 0.13.0. Remove it, ' +
+      'then update again.';
+    const status: UpdateStatus = { ...base, lastInstall: { version: '0.13.0', at: read.at, ok: false, error } };
+    const agent = statusLines(status, TOOL_WAYS);
+    expect(agent.slice(agent.indexOf(`Last install: ${error}`), agent.indexOf(`Last install: ${error}`) + 2)).toEqual([
+      `Last install: ${error}`,
+      "That error is your host's, written to the person who runs it: what it asks of that person is theirs to do, so " +
+        'pass it on.',
+    ]);
+    for (const ways of [COMMAND_WAYS, PAGE_WAYS]) {
+      expect(statusLines(status, ways).join('\n')).not.toContain('pass it on');
+    }
+  });
+
   test('a trial log keeps its blank lines', () => {
     const lines = statusLines({ ...base, lastSwitch: fellBack });
     expect(lines.slice(-3)).toEqual(['  loading the recipe', '  ', '  Error: no such recipe']);
