@@ -395,7 +395,7 @@ describe('doctor: Discord', () => {
     expect(r.problems).toEqual([]);
   });
 
-  test('the scope reads back by name, and a server the bot isn\'t in, or a channel it can\'t see, is a problem', async () => {
+  test('the scope reads back by name, and a server the bot isn\'t in, or a channel Discord lists that the bot can\'t see, is a problem', async () => {
     const discord = fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME, ELSEWHERE] });
     const ok = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100:101+104,200' }, discord);
     expect(ok.problems).toEqual([]);
@@ -514,7 +514,7 @@ describe('doctor: Discord', () => {
     const quiet: FakeGuild = {
       ...HOME,
       channels: [...HOME.channels,
-        { id: '106', name: 'announcements', type: 0, overwrites: [{ id: '100', type: 0, deny: SEND }] },
+        { id: '106', name: 'announcements', type: 5, overwrites: [{ id: '100', type: 0, deny: SEND }] },
         { id: '107', name: 'read-only', type: 0, overwrites: [{ id: '110', type: 0, deny: SEND }] }],
     };
     const discord = fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [quiet] });

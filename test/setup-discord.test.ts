@@ -301,4 +301,84 @@ describe('setup--discord', () => {
       expect(r.error).not.toContain(TOKEN);
     }
   });
+
+  test('a call outside setup--discord\'s shapes is refused naming the value it refused, a stored secret by its name', async () => {
+    const discord = fakeDiscord([HOME]);
+    const { module } = install(discord, `DISCORD_TOKEN="${TOKEN}"\nOPENAI_API_KEY="sk-test-secret-value"\n`);
+    const shapes = 'setup--discord searches members given both server, a server\'s id as it gives them, and username, ' +
+      'the start of a username or server nickname. Call it with server alone to read that server, or with neither to ' +
+      'read the servers and channels.';
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ server: 'general' }, 'server is "general", which isn\'t a server\'s id: one is digits, given as text.'],
+      [{ server: 100 }, 'server is 100, which isn\'t a server\'s id: one is digits, given as text.'],
+      [{ server: 'sk-test-secret-value' }, 'server is "<OPENAI_API_KEY>", which isn\'t a server\'s id: one is digits, given as text.'],
+      [{ username: 'ada' }, 'username is "ada", given without server, the server whose members to search.'],
+      [{ server: '100', username: '  ' }, 'username is "  ", which holds no start of a name to search for.'],
+      [{ server: '100', username: 7 }, 'username is 7, which holds no start of a name to search for.'],
+    ];
+    for (const [input, says] of cases) {
+      const r = await read(module, input);
+      expect([input, r.success, r.error]).toEqual([input, false, `${says} ${shapes}`]);
+    }
+    expect(discord.asked).toEqual([]);
+  });
+
+  test('a read asked for while a question is being asked waits for its answer: no line and no request to Discord come before it', async () => {
+    let answer!: (value: string) => void;
+    const typed = new Promise<string>((done) => { answer = done; });
+    const discord = fakeDiscord([HOME]);
+    const dir = mkdtempSync(join(tmpdir(), 'setup-discord-'));
+    dirs.push(dir);
+    writeFileSync(join(dir, '.env'), `DISCORD_TOKEN="${TOKEN}"\n`, { mode: 0o600 });
+    const shown: string[] = [];
+    const module = new SetupModule({
+      dir, env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: dir }, asker: () => ({ ask: () => typed }),
+      show: (line) => shown.push(line), fetch: discord.fetch,
+    });
+    const asked = module.handleToolCall({ id: 'a1', name: 'ask_secret', input: { name: 'NEW_TOKEN', purpose: 'a test' } } as ToolCall);
+    await Bun.sleep(20);
+    const reading = read(module);
+    await Bun.sleep(50);
+    expect(shown.filter((line) => line.startsWith('Reading'))).toEqual([]);
+    expect(discord.asked).toEqual([]);
+    answer('a-typed-value');
+    await asked;
+    expect((await reading).success).toBe(true);
+    expect(shown).toContain('Reading the bot\'s servers and channels from Discord.');
+    expect(discord.asked.length).toBeGreaterThan(0);
+  });
+
+  test('a stored secret in what Discord gives back, or in the call\'s own username, comes in the answer by its name', async () => {
+    const named: FakeServer = { ...HOME, name: `Home ${TOKEN}`, members: [...HOME.members, { id: '702', username: 'sk-test-secret-value-fan' }] };
+    const env = `DISCORD_TOKEN="${TOKEN}"\nOPENAI_API_KEY="sk-test-secret-value"\n`;
+    const whole = await read(install(fakeDiscord([named]), env).module);
+    expect(whole.success).toBe(true);
+    expect(JSON.stringify(whole.data)).not.toContain(TOKEN);
+    expect((whole.data as { servers: Array<{ name: string }> }).servers[0]!.name).toBe('Home <DISCORD_TOKEN>');
+    const one = await read(install(fakeDiscord([named]), env).module, { server: '100' });
+    expect((one.data as { server: { name: string } }).server.name).toBe('Home <DISCORD_TOKEN>');
+    const found = await read(install(fakeDiscord([named]), env).module, { server: '100', username: 'sk-test-secret-value' });
+    expect(found.success).toBe(true);
+    expect(JSON.stringify(found.data)).not.toContain('sk-test-secret-value');
+    expect(found.data).toMatchObject({ username: '<OPENAI_API_KEY>', members: [{ id: '702', username: '<OPENAI_API_KEY>-fan' }] });
+  });
+
+  test('a call that carries the framework\'s lowest cap, 1,000, gets an answer that fits it, saying how many are shown; a call with none fits 24,000', async () => {
+    const discord = fakeDiscord([big('300', 50), big('400', 50)]);
+    const { module } = install(discord);
+    const capped = (input: Record<string, unknown>, resultMaxChars: number) =>
+      module.handleToolCall({ id: 'd1', name: 'discord', input, resultMaxChars } as ToolCall);
+    const free = await read(module, { server: '300' });
+    expect(JSON.stringify(free.data).length).toBeGreaterThan(1_000);
+    for (const [input, note] of [[{}, /^(Every server's channels together would pass|\d+ of 2 servers are shown)/], [{ server: '300' }, /^\d+ of 50 text and announcement channels are shown/]] as const) {
+      const r = await capped(input, 1_000);
+      expect([input, r.success]).toEqual([input, true]);
+      expect([input, JSON.stringify(r.data).length <= 1_000]).toEqual([input, true]);
+      expect((r.data as { note: string }).note).toMatch(note);
+    }
+    const whole = await read(module);
+    expect(JSON.stringify(whole.data).length).toBeLessThanOrEqual(24_000);
+    expect(whole.data).toMatchObject({ servers: [{ id: '300' }, { id: '400' }] });
+    expect((whole.data as { servers: Array<{ channels: unknown[] }> }).servers[0]!.channels.length).toBe(50);
+  });
 });
