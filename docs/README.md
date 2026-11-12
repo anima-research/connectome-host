@@ -10,6 +10,7 @@ A map of the guides, by who they are for. The top-level
 |---|---|
 | [AGENT-ONBOARDING.md](./AGENT-ONBOARDING.md) | Deploying a new resident end to end — interview, host user, install dir, recipe, history import, Discord, services, launch checks. Written as a runbook for an assisting Claude instance. |
 | [DEPLOYMENTS.md](./DEPLOYMENTS.md) | Day-to-day operations: supervision, logs, wake gating, known gaps. |
+| [agent-service-home.md](./agent-service-home.md) | Opt-in no-LLM Zulip status/incidents, explicit trust limits, bounded journal and later-pilot preconditions. |
 | [DEV-ENVIRONMENT.md](./DEV-ENVIRONMENT.md) | Working on the libraries themselves: sibling checkouts wired to one shared instance of each. |
 | [webui-deployment.md](./webui-deployment.md) | Serving the web console behind a proxy; auth and observers. |
 | [webui-live-surgery.md](./webui-live-surgery.md) | Rolling back, suppressing messages, quiescing — from the web console. |

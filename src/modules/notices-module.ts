@@ -18,10 +18,15 @@ import type {
 } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
 import { addressedPush } from './addressed-push.js';
+import { validateNoticeHome, type NoticeHomeConfig } from '../notice-home-config.js';
+import { NoticeHome, type HomeRuntime } from './notice-home.js';
 
 export type NoticeTier = 'silent' | 'status' | 'reply';
 
 export interface NoticesModuleConfig {
+  home?: NoticeHomeConfig;
+  /** Host-owned persistence/instance identity, never model-supplied. */
+  homeRuntime?: HomeRuntime;
   agentName?: string;
   statusChannels?: string[];
   replyIn?: string[];
@@ -215,8 +220,16 @@ export class NoticesModule implements Module {
   private reconnectEpoch = 0;
   private owedLines = new Map<string, OwedLine[]>();
   private flushChain: Promise<void> = Promise.resolve();
+  private home: NoticeHome | null = null;
 
   constructor(private readonly config: NoticesModuleConfig = {}) {
+    if (config.home) {
+      validateNoticeHome(config.home);
+      if (!config.homeRuntime || !config.agentName) throw new Error('notice home requires host runtime and agentName');
+      if ([config.statusChannels, config.replyIn, config.replyNot, config.kinds, config.quietMs, config.renotifyMs].some((v) => v !== undefined)) {
+        throw new Error('notice home cannot be combined with legacy notice routing/tier options');
+      }
+    }
     this.now = config.now ?? Date.now;
     this.timers = config.timers ?? {
       setTimeout: (fn, ms) => setTimeout(fn, ms),
@@ -236,6 +249,7 @@ export class NoticesModule implements Module {
 
   async start(ctx: ModuleContext): Promise<void> {
     this.ctx = ctx;
+    if (this.config.home) this.home = new NoticeHome(this.config.home, this.config.homeRuntime!, this.config.agentName!, this.now);
     this.warnUnknownServers(this.config.knownServers);
   }
 
@@ -243,6 +257,7 @@ export class NoticesModule implements Module {
     for (const ep of this.episodes.values()) this.cancelQuiet(ep);
     this.unsubscribe?.();
     this.unsubscribe = null;
+    await this.home?.stop();
     this.framework = null;
     this.ctx = null;
   }
@@ -250,6 +265,16 @@ export class NoticesModule implements Module {
   setFramework(framework: AgentFramework): void {
     this.framework = framework;
     this.unsubscribe?.();
+    if (this.config.home) {
+      this.home?.bind({
+        servers: () => framework.listMcplServers(),
+        tools: () => framework.getAllTools(),
+        call: (call) => this.ctx!.callTool(call),
+      }, () => framework.healthSnapshot());
+      // The framework buffers bounded create()-time traces for host sinks.
+      this.unsubscribe = framework.onTrace((event: TraceEvent) => this.onTrace(event as unknown as Record<string, unknown>), { replay: true });
+      return;
+    }
     this.unsubscribe = framework.onTrace((event: TraceEvent) => this.onTrace(event as unknown as Record<string, unknown>));
     for (const ep of this.episodes.values()) this.scheduleStatus(ep);
     if (this.episodes.size > 0 || this.owedLines.size > 0) void this.flushPending();
@@ -294,11 +319,16 @@ export class NoticesModule implements Module {
 
   getTools(): ToolDefinition[] { return []; }
 
+  /** Read-only inspection/testing hooks, not chat controls or model tools. */
+  homeState(): ReturnType<NoticeHome['state']> | null { return this.home?.state() ?? null; }
+  homeSettled(): Promise<void> { return this.home?.settled() ?? Promise.resolve(); }
+
   async handleToolCall(call: ToolCall): Promise<ToolResult> {
     return unknownToolResult(this, call.name);
   }
 
   async onProcess(event: ProcessEvent, _state: ProcessState): Promise<EventResponse> {
+    if (this.config.home) return {}; // Never redirect to an inbound/waker locus.
     if (event.type === 'mcpl:channel-incoming') {
       const e = event as unknown as { channelId: string };
       await this.replyIfDown(e.channelId);
@@ -310,6 +340,10 @@ export class NoticesModule implements Module {
   }
 
   private onTrace(event: Record<string, unknown>): void {
+    if (this.config.home) {
+      this.home?.observe(event, () => this.framework!.healthSnapshot());
+      return;
+    }
     const type = event.type as string;
     const agentName = typeof event.agentName === 'string' ? event.agentName : undefined;
     const mine = !this.config.agentName || !agentName || agentName === this.config.agentName;

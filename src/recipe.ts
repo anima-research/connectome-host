@@ -12,6 +12,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
+import { validateNoticeHome, type NoticeHomeConfig } from './notice-home-config.js';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type ForkReaderConfig, type FrameworkConfig, type MountConfig, type PersistentReaderConfig } from '@animalabs/agent-framework';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
@@ -1124,6 +1125,8 @@ export interface RecipeModules {
    * `true` = reply anywhere the agent is subscribed, no status channels.
    */
   notices?: boolean | {
+    /** Fixed, no-LLM Zulip service home. Mutually exclusive with legacy options. */
+    home?: NoticeHomeConfig;
     statusChannels?: string[];
     reply?: { in?: string[]; not?: string[] };
     kinds?: Record<string, 'silent' | 'status' | 'reply'>;
@@ -3328,9 +3331,13 @@ export function validateRecipe(raw: unknown): Recipe {
         }
       };
       for (const key of Object.keys(n)) {
-        if (!['statusChannels', 'reply', 'kinds', 'quietMs', 'renotifyMs'].includes(key)) {
+        if (!['home', 'statusChannels', 'reply', 'kinds', 'quietMs', 'renotifyMs'].includes(key)) {
           throw new Error(`modules.notices has unknown field ${JSON.stringify(key)}`);
         }
+      }
+      if (n.home !== undefined) {
+        validateNoticeHome(n.home);
+        if (Object.keys(n).some((key) => key !== 'home')) throw new Error('modules.notices.home cannot be combined with legacy notice options');
       }
       strList(n.statusChannels, 'statusChannels');
       if (n.reply !== undefined) {
