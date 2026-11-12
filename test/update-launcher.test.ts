@@ -7,7 +7,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
-  ContractError, ITEM_UPDATE_DIR, appendJournal, childrenFilePath, copyLabelPath, goBackListPath, installPaths,
+  ContractError, ENTRY_POINT, ITEM_UPDATE_DIR, appendJournal, childrenFilePath, copyLabelPath, goBackListPath, installPaths,
   itemSetAsideDir, lastCopy,
   moveCurrent, readJournal, readRecord, setAsideDir, writeJsonAtomic, type CopyLabel, type InstallRecord, type Mark,
 } from '../src/update/contract.js';
@@ -491,7 +491,8 @@ describe('a switch', () => {
       expect(existsSync(installPaths(root).copy)).toBe(false);
       const said = reports.find((l) => l.includes("didn't go ahead"))!;
       expect(said).toMatch(r.says);
-      expect(said).toContain('The request is dropped: once what refused it has cleared, ask again with /update restart.');
+      expect(said).toContain('The request is dropped: once what refused it has cleared, ask again with ' +
+        'Restart in the Web UI, `/update restart` in the host\'s terminal, or the install\'s own `connectome update restart` in a shell.');
       expect(said).not.toContain('..');
     });
   }
@@ -2440,18 +2441,24 @@ describe('a refused request', () => {
     expect(failed).toBe(true);
     expect(existsSync(installPaths(root).mark)).toBe(false);
     expect(reports.find((l) => l.includes("didn't go ahead"))).toContain('The request is dropped: once what refused it has ' +
-      'cleared, ask again with /update restart. Syncing its removal failed (EIO), so a power cut could bring the mark back, ' +
+      'cleared, ask again with Restart in the Web UI, `/update restart` in the host\'s terminal, or the install\'s own ' +
+      '`connectome update restart` in a shell. Syncing its removal failed (EIO), so a power cut could bring the mark back, ' +
       'for the next start to try the request once more.');
   });
 
-  test('a refused Go back names the ways to ask for one again', async () => {
-    await committedSwitch();
-    mark({ to: '0.10.2', why: 'go-back' });
-    free = 1024;
-    await decide(root, ops());
-    expect(reports.find((l) => l.includes("didn't go ahead"))).toContain(
-      'once what refused it has cleared, ask again with /update back, or `--go-back` from a shell.');
-  });
+  for (const keepData of [false, true]) {
+    test(`a refused Go back ${keepData ? 'that keeps the data' : 'that restores the copy'} names each way an install offers to ask again, and the whole command for its own way`, async () => {
+      await committedSwitch();
+      mark({ to: '0.10.2', why: 'go-back', keepData });
+      free = 1024;
+      await decide(root, ops());
+      const said = reports.find((l) => l.includes("didn't go ahead"))!;
+      expect(said).toContain('once what refused it has cleared, ask again with Go back in the Web UI, `/update back` in the ' +
+        'host\'s terminal, or the install\'s own `connectome update back` in a shell. Where the host doesn\'t stay up, ' +
+        `\`bun ${shellWord(join(root, ENTRY_POINT))} --go-back${keepData ? ' --keep-data' : ''}\` asks its next start to go back.`);
+      expect(said).not.toContain('`--go-back` from a shell');
+    });
+  }
 });
 
 describe('the lock', () => {
