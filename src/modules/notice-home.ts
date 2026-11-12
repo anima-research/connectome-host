@@ -78,10 +78,10 @@ interface HomeJournal {
 function diagnostic(value: unknown): { text: string; capped: boolean } {
   const raw = typeof value === 'string' ? value : '(diagnostic unavailable)';
   const text = raw.slice(0, MAX_DIAGNOSTIC)
-    .replace(/\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=][^\r\n]*/gi, '$1: [REDACTED]')
-    .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1=[REDACTED]')
-    .replace(/\b(?:sk-|sk-ant-)[A-Za-z0-9_-]{12,}/g, '[REDACTED]')
-    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, '$1[REDACTED]@');
+    .replace(/\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=][^\r\n]*/gi, '$1: (redacted)')
+    .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1=(redacted)')
+    .replace(/\b(?:sk-|sk-ant-)[A-Za-z0-9_-]{12,}/g, '(redacted)')
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, '$1(redacted)@');
   return { text, capped: raw.length > MAX_DIAGNOSTIC };
 }
 

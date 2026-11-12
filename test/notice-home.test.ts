@@ -233,7 +233,7 @@ test('diagnostic wording retained in attachment; display truncation/escaping; no
   const attachment = JSON.parse(Buffer.from(input.attachments[0].data, 'base64').toString());
   expect(attachment.record.diagnostic).toContain('Exact diagnostic @**all** ``` /pause');
   expect(attachment.record.diagnostic).toContain('detail '.repeat(700));
-  expect(attachment.record.diagnostic).toContain('[REDACTED]');
+  expect(attachment.record.diagnostic).toContain('(redacted)');
   const serialized = JSON.stringify(await journal(h.dir));
   for (const s of ['DO-NOT-KEEP', 'ALSO-SECRET', 'NEVER-CONVERSATION', 'NEVER-RESPONSE', 'NEVER-REASONING']) expect(serialized).not.toContain(s);
   expect(input.content).toContain(input.attachments[0].name);
@@ -580,8 +580,8 @@ test('fix1 F7: safe structured ops metadata retained, bounded and redacted, arbi
   await h.settle();
   const j = await journal(h.dir);
   expect(j.records.find((r: any) => r.kind === 'store-held-lost').metadata.fields).toMatchObject({ count: 4, kinds: { mail: 2, message: 2 }, mail: 2 });
-  expect(j.records.find((r: any) => r.kind === 'refusal').metadata.fields).toEqual({ category: 'secret=[REDACTED]', streak: 3 });
-  expect(j.records.find((r: any) => r.kind === 'context-maintenance-failed').metadata.fields).toMatchObject({ scope: 'agent', pending: 'api_key=[REDACTED]', progress: { totalChunks: 2, pending: true } });
+  expect(j.records.find((r: any) => r.kind === 'refusal').metadata.fields).toEqual({ category: 'secret=(redacted)', streak: 3 });
+  expect(j.records.find((r: any) => r.kind === 'context-maintenance-failed').metadata.fields).toMatchObject({ scope: 'agent', pending: 'api_key=(redacted)', progress: { totalChunks: 2, pending: true } });
   const serialized = JSON.stringify(j);
   for (const s of ['PRIVATE-BODY', 'PRIVATE-HEADER', 'PRIVATE-PROGRESS', 'DO-NOT-KEEP', 'HIDE']) expect(serialized).not.toContain(s);
   expect(serialized).toContain('omitted');
