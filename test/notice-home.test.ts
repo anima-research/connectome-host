@@ -589,6 +589,42 @@ test('fix1 F7: safe structured ops metadata retained, bounded and redacted, arbi
 });
 
 
+test('legacy redaction journal loads and delivery continues without changing historical metadata', async () => {
+  const h = await harness();
+  h.alert('legacy-incident', 'refused', 501, { data: { category: 'secret=PRIVATE', scope: 'authorization: PRIVATE',
+    pending: 'https://user:PRIVATE@example.invalid', kinds: { 'api_key=PRIVATE': 2 } } });
+  await h.settle(); await h.module.stop();
+  // Recreate the v1 projection written before the placeholder changed.
+  const legacy = JSON.stringify(await journal(h.dir)).replaceAll('(redacted)', '[REDACTED]');
+  await writeFile(join(h.dir, 'journal.json'), legacy);
+  const historical = JSON.parse(legacy).records.find((r: any) => r.kind === 'legacy-incident');
+  expect(historical.metadata.fields.category).toBe('secret=[REDACTED]');
+
+  const r = await harness({ dir: h.dir, instance: 'legacy-upgrade' });
+  expect(r.calls).toHaveLength(1); // New startup, not replay of historical records.
+  r.alert('new-incident', 'delivery after upgrade', 502); await r.settle();
+  expect(r.calls).toHaveLength(3); // Incident plus changed active-incident status.
+  expect((r.calls[1]!.input as any).content).toContain('delivery after upgrade');
+  const loaded = await journal(h.dir);
+  expect(loaded.version).toBe(1);
+  expect(loaded.records.find((x: any) => x.id === historical.id).metadata).toEqual(historical.metadata);
+});
+
+test.each(['secret=[REDACTED] password=PRIVATE', 'secret=[REDACTED]PRIVATE'])
+('legacy-looking metadata with an unredacted secret still refuses: %s', async (category) => {
+  const h = await harness();
+  h.alert('refusal', 'refused', 501, { data: { category: 'secret=PRIVATE' } });
+  await h.settle(); await h.module.stop();
+  const j = await journal(h.dir);
+  j.records.find((r: any) => r.kind === 'refusal').metadata.fields.category = category;
+  const corrupt = JSON.stringify(j);
+  await writeFile(join(h.dir, 'journal.json'), corrupt);
+  const r = await harness({ dir: h.dir, instance: 'unsafe-legacy' });
+  r.alert('new-incident', 'must not deliver', 502); await r.settle();
+  expect(r.calls).toHaveLength(0);
+  expect(await readFile(join(h.dir, 'journal.json'), 'utf8')).toBe(corrupt);
+});
+
 test('fix1 F1: actual fork nullable explicit stream schema dispatches; later schema refusal recovers', async () => {
   const h = await harness({ setup: h => { h.tools[0].inputSchema = forkSchema(); } });
   expect(h.calls).toHaveLength(1);

@@ -147,10 +147,14 @@ function safeMetadata(value: unknown): DiagnosticMetadata {
 }
 
 function validMetadata(m: DiagnosticMetadata): boolean {
+  // Compare modulo the original v1 placeholder, but still scrub every field
+  // (including kinds keys). Keep historical values as-is: validation is not a
+  // migration, and a legacy marker must not exempt adjacent secrets from scrubbing.
+  const canonical = (fields: unknown) => JSON.stringify(fields)?.replace(/\[REDACTED\]/g, '(redacted)');
   return !!m && Object.keys(m).sort().join(',') === 'disposition,fields,omitted,redacted,truncated' &&
     m.disposition === 'allowlisted-diagnostic-projection' && Number.isSafeInteger(m.omitted) && m.omitted >= 0 &&
     typeof m.truncated === 'boolean' && typeof m.redacted === 'boolean' && JSON.stringify(m).length <= 4096 &&
-    JSON.stringify(safeMetadata(m.fields).fields) === JSON.stringify(m.fields);
+    canonical(safeMetadata(m.fields).fields) === canonical(m.fields);
 }
 
 /** Deliberately small health projection: no gate reasons, pending request
