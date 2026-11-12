@@ -576,7 +576,10 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         const answering = import('./update/quiesce.js').then(({ answerSwitchRequest }) => answerSwitchRequest(app.framework, cmd.request));
         try {
           const data = await (asked === 'quiesce' ? trackOperatorWork(app, "the release switch's quiesce", answering) : answering);
-          const inFlight = asked === 'quiesce' ? [...(turnWorkInFlight() ? ['turn work'] : []), ...workBesideTurns()] : [];
+          // Turn work the framework already counts leaves the answer undrained,
+          // so it's named only where the answer reads drained.
+          const turnWork = data.drained === true && turnWorkInFlight() ? ['turn work'] : [];
+          const inFlight = asked === 'quiesce' ? [...turnWork, ...workBesideTurns()] : [];
           reply({ type: 'update-response', corrId: cmd.corrId, ok: true, data: inFlight.length > 0 ? { ...data, inFlight } : data });
         } catch (error) {
           reply({ type: 'update-response', corrId: cmd.corrId, ok: false, error: error instanceof Error ? error.message : String(error) });

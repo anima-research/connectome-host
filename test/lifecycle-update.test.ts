@@ -12,6 +12,7 @@ import { RELEASE_HOST, shellWord } from '../src/update/launcher.js';
 import type { SwitchFleet, SwitchRequest } from '../src/update/quiesce.js';
 import { HostUpdate, type SwitchFramework } from '../src/update/update.js';
 import { COMMAND_WAYS, PAGE_WAYS, cliWays, statusLines, type UpdateStatus } from '../src/web/update-text.js';
+import { answerToQuiesce } from './switch-answer-child.js';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -592,6 +593,24 @@ test('a fleet child with a script running outside any turn keeps the restart arm
   expect(check).toContain('scripts were running outside any turn');
   expect(check).toContain('- kid: 1 background script running outside any turn');
 });
+
+test('a fleet child mid-turn holds the armed restart by its turn alone, and check names only the turn', async () => {
+  const answer = await answerToQuiesce('mid-turn');
+  const { root } = installRunning0141(['0.15.0']);
+  const fleet: SwitchFleet = {
+    runningChildren: () => [{ name: 'kid' }],
+    requestSwitch: async (_name, request: SwitchRequest) =>
+      request.op === 'resume' ? { ok: true, data: { resumed: true } } : answer as { ok: boolean; data?: unknown },
+  };
+  const host = residentHost({ root, fleet });
+  await host.armed();
+  await host.update.runArmed(alwaysQuiet);
+  expect(readMark(root)).toBeNull();
+  const check = text(await host.call({ action: 'check' }));
+  expect(check).toContain('turns were still going, so the switch\'s quiesce ended.');
+  expect(check).not.toContain('work in flight');
+  expect(check).toContain('Holding it then:\n- kid: mid-turn: fixture\n');
+}, 20_000);
 
 test('a fleet child with a credential action in flight keeps the restart armed, and check names that work', async () => {
   const { root } = installRunning0141(['0.15.0']);
