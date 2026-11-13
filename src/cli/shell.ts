@@ -5,7 +5,8 @@ import { makeSpawnHelperExecutable, nodePtyDir } from '../setup/node-pty.js';
 import { readWithoutWaiting } from '../update/contract.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { typedCommand } from './install-command.js';
-import { SHOWN_FILE, shownToPerson } from './shown.js';
+import { SHOWN_FILE } from '../setup/commands-shown.js';
+import { shownToPerson } from './shown.js';
 import {
   SETUP_BUN_FLOOR, SHELL_NODE_TOP, SERVERS, declaredDependencies, ended, envFileRefusal, installedVersion,
   packageJson, realWorld, withoutDotEnv, withoutKeys, type SetupWorld,

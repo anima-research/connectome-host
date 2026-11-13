@@ -1,7 +1,6 @@
 import { appendFileSync } from 'node:fs';
+import { SHOWN_FILE } from '../setup/commands-shown.js';
 import type { CliContext } from './connectome.js';
-
-export const SHOWN_FILE = 'CONNECTOME_SETUP_SHOWN';
 
 export function shownToPerson<T extends Pick<CliContext, 'out' | 'err'>>(
   ctx: T,

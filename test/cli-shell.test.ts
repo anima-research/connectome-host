@@ -7,7 +7,7 @@ import { COMMANDS } from '../src/cli/connectome.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
 import type { Ran, RunOptions } from '../src/cli/setup.js';
 import { shell, shellCommand, type ShellWorld } from '../src/cli/shell.js';
-import { SHOWN_FILE } from '../src/cli/shown.js';
+import { SHOWN_FILE } from '../src/setup/commands-shown.js';
 import { shellWord } from '../src/update/launcher.js';
 import { modeTest } from './mode-test.js';
 

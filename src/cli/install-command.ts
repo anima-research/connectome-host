@@ -3,7 +3,7 @@ import { delimiter, join, resolve, sep } from 'node:path';
 import { writeTextAtomic } from '../update/contract.js';
 import { RELEASE_HOST, shellWord } from '../update/launcher.js';
 import { bindingCheckLines } from '../update/rebind.js';
-import { SHOWN_FILE } from './shown.js';
+import { SHOWN_FILE } from '../setup/commands-shown.js';
 
 export const INSTALL_COMMAND = 'connectome';
 

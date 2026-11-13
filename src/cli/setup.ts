@@ -17,7 +17,7 @@ import {
 import { lingerOf } from '../setup/linger.js';
 import { readSetupState, type KeptState, type SetupState } from '../setup/state.js';
 import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
-import { commandsShownNote } from '../modules/setup-module.js';
+import { commandsShownNote } from '../setup/commands-shown.js';
 import { askHidden as askHiddenOn } from '../setup/terminal-secret.js';
 import {
   ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, readWithoutWaiting,

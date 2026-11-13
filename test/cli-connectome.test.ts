@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { bare, COMMANDS, send } from '../src/cli/connectome.js';
 import { openHost } from '../src/cli/host-socket.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
-import { SHOWN_FILE } from '../src/cli/shown.js';
+import { SHOWN_FILE } from '../src/setup/commands-shown.js';
 import { installPaths } from '../src/update/contract.js';
 import { shellWord } from '../src/update/launcher.js';
 import type { UpdateStatus } from '../src/web/update-text.js';
