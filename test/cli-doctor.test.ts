@@ -730,15 +730,22 @@ describe('connectome doctor', () => {
   test('a stored DISCORD_TOKEN that no server gets is told to be named in a server\'s env, the one place discord-mcpl reads it', async () => {
     const at = install({ stored: ['DISCORD_TOKEN'], recipe: { ...RECIPE(''), mcpServers: { shell: RECIPE('').mcpServers.shell } } });
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
-    expect(r.out).toMatch(/\n {2}DISCORD_TOKEN is in setup's list of stored secrets, and doctor finds no server given it: .* Name it as "\$\{DISCORD_TOKEN\}" in the recipe entry of the server that needs it: in its env, as "DISCORD_TOKEN": "\$\{DISCORD_TOKEN\}"\. mcpl-servers\.json /);
-    expect(r.out).not.toMatch(/DISCORD_TOKEN is in setup's list of stored secrets, and doctor finds no server given it[^\n]*or in its args/);
+    expect(r.out).toContain('DISCORD_TOKEN is in setup\'s list of stored secrets, and doctor finds no server given it: no server the ' +
+      'host starts is given it in its env or args, no server it dials names it in its token or url, and the recipe names it nowhere ' +
+      'outside its servers. Doctor can\'t tell which server needs it: give it to that server in the env of the entry that defines it, ' +
+      'as "DISCORD_TOKEN": "${DISCORD_TOKEN}" in the recipe, and as its value in mcpl-servers.json or the agent overlay, which take ' +
+      'values as written. Then restart the service.');
   });
 
   test('a secret setup stored that no server\'s env maps is a line saying doctor finds none given it, the overlay\'s replacement included', async () => {
     const lonely = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'] });
     const r = await withHost(lonely, HEALTHY_HOST, () => run(lonely));
     expect(r.out).not.toMatch(/✗.*LONELY_SECRET/);
-    expect(r.out).toMatch(/LONELY_SECRET is in setup's list of stored secrets, and doctor finds no server given it: no server the host starts is given it in its env or args, no server it dials names it in its token or url, and the recipe names it nowhere outside its servers\. Name it as "\$\{LONELY_SECRET\}" in the recipe entry of the server that needs it: in its env, as "LONELY_SECRET": "\$\{LONELY_SECRET\}", or in its args, or, for a server the host dials, in its token or url\. mcpl-servers\.json and the agent overlay take their values as written, with no \$\{…\} substituted\. For a server mcpl-servers\.json starts, a recipe entry can't set its env or args: move the server's definition out of mcpl-servers\.json into the recipe, or set "inheritEnv": true in its recipe entry, which hands it the host's whole environment, with LONELY_SECRET left out of the file's env, whose value would replace the host's\. An agent overlay entry replaces the recipe's and the file's, so the recipe can't reach a server the overlay defines while that entry is there: take the entry out of the overlay, put the server's definition, with its command or url, in the recipe, and out of mcpl-servers\.json too where the file has an entry of that name, whose command and env would stay, or in mcpl-servers\.json with a recipe entry that names it, and follow the steps above for whichever then defines it\. Then restart the service\./);
+    expect(r.out).toContain('LONELY_SECRET is in setup\'s list of stored secrets, and doctor finds no server given it: no server the ' +
+      'host starts is given it in its env or args, no server it dials names it in its token or url, and the recipe names it nowhere ' +
+      'outside its servers. Doctor can\'t tell which server needs it: give it to that server in the env or args of the entry that ' +
+      'defines it, as "${LONELY_SECRET}" in the recipe, and as its value in mcpl-servers.json or the agent overlay, which take values ' +
+      'as written, or, for a server the host dials, in its token or url. Then restart the service.');
     expect(r.out).not.toMatch(/✗.*SESSION_SERVER_TOKEN/);
     expectNoSecret(r.out + r.err);
     expect(r.status).toBe(0);
@@ -747,6 +754,15 @@ describe('connectome doctor', () => {
     const r2 = await withHost(shadowed, HEALTHY_HOST, () => run(shadowed));
     expect(r2.out).toMatch(/\n {2}SESSION_SERVER_TOKEN is in setup's list of stored secrets, and doctor finds no server given it/);
     expect(r2.out).not.toMatch(/✗.*SESSION_SERVER_TOKEN/);
+  });
+
+  test('a Discord entry the agent overlay defines with no DISCORD_TOKEN is told to come out of it, so the recipe\'s entry beneath defines the server', async () => {
+    const at = install({ overlay: { discord: { command: join('/x', 'node_modules/.bin/discord-mcpl'), env: { DISCORD_GUILD_ID: '100' } } } });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain('The Discord server\'s env has no DISCORD_TOKEN, or an empty one, so discord-mcpl can\'t log in. The agent ' +
+      `overlay ${join(at.work, 'mcpl-servers.agent.json')} defines the server at mcplServers.discord, and the overlay can neither put in ` +
+      'a "${…}" nor hand a server the service\'s environment: take that entry out of the overlay, so that the recipe\'s entry for it ' +
+      `defines the server, then run \`${join(at.root, 'connectome')} doctor\` again.`);
   });
 
   test('with modules.heartbeat on, an overlay heartbeat-mcpl server is left out as the host leaves it out, so no stored secret reaches it', async () => {
@@ -1763,7 +1779,7 @@ describe('connectome doctor', () => {
     const at = install();
     const refusing = (async () => Response.json({ message: '401: Unauthorized', code: 0 }, { status: 401 })) as unknown as typeof fetch;
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { fetch: refusing }));
-    expect(r.out).toContain(`\`${join(at.root, 'connectome')} setup discord\` stores it in`);
+    expect(r.out).toContain(`\`${join(at.root, 'connectome')} setup discord\`, which stores it in`);
     expect(r.out).not.toMatch(/`connectome setup discord`/);
   });
 
@@ -1776,7 +1792,9 @@ describe('connectome doctor', () => {
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { fetch: refusing }));
     expect(r.out).toContain('✗ Discord refused the bot token');
     expect(r.out).not.toContain('"<DISCORD_TOKEN>"');
-    expect(r.out).toContain('mcpl-servers.json and the agent overlay take it as written, a "${DISCORD_TOKEN}" included');
+    expect(r.out).toContain('The token is the value written at mcplServers.discord.env.DISCORD_TOKEN in ' +
+      `${join(at.work, 'mcpl-servers.json')}, which takes it as written: replace it with the bot token from the Developer Portal\'s ` +
+      'Bot page, then restart the service.');
   });
 
   test('a discord-mcpl entry the host dials at its url isn\'t checked as one it starts, and is said as dialed', async () => {
