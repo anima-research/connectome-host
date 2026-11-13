@@ -3488,6 +3488,18 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
   });
 
+  test('where systemd runs the service in another directory, the host that answers isn\'t compared with that unit\'s main process', async () => {
+    const at = install();
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      checkService: async () => ({ passed: false, lines: [`systemd runs connectome-test.service in /elsewhere, not ${at.work}.`], elsewhere: true as const }),
+      servicePid: async () => ({ pid: '5151' }),
+    }));
+    expect(r.out).toContain('The host answers: pid 4242, recipe Ember. Whether it\'s the service\'s host can\'t be told: systemd ' +
+      'runs the service\'s unit in another directory, said above, so its main process isn\'t compared with this host.');
+    expect(r.out).not.toContain('isn\'t the service\'s');
+    expect(r.out).not.toContain('kill 4242');
+  });
+
   test('where the service check didn\'t see systemd run the service in this install\'s directory, the ladder doesn\'t run, naming why', async () => {
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, () => run(at, {

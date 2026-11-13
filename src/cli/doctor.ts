@@ -452,7 +452,10 @@ export async function doctor(
           `service's host can't be told: ${why.replace(/\.$/, '')}.`);
         pidUntold = true;
       };
-      if (stopped) {
+      if (unitElsewhere) {
+        untold('systemd runs the service\'s unit in another directory, said above, so its main process isn\'t compared with ' +
+          'this host');
+      } else if (stopped) {
         const now = await ownPid();
         if (now !== null && 'why' in now) untold(now.why);
         else if (now !== null && (now.pid !== '0' || !(await stillAnswers()))) changed();
