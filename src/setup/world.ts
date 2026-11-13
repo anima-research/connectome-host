@@ -38,7 +38,8 @@ export interface SetupWorld {
   bun: { path: string; version: string };
   hasSudo: boolean;
   lingerOf(user: string): boolean | null;
-  macSession(): boolean;
+  /** How the Mac's session check ended where it didn't exit 0, in ended()'s words, or null where it did. */
+  macSession(): string | null;
   timeZone: string | undefined;
   userExists(user: string): boolean | null;
   ask(question: string): Promise<string | null>;
@@ -88,6 +89,10 @@ export function withoutKeys(env: Record<string, string | undefined>, keys: strin
   return kept;
 }
 
+// launchd loads the service's agents, which name no session type, only once their user has logged in to the Mac's
+// graphical session, and that login creates the gui/<uid> domain this prints: it exits 0 only where there is one.
+export const macSessionCheck = (): string[] => ['launchctl', 'print', `gui/${process.getuid!()}`];
+
 export function ended(ran: Ran): string {
   if (ran.startError) return `it couldn't be started (${ran.startError.message})`;
   if (ran.signal) return `it was ended by ${ran.signal}`;
@@ -116,7 +121,16 @@ export function realWorld(): SetupWorld {
     bun: { path: process.execPath, version: Bun.version },
     hasSudo: Bun.which('sudo') !== null,
     lingerOf: (user) => lingerOf(user),
-    macSession: () => spawnSync('launchctl', ['print', `gui/${process.getuid!()}`], { stdio: 'ignore' }).status === 0,
+    macSession: () => {
+      const [command, ...args] = macSessionCheck();
+      const ran = spawnSync(command!, args, { stdio: 'ignore' });
+      if (ran.status === 0) return null;
+      const error = ran.error as NodeJS.ErrnoException | undefined;
+      return ended({
+        status: ran.status, stdout: '', stderr: '', signal: ran.signal ?? undefined,
+        startError: error ? { code: error.code, message: error.message } : undefined,
+      });
+    },
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     userExists: (user) => {
       const found = spawnSync('getent', ['passwd', user], { stdio: 'ignore', env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });

@@ -19,7 +19,8 @@ import {
   SERVERS, SETUP_BUN_FLOOR, SHELL_NODE_TOP, declaredDependencies, installedVersion, packageJson, type PackageJson,
 } from '../setup/packages.js';
 import {
-  envFileRefusal, ended, realWorld, withoutDotEnv, withoutKeys, type AgentLaunch, type Ran, type SetupWorld,
+  envFileRefusal, ended, macSessionCheck, realWorld, withoutDotEnv, withoutKeys, type AgentLaunch, type Ran,
+  type SetupWorld,
 } from '../setup/world.js';
 import {
   ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, readWithoutWaiting,
@@ -363,13 +364,13 @@ function linesForAgent(world: SetupWorld, linger: boolean | null): Record<string
   return lines;
 }
 
-function factsForAgent(world: SetupWorld, dir: string, session: boolean | null): Record<string, string> {
+function factsForAgent(world: SetupWorld, dir: string, session: string | null | undefined): Record<string, string> {
   const facts: Record<string, string> = {};
   if (world.timeZone) facts.CONNECTOME_SETUP_TIME_ZONE = world.timeZone;
   for (const [name, files] of Object.entries(dotenvSettings(dir, ['MODEL', AGENT_OVERLAY_FILE_ENV]))) {
     if (files.length > 0) facts[`CONNECTOME_SETUP_FILES_SETTING_${name}`] = files.join(', ');
   }
-  if (session !== null) facts.CONNECTOME_SETUP_MAC_SESSION = session ? 'yes' : 'no';
+  if (session !== undefined) facts.CONNECTOME_SETUP_MAC_SESSION = session ?? '0';
   return facts;
 }
 
@@ -395,7 +396,7 @@ async function installAndStart(
   const { out, err } = ctx;
   const envFile = join(dir, '.env');
   const linger = world.lingerOf(world.user);
-  const session = world.platform === 'darwin' ? world.macSession() : null;
+  const session = world.platform === 'darwin' ? world.macSession() : undefined;
   if (linger === null && world.platform === 'linux') {
     out('This machine doesn\'t run systemd, so the resident can\'t run as a systemd user service here, the way its ' +
       'guide sets it up. Another service manager can run it: one that starts the install\'s start.js and restarts it ' +
@@ -409,10 +410,11 @@ async function installAndStart(
     out(`  ${lingerLine(world)}`);
   } else if (world.platform === 'darwin') {
     out(`On macOS, a service of ${world.user}'s stops when ${world.user} logs out of the Mac's graphical session, not ` +
-      `when an ssh session ends, and launchd starts it when ${world.user} logs in there. ${session
+      `when an ssh session ends, and launchd starts it when ${world.user} logs in there. ${session === null
         ? `${world.user} is logged in there now.`
-        : `${world.user} isn't logged in there now, so the service's install refuses until ${world.user} is, and setup ` +
-          'goes on meanwhile.'}`);
+        : `\`${macSessionCheck().join(' ')}\` didn't give 0 for ${world.user}'s graphical session ` +
+          `(${session}). It gives 0 only while ${world.user} is logged in there, and the service's install refuses ` +
+          'until it does, so setup goes on meanwhile.'}`);
   }
 
   if (bunBelowFloor(pkg.engines.bun, world.bun.version) === true) {
