@@ -161,7 +161,7 @@ export async function doctor(
       text = readFileSync(units.host.file, 'utf-8');
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      if (code !== 'ENOENT') {
         serviceError = `${units.host.file}, ${units.host.name}'s ${fileWord(units.manager)}, can't be read: ` +
           `${errorText(error).replace(/\.$/, '')}.`;
       }

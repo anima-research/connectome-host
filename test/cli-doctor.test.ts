@@ -988,11 +988,6 @@ describe('connectome doctor', () => {
     const nowhere = await withHost(at, HEALTHY_HOST, () => run(at, { platform: 'win32' }));
     expect(nowhere.out).toContain(`✗ No service is installed for this install: \`${join(at.root, 'connectome')} service install\` ` +
       'writes one only on Linux and macOS, for a directory whose name has a letter or digit.');
-    rmSync(dirname(at.unit), { recursive: true });
-    writeFileSync(dirname(at.unit), '');
-    const through = await withHost(at, HEALTHY_HOST, () => run(at));
-    expect(through.out).toContain(`✗ No service is installed for this install: ${at.unit} isn't there. `);
-    expect(through.out).not.toContain(`${at.unit}, connectome-test.service's unit file, can't be read`);
   });
 
   test('a unit file install couldn\'t have written, or one that can\'t be read, is a problem naming how to write it anew, and the ladder says why it didn\'t run', async () => {
@@ -1022,6 +1017,12 @@ describe('connectome doctor', () => {
     expect(unread.out).not.toContain('No service is installed');
     expect(unread.out).toContain(ladder);
     expect(unread.status).toBe(1);
+    rmSync(dirname(at.unit), { recursive: true });
+    writeFileSync(dirname(at.unit), '');
+    const through = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(through.out).toMatch(new RegExp(`✗ ${at.unit.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&')}, connectome-test\\.service's unit file, can't be read: .*not a directory`, 'i'));
+    expect(through.out).not.toContain('No service is installed');
+    expect(through.status).toBe(1);
   });
 
   test('a unit that runs in another directory than this install\'s, as another install\'s of the same directory name does, is a problem, and doctor reads nothing there', async () => {
