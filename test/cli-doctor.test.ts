@@ -146,6 +146,9 @@ const discordFetch = (async (input: string | URL | Request, init?: RequestInit):
   return new Response('not found', { status: 404 });
 }) as typeof fetch;
 
+// Keep this written out, not imported from doctor: a change to doctor's probe must fail the version tests.
+const VERSION_PROBE = 'import sys; print("%d.%d" % sys.version_info[:2])';
+
 function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lines' | 'traceback' | 'clean' | 'signal' | 'garbled' | 'silent' | 'misshapen'; version?: string } = {}): string {
   const end = opts.end ?? 'lines';
   const path = join(dir, opts.sleep ? 'python3-slow' : end !== 'lines' ? `python3-${end}` : opts.version !== undefined ? `python3-${opts.version}` : 'python3');
@@ -154,7 +157,8 @@ function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lin
   const written = (json: string): string[] => [`printf '%s\\n' 'connectome-doctor findings: ${json}'`, 'exit 0'];
   writeFileSync(path, [
     '#!/bin/sh',
-    `if [ "$1" = -c ]; then echo '${opts.version ?? '3.12'}'; exit 0; fi`,
+    `if [ "$1" = -c ] && [ "$2" = '${VERSION_PROBE}' ]; then echo '${opts.version ?? '3.12'}'; exit 0; fi`,
+    'if [ "$1" = -c ]; then echo "the stand-in answers only doctor\'s version probe" >&2; exit 1; fi',
     'shift',
     'echo "ladder args: $*"',
     `printf '%s' "$CONNECTOME_DOCTOR_WITHHOLD" > '${join(dir, 'withheld.json')}'`,
