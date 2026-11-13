@@ -461,8 +461,11 @@ async function turnWorkAndIdle(hold: string): Promise<{ done: number; idle: numb
   try {
     const watching = await client(dir, closed);
     await watching.next('ready');
+    if (hold === 'shell-check' || hold === 'count-check') {
+      watching.send({ type: 'panel-request', op: hold, corrId: `held-${hold}` });
+      while (!existsSync(join(dir, 'hold-entered'))) await Bun.sleep(10);
+    }
     writeFileSync(join(dir, 'go'), '');
-    if (hold === 'shell-check' || hold === 'count-check') watching.send({ type: 'panel-request', op: hold, corrId: `held-${hold}` });
     const done = Number((await watching.next('turn-work-done')).ts);
     if (hold === 'subagent-streaming') {
       writeFileSync(join(dir, 'scout-go'), '');
