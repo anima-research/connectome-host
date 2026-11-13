@@ -968,14 +968,17 @@ export class SetupModule implements Module {
       return this.damaged(error, 'Nothing was read');
     }
     const { server, username } = input;
-    const given = (value: unknown): string => shown(redacted(JSON.stringify(value) ?? String(value), hide));
+    const given = (value: unknown): string =>
+      shown(redacted(JSON.stringify(redactedData(value, hide)) ?? String(value), hide));
     const wrong = server !== undefined && (typeof server !== 'string' || !/^\d+$/.test(server))
       ? `server is ${given(server)}, which isn't a server's id: one is digits, given as text`
       : username !== undefined && server === undefined
         ? `username is ${given(username)}, given without server, the server whose members to search`
         : username !== undefined && (typeof username !== 'string' || username.trim() === '')
           ? `username is ${given(username)}, which holds no start of a name to search for`
-          : null;
+          : typeof username === 'string' && /\p{Surrogate}/u.test(username)
+            ? 'username holds a lone UTF-16 surrogate, so it isn\'t well-formed Unicode and can\'t be sent to Discord'
+            : null;
     if (wrong !== null) {
       return failed(`${wrong}. setup--discord searches members given both server, a server's id as it gives them, and ` +
         'username, the start of a username or server nickname. Call it with server alone to read that server, or with ' +
