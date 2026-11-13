@@ -360,25 +360,6 @@ test('an install again of node-pty that fails stops the command, says why, and k
   expect(existsSync(join(dir, '.setup'))).toBe(false);
 });
 
-test('an install again of node-pty that finishes but leaves one that still doesn\'t work puts back the copy the command found', async () => {
-  const { dir, root } = installed();
-  const made = world(dir, {
-    pty: [BROKEN, BROKEN],
-    atAdd: (cwd) => {
-      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
-      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'the copy the command found');
-    },
-    atInstall: (cwd) => {
-      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
-      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'unpacked by an install that finished, and never built');
-    },
-  });
-  expect(await runShell(root, ['install'], made)).toBe(1);
-  expect(text(made.seen.err)).toContain('The resident\'s shell runs on node-pty, and here it doesn\'t work: Failed to load native module: pty.node, checked: build/Release.');
-  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy the command found');
-  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
-});
-
 test('a node-pty that loads from outside the directory, through a link or from a directory above it, isn\'t repaired: shell install says where it loads from, stops, and leaves it as it is', async () => {
   const placed = {
     'linked from a store': (dir: string, store: string) => {
@@ -397,48 +378,9 @@ test('a node-pty that loads from outside the directory, through a link or from a
     const made = world(dir, { pty: [BROKEN], atAdd: (cwd) => place(cwd, store) });
     expect(await runShell(root, ['install'], made)).toBe(1);
     expect(readFileSync(join(store, 'node-pty', 'pty.node'), 'utf-8')).toBe('another project\'s copy');
-    expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
     expect(made.seen.ran.some((argv) => args(argv)[0] === 'install')).toBe(false);
     expect(made.seen.err).toEqual([`The resident's shell runs on node-pty, and here it doesn't work: Failed to load native module: pty.node, checked: build/Release. node-pty loads from ${realpathSync(join(store, 'node-pty'))}, which is outside ${dir}, so this command leaves it as it is. A resident without a shell needs none of this.`]);
   }
-});
-
-test('a repair that finds a copy a stopped repair set aside keeps that copy, and puts it back when its own install fails', async () => {
-  const { dir, root } = installed();
-  const made = world(dir, {
-    pty: [BROKEN], installed: { status: 1, stdout: '', stderr: 'error: network\n' },
-    atAdd: (cwd) => {
-      mkdirSync(join(cwd, '.setup', 'node-pty-aside'), { recursive: true });
-      writeFileSync(join(cwd, '.setup', 'node-pty-aside', 'pty.node'), 'the copy the command found');
-      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
-      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'unpacked by an install that was stopped, and never built');
-    },
-  });
-  expect(await runShell(root, ['install'], made)).toBe(1);
-  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy the command found');
-  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
-});
-
-test('a first pty check that passes removes a copy a stopped repair left aside, says so, and leaves the working copy as it is', async () => {
-  const { dir, root } = installed();
-  const aside = join(dir, '.setup', 'node-pty-aside');
-  mkdirSync(aside, { recursive: true });
-  writeFileSync(join(aside, 'pty.node'), 'the copy a stopped repair set aside');
-  const made = world(dir, {
-    atAdd: (cwd) => {
-      mkdirSync(join(cwd, 'node_modules', 'node-pty'), { recursive: true });
-      writeFileSync(join(cwd, 'node_modules', 'node-pty', 'pty.node'), 'the copy that works');
-    },
-  });
-  expect(await runShell(root, ['install'], made)).toBe(0);
-  expect(existsSync(aside)).toBe(false);
-  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy that works');
-  expect(made.seen.out).toContain(`node-pty works in ${dir}, so this removed the copy a stopped repair had set aside at ${aside}.`);
-  expect(made.seen.ran.some((argv) => args(argv)[0] === 'install')).toBe(false);
-  const none = installed();
-  const clean = world(none.dir);
-  expect(await runShell(none.root, ['install'], clean)).toBe(0);
-  expect(text(clean.seen.out)).not.toContain('set aside');
 });
 
 test('a pty check stopped at its 30 s limit says so, in the repair\'s line and in the stop, whatever it printed first', async () => {

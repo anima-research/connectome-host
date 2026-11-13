@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, realpathSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { bunBelowFloor } from '../bun-floor.js';
 import { makeSpawnHelperExecutable, nodePtyDir } from '../setup/node-pty.js';
@@ -123,34 +123,23 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
   const outside = existsSync(loadedFrom) && !within(realpathSync(loadedFrom), realpathSync(dir));
   let helper = outside ? null : makeSpawnHelperExecutable(loadedFrom, world.platform);
   let pty = await ptyWorks(world, dir, env);
-  const aside = join(dir, '.setup', 'node-pty-aside');
   if (pty !== null && outside) {
     err(`The resident's shell runs on node-pty, and here it doesn't work: ${pty.replace(/\.+$/, '')}. node-pty loads from ` +
       `${loadedFrom}, which is outside ${dir}, so this command leaves it as it is. A resident without a shell needs none of this.`);
     return 1;
   }
   if (pty !== null) {
-    const ptyDir = nodePtyDir(dir);
     out(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (${pty.replace(/\.+$/, '')}), so ` +
-      `this installs it again, keeping the copy it has at ${aside} until the new one works, and putting it back if ` +
-      'it doesn\'t.');
-    mkdirSync(dirname(aside), { recursive: true, mode: 0o700 });
-    if (existsSync(aside)) rmSync(ptyDir, { recursive: true, force: true });
-    else if (existsSync(ptyDir)) renameSync(ptyDir, aside);
+      'this installs it again.');
+    rmSync(nodePtyDir(dir), { recursive: true, force: true });
     const reinstalled = await world.run([world.bun.path, '--no-env-file', 'install'], { cwd: dir, env, show: true });
     if (reinstalled.status === 0) {
       helper = makeSpawnHelperExecutable(nodePtyDir(dir), world.platform);
       pty = await ptyWorks(world, dir, env);
-    } else pty = `\`bun --no-env-file install\` didn't finish (${ended(reinstalled)})`;
-    if (pty === null) rmSync(aside, { recursive: true, force: true });
-    else if (existsSync(aside)) {
-      rmSync(ptyDir, { recursive: true, force: true });
-      renameSync(aside, ptyDir);
-      helper = makeSpawnHelperExecutable(ptyDir, world.platform);
+    } else {
+      pty = `\`bun --no-env-file install\` didn't finish (${ended(reinstalled)})`;
+      helper = null;
     }
-  } else if (existsSync(aside)) {
-    rmSync(aside, { recursive: true, force: true });
-    out(`node-pty works in ${dir}, so this removed the copy a stopped repair had set aside at ${aside}.`);
   }
   if (pty !== null) {
     const prebuilt = world.platform === 'darwin' && existsSync(join(nodePtyDir(dir), 'prebuilds'));
