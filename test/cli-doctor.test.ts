@@ -3376,6 +3376,20 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     expect(rootOwned.out).toContain('connectome doctor: the install at');
   });
 
+  test('as root, the stop names the install\'s command by its path, even where root\'s PATH finds that command, since the user\'s PATH isn\'t root\'s', async () => {
+    const at = install();
+    writeFileSync(join(at.root, 'connectome'), '#!/bin/sh\nexit 0\n');
+    chmodSync(join(at.root, 'connectome'), 0o755);
+    const path = process.env.PATH;
+    process.env.PATH = `${at.root}:${path ?? ''}`;
+    try {
+      const { err } = await run(at, { uid: 0, owner: () => 1001 });
+      expect(err).toContain(`Run \`${join(at.root, 'connectome')} doctor\` as the user who owns ${at.work}, without sudo.`);
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
   test('a host whose connection closes during a manager read that holds the event loop is said as changed, not as another\'s to kill', async () => {
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, (host) => run(at, {

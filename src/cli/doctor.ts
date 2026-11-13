@@ -24,7 +24,7 @@ import { shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
 import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy } from './discord-check.js';
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
-import { typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, typedCommand } from './install-command.js';
 import { checkUnits, heldWithoutFile, ownerProblem, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
 import {
   childEnv as serviceChildEnv, machine, managerOwner, namedElsewhere, recipeHasShell, serviceCommands, serviceLines, stopLine,
@@ -146,7 +146,8 @@ export async function doctor(
     }
     if (owner !== null && owner !== 0) {
       ctx.err(`connectome: ${dir} belongs to uid ${owner}, and doctor runs as root, so it would read root's service and ` +
-        `service manager, not those of the user the resident runs as. Run \`${typed} doctor\` as the user who owns ${dir}, without sudo.`);
+        `service manager, not those of the user the resident runs as. Run \`${shellWord(join(root, INSTALL_COMMAND))} doctor\` as the ` +
+        `user who owns ${dir}, without sudo.`);
       return 1;
     }
   }
