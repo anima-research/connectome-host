@@ -1,25 +1,22 @@
 import { randomBytes } from 'node:crypto';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, type Stats,
+  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, type Stats,
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { ContractError, RESTART_EXIT_CODE, SUPERVISED_ENV, realOrResolved, writeTextAtomic } from '../update/contract.js';
-import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/setup.js';
-import { shellWord } from '../update/launcher.js';
+import { ContractError, RESTART_EXIT_CODE, SUPERVISED_ENV, writeTextAtomic } from '../update/contract.js';
 import { lingerOf } from '../setup/linger.js';
-import { StoredSecrets, envForm, readEnvFile, writeEnvValue } from '../setup/secrets.js';
+import { StoredSecrets, envForm, envLink, readEnvFile, writeEnvValue } from '../setup/secrets.js';
 import { readRecipeDocument } from '../recipe-document.js';
-import { parseHandWrittenJson } from '../hand-written-json.js';
-import { agentOverlayPath } from '../update/agent-overlay-path.js';
-import { THINKING_BINDING_PROBE_MS } from '../thinking-binding-bound.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
-import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, shellWord, typedCommand } from '../update/typed-command.js';
+import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/systemd-units.js';
 import {
-  Refusal, plain, plist, serviceUnits, systemdUnit, systemdWorkingDirectory, type Manager, type ServiceUnit,
-} from './service-unit.js';
+  type ManagerSystem, agentState, childEnv, fileDirectory, launchctlFailure, ownerOf, readOr, runsFrom, runsHere, showUnit, stateOf, stderrOf, systemctlLine,
+} from './service-manager.js';
+import { Refusal, plain, plist, serviceUnits, systemdUnit, type Manager, type ServiceUnit } from './service-unit.js';
 import { shownToPerson } from './shown.js';
 
 const SHELL_PACKAGE = 'term-sessions-mcp';
@@ -30,42 +27,26 @@ const SHELL_BIN = 'session-server';
 const SHELL_PORTS = { first: 3100, last: 32767 };
 const SHELL_CLIENT = /(?:^|[/\\\s])(?:terminal-sessions-mcp|term-sessions-mcp)(?:$|[@/\\\s])/;
 const SHELL_SETTINGS = ['SESSION_SERVER_TOKEN', 'SESSION_SERVER_PORT'];
-const HOST_START_MS = 1_756;
-// agent-framework 0.33.0 connects each server in turn before the host's socket answers (src/framework.ts), and none of
-// these bounds is exported. A legacy WebSocket server can take the longest: its open, 15 s (src/mcpl/transport.ts),
-// initialize, 30 s (src/mcpl/server-connection.ts), the initial policy request, 15 s (server-connection.ts), and, when
-// a refusal of that policy closes it, the close, which waits for ws's closeTimeout, 30 s (ws 8.21.3, lib/constants.js).
-const SERVER_START_MS = 90_000;
+// Keep this how long install holds a person before saying its host hasn't answered, not how long a start can take.
+const READY_WAIT_MS = 60_000;
 // launchctl print shows `exit timeout = 5` for an agent plist() writes, on macOS 26.
 const EXIT_TIMEOUT_S = 5;
 const UNLOAD_POLL_MS = 100;
 const serviceUsage = (cmd: string) => `${cmd} service install <recipe>`;
+// Keep this install's own: a unit in one of these states has its process up, or coming up.
 const RUNNING = new Set(['active', 'activating', 'reloading']);
-const STOPPING = new Set([...RUNNING, 'deactivating']);
 
-export interface Ran {
-  status: number | null;
-  stdout: string;
-  stderr: string;
-}
-
-export interface ServiceSystem {
-  platform: NodeJS.Platform;
+export interface ServiceSystem extends ManagerSystem {
   user: string;
-  uid: number;
-  home: string;
   cwd: string;
-  env: Record<string, string | undefined>;
   bun: string;
   owner(path: string): number;
   cgroup(): string | null;
-  environ(pid: string): string;
   which(name: string): string | null;
-  run(command: string, args: string[], env: Record<string, string>): Ran;
   readRecipe(recipe: string): Promise<unknown>;
   linger(user: string): boolean | null;
   portFree(port: number): Promise<boolean>;
-  openHost(root: string): Promise<HostClient | NoHost>;
+  openHost(root: string, waitMs?: number): Promise<HostClient | NoHost>;
   sleep(ms: number): Promise<void>;
   now(): number;
 }
@@ -91,7 +72,6 @@ export function machine(): ServiceSystem {
         return null;
       }
     },
-    environ: (pid) => readFileSync(`/proc/${pid}/environ`, 'utf-8'),
     which: (name) => Bun.which(name),
     run: (command, args, env) => {
       try {
@@ -197,6 +177,14 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       'written.');
   }
   const manager = managerOf(sys);
+  if (manager === 'launchd') {
+    const domain = sys.run('launchctl', ['print', `gui/${sys.uid}`], childEnv(sys));
+    if (domain.status !== 0) {
+      throw new Refusal(`launchctl print gui/${sys.uid} failed: ${launchctlFailure(domain)}. launchd loads this ` +
+        `service's agents, which name no session type, only once ${sys.user} has logged in to the Mac's graphical ` +
+        `session. Repeat this command once ${sys.user} is logged in to it. Nothing was written.`);
+    }
+  }
   const names = serviceUnits(root, sys.platform, sys.home);
   if (names === null) {
     throw new Refusal(`a service's name comes from its working directory's name, and ${basename(work)} has no letter ` +
@@ -218,16 +206,32 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   if (manager === 'systemd-user') noOtherUnit(ctx, work, names, sys, env);
   await noOtherHost(root, dataDir, manager, names.host, sys, env);
   const envFile = join(work, '.env');
-  if (shellBin !== null) envWritable(envFile);
+  if (shellBin !== null) {
+    const link = envLink(envFile);
+    if (link !== null) {
+      throw new Refusal(`${link.message}. Replace the link with the file it leads to, if that's there, or take it away, ` +
+        'then repeat this service install command with the same recipe. Nothing was written.');
+    }
+    let outside: Error | null;
+    try {
+      outside = envForm(envFile);
+    } catch (error) {
+      throw new Refusal(`${errorText(error)}. Nothing was written.`);
+    }
+    if (outside !== null) {
+      throw new Refusal(`${outside.message}. Then repeat this service install command with the same recipe. ` +
+        'Nothing was written.');
+    }
+  }
   const shell = shellBin === null ? null : await shellPlan(sys, work, shellBin);
   if (shell !== null) {
-    if (!shell.newPort && !(await sys.portFree(Number(shell.port))) &&
-      heldPort(sys, manager, env, names.shell) !== Number(shell.port)) {
-      throw new Refusal(`SESSION_SERVER_PORT in ${envFile} is ${shell.port}, and something other than this install's ` +
-        `shell daemon, ${names.shell.name}, is listening on it, as a copied install's original daemon would be. This ` +
-        `install's shell clients would reach that process, with ${shell.newToken ? 'a new' : 'the stored'} token. Give ` +
-        `this install a port of its own as SESSION_SERVER_PORT in ${envFile}, or take that line away to have one ` +
-        'picked, then repeat this service install command. Nothing was written.');
+    if (!shell.newPort && !(await sys.portFree(Number(shell.port))) && !shellRuns(sys, manager, env, names.shell)) {
+      throw new Refusal(`SESSION_SERVER_PORT in ${envFile} is ${shell.port}. Something is listening on it, and ` +
+        `${manager === 'launchd' ? 'launchd' : 'systemd'} doesn't show this install's shell daemon, ${names.shell.name}, ` +
+        'running, as when another install took that port while this one was down. This install\'s shell clients would ' +
+        `reach that listener, with ${shell.newToken ? 'a new' : 'the stored'} token. Give this install a port of its own ` +
+        `as SESSION_SERVER_PORT in ${envFile}, or take that line away to have one picked, then repeat this service ` +
+        'install command. Nothing was written.');
     }
     if (!shell.newPort || !shell.newToken) {
       const kept = [...(shell.newPort ? [] : [`SESSION_SERVER_PORT ${shell.port}`]),
@@ -340,10 +344,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       if (loaded) await bootout(ctx, sys, env, unit,
         'Repeat this service install command with the same recipe to load its rewritten agents.');
       ownedOrFree(unit, manager, work, sys, env, loaded ? `${unit.name} was already unloaded. ` : '');
-      const rotate = loaded || stateBefore.kind === 'unloaded';
-      if (stateBefore.kind === 'unknown') ctx.out(`The state of ${unit.name} couldn't be read: ${stateBefore.why}. ` +
-        'This run kept its log in place; it can hold earlier loads.');
-      const ran = loadAgent(sys, env, unit, unit === names.host ? logPath : join(work, 'logs', 'shell.log'), rotate);
+      const ran = sys.run('launchctl', ['bootstrap', `gui/${sys.uid}`, unit.file], env);
       if (ran.status !== 0) {
         const state = agentState(sys, env, unit);
         const subject = unit === names.host ? "resident's service" : "resident's shell daemon";
@@ -367,20 +368,25 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       `${units.length === 1 ? 'it' : 'them'}, each time ${sys.user} logs in to the Mac's graphical session.`);
   }
 
-  const ready = await awaitReady(root, manager, names.host, sys, env,
-    HOST_START_MS + THINKING_BINDING_PROBE_MS + SERVER_START_MS * serversIn(raw, work));
+  ctx.out(`Waiting up to ${READY_WAIT_MS / 1000} s for its host to answer.`);
+  const ready = await awaitReady(root, manager, names.host, sys, env);
   const commands = serviceCommands(root, sys);
+  const log = commands === null ? '' : `: ${commands.log}`;
   if (typeof ready === 'string') {
     ctx.err(`connectome: ${ready}`);
-    ctx.out(`Its log shows what happened${commands === null ? '' : `: ${commands.log}`}. Put that right, then run ${cmd} service ` +
+    ctx.out(`Its log shows what happened${log}. Put that right, then run ${cmd} service ` +
       `install ${shellWord(recipe)} again. Until then ${manager === 'systemd-user'
       ? 'systemd restarts the host each time it fails, while it has its unit loaded and its start limit allows; the ' +
         'run clears that limit'
       : 'launchd starts the host again each time it exits other than with 0, while it has its agent loaded'}.`);
+  } else if ('late' in ready) {
+    ctx.err(`connectome: ${ready.late}`);
+    ctx.out(`Its log shows how its start is going${log}.`);
   }
+  const answered = typeof ready === 'string' || 'late' in ready ? null : ready;
   let lost: string | null = null;
-  if (typeof ready !== 'string') {
-    ctx.out(`Its host answers: pid ${ready.pid}, recipe ${ready.recipe}.`);
+  if (answered !== null) {
+    ctx.out(`Its host answers: pid ${answered.pid}, recipe ${answered.recipe}.`);
     if (shellBin === null) await removeShell(ctx, sys, env, manager, names.shell, work);
     else lost = shellLost(sys, env, manager, names.shell, shellStart);
   }
@@ -390,7 +396,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       `Put that right, then run ${cmd} service install ${shellWord(recipe)} again.`);
   }
   for (const line of serviceLines(root, sys) ?? []) ctx.out(line);
-  return typeof ready === 'string' || lost !== null ? 1 : 0;
+  return answered === null || lost !== null ? 1 : 0;
 }
 
 function shellLost(sys: ServiceSystem, env: Record<string, string>, manager: Manager, unit: ServiceUnit,
@@ -409,25 +415,6 @@ function shellLost(sys: ServiceSystem, env: Record<string, string>, manager: Man
   if (state.kind === 'running' && (started === undefined || state.pid === started)) return null;
   return `${daemon} didn't stay up after this run started it: launchd shows it ${state.kind === 'running'
     ? `running as pid ${state.pid}, where this run started pid ${started}` : 'not running'}.`;
-}
-
-function envWritable(envFile: string): void {
-  if (lstatSync(envFile, { throwIfNoEntry: false })?.isSymbolicLink()) {
-    throw new Refusal(`${envFile} is a link to ${readlinkSync(envFile)}. The install's .env is a file of its own, as ` +
-      'setup keeps it, so service install won\'t write the shell daemon\'s settings through the link or over it. ' +
-      "Replace the link with the file it leads to, if that's there, or take it away, then repeat this service install " +
-      'command with the same recipe. Nothing was written.');
-  }
-  let outside: Error | null;
-  try {
-    outside = envForm(envFile);
-  } catch (error) {
-    throw new Refusal(`${errorText(error)}. Nothing was written.`);
-  }
-  if (outside !== null) {
-    throw new Refusal(`${outside.message}. Then repeat this service install command with the same recipe. ` +
-      'Nothing was written.');
-  }
 }
 
 async function noOtherHost(root: string, dataDir: string, manager: Manager, unit: ServiceUnit, sys: ServiceSystem,
@@ -509,37 +496,16 @@ export function serviceLines(root: string, sys: ServiceSystem = machine()): stri
   ];
 }
 
-function serversIn(raw: unknown, work: string): number {
-  const named = (raw as { mcpServers?: unknown } | null)?.mcpServers;
-  let added: unknown;
-  try {
-    added = (parseHandWrittenJson(readFileSync(agentOverlayPath(work, settingsOf(work)), 'utf-8')) as
-      { mcplServers?: unknown } | null)?.mcplServers;
-  } catch {
-    added = undefined;
-  }
-  return [named, added].reduce<number>((count, servers) =>
-    count + (servers !== null && typeof servers === 'object' ? Object.keys(servers).length : 0), 0);
-}
-
-function settingsOf(work: string): Record<string, string> {
-  try {
-    return Object.fromEntries(readEnvFile(join(work, '.env')));
-  } catch {
-    return {};
-  }
-}
-
 async function awaitReady(root: string, manager: Manager, unit: ServiceUnit, sys: ServiceSystem,
-  env: Record<string, string>, waitMs: number): Promise<HostReady | string> {
-  const until = sys.now() + waitMs;
+  env: Record<string, string>): Promise<HostReady | { late: string } | string> {
+  const until = sys.now() + READY_WAIT_MS;
   const name = unit.name;
   let first: string | undefined;
   let last = 'nothing answered';
   for (;;) {
     let host: HostClient | NoHost;
     try {
-      host = await sys.openHost(root);
+      host = await sys.openHost(root, until - sys.now());
     } catch (error) {
       return `its host can't be reached: ${errorText(error)}`;
     }
@@ -573,11 +539,11 @@ async function awaitReady(root: string, manager: Manager, unit: ServiceUnit, sys
       }
       if (invocation !== first) return `systemd restarted ${name} before its host answered: ${last}.`;
     }
+    await sys.sleep(Math.min(1_000, Math.max(until - sys.now(), 0)));
     if (sys.now() >= until) {
-      return `no host said it was ready within ${Math.floor(waitMs / 1000)} s: ${last}. It may still be starting: ` +
-        `${typedCommand(root, sys.env.PATH)} alone says whether its host answers.`;
+      return { late: `no host said it was ready within ${READY_WAIT_MS / 1000} s: ${last}. It may still be starting: ` +
+        `${typedCommand(root, sys.env.PATH)} alone says whether its host answers.` };
     }
-    await sys.sleep(1_000);
   }
 }
 
@@ -589,10 +555,6 @@ function insideNeither(sys: ServiceSystem, manager: Manager,
     'this command runs inside it, so that would end this command partway, before it knows whether the host ' +
     'answers. Nothing was written. Ask whoever runs this machine to run it from a terminal outside the resident\'s ' +
     'service, such as over ssh.');
-}
-
-export function runsHere(directory: string | null, work: string): boolean {
-  return directory !== null && realOrResolved(directory) === realOrResolved(work);
 }
 
 function noOtherUnit(ctx: CliContext, work: string, names: { host: ServiceUnit; shell: ServiceUnit },
@@ -704,24 +666,6 @@ function insideOf(sys: ServiceSystem, manager: Manager, units: ServiceUnit[]): S
     : sys.env.XPC_SERVICE_NAME === unit.name);
 }
 
-type AgentState = { kind: 'unloaded' } | { kind: 'loaded'; exit?: string } |
-  { kind: 'running'; pid: string } | { kind: 'unknown'; why: string };
-
-export function agentState(sys: ServiceSystem, env: Record<string, string>, unit: ServiceUnit): AgentState {
-  const listed = sys.run('launchctl', ['list', unit.name], env);
-  if (listed.status === 113) return { kind: 'unloaded' };
-  if (listed.status !== 0) return { kind: 'unknown', why: launchctlFailure(listed) };
-  const pid = pidOf(listed.stdout);
-  return pid === undefined
-    ? { kind: 'loaded', exit: /"LastExitStatus"\s*=\s*(-?\d+);/.exec(listed.stdout)?.[1] }
-    : { kind: 'running', pid };
-}
-
-function loadAgent(sys: ServiceSystem, env: Record<string, string>, unit: ServiceUnit, log: string, rotate: boolean): Ran {
-  if (rotate && existsSync(log)) renameSync(log, `${log}.previous`);
-  return sys.run('launchctl', ['bootstrap', `gui/${sys.uid}`, unit.file], env);
-}
-
 function mayRunHere(sys: ServiceSystem, manager: Manager, unit: ServiceUnit, work: string): boolean {
   return namedElsewhere(sys, manager, unit, work) === undefined;
 }
@@ -748,105 +692,11 @@ export function unitElsewhere(root: string, sys: ServiceSystem = machine()): { u
   return null;
 }
 
-/** The SESSION_SERVER_PORT the shell daemon's running process started with, or null when none runs. systemd shows a
- *  unit as it last loaded it, which a daemon-reload changes under a running process (systemd 259), and launchd starts
- *  each process of a loaded agent with the environment it was loaded with, which `launchctl print` shows, whatever its
- *  plist says since (macOS 26). */
-function heldPort(sys: ServiceSystem, manager: Manager, env: Record<string, string>, unit: ServiceUnit): number | null {
-  const cannotTell = (why: string) => new Refusal(`whether this install's shell daemon, ${unit.name}, holds the ` +
-    `stored SESSION_SERVER_PORT can't be told: ${why}. Nothing was written. Once that's put right, or that daemon is ` +
-    `stopped (${stopLine(sys, manager, unit.name)}), repeat this service install command with the same recipe.`);
-  if (manager === 'launchd') {
-    const state = agentState(sys, env, unit);
-    if (state.kind === 'unknown') throw cannotTell(`launchctl list ${unit.name} failed: ${state.why}`);
-    if (state.kind !== 'running') return null;
-    const target = `gui/${sys.uid}/${unit.name}`;
-    const shown = sys.run('launchctl', ['print', target], env);
-    if (shown.status !== 0) throw cannotTell(`launchctl print ${target} failed: ${launchctlFailure(shown)}`);
-    const loaded = /^\tenvironment = \{\n((?:\t\t.*\n)*)\t\}$/m.exec(shown.stdout)?.[1] ?? '';
-    const port = /^\t\tSESSION_SERVER_PORT => (.*)$/m.exec(loaded)?.[1];
-    if (port === undefined) throw cannotTell('launchd shows no SESSION_SERVER_PORT in the environment it runs it with');
-    return Number(port);
-  }
-  const shown = showUnit(sys, env, unit.name, ['MainPID']);
-  if (typeof shown === 'string') throw cannotTell(shown);
-  const pid = shown.get('MainPID') || '0';
-  if (pid === '0') return null;
-  let environ: string;
-  try {
-    environ = sys.environ(pid);
-  } catch (error) {
-    throw cannotTell(`the environment of its process, pid ${pid}, can't be read: ${errorText(error)}`);
-  }
-  const port = /(?:^|\0)SESSION_SERVER_PORT=([^\0]*)/.exec(environ)?.[1];
-  if (port === undefined) throw cannotTell(`its process, pid ${pid}, has no SESSION_SERVER_PORT in its environment`);
-  return Number(port);
-}
-
-function fileDirectory(sys: ServiceSystem, env: Record<string, string>, manager: Manager,
-  unit: ServiceUnit, text: string): string | null {
-  const set = manager === 'systemd-user' ? systemdWorkingDirectory(text) : plistField(sys, env, unit.file, 'WorkingDirectory');
-  return set === null || set === '' ? null : realOrResolved(set === '~' ? sys.home : set);
-}
-
-function plistField(sys: ServiceSystem, env: Record<string, string>, path: string, key: string): string | null {
-  const type = sys.run('plutil', ['-type', key, path], env);
-  if (type.status !== 0) {
-    const lint = sys.run('plutil', ['-lint', path], env);
-    if (lint.status !== 0) throw new Error(lint.stderr.trim() || lint.stdout.trim() || `plutil exited with ${lint.status}`);
-    return null;
-  }
-  if (type.stdout !== 'string\n') return null;
-  const raw = sys.run('plutil', ['-extract', key, 'raw', '-o', '-', path], env);
-  if (raw.status !== 0) throw new Error(raw.stderr.trim() || raw.stdout.trim() || `plutil exited with ${raw.status}`);
-  // plutil raw adds one LF; spaces and any newline in the value itself remain part of that value.
-  return raw.stdout.replace(/\n$/, '');
-}
-
-/** systemctl show (systemd 257) gives WorkingDirectory=-/x as !/x, ~ as ~, and an unset one under the user manager as
- *  ! and the home, its default. */
-export function runsFrom(shown: string, home: string): string | null {
-  const set = shown.replace(/^[-!+@:]+/, '');
-  if (set === '' || (shown.startsWith('!') && realOrResolved(set) === realOrResolved(home))) return null;
-  return realOrResolved(set === '~' ? home : set);
-}
-
-export type Owner = { kind: 'ok'; held?: true } | { kind: 'other'; runsIn: string | null; from: string; loadedOnly?: boolean } | { kind: 'untold' }
-  | { kind: 'unshown'; shown: string };
-
-function ownerOf(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
-  env: Record<string, string>): Owner {
-  const text = readOr(unit.file);
-  if (text !== null) {
-    const runsIn = fileDirectory(sys, env, manager, unit, text);
-    if (!runsHere(runsIn, work)) return { kind: 'other', runsIn, from: unit.file };
-  }
-  return managerOwner(unit, manager, work, sys, env, text !== null);
-}
-
-export function managerOwner(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
-  env: Record<string, string>, fileThere: boolean): Owner {
-  if (manager !== 'systemd-user') {
-    if (fileThere) return { kind: 'ok' };
-    const state = agentState(sys, env, unit);
-    if (state.kind === 'unknown') return { kind: 'unshown', shown: `launchctl list ${unit.name} failed: ${state.why}` };
-    return state.kind === 'unloaded' ? { kind: 'ok' } : { kind: 'untold' };
-  }
-  const shown = showUnit(sys, env, unit.name, OWNER_PROPERTIES);
-  if (typeof shown === 'string') return { kind: 'unshown', shown };
-  return loadedOwner(unit, work, sys, shown, fileThere);
-}
-
-export const OWNER_PROPERTIES = ['LoadState', 'ActiveState', 'WorkingDirectory', 'FragmentPath'];
-
-export function loadedOwner(unit: ServiceUnit, work: string, sys: Pick<ServiceSystem, 'home'>,
-  shown: Map<string, string>, fileThere: boolean): Owner {
-  if (shown.get('LoadState') === 'not-found') {
-    return STOPPING.has(shown.get('ActiveState') ?? '') ? { kind: 'untold' } : { kind: 'ok' };
-  }
-  const runsIn = runsFrom(shown.get('WorkingDirectory') ?? '', sys.home);
-  return runsHere(runsIn, work) ? (fileThere ? { kind: 'ok' } : { kind: 'ok', held: true })
-    : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file, loadedOnly: fileThere };
+/** systemd shows a unit as activating between its restarts, as when its daemon can't bind its port. */
+function shellRuns(sys: ServiceSystem, manager: Manager, env: Record<string, string>, unit: ServiceUnit): boolean {
+  if (manager === 'launchd') return agentState(sys, env, unit).kind === 'running';
+  const shown = showUnit(sys, env, unit.name, ['ActiveState']);
+  return typeof shown !== 'string' && shown.get('ActiveState') === 'active';
 }
 
 export function reloadLine(sys: Pick<ServiceSystem, 'env' | 'uid'>, unit: ServiceUnit, work: string, next: string): string {
@@ -1014,60 +864,11 @@ function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, sh
   }
 }
 
-export function childEnv(sys: ServiceSystem): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(sys.env)) if (value !== undefined) env[key] = value;
-  if (sys.platform === 'linux' && !env.XDG_RUNTIME_DIR) env.XDG_RUNTIME_DIR = `/run/user/${sys.uid}`;
-  return env;
-}
-
-function launchctlFailure(ran: Ran): string {
-  return stderrOf({ ...ran, stderr: ran.stderr.split('\n').filter((line) =>
-    line.trim() !== 'Try re-running the command as root for richer errors.').join('\n') });
-}
-
-function stderrOf(ran: Ran): string {
-  return (ran.stderr.trim() || `exit ${ran.status}`).replace(/\.$/, '');
-}
-
-export function systemctlLine(sys: Pick<ServiceSystem, 'env' | 'uid'>, args: string): string {
-  return `${sys.env.XDG_RUNTIME_DIR ? '' : `XDG_RUNTIME_DIR=/run/user/${sys.uid} `}systemctl --user ${args}`;
-}
-
 function systemctl(sys: ServiceSystem, env: Record<string, string>, args: string[]): void {
   const ran = sys.run('systemctl', ['--user', ...args], env);
   if (ran.status !== 0) {
     throw new Refusal(`systemctl --user ${args.join(' ')} failed: ${stderrOf(ran)}. Once that's put right, repeat ` +
       'this service install command with the same recipe.');
-  }
-}
-
-function pidOf(listed: string): string | undefined {
-  return /"PID"\s*=\s*(\d+);/.exec(listed)?.[1];
-}
-
-function stateOf(shown: Map<string, string>): string {
-  const [active, sub] = [shown.get('ActiveState') || '?', shown.get('SubState') || '?'];
-  return sub === active ? active : `${active} (${sub})`;
-}
-
-export function showUnit(sys: ServiceSystem, env: Record<string, string>, name: string,
-  properties: string[]): Map<string, string> | string {
-  const ran = sys.run('systemctl', ['--user', 'show', `--property=${properties.join(',')}`, '--', name], env);
-  if (ran.status !== 0) {
-    return `systemd couldn't be asked about ${name}: ${stderrOf(ran)} ` +
-      `(${systemctlLine(sys, `show ${name}`)})`;
-  }
-  return new Map(ran.stdout.split('\n').filter((line) => line.includes('='))
-    .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
-}
-
-function readOr(path: string): string | null {
-  try {
-    return readFileSync(path, 'utf-8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
   }
 }
 

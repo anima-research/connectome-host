@@ -6,14 +6,14 @@ import { dirname, join, resolve } from 'node:path';
 import { ENTRY_POINT, readCurrent } from '../update/contract.js';
 import { EXACT_VERSION } from '../update/install.js';
 import {
-  KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRecord, shellWord, type LauncherOps,
+  KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRecord, type LauncherOps,
 } from '../update/launcher.js';
 import {
   COMMAND_WAYS, cliWays, statusLines, type UpdateStatus,
 } from '../web/update-text.js';
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
-import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, shellWord, typedCommand } from '../update/typed-command.js';
 import { serviceCommand, serviceCommands, serviceLines, unitElsewhere } from './service.js';
 import { serviceUnits } from './service-unit.js';
 import { ROOT_IN_WORKDIR, SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, packageCommand, setup, setupDirectory } from './setup.js';
@@ -196,17 +196,22 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
     release = readCurrent(root);
   } catch (error) {
     ctx.err(`connectome: ${root}'s current release can't be read: ${errorText(error)}`);
-    return Math.max(1, service(ctx));
+    service(ctx);
+    return 1;
   }
   ctx.out(`Release: ${release ?? `none is current: run setup again in ${dirname(root)}, which says how to put it right`}`);
   const status = release === null ? 1 : 0;
   const host = await reach(ctx);
-  if (host === null) return Math.max(1, service(ctx));
+  if (host === null) {
+    service(ctx);
+    return 1;
+  }
   if ('reason' in host) {
     ctx.out(`Its host doesn't answer: ${host.reason}.`);
     if (host.down) ctx.out(startHost(root, 'ask again'));
     ctx.out('Its update state isn\'t known while no host answers.');
-    return Math.max(status, service(ctx));
+    service(ctx);
+    return status;
   }
   ctx.out(`Its host is running: pid ${host.ready.pid}, recipe ${host.ready.recipe}.`);
   if (host.ready.turnWork === undefined) {
@@ -230,14 +235,14 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
     const ways = shell ? cliWays(typed) : COMMAND_WAYS;
     for (const line of statusLines(update, ways)) ctx.out(`  ${line}`);
   }
-  return Math.max(status, service(ctx));
+  service(ctx);
+  return status;
 }
 
-function service(ctx: CliContext): number {
+function service(ctx: CliContext): void {
   const lines = serviceLines(ctx.root!);
   if (lines === null) ctx.out(noService(ctx.root!));
   for (const line of lines ?? []) ctx.out(line);
-  return 0;
 }
 
 function noService(root: string): string {

@@ -11,9 +11,10 @@ import { bare, COMMANDS, send, update } from '../src/cli/connectome.js';
 import { plist, serviceUnits, systemdUnit } from '../src/cli/service-unit.js';
 import { openHost } from '../src/cli/host-socket.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
-import { SHOWN_FILE } from '../src/cli/shown.js';
+import { SHOWN_FILE } from '../src/setup/commands-shown.js';
 import { installPaths } from '../src/update/contract.js';
-import { machineOps, shellWord, type LauncherOps } from '../src/update/launcher.js';
+import { machineOps, type LauncherOps } from '../src/update/launcher.js';
+import { shellWord } from '../src/update/typed-command.js';
 import type { UpdateStatus } from '../src/web/update-text.js';
 
 const REPO = resolve(import.meta.dir, '..');
@@ -988,6 +989,18 @@ test('send stops waiting once nothing has come from the host for its limit, and 
   expect(endedAt - lastAt).toBeGreaterThanOrEqual(590);
   expect(err.join('\n')).toContain('nothing came from the host for 0.01 minutes, and it hadn\'t said the agent\'s turn ' +
     'ended, so this stopped waiting. The message was sent, and the agent may still be working on it.');
+});
+
+test('a look at the host given less than the socket\'s own wait ends when its time does, and names no number', async () => {
+  const { root, data } = install();
+  const sock = join(data, 'ipc.sock');
+  const server = createServer(() => {});
+  servers.push(server);
+  await new Promise<void>((listening) => server.listen(sock, () => listening()));
+  const started = performance.now();
+  const host = await openHost(root, 300);
+  expect(performance.now() - started).toBeLessThan(2_000);
+  expect(host).toEqual({ reason: `the socket ${sock} accepted the connection, but no host said it was ready`, down: false });
 });
 
 test('a client whose connection the host has ended gets false from send', async () => {

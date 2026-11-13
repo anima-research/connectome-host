@@ -1,11 +1,11 @@
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { RESTART_EXIT_CODE, SUPERVISED_ENV } from '../update/contract.js';
-import { RESTART_PROPERTIES, restartPolicy } from '../update/setup.js';
+import { RESTART_PROPERTIES, restartPolicy } from '../update/systemd-units.js';
 import {
-  agentState, childEnv, dropInLine, loadedOwner, managerOwner, reloadLine, showUnit, stopLine, systemctlLine, untold, type Owner,
-  type ServiceSystem,
-} from './service.js';
+  agentState, childEnv, loadedOwner, managerOwner, showUnit, systemctlLine, type Owner,
+} from './service-manager.js';
+import { dropInLine, reloadLine, stopLine, untold, type ServiceSystem } from './service.js';
 import type { Manager, ServiceUnit, ServiceUnits } from './service-unit.js';
 
 export interface ServiceCheck {

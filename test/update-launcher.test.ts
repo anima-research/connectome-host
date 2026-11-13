@@ -14,9 +14,10 @@ import {
 import {
   CHILDREN_WAIT_MS, GO_BACK_LOCK_WAIT_MS, HOST_ENTRY, KEEP_DATA_FLAG, LAUNCHER, LockHeld, dataItems, decide,
   goBackFromShell, goBackFromStart, goBackLine, goBackOffer, itemStagingDir, linuxMountPoints, machineMountPoints, machineOps,
-  macMountPoints, shellWord, takeLock, type LauncherOps,
+  macMountPoints, takeLock, type LauncherOps,
 } from '../src/update/launcher.js';
-import * as installCommand from '../src/cli/install-command.js';
+import * as typedCommandModule from '../src/update/typed-command.js';
+import { shellWord } from '../src/update/typed-command.js';
 import { copyTree, removeTree, spaceTaken } from '../src/update/data-swap.js';
 
 const ROOM_MARGIN = 256 * 2 ** 20;
@@ -2618,7 +2619,7 @@ describe('a Go back from a shell', () => {
     reports = [];
     lockOf(4242);
     alive.add(4242);
-    const spelling = spyOn(installCommand, 'typedCommand').mockImplementation(() => {
+    const spelling = spyOn(typedCommandModule, 'typedCommand').mockImplementation(() => {
       throw new Error('the working directory was removed');
     });
     try {

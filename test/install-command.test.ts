@@ -4,8 +4,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
-import { CLI_IN_RELEASE, installCommandOf, typedCommand, writeInstallCommand } from '../src/cli/install-command.js';
-import { SHOWN_FILE } from '../src/cli/shown.js';
+import { CLI_IN_RELEASE, installCommandOf, writeInstallCommand } from '../src/cli/install-command.js';
+import { typedCommand } from '../src/update/typed-command.js';
+import { SHOWN_FILE } from '../src/setup/commands-shown.js';
 
 const SETUP_RECIPE = join('node_modules', '@animalabs', 'connectome-host', 'recipes', 'setup.json');
 

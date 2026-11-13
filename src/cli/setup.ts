@@ -1,35 +1,40 @@
-import { spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync,
   statSync, writeFileSync,
 } from 'node:fs';
-import { constants, tmpdir, userInfo } from 'node:os';
+import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { createInterface, type Interface } from 'node:readline';
 import { Database } from 'bun:sqlite';
 import { bunBelowFloor } from '../bun-floor.js';
 import { priceAnthropicCall } from '../call-pricing.js';
-import { ANTHROPIC_API, checkKey, originOf, withSecretsHidden, type KeyCheck, type KeyCheckOptions } from '../setup/key-check.js';
+import { ANTHROPIC_API, originOf, withSecretsHidden } from '../setup/key-check.js';
 import {
-  EnvFormError, SHORT_CHARACTERS, SHORT_HIDES, dotenvNames, dotenvValues, envForm, isShort, readEnvFile, shortLength,
+  EnvFormError, SHORT_CHARACTERS, SHORT_HIDES, dotenvSettings, dotenvValues, envForm, isShort, readEnvFile, shortLength,
   storedSecretsIn, unwritableValue, writeEnvValue, type Secret,
 } from '../setup/secrets.js';
-import { lingerOf } from '../setup/linger.js';
 import { readSetupState, type KeptState, type SetupState } from '../setup/state.js';
 import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
-import { commandsShownNote } from '../modules/setup-module.js';
-import { askHidden as askHiddenOn } from '../setup/terminal-secret.js';
+import { commandsShownNote } from '../setup/commands-shown.js';
+import {
+  SERVERS, SETUP_BUN_FLOOR, SHELL_NODE_TOP, declaredDependencies, installedVersion, packageJson, type PackageJson,
+} from '../setup/packages.js';
+import {
+  envFileRefusal, ended, macSessionCheck, realWorld, withoutDotEnv, withoutKeys, type AgentLaunch, type Ran,
+  type SetupWorld,
+} from '../setup/world.js';
 import {
   ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, readWithoutWaiting,
   realOrResolved, releaseDir, writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
-import { HOST_ENTRY, RELEASE_HOST, isUnder, shellWord } from '../update/launcher.js';
+import { AGENT_OVERLAY_FILE_ENV } from '../update/agent-overlay-path.js';
+import { HOST_ENTRY, RELEASE_HOST, isUnder } from '../update/launcher.js';
 import {
   MOVED_ASIDE_AFTERWARDS, bindingOf, childPathsOf, keptAccount, keptInRoot, mapPath, moveAsideByHand, movesPlaces, movingAside,
   unfinishedWords, type Binding, type KeptInRoot, type Place,
 } from '../update/rebind.js';
 import type { CliContext } from './connectome.js';
-import { INSTALL_COMMAND, SETUP_RECIPE, typedCommand } from './install-command.js';
+import { SETUP_RECIPE } from './install-command.js';
+import { INSTALL_COMMAND, shellWord, typedCommand } from '../update/typed-command.js';
 
 export const SETUP_USAGE = 'connectome setup discord';
 
@@ -42,28 +47,12 @@ export const SETUP_SUMMARY = 'Sets a resident up on Discord with the host\'s own
 const PACKAGE = '@animalabs/connectome-host';
 export const ROOT_IN_WORKDIR = 'connectome-host';
 const SURFACE = 'discord';
-export const SERVERS = { discord: '@animalabs/discord-mcpl', shell: 'term-sessions-mcp' } as const;
-// term-sessions-mcp 1.7.3's engines: node ">=18.0.0 <25.0.0".
-export const SHELL_NODE_TOP = 24;
 const BOOT_TIMEOUT_MS = 60_000;
-// Bun 1.4.3's `bun add --no-env-file` still gives a package's install script the working directory's .env, where
-// 1.4.4's gives none (probed), and setup's bun add runs where the resident's secrets are.
-export const SETUP_BUN_FLOOR = '>=1.4.4';
 const OWN_USER = 'connectome';
 const NOT_FOR_THE_AGENT = [
   'CONNECTOME_INSTALL_ROOT', 'MODEL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'ANTHROPIC_BASE_URL',
   'MCPL_AGENT_OVERLAY_FILE',
 ];
-
-interface PackageJson {
-  version: string;
-  engines: { bun: string; node: string };
-  bugs: { url: string };
-}
-
-export function packageJson(): PackageJson {
-  return JSON.parse(readFileSync(join(import.meta.dir, '..', '..', 'package.json'), 'utf-8')) as PackageJson;
-}
 
 export function packageCommand(): string {
   return `bunx ${PACKAGE}@${packageJson().version}`;
@@ -114,46 +103,6 @@ function holds(dir: string, entries: string[], home: string | null): string {
   return home !== null && dir === home ? `${dir} is your home directory`
     : entries.every((entry) => entry.startsWith('.')) ? `${dir} holds hidden files, such as ${[...entries].sort()[0]}`
       : `${dir} holds other files`;
-}
-
-export interface Ran {
-  status: number | null;
-  stdout: string;
-  stderr: string;
-  startError?: { code?: string; message: string };
-  timedOut?: boolean;
-  signal?: NodeJS.Signals;
-}
-
-export interface RunOptions {
-  cwd: string;
-  env: Record<string, string>;
-  timeoutMs?: number;
-  show?: boolean;
-}
-
-export interface AgentLaunch {
-  argv: string[];
-  cwd: string;
-  env: Record<string, string>;
-}
-
-export interface SetupWorld {
-  terminal: boolean;
-  platform: NodeJS.Platform;
-  user: string;
-  env: Record<string, string | undefined>;
-  cwd: string;
-  execArgv: string[];
-  bun: { path: string; version: string };
-  hasSudo: boolean;
-  lingerOf(user: string): boolean | null;
-  userExists(user: string): boolean | null;
-  ask(question: string): Promise<string | null>;
-  askHidden(label: string): Promise<string | null>;
-  run(argv: string[], options: RunOptions): Promise<Ran>;
-  checkKey(options: KeyCheckOptions): Promise<KeyCheck>;
-  startAgent(launch: AgentLaunch): Promise<number>;
 }
 
 export async function setup(ctx: CliContext & { root: string }, world: SetupWorld = realWorld()): Promise<number> {
@@ -416,6 +365,16 @@ function linesForAgent(world: SetupWorld, linger: boolean | null): Record<string
   return lines;
 }
 
+function factsForAgent(world: SetupWorld, dir: string, session: string | null | undefined): Record<string, string> {
+  const facts: Record<string, string> = {};
+  if (world.timeZone) facts.CONNECTOME_SETUP_TIME_ZONE = world.timeZone;
+  for (const [name, files] of Object.entries(dotenvSettings(dir, ['MODEL', AGENT_OVERLAY_FILE_ENV]))) {
+    if (files.length > 0) facts[`CONNECTOME_SETUP_FILES_SETTING_${name}`] = files.join(', ');
+  }
+  if (session !== undefined) facts.CONNECTOME_SETUP_MAC_SESSION = session ?? '0';
+  return facts;
+}
+
 function goOnAsOwnUser(out: (line: string) => void): void {
   out(`Setup needs Node ${packageJson().engines.node.replace('>=', '')} or later there too, and at most Node ` +
     `${SHELL_NODE_TOP} if the resident may get a shell: if this machine's Node is installed for your user alone, as ` +
@@ -438,6 +397,7 @@ async function installAndStart(
   const { out, err } = ctx;
   const envFile = join(dir, '.env');
   const linger = world.lingerOf(world.user);
+  const session = world.platform === 'darwin' ? world.macSession() : undefined;
   if (linger === null && world.platform === 'linux') {
     out('This machine doesn\'t run systemd, so the resident can\'t run as a systemd user service here, the way its ' +
       'guide sets it up. Another service manager can run it: one that starts the install\'s start.js and restarts it ' +
@@ -451,9 +411,11 @@ async function installAndStart(
     out(`  ${lingerLine(world)}`);
   } else if (world.platform === 'darwin') {
     out(`On macOS, a service of ${world.user}'s stops when ${world.user} logs out of the Mac's graphical session, not ` +
-      `when an ssh session ends, and launchd starts it only while ${world.user} is logged in there, so over ssh with no ` +
-      `one logged in to the Mac, it can't start until they are. \`who\` lists ${world.user} on console while ` +
-      `${world.user} is logged in there.`);
+      `when an ssh session ends, and launchd starts it when ${world.user} logs in there. ${session === null
+        ? `${world.user} is logged in there now.`
+        : `\`${macSessionCheck().join(' ')}\` didn't give 0 for ${world.user}'s graphical session ` +
+          `(${session}). It gives 0 only while ${world.user} is logged in there, and the service's install refuses ` +
+          'until it does, so setup goes on meanwhile.'}`);
   }
 
   if (bunBelowFloor(pkg.engines.bun, world.bun.version) === true) {
@@ -813,6 +775,7 @@ async function installAndStart(
       CONNECTOME_SETUP_GUIDE: join(host, 'docs', 'AGENT-ONBOARDING.md'),
       CONNECTOME_SETUP_USER: world.user,
       ...linesForAgent(world, linger),
+      ...factsForAgent(world, dir, session),
       CONNECTOME_SETUP_COMMAND: shellWord(join(root, INSTALL_COMMAND)),
       CONNECTOME_UPDATE_CHECK: '0',
     },
@@ -979,34 +942,6 @@ async function bindingAnswers(world: SetupWorld, root: string, record: InstallRe
   return { dataDir: mapPath(record.dataDir, mapping)!, placeArgs };
 }
 
-export interface EnvFileWords {
-  name: string;
-  command: string;
-  again: string;
-  environment: string;
-}
-
-// Bun loads a file --env-file names into the process's own environment as it starts, where a name of it can't be told
-// from one exported, so nothing of it can be kept from what that process runs.
-export function envFileRefusal(world: Pick<SetupWorld, 'env' | 'execArgv'>, words: EnvFileWords): string[] | null {
-  if (world.env.BUN_OPTIONS?.includes('--env-file')) {
-    return [
-      `${words.name}: BUN_OPTIONS holds --env-file, and Bun loads the file such a flag names into ${words.environment}. ` +
-        `${words.again} without BUN_OPTIONS:`,
-      `  env -u BUN_OPTIONS ${words.command}`,
-      'or with only its --env-file taken out of BUN_OPTIONS.',
-    ];
-  }
-  if (world.execArgv.some((word) => word === '--env-file' || word.startsWith('--env-file='))) {
-    return [
-      `${words.name}: Bun was started with --env-file, and loads the file it names into ${words.environment}. ` +
-        `${words.again} without it:`,
-      `  ${words.command}`,
-    ];
-  }
-  return null;
-}
-
 function takeSetupLock(file: string): { release(): void } | null {
   let db: Database | undefined;
   try {
@@ -1029,12 +964,6 @@ function takeSetupLock(file: string): { release(): void } | null {
   }
   const held = db;
   return { release: () => held.close() };
-}
-
-// By name, since Bun puts in $NAME as it reads a dotenv file, so a value it read there needn't match the file's text.
-export function withoutDotEnv(env: Record<string, string | undefined>, cwd: string): Record<string, string | undefined> {
-  const names = new Set(dotenvNames(cwd));
-  return Object.fromEntries(Object.entries(env).filter(([name]) => !names.has(name)));
 }
 
 // Bun keeps an exported value over a dotenv file's, so a name the files give, holding a value none of them gives, was
@@ -1123,42 +1052,6 @@ function addTrusted(file: string, names: string[]): { added: string[] } | { reas
   return { added };
 }
 
-export function declaredDependencies(dir: string): Set<string> | null {
-  let text: string;
-  try {
-    text = readWithoutWaiting(join(dir, 'package.json'));
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? new Set() : null;
-  }
-  try {
-    const dependencies = (JSON.parse(text) as { dependencies?: unknown } | null)?.dependencies;
-    return new Set(dependencies !== null && typeof dependencies === 'object' ? Object.keys(dependencies) : []);
-  } catch {
-    return null;
-  }
-}
-
-export function installedVersion(dir: string, name: string): string | null {
-  try {
-    return (JSON.parse(readFileSync(join(dir, 'node_modules', name, 'package.json'), 'utf-8')) as { version?: string })
-      .version ?? null;
-  } catch {
-    return null;
-  }
-}
-
-export function withoutKeys(env: Record<string, string | undefined>, keys: string[]): Record<string, string> {
-  const kept: Record<string, string> = {};
-  for (const [name, value] of Object.entries(env)) if (value !== undefined && !keys.includes(name)) kept[name] = value;
-  return kept;
-}
-
-export function ended(ran: Ran): string {
-  if (ran.startError) return `it couldn't be started (${ran.startError.message})`;
-  if (ran.signal) return `it was ended by ${ran.signal}`;
-  return `exit ${ran.status}`;
-}
-
 function outputLines(ran: Ran): string[] {
   return `${ran.stdout}\n${ran.stderr}`.split('\n').filter((line) => line.trim() !== '');
 }
@@ -1199,88 +1092,3 @@ const WALKS_MODEL = 'claude-opus-5-5';
 
 const CHEAPEST_TEST_SETUP: WalkTokens = { input: 27505, output: 6594, cacheRead: 208026, cacheWrite: 20223 };
 const COSTLIEST_TEST_SETUP: WalkTokens = { input: 199250, output: 27589, cacheRead: 1854547, cacheWrite: 122949 };
-
-export function realWorld(): SetupWorld {
-  // One interface a question: readline holds the terminal raw while it's open, so Ctrl-C between questions, as
-  // during an install, reaches setup as a signal.
-  const question = async (asking: (rl: Interface) => Promise<string>): Promise<string | null> => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const gone = new Promise<null>((done) => rl.once('close', () => done(null)));
-    try {
-      return await Promise.race([asking(rl), gone]);
-    } finally {
-      rl.close();
-    }
-  };
-  return {
-    terminal: Boolean(process.stdin.isTTY && process.stdout.isTTY),
-    platform: process.platform,
-    user: userInfo().username,
-    env: process.env,
-    cwd: process.cwd(),
-    execArgv: process.execArgv,
-    bun: { path: process.execPath, version: Bun.version },
-    hasSudo: Bun.which('sudo') !== null,
-    lingerOf: (user) => lingerOf(user),
-    userExists: (user) => {
-      const found = spawnSync('getent', ['passwd', user], { stdio: 'ignore', env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
-      return found.status === 0 ? true : found.status === 2 ? false : null;
-    },
-    ask: (text) => question((rl) => new Promise((done) => rl.question(text, done))),
-    askHidden: (label) => question((rl) => askHiddenOn(rl, process.stdout, label)),
-    run: runProgram,
-    checkKey,
-    startAgent,
-  };
-}
-
-function runProgram(argv: string[], options: RunOptions): Promise<Ran> {
-  return new Promise((done) => {
-    const child = spawn(argv[0]!, argv.slice(1), {
-      cwd: options.cwd, env: options.env, stdio: ['ignore', options.show ? 'inherit' : 'pipe', options.show ? 'inherit' : 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.on('data', (chunk) => { stdout += chunk; });
-    child.stderr?.on('data', (chunk) => { stderr += chunk; });
-    let timedOut = false;
-    const limit = options.timeoutMs === undefined ? null : setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 5_000).unref();
-    }, options.timeoutMs);
-    child.on('error', (error: NodeJS.ErrnoException) => {
-      if (limit) clearTimeout(limit);
-      done({ status: null, stdout, stderr, startError: { code: error.code, message: error.message } });
-    });
-    child.on('close', (code, signal) => {
-      if (limit) clearTimeout(limit);
-      done({
-        status: timedOut ? null : code, stdout, stderr,
-        ...(timedOut ? { timedOut } : signal === null ? {} : { signal }),
-      });
-    });
-  });
-}
-
-function startAgent(launch: AgentLaunch): Promise<number> {
-  return new Promise((done) => {
-    // The terminal's Ctrl-C reaches every process in its foreground group, this one too.
-    const keep = () => {};
-    process.on('SIGINT', keep);
-    const child = spawn(launch.argv[0]!, launch.argv.slice(1), { cwd: launch.cwd, env: launch.env, stdio: 'inherit' });
-    child.on('error', (error) => {
-      process.off('SIGINT', keep);
-      process.stderr.write(`connectome setup: the agent's host couldn't be started: ${error.message}\n`);
-      done(1);
-    });
-    child.on('close', (code, signal) => {
-      process.off('SIGINT', keep);
-      if (signal !== null) {
-        process.stderr.write(`connectome setup: the agent's host was ended by ${signal}. Setup's answers and key are kept, ` +
-          'so running setup again in this directory goes on.\n');
-      }
-      done(code ?? (signal === null ? 1 : 128 + (constants.signals[signal] ?? 0)));
-    });
-  });
-}

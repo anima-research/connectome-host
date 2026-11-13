@@ -12,10 +12,9 @@ import {
   type InstallRecord,
 } from '../src/update/contract.js';
 import { HOST_ENTRY, LAUNCHER, readInstall, type LauncherOps } from '../src/update/launcher.js';
-import {
-  ENTRY_POINT, entryPointText, parseArgs, passwdHome, setup, systemdUnits, type ServiceUnits, type SetupOptions,
-} from '../src/update/setup.js';
-import { INSTALL_COMMAND } from '../src/cli/install-command.js';
+import { ENTRY_POINT, entryPointText, parseArgs, setup, type SetupOptions } from '../src/update/setup.js';
+import { passwdHome, systemdUnits, type ServiceUnits } from '../src/update/systemd-units.js';
+import { INSTALL_COMMAND } from '../src/update/typed-command.js';
 
 let dir: string;
 let install: string;

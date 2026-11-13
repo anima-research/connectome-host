@@ -29,7 +29,6 @@ import {
   accountBinding, accountBindingKey, isBindingRefusal, modelAcceptsAdaptiveThinking, modelThinking, recordAccountBinding,
   type AccountBinding,
 } from './logging-adapter.js';
-import { THINKING_BINDING_PROBE_MS } from './thinking-binding-bound.js';
 
 const HEAD_MINTED = 'You answer arithmetic questions. Session A.';
 const HEAD_CHANGED = 'You answer arithmetic questions. Session B.';
@@ -37,6 +36,7 @@ const QUESTION = 'What is 4817 × 263? Work it out, then reply with the product 
 /** Under adaptive thinking the model may answer without thinking; a request that minted no signed block is tried again. */
 const MINT_ATTEMPTS = 3;
 const FOLLOW_UP = 'Thanks.';
+const DEFAULT_TIMEOUT_MS = 60_000;
 /** Fewer input tokens than this for a valid block, and the counts can't tell it apart from the system texts' difference. */
 const MIN_BLOCK_TOKENS = 8;
 
@@ -66,7 +66,7 @@ export async function probeThinkingBinding(
   membrane: Completer,
   model: string,
   assistant: string,
-  timeoutMs = THINKING_BINDING_PROBE_MS,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<BindingProbeResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

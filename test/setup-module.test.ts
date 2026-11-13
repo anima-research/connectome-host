@@ -6,8 +6,9 @@ import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { ToolCall, ToolResult } from '@animalabs/agent-framework';
-import { SetupModule, commandsShownNote, openingMessage, type SecretAsker } from '../src/modules/setup-module.js';
-import { SHOWN_FILE } from '../src/cli/shown.js';
+import { SetupModule, openingMessage, type SecretAsker } from '../src/modules/setup-module.js';
+import { commandsShownNote } from '../src/setup/commands-shown.js';
+import { SHOWN_FILE } from '../src/setup/commands-shown.js';
 import { EnvFormError, envForm, readEnvFile, writeEnvValue } from '../src/setup/secrets.js';
 import { PASTE_QUIET_MS, askHidden } from '../src/setup/terminal-secret.js';
 import * as terminalSecret from '../src/setup/terminal-secret.js';
@@ -75,26 +76,10 @@ async function askSecret(module: SetupModule, input: Record<string, unknown>) {
   return module.handleToolCall({ id: 'c2', name: 'ask_secret', input } as ToolCall);
 }
 
-// await calls a thenable's then.
-function heldAt(module: SetupModule): Promise<void> {
-  const held = module as unknown as { asking: PromiseLike<unknown> };
-  const open = held.asking;
-  return new Promise((reached) => {
-    held.asking = { then: (onDone, onFailed) => { reached(); return open.then(onDone, onFailed); } } as PromiseLike<unknown>;
-  });
-}
-
-// Promise.all calls then on each promise it's given, so a then set on the promise itself is the one called.
-function heldOnChecks(module: SetupModule): Promise<void> {
-  const { checks } = module as unknown as { checks: Set<Promise<void>> };
-  if (checks.size === 0) throw new Error('no model check is under way');
-  return new Promise((reached) => {
-    for (const check of checks) {
-      const then = check.then.bind(check);
-      check.then = ((onDone, onFailed) => { reached(); return then(onDone, onFailed); }) as typeof check.then;
-    }
-  });
-}
+// A command shows its first line, and a model check its "Checking" line, before anything it awaits that the test
+// doesn't hold. setImmediate's callback runs once every promise reaction queued before it has run. So a call that
+// doesn't wait for a question has shown that line by then.
+const queueRan = () => new Promise<void>((done) => setImmediate(done));
 
 // For tests that read /proc, and one that also runs setsid(1): macOS has neither, and a Linux container may not mount
 // /proc or have setsid.
@@ -279,9 +264,8 @@ describe('setup--run', () => {
     const asking = askSecret(module, { name: 'API_TOKEN', purpose: 'a token' });
     for (const started = performance.now(); answer === undefined && performance.now() - started < 5_000; await new Promise((done) => setTimeout(done, 10)));
     expect(answer).toBeDefined();
-    const reached = heldAt(module);
     const running = run(module, 'touch ran');
-    await Promise.race([reached, running.then(() => { throw new Error('the command ran without waiting for the question'); })]);
+    await queueRan();
     expect(shown).toEqual([]);
     expect(existsSync(join(dir, 'ran'))).toBe(false);
     answer!('a-held-secret');
@@ -348,37 +332,31 @@ describe('setup--run', () => {
       new Promise<string | null>((done) => { releaseSecond = done; }),
     ];
     let asks = 0;
-    const made = install({ ...extra, asker: { ask: () => { asks += 1; return answers.shift()!; } } });
+    let secondAsked = () => {};
+    const secondOpen = new Promise<void>((done) => { secondAsked = done; });
+    const made = install({ ...extra, asker: { ask: () => { asks += 1; if (asks === 2) secondAsked(); return answers.shift()!; } } });
     const first = askSecret(made.module, { name: firstName, purpose: 'x' });
-    let second: Promise<unknown> | undefined;
-    let askedAt = -1;
-    let onReached = () => {};
-    const reached = new Promise<void>((done) => { onReached = done; });
-    void (made.module as unknown as { asking: Promise<unknown> }).asking.then(() => {
-      askedAt = made.shown.length;
-      second = askSecret(made.module, { name: 'OTHER_TOKEN', purpose: 'y' });
-      void heldAt(made.module).then(onReached);
-    });
     const pending = made.module.handleToolCall(call);
     releaseFirst('sk-first-value');
-    await first;
-    await Promise.race([reached, pending.then(() => { throw new Error('it ran without waiting for the second question'); })]);
-    const answeredAt = made.shown.length;
+    const second = askSecret(made.module, { name: 'OTHER_TOKEN', purpose: 'y' });
+    await secondOpen;
+    await queueRan();
+    const whileAsked = made.shown.some((line) => line.includes(startLine));
     releaseSecond('second-value');
+    await first;
     await second;
     const result = await pending;
-    const started = made.shown.findIndex((line) => line.includes(startLine));
-    return { result, started: started >= 0, whileAsked: started >= askedAt && started < answeredAt, asks };
+    return { result, started: made.shown.some((line) => line.includes(startLine)), whileAsked, asks };
   }
 
-  test('a command doesn\'t start while a question asked as its wait for the earlier ones ended is unanswered', async () => {
+  test('a command asked for while a question is open waits for a question asked as that one is answered', async () => {
     const { result, ...when } = await startedWhileOpen(
       { id: 'r1', name: 'run', input: { command: 'echo ran' } } as ToolCall, 'Setup\'s agent runs:', 'MY_TOKEN');
     expect(when).toEqual({ started: true, whileAsked: false, asks: 2 });
     expect(result.success).toBe(true);
   });
 
-  test('a model check doesn\'t start while a question asked as its wait for the earlier ones ended is unanswered', async () => {
+  test('a model check asked for while a question is open waits for a question asked as that one is answered', async () => {
     const fetchModels = (async () => Response.json({ data: [{ id: 'gpt-6.1-terra' }] })) as unknown as typeof fetch;
     const { result, ...when } = await startedWhileOpen(
       { id: 'c1', name: 'check_model', input: { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' } } as ToolCall,
@@ -415,9 +393,8 @@ describe('setup--run', () => {
     checked = made.module.handleToolCall(
       { id: 'c1', name: 'check_model', input: { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' } } as ToolCall);
     await sent;
-    const held = heldOnChecks(made.module);
     const asked = askSecret(made.module, { name: 'OTHER_TOKEN', purpose: 'y' });
-    await Promise.race([open, held]);
+    await Promise.race([open, queueRan()]);
     reply(Response.json({ data: [{ id: 'gpt-6.1-terra' }] }));
     expect((await checked).success).toBe(true);
     expect((await asked).success).toBe(true);
@@ -428,24 +405,24 @@ describe('setup--run', () => {
   test('a command that ends while a question is open shows what it said once the question is answered', async () => {
     const shownWhileOpen: string[] = [];
     let open = '';
+    let pidFile = '';
     const made = install({
       asker: {
         ask: async () => {
           const at = made.shown.length;
-          const held = heldAt(made.module);
           writeFileSync(open, '');
-          const shownSince = new Promise<void>((done) => {
-            const look = () => (made.shown.slice(at).includes('It said:') ? done() : setTimeout(look, 10));
-            look();
-          });
-          await Promise.race([held, shownSince]);
+          // The module takes the command's end when its process has ended and its output has closed. After that, it
+          // awaits nothing but this question before it shows what the command said.
+          expect(await waitForEnd(Number(await waitForFile(pidFile)), 5_000)).toBe(true);
+          for (let turn = 0; turn < 3; turn++) await queueRan();
           shownWhileOpen.push(...made.shown.slice(at));
           return 'a-held-secret';
         },
       },
     });
     open = join(made.dir, 'open');
-    const running = run(made.module, `while [ ! -e ${open} ]; do sleep 0.02; done; echo said-for-the-person >> "$CONNECTOME_SETUP_SHOWN"`);
+    pidFile = join(made.dir, 'pid');
+    const running = run(made.module, `echo $$ > ${pidFile}; while [ ! -e ${open} ]; do sleep 0.02; done; echo said-for-the-person >> "$CONNECTOME_SETUP_SHOWN"`);
     for (const started = performance.now(); !made.shown.includes("Setup's agent runs:") && performance.now() - started < 5_000; await Bun.sleep(10));
     expect((await askSecret(made.module, { name: 'OTHER_TOKEN', purpose: 'y' })).success).toBe(true);
     expect(shownWhileOpen).toEqual([]);
@@ -1280,11 +1257,10 @@ describe('setup--run', () => {
     const first = askSecret(made.module, { name: 'FIRST_TOKEN', purpose: 'a token' });
     const ran = runCall(made.module, 'touch ran');
     const second = askSecret(made.module, { name: 'SECOND_TOKEN', purpose: 'a token' });
-    const reached = heldAt(made.module);
     while (answers.length < 1) await Bun.sleep(1);
     answers[0]!('first-value');
-    await Promise.race([reached, ran.then(() => { throw new Error('the command ran without waiting for the second question'); })]);
     while (answers.length < 2) await Bun.sleep(1);
+    await queueRan();
     expect(made.shown.filter((line) => line.startsWith('Setup\'s agent runs'))).toEqual([]);
     answers[1]!('second-value');
     expect((await first).success).toBe(true);
@@ -1695,7 +1671,7 @@ describe('checkDiscordToken', () => {
     const result = await checkDiscordToken(' a-token  ', {
       fetch: (async () => { throw new Error('header Bot  a-token rejected; sent Bot  a-token  '); }) as unknown as typeof fetch,
     });
-    expect(result).toEqual({ kind: 'unanswered', why: 'header Bot  <DISCORD_TOKEN> rejected; sent Bot <DISCORD_TOKEN>' });
+    expect(result).toEqual({ kind: 'unanswered', timedOut: false, why: 'header Bot  <DISCORD_TOKEN> rejected; sent Bot <DISCORD_TOKEN>' });
   });
 
   test('a 401 is a refusal though its body never comes', async () => {
@@ -1749,7 +1725,7 @@ describe('checkDiscordToken', () => {
         init.signal!.addEventListener('abort', () => reject(init.signal!.reason));
       })) as unknown as typeof fetch,
     });
-    expect(result).toEqual({ kind: 'unanswered', why: 'no answer within 0.05 s' });
+    expect(result).toEqual({ kind: 'unanswered', timedOut: true, why: 'no answer within 0.05 s' });
   });
 
   test('a 200 that isn\'t JSON is read as unrecognized, one that isn\'t the bot user as Discord answering otherwise, and Discord\'s own words never show the token', async () => {
@@ -2922,9 +2898,9 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     });
     const asked = askSecret(made.module, { name: 'OPENAI_API_KEY', purpose: 'a key' });
     while (answer === undefined) await Bun.sleep(1);
-    const reached = heldAt(made.module);
     const checked = checkModel(made.module, { name: 'OPENAI_API_KEY', model: 'gpt-6.1-terra' });
-    await Promise.race([reached, checked.then(() => { throw new Error('the check ended without waiting for the question'); })]);
+    await queueRan();
+    expect(made.shown.filter((line) => line.startsWith('Checking'))).toEqual([]);
     answer('sk-openai-key');
     expect((await asked).success).toBe(true);
     const result = await checked;
