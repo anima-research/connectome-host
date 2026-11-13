@@ -417,6 +417,7 @@ function fake(at: Install, options: {
   taken?: number[];
   ready?: boolean;
   answersAfter?: number;
+  acceptsAfter?: number;
   node?: string | null;
   cwd?: string;
   cgroup?: string;
@@ -455,7 +456,7 @@ function fake(at: Install, options: {
     },
     linger: () => (options.linger === undefined ? true : options.linger),
     portFree: async (port) => !taken.has(port),
-    openHost: async (root) => {
+    openHost: async (root, waitMs?: number) => {
       const recipe = root === at.root ? 'Resident' : basename(dirname(root));
       if (options.other !== undefined) return { ready: { pid: options.other, recipe }, close() {} } as never;
       if (options.silent) {
@@ -464,6 +465,11 @@ function fake(at: Install, options: {
       }
       if (!running(root)) return { reason: 'there\'s no socket: no host is running, or one is still starting', down: true };
       asked++;
+      if (options.acceptsAfter !== undefined) {
+        if (asked <= options.acceptsAfter) return { reason: 'there\'s no socket: no host is running, or one is still starting', down: true };
+        clock += Math.min(waitMs ?? 5_000, 5_000);
+        return { reason: `the socket ${join(at.data, 'ipc.sock')} accepted the connection, but no host said it was ready`, down: false };
+      }
       return options.ready === false || asked <= (options.answersAfter ?? 0)
         ? { reason: 'no host is running', down: true }
         : { ready: { pid: systemd.pidFor(hostOf(root)), recipe }, close() {} } as never;
@@ -1157,6 +1163,14 @@ test('a host that never answers while its unit stays active is waited for 60 s, 
   expect(f.slept()).toBeGreaterThanOrEqual(60_000);
   expect(f.slept()).toBeLessThan(62_000);
   expect(f.slept()).toBeLessThan(DEFAULT_TIMEOUT_MS);
+  expect(f.err.join('\n')).toContain('no host said it was ready within 60 s');
+});
+
+test('a host whose socket accepts but never says it\'s ready holds install 60 s, and not past them', async () => {
+  const at = install();
+  const f = fake(at, { acceptsAfter: 2 });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.system.now()).toBe(60_000);
   expect(f.err.join('\n')).toContain('no host said it was ready within 60 s');
 });
 

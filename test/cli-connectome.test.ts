@@ -970,6 +970,18 @@ test('send stops waiting once nothing has come from the host for its limit, and 
     'ended, so this stopped waiting. The message was sent, and the agent may still be working on it.');
 });
 
+test('a look at the host given less than the socket\'s own wait ends when its time does, and names no number', async () => {
+  const { root, data } = install();
+  const sock = join(data, 'ipc.sock');
+  const server = createServer(() => {});
+  servers.push(server);
+  await new Promise<void>((listening) => server.listen(sock, () => listening()));
+  const started = performance.now();
+  const host = await openHost(root, 300);
+  expect(performance.now() - started).toBeLessThan(2_000);
+  expect(host).toEqual({ reason: `the socket ${sock} accepted the connection, but no host said it was ready`, down: false });
+});
+
 test('a client whose connection the host has ended gets false from send', async () => {
   const { root, data } = install();
   await fakeHost(data, (message, _reply, socket) => {

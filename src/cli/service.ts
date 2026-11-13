@@ -46,7 +46,7 @@ export interface ServiceSystem extends ManagerSystem {
   readRecipe(recipe: string): Promise<unknown>;
   linger(user: string): boolean | null;
   portFree(port: number): Promise<boolean>;
-  openHost(root: string): Promise<HostClient | NoHost>;
+  openHost(root: string, waitMs?: number): Promise<HostClient | NoHost>;
   sleep(ms: number): Promise<void>;
   now(): number;
 }
@@ -507,7 +507,7 @@ async function awaitReady(root: string, manager: Manager, unit: ServiceUnit, sys
   for (;;) {
     let host: HostClient | NoHost;
     try {
-      host = await sys.openHost(root);
+      host = await sys.openHost(root, until - sys.now());
     } catch (error) {
       return `its host can't be reached: ${errorText(error)}`;
     }
@@ -541,11 +541,11 @@ async function awaitReady(root: string, manager: Manager, unit: ServiceUnit, sys
       }
       if (invocation !== first) return `systemd restarted ${name} before its host answered: ${last}.`;
     }
+    await sys.sleep(Math.min(1_000, Math.max(until - sys.now(), 0)));
     if (sys.now() >= until) {
       return { late: `no host said it was ready within ${READY_WAIT_MS / 1000} s: ${last}. It may still be starting: ` +
         `${typedCommand(root, sys.env.PATH)} alone says whether its host answers.` };
     }
-    await sys.sleep(1_000);
   }
 }
 
