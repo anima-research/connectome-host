@@ -1758,7 +1758,8 @@ describe('connectome doctor', () => {
       mkdirSync(join(at.work, 'logs', 'failures.log'));
       const unreadable = await run(at, parts);
       expect(unreadable.out).toContain(`  ${join(at.work, 'logs', 'failures.log')} can't be read (`);
-      expect(unreadable.out).toContain('), so which channels the subscription GC closed isn\'t shown.');
+      expect(unreadable.out).toContain('), so which channels the subscription GC closed isn\'t shown. To see them, make it a ' +
+        `file this user can read, then run ${join(at.root, 'connectome')} doctor again.`);
       expect(count(unreadable.out)).toBe(count(before.out));
     }
   });

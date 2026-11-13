@@ -635,7 +635,7 @@ export async function doctor(
     report.section('Channels the subscription GC closed (logs/failures.log):');
     if (typeof closed === 'string') {
       report.line(`${join(work, 'logs', 'failures.log')} can't be read (${closed}), so which channels the subscription GC ` +
-        'closed isn\'t shown.');
+        `closed isn't shown. To see them, make it a file this user can read, then run ${typed} doctor again.`);
     }
     for (const close of typeof closed === 'string' ? [] : closed.closes) {
       report.line(`Channel ${close.channelId} was auto-closed at ${close.at}, over ${close.limitChars} characters of messages ` +
