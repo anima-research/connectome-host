@@ -212,8 +212,13 @@ test('a shell unit systemd runs in another directory fails as install refuses it
 
 test('a host unit systemd can\'t show, or hasn\'t loaded, isn\'t seen running here', () => {
   const at = place('linux', ['host']);
-  const unshown = system(at.home, {});
-  expect(checkUnits(at.units, at.work, false, 'connectome', unshown.sys).here).toBeUndefined();
+  const unshown = system(at.home, {
+    [`systemctl ${at.units.host.name}`]: { status: 1, stderr: 'Failed to connect to bus: No medium found' },
+  });
+  const failed = checkUnits(at.units, at.work, false, 'connectome', unshown.sys);
+  expect(failed.lines).toContain(`systemd couldn't be asked about ${at.units.host.name}: Failed to connect to bus: No medium ` +
+    `found (XDG_RUNTIME_DIR=/run/user/1000 systemctl --user show ${at.units.host.name}).`);
+  expect(failed.here).toBeUndefined();
   const unloaded = system(at.home, { [`systemctl ${at.units.host.name}`]: 'LoadState=not-found\nActiveState=active\n' });
   expect(checkUnits(at.units, at.work, false, 'connectome', unloaded.sys).here).toBeUndefined();
 });
