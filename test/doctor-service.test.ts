@@ -236,6 +236,8 @@ test('the service\'s pid is its host unit\'s main process, under systemd and lau
   expect(servicePid(linux.units, system(linux.home, { [`systemctl ${linux.units.host.name}`]: 'MainPID=4242\n' }).sys))
     .toEqual({ pid: '4242' });
   const mac = place('darwin', ['host']);
+  expect(servicePid(mac.units, system(mac.home, { [`launchctl ${mac.units.host.name}`]: '{\n\t"PID" = 501;\n};\n' }).sys))
+    .toEqual({ pid: '501' });
   expect(servicePid(mac.units, system(mac.home, { [`launchctl ${mac.units.host.name}`]: { status: 113 } }).sys))
     .toEqual({ pid: '0' });
 });
