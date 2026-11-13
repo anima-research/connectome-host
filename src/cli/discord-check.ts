@@ -4,7 +4,7 @@ import {
   botGuilds, channelPermissions, DiscordFailed, discordReader, SEND_MESSAGES, TEXT_CHANNEL_TYPES, VIEW_CHANNEL, type Channel,
   type DiscordFailure,
 } from '../setup/discord-read.js';
-import { checkDiscordToken } from '../setup/discord-token.js';
+import { checkDiscordToken, sentToken } from '../setup/discord-token.js';
 
 const GATEWAY_MESSAGE_CONTENT = 1 << 18;
 const GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19;
@@ -30,10 +30,6 @@ const listed = (command: string): string => 'Discord listed that server for the 
 
 const waited = (unchecked: string, seconds: number, command: string): string =>
   `${unchecked}: Discord asked for ${Math.ceil(seconds)} s before the next request, so run ${command} doctor again after that`;
-
-export function sentToken(given: string): string {
-  return given.replace(/^(Bot|Bearer)\s*/i, '');
-}
 
 export async function checkDiscord(
   env: Record<string, string | undefined>,

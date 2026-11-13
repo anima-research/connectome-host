@@ -13,11 +13,11 @@ import type {
   ToolResult,
 } from '@animalabs/agent-framework';
 import {
-  DISCORD_TOKEN, StoredSecrets, addSecret, commandEnvOf, isSecretName, readEnvFile, readSecrets, redactWindow,
-  secretNames, secretValues, unwritableValue, writeEnvValue, DotenvTimeoutError, EnvFormError, EnvLinkError, envForm,
-  envLink, type Secret,
+  DISCORD_TOKEN, SHORT_CHARACTERS, SHORT_HIDES, StoredSecrets, addSecret, commandEnvOf, isSecretName, isShort,
+  readEnvFile, readSecrets, redactWindow, secretNames, secretValues, shortLength, unwritableValue, writeEnvValue,
+  DotenvTimeoutError, EnvFormError, EnvLinkError, envForm, envLink, type Secret,
 } from '../setup/secrets.js';
-import { checkDiscordToken, hidden, type TokenCheck } from '../setup/discord-token.js';
+import { checkDiscordToken, hidden, sentToken, withSentForms, type TokenCheck } from '../setup/discord-token.js';
 import {
   botGuild, botGuilds, channelPermissions, DiscordFailed, discordReader, SEND_MESSAGES, TEXT_CHANNEL_TYPES, VIEW_CHANNEL,
   type BotGuild, type DiscordFailure, type DiscordReader,
@@ -229,6 +229,20 @@ export function showsItself(tool: string): boolean {
   return tool.startsWith(`${SETUP_MODULE}--`);
 }
 
+const shortWarning = (name: string, value: string): string => `What you typed for ${name} is ${shortLength(value)}. ` +
+  `${SHORT_HIDES} If it was cut short, type the whole value. If the endpoint takes any key, type a longer made-up ` +
+  `one: ${SHORT_CHARACTERS} or more random letters and digits, not a word. To keep this one, type it again.`;
+
+const SHORT_AGAIN = 'the same value again to keep it, or another one';
+
+const shortNote = (name: string): string => `The value stored as ${name} is shorter than ${SHORT_CHARACTERS} ` +
+  `characters, and the person typed it twice to keep it. So <${name}> can appear in place of parts of other text, ` +
+  'such as ids and command output, and setup--run leaves an environment variable with the same value out of its ' +
+  'commands\' environment.';
+
+const shortBeforeNote = (name: string): string => `The value stored as ${name} before this one was shorter than ` +
+  `${SHORT_CHARACTERS} characters, and setup still hides it, as <${name}>, until the host restarts.`;
+
 function redacted(text: string, secrets: Secret[]): string {
   const bytes = Buffer.from(text);
   return redactWindow(bytes, 0, bytes.length, secrets, new Set()).text;
@@ -399,7 +413,8 @@ export class SetupModule implements Module {
           `Run one command with bash -c in the install's directory, and get its exit status and output back: of an ` +
           `output longer than 8 KiB, its first and last 4 KiB, each widened to take in whole a secret a cut falls ` +
           `in, or the whole output where the two then meet. Its environment is the host's, less the stored secrets, the provider credentials and the ` +
-          `providers' base URLs, under their own names or any other whose whole value is one of theirs, as stored or trimmed (a variable holding ` +
+          `providers' base URLs, under their own names or any other whose whole value is one of theirs, as stored or trimmed, or, for DISCORD_TOKEN, without the Bot ` +
+          `or Bearer prefix that discord.js drops (a variable holding ` +
           `one within a longer value stays), and no shell startup file is read, though a Bun program reads the dotenv files in the ` +
           `install's directory itself unless it's run with --no-env-file. Nothing is kept between calls but what the command ` +
           `leaves behind: a process it leaves running when it ends, before the host shuts down, keeps running, after ` +
@@ -565,7 +580,7 @@ export class SetupModule implements Module {
     for (const name of current) this.seen.names.add(name);
     const names = [...this.seen.names];
     readSecrets(names, envFile, this.config.env, this.seen.values, this.notForCommands());
-    return { names, values: [...this.seen.values], guessed };
+    return { names, values: [...this.seen.values].flatMap(withSentForms), guessed };
   }
 
   private notForCommands(): string[] {
@@ -801,16 +816,37 @@ export class SetupModule implements Module {
         'won\'t change that, so tell the person why.');
     }
     if (value !== null && name === DISCORD_TOKEN) value = value.trim();
-    if (value === null || value === '') {
-      const spaces = name === DISCORD_TOKEN ? ', or only whitespace' : '';
-      return failed(`Nothing came back from the terminal (Enter alone${spaces}, or the terminal closed), so nothing was stored as ${name}. ` +
+    if (value === null || value.trim() === '') {
+      return failed(`Nothing came back from the terminal (Enter alone, or only whitespace, or the terminal closed), so nothing was stored as ${name}. ` +
         'If they declined, ask them in the conversation whether to try again.');
     }
-    const why = unwritableValue(value);
-    if (why) {
-      return failed(`What the person typed for ${name} can't be stored, since ${why}, and ask_secret can't store such a ` +
-        'value however it is asked. Nothing was stored. Tell them why, and ask them to check what they copied; if it\'s ' +
-        'right as typed, tell them setup can\'t store it.');
+    const unstorable = (typed: string): ToolResult | null => {
+      const why = unwritableValue(typed);
+      return why === null ? null : failed(`What the person typed for ${name} can't be stored, since ${why}, and ` +
+        'ask_secret can\'t store such a value however it is asked. Nothing was stored. Tell them why, and ask them to ' +
+        'check what they copied; if it\'s right as typed, tell them setup can\'t store it.');
+    };
+    const refused = unstorable(value);
+    if (refused) return refused;
+    while (isShort(value)) {
+      this.config.show(shortWarning(name, value));
+      let again: string | null;
+      try {
+        again = await asker.ask(name, SHORT_AGAIN);
+      } catch (error) {
+        return failed(`Nothing was stored as ${name}: the second ask failed (${(error as Error).message}). Calling ` +
+          'again won\'t change that, so tell the person why.');
+      }
+      if (again !== null && name === DISCORD_TOKEN) again = again.trim();
+      if (again === null || again.trim() === '') {
+        return failed(`The person was told the value is shorter than ${SHORT_CHARACTERS} characters and gave nothing ` +
+          `back (Enter alone, or only whitespace, or the terminal closed), so nothing was stored as ${name}. Ask them in ` +
+          'the conversation whether to try again.');
+      }
+      if (again === value) break;
+      const againRefused = unstorable(again);
+      if (againRefused) return againRefused;
+      value = again;
     }
     let token: TokenCheck | null = null;
     if (name === DISCORD_TOKEN) {
@@ -863,10 +899,14 @@ export class SetupModule implements Module {
     this.seen.names.add(name);
     addSecret(this.seen.values, { name, value });
     let writing = false;
+    let shortBefore = false;
     try {
       const link = envLink(envFile);
       if (link) throw link;
-      for (const replaced of secretValues([name], envFile, {})) addSecret(this.seen.values, replaced);
+      for (const replaced of secretValues([name], envFile, {})) {
+        addSecret(this.seen.values, replaced);
+        if (replaced.value !== value && isShort(replaced.value)) shortBefore = true;
+      }
       this.storedSecrets.record(name, envFile);
       writing = true;
       writeEnvValue(envFile, name, value);
@@ -886,7 +926,9 @@ export class SetupModule implements Module {
     if (token !== null ? token.kind !== 'accepted' : key !== null && key.kind !== 'accepted') {
       this.config.show(`It's stored as ${name}, though whether it works isn't known.`);
     }
-    return { success: true, data: `stored as ${name} in ${envFile}${told}` };
+    const notes = [...isShort(value) ? [shortNote(name)] : [], ...shortBefore ? [shortBeforeNote(name)] : []];
+    const data = `stored as ${name} in ${envFile}${told}`;
+    return { success: true, data: notes.length === 0 ? data : `${data}${data.endsWith('.') ? '' : '.'} ${notes.join(' ')}` };
   }
 
   private async checkKey(
@@ -943,13 +985,13 @@ export class SetupModule implements Module {
         : 'Reading one of the bot\'s servers from Discord.');
     }
     const fetchFn = this.config.fetch ?? fetch;
-    const bot = await checkDiscordToken(token, { fetch: fetchFn });
+    const bot = await checkDiscordToken(sentToken(token), { fetch: fetchFn });
     if (bot.kind === 'unsendable') {
       return failed(`The token stored as ${DISCORD_TOKEN} holds a character a request header can't carry, so it can't be a ` +
         'bot token: ask the person for it again with setup--ask_secret.');
     }
     if (bot.kind !== 'accepted') return failed(redacted(discordNote(tokenFailure(bot)), hide));
-    const reader = discordReader(token, { fetch: fetchFn });
+    const reader = discordReader(sentToken(token), { fetch: fetchFn });
     const botUser = redactedData({ id: bot.id, name: bot.name }, hide);
     try {
       if (typeof username === 'string') {
@@ -1094,7 +1136,7 @@ export class SetupModule implements Module {
   }
 
   private async checkToken(value: string, known: Secret[]): Promise<TokenCheck> {
-    const token = await checkDiscordToken(value, {
+    const token = await checkDiscordToken(sentToken(value), {
       fetch: this.config.fetch, asking: () => this.config.show('Checking it with Discord.'),
     });
     this.config.show(redacted(tokenLine(token), known));
