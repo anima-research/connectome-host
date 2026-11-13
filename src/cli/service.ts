@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, type Stats,
+  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, type Stats,
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
@@ -9,7 +9,7 @@ import { ContractError, RESTART_EXIT_CODE, SUPERVISED_ENV, realOrResolved, write
 import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/setup.js';
 import { shellWord } from '../update/launcher.js';
 import { lingerOf } from '../setup/linger.js';
-import { StoredSecrets, envForm, readEnvFile, writeEnvValue } from '../setup/secrets.js';
+import { StoredSecrets, envForm, envLink, readEnvFile, writeEnvValue } from '../setup/secrets.js';
 import { readRecipeDocument } from '../recipe-document.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
@@ -186,6 +186,15 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       'written.');
   }
   const manager = managerOf(sys);
+  if (manager === 'launchd') {
+    const domain = sys.run('launchctl', ['print', `gui/${sys.uid}`], childEnv(sys));
+    if (domain.status !== 0) {
+      throw new Refusal(`launchctl print gui/${sys.uid} failed: ${launchctlFailure(domain)}. launchd starts a user's ` +
+        `agents only in that user's graphical session, so while ${sys.user} isn't logged in to the Mac's graphical ` +
+        `session there's none to start them in. Repeat this command once ${sys.user} is logged in to it. Nothing was ` +
+        'written.');
+    }
+  }
   const names = serviceUnits(root, sys.platform, sys.home);
   if (names === null) {
     throw new Refusal(`a service's name comes from its working directory's name, and ${basename(work)} has no letter ` +
@@ -207,7 +216,23 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   if (manager === 'systemd-user') noOtherUnit(ctx, work, names, sys, env);
   await noOtherHost(root, dataDir, manager, names.host, sys, env);
   const envFile = join(work, '.env');
-  if (shellBin !== null) envWritable(envFile);
+  if (shellBin !== null) {
+    const link = envLink(envFile);
+    if (link !== null) {
+      throw new Refusal(`${link.message}. Replace the link with the file it leads to, if that's there, or take it away, ` +
+        'then repeat this service install command with the same recipe. Nothing was written.');
+    }
+    let outside: Error | null;
+    try {
+      outside = envForm(envFile);
+    } catch (error) {
+      throw new Refusal(`${errorText(error)}. Nothing was written.`);
+    }
+    if (outside !== null) {
+      throw new Refusal(`${outside.message}. Then repeat this service install command with the same recipe. ` +
+        'Nothing was written.');
+    }
+  }
   const shell = shellBin === null ? null : await shellPlan(sys, work, shellBin);
   if (shell !== null) {
     if (!shell.newPort && !(await sys.portFree(Number(shell.port))) && !shellRuns(sys, manager, env, names.shell)) {
@@ -401,25 +426,6 @@ function shellLost(sys: ServiceSystem, env: Record<string, string>, manager: Man
   if (state.kind === 'running' && (started === undefined || state.pid === started)) return null;
   return `${daemon} didn't stay up after this run started it: launchd shows it ${state.kind === 'running'
     ? `running as pid ${state.pid}, where this run started pid ${started}` : 'not running'}.`;
-}
-
-function envWritable(envFile: string): void {
-  if (lstatSync(envFile, { throwIfNoEntry: false })?.isSymbolicLink()) {
-    throw new Refusal(`${envFile} is a link to ${readlinkSync(envFile)}. The install's .env is a file of its own, as ` +
-      'setup keeps it, so service install won\'t write the shell daemon\'s settings through the link or over it. ' +
-      "Replace the link with the file it leads to, if that's there, or take it away, then repeat this service install " +
-      'command with the same recipe. Nothing was written.');
-  }
-  let outside: Error | null;
-  try {
-    outside = envForm(envFile);
-  } catch (error) {
-    throw new Refusal(`${errorText(error)}. Nothing was written.`);
-  }
-  if (outside !== null) {
-    throw new Refusal(`${outside.message}. Then repeat this service install command with the same recipe. ` +
-      'Nothing was written.');
-  }
 }
 
 async function noOtherHost(root: string, dataDir: string, manager: Manager, unit: ServiceUnit, sys: ServiceSystem,
