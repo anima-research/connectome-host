@@ -728,12 +728,14 @@ describe('count-check, in the round on the review of 4a79597ff', () => {
   afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
 
   test('a count answered 200 with no input_tokens is no count: each source says it failed, and nothing reads as counted', async () => {
-    const server = Bun.serve({ port: 0, hostname: '127.0.0.1', async fetch(req) { await req.text(); return Response.json({}); } });
+    let requests = 0;
+    const server = Bun.serve({ port: 0, hostname: '127.0.0.1', async fetch(req) { requests += 1; await req.text(); return Response.json({}); } });
     try {
       setEnv({ COUNT_TOKENS_MODEL: undefined, ANTHROPIC_API_KEY: 'sk-count-test', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}` });
       const check = await buildCountCheck(appWith(), 2_000);
       expect([check.agent.source, check.compression?.source, check.beside]).toEqual(
         ['count_tokens_error', 'count_tokens_error', { tokens: null, source: 'count_tokens_error' }]);
+      expect(requests).toBe(3);
     } finally {
       server.stop(true);
     }
