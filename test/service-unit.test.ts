@@ -29,6 +29,7 @@ test('a systemd unit whose start or working directory line install could not hav
     [text.replace(/^WorkingDirectory=.*$/m, 'WorkingDirectory=/srv/%h'), /WorkingDirectory/],
     [`${text}ExecStart="/bin/true"\n`, /ExecStart/],
     [text.replace(/^WorkingDirectory=.*$/m, 'WorkingDirectory=/srv/w\\'), /backslash/],
+    [text.replace(/^(Environment=.*)$/m, '$1\\'), /backslash/],
     [text.replace(/^ExecStart=.*$/m, 'ExecStart="/bin/bun" "/srv/start.js" "r\t.json"'), /ExecStart/],
     [text.replace(/^ExecStart=.*$/m, 'ExecStart="/bin/bun" "/srv/start.js" "r\u0001.json"'), /ExecStart/],
     [text.replace(/^WorkingDirectory=.*$/m, 'WorkingDirectory=/srv/a\u0001b'), /WorkingDirectory/],
