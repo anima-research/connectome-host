@@ -13,8 +13,9 @@ import { readRecipeDocument } from '../recipe-document.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/systemd-units.js';
 import {
-  type ManagerSystem, RESTART_PROPERTIES, agentState, childEnv, fileDirectory, launchctlFailure, ownerOf, readOr, restartPolicy, runsFrom, runsHere, showUnit, stateOf, stderrOf, systemctlLine, systemdUnits,
+  type ManagerSystem, agentState, childEnv, fileDirectory, launchctlFailure, ownerOf, readOr, runsFrom, runsHere, showUnit, stateOf, stderrOf, systemctlLine,
 } from './service-manager.js';
 import { Refusal, plain, plist, serviceUnits, systemdUnit, type Manager, type ServiceUnit } from './service-unit.js';
 import { shownToPerson } from './shown.js';

@@ -52,7 +52,7 @@ import {
   sameDirectory, unfinishedWords, workingDirOf, type Moved, type Place,
 } from './rebind.js';
 import { INSTALL_COMMAND, typedCommand, writeInstallCommand } from '../cli/install-command.js';
-import { type ServiceUnits, systemdUnits } from '../cli/service-manager.js';
+import { type ServiceUnits, systemdUnits } from './systemd-units.js';
 
 export { ENTRY_POINT };
 
