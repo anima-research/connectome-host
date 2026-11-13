@@ -265,34 +265,6 @@ Two grants go in the recipe, each on unless the person declines it in the read-b
 - With a shell, that line is all.
 - Without a shell, the line also says plainly what holds a script in: it can only call the resident's own tools, and it runs in a sealed engine with no way to files, programs or the network. If that engine ever failed, the limit would be this user's account, which can read `.env` with its keys.
 
-**Code execution — turn it on for every resident.** `"codeExecution": { "enabled": true }`
-(top-level, beside `modules`) gives the agent agent-framework's `code_execution` tool. The
-agent writes JavaScript that calls its own tools by name (`await tools["module--tool"]({...})`),
-and only what the script writes or returns comes back, with how each call ended: the calls
-and the results between them stay out of the context. Reading ten files, querying every
-channel or paging through a log then takes one tool round instead of ten, and the window keeps
-the answer, not the haystack. A script that runs long yields and keeps going; the agent can
-wait on it, stop it, or leave it running past its turn, and a script can wake the agent with
-`wake_agent(payload)` (it is also woken if the script fails or reaches its lifetime). Each
-script starts fresh and reaches nothing but the agent's tools — no network, files, timers or
-packages — so by design it adds no authority: anything a script does, the agent could already
-do one call at a time. That holds as far as the engine holds. The script runs in QuickJS's
-WebAssembly sandbox inside a child process of the host, as the host's user, with no
-operating-system sandbox around it: agent-framework claims no containment beyond its engine and
-its glue (the security note on `RecipeCodeExecution` in `src/recipe.ts`). A resident that already
-has a shell tool can already do far more than a script can; on one without, weigh that before
-turning it on.
-
-There is nothing to install: the engine (QuickJS, in a child process) ships with
-agent-framework 0.24 and later. Releases before that ran Python and took other keys
-(`pythonPath`, `idleReclaimMs`, `env`, `scriptTimeoutMs` …); in a block with `"enabled": true`,
-current hosts refuse them with a message saying what replaced each. Every limit has a default (`yieldMs`, `maxYieldMs`,
-`scriptLifetimeMs`, `maxRunningScripts`, `maxScriptChildren`, `toolCallTimeoutMs`,
-`wakeMinIntervalMs`, `maxWakesPerScript`, `memoryMaxBytes`), so `{ "enabled": true }` is the
-whole setting. It is off unless the recipe turns it on: the host's built-in default recipe
-leaves it off, so an agent started with no recipe has none. Turning it on for a running
-resident adds one tool, so its first turn after the restart is one full cache write.
-
 ## Going live
 
 1. **The service.** Run `connectome service install '<name>.json'` with `setup--run`, giving it a `timeoutMs` of `1800000`, thirty minutes, the most `setup--run` takes, since its own wait for the host below can run past `setup--run`'s default, and wherever this guide says to run it again, with that recipe and that limit. When it ends, the person's screen shows what it printed, as "Working with the person" says, so its warnings reach them whole as well as you. On Linux it refuses, writing nothing, while linger is off for this user, and nothing gets past that: a service would stop whenever they log out. So when it's off, the line setup showed has to be run as root first, by the person or by whoever administers the machine. Never tell them they can skip it. If nobody can run it yet, the resident can't go live yet, and on a rerun over a service already installed, the refusal stops nothing and leaves that service as it was: write `SETUP.md` with that line and the steps after it, tell them so plainly, and don't call `setup--finished`: going live is still to set up. They leave with `/quit`, and setup run again once linger is on picks up where it stopped. `service install` reads the recipe first and refuses, writing nothing, one it can't read ("The recipe"). Then it writes and starts the resident's service (a systemd user unit on Linux, a launch agent on macOS), with the shell's daemon beside it when the recipe names a shell, and waits for the host to answer: about two seconds, up to a minute for the start's check of what the account does with signed thinking, and 90 s more for each MCP server the recipe and `mcpl-servers.agent.json` name. Where `setup--run` stops it at its limit, it may have written and started the service already: give the person the same command to run in their second terminal, as the resident's user ("Working with the person"), where nothing stops it before its own wait for the host ends it. As it starts the shell's daemon, it says what a shell reaches, and the person reads that on their own screen. Where the recipe names a shell and its package isn't in `<dir>`, it starts no daemon and names `connectome shell install`: run that ("The resident's shell"), then install again. When it refuses, its words say what to put right; put it right with them, and run it again. On a Linux without systemd it refuses for good: there the machine's own service manager runs the host, as `<host>/docs/DEPLOYMENTS.md` says, set up with the person or left to them, and `SETUP.md` says which. When the host doesn't answer, install says so and gives the line that follows its log. Read that log yourself, and read it too where install's words are only a service command's own failure, `systemctl` or `launchctl` and what it printed, which can be just its exit status, then put right what it shows. The resident's log is `journalctl --user -u` with its unit, which install's output names, on Linux, and `<dir>/logs/agent.log` on macOS. Read it without the printed line's `-f`, which follows the log and doesn't end by itself. The shell's daemon has its own log, the same with the shell's unit on Linux and `<dir>/logs/shell.log` on macOS, and the doctor's real call to the shell says whether it works.

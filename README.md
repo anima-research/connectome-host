@@ -513,6 +513,12 @@ Each MCPL server can also be presented as a tab. `presentation` on its entry set
 
 Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) with `mcpl-admin--mcpl_deploy`'s `presentation`. A value other than those three stops the load, or in the agent's own overlay is left out, named in a startup line.
 
+### Code execution (`codeExecution`)
+
+`"codeExecution": { "enabled": true }` (top-level, beside `modules`) gives the agent agent-framework's `code_execution` tool. The agent writes JavaScript that calls its own tools by name (`await tools["module--tool"]({...})`), and only what the script writes or returns comes back, with how each call ended: the calls and the results between them stay out of the context. Reading ten files, querying every channel or paging through a log then takes one tool round instead of ten, and the window keeps the answer, not the haystack. A script that runs long yields and keeps going; the agent can wait on it, stop it, or leave it running past its turn, and a script can wake the agent with `wake_agent(payload)` (it is also woken if the script fails or reaches its lifetime). Each script starts fresh and reaches nothing but the agent's tools — no network, files, timers or packages — so by design it adds no authority: anything a script does, the agent could already do one call at a time. That holds as far as the engine holds. The script runs in QuickJS's WebAssembly sandbox inside a child process of the host, as the host's user, with no operating-system sandbox around it: agent-framework claims no containment beyond its engine and its glue (the security note on `RecipeCodeExecution` in `src/recipe.ts`). A resident that already has a shell tool can already do far more than a script can; on one without, weigh that before turning it on.
+
+There is nothing to install: the engine (QuickJS, in a child process) ships with agent-framework 0.24 and later. Releases before that ran Python and took other keys (`pythonPath`, `idleReclaimMs`, `env`, `scriptTimeoutMs` …); in a block with `"enabled": true`, current hosts refuse them with a message saying what replaced each. Every limit has a default (`yieldMs`, `maxYieldMs`, `scriptLifetimeMs`, `maxRunningScripts`, `maxScriptChildren`, `toolCallTimeoutMs`, `wakeMinIntervalMs`, `maxWakesPerScript`, `memoryMaxBytes`), so `{ "enabled": true }` is the whole setting. It is off unless the recipe turns it on: the host's built-in default recipe leaves it off, so an agent started with no recipe has none. Turning it on for a running resident adds one tool, so its first turn after the restart is one full cache write.
+
 ### Included recipes
 
 | Recipe | What it is |
@@ -776,7 +782,7 @@ unknown-key warning, like those at the other levels.
   `tune_out` channels; **code execution** (top-level `codeExecution`) —
   JavaScript scripts that call the agent's tools, in a QuickJS engine
   (agent-framework 0.24); recommended for every resident, and off unless a
-  recipe turns it on (see docs/AGENT-ONBOARDING.md)
+  recipe turns it on (see "Code execution" above)
 - **Activity** (`modules.activity`) typing indicators and a **TTS relay**
   (`modules.ttsRelay`) for voice clients
 - **Extensions** (top-level `extensions`) — local modules that register
