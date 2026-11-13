@@ -1127,104 +1127,41 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s data directory', () => {
   });
 });
 
-describe.skipIf(ladderUnrunnable)('what the ladder withholds', () => {
-  test('a value it\'s given to withhold is replaced in each line it cuts short, before the cut', async () => {
+describe.skipIf(ladderUnrunnable)('what the ladder cuts', () => {
+  const longFields = async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
-    const secret = 'Zq9-SECRET-77';
-    const long = `[inference-failed] ${'x'.repeat(125)}${secret} and the rest`;
-    writeFileSync(join(at.work, 'journal.txt'), `${at.now}.000000 host bun[1]: ${long}\n`);
-    writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ reason: `Error: ${'y'.repeat(120)}${secret}` })}\n`);
+    writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ reason: `Error: ${'y'.repeat(200)}FAIL-TAIL-END` })}\n`);
     writeFileSync(join(at.work, 'data', 'discord-mcpl-debug.log'),
-      `${new Date(at.now * 1000).toISOString()} handleDiscordMessage:enter {"channelName":"general","contentPreview":"${'p'.repeat(35)}${secret} more"}\n`);
+      `${new Date(at.now * 1000).toISOString()} handleDiscordMessage:enter {"channelName":"general","contentPreview":"${'p'.repeat(60)}PREVIEW-TAIL-END"}\n`);
     writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'), `${JSON.stringify({
-      timestamp: new Date(at.now * 1000).toISOString(), kind: 'stream', type: 'error', error: { message: `${'z'.repeat(75)}${secret} more` } })}\n`);
-    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', secret]]) });
-    expect(out).toContain('<DISC');
-    expect(out).toMatch(/discord event seen .*#general: p{35}<DISC…/);
-    expect(out).toMatch(/err=z{75}<DISC/);
-    expect(out).not.toContain('Zq9');
+      timestamp: new Date(at.now * 1000).toISOString(), kind: 'stream', type: 'error', error: { message: `${'z'.repeat(100)}ERR-TAIL-END` } })}\n`);
+    return at;
+  };
+
+  test('under --findings-json, a message\'s preview, a model call\'s error and a failure line are printed whole, with no "…", since its caller hides each line it shows', async () => {
+    const { out } = ladder(await longFields(), ['--findings-json']);
+    expect(out).toMatch(/discord event seen .*#general: p{60}PREVIEW-TAIL-END(?!…)/);
+    expect(out).toMatch(/err=z{100}ERR-TAIL-END/);
+    expect(out).toMatch(/y{200}FAIL-TAIL-END/);
   });
 
-  test('a value that holds a line separator other than a newline is withheld whole in a message\'s preview', async () => {
-    const at = await install({ listens: true, mainPidNow: '0' });
-    const secret = 'Zq9\u2028SEC-77';
-    writeFileSync(join(at.work, 'data', 'discord-mcpl-debug.log'),
-      `${new Date(at.now * 1000).toISOString()} handleDiscordMessage:enter {"channelName":"general","contentPreview":"pre ${secret} more"}\n`);
-    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', secret]]) });
-    expect(out).toMatch(/discord event seen .*#general: pre <DISCORD_TOKEN> more…/);
-    expect(out).not.toContain('Zq9');
+  test('run alone, it cuts a message\'s preview at 40 characters with "…", a model call\'s error at 80 and a failure line at 150', async () => {
+    const { out } = ladder(await longFields());
+    expect(out).toMatch(/discord event seen .*#general: p{40}…/);
+    expect(out).toMatch(/err=z{80}(?!z)/);
+    expect(out).toContain(`{"reason":"Error: ${'y'.repeat(132)}`);
+    for (const end of ['PREVIEW-TAIL-END', 'ERR-TAIL-END', 'FAIL-TAIL-END', 'y'.repeat(133)]) expect(out).not.toContain(end);
   });
 
-  test('a value is withheld in the forms doctor\'s redactor matches: in another ASCII case, and trimmed where doctor passes that form', async () => {
-    const at = await install({ listens: true, mainPidNow: '0' });
-    const long = `[inference-failed] ${'x'.repeat(125)}zQ9-CASE-SECRET-55 and the rest`;
-    writeFileSync(join(at.work, 'journal.txt'), `${at.now}.000000 host bun[1]: ${long}\n`);
-    const withhold = JSON.stringify([['DISCORD_TOKEN', '  Zq9-case-secret-55 '], ['DISCORD_TOKEN', 'Zq9-case-secret-55']]);
-    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: withhold });
-    expect(out).toContain('<DISC');
-    expect(out.toLowerCase()).not.toContain('zq9');
-  });
-
-  test('a value is withheld only in the forms it\'s given, so a word inside one that only Python\'s strip would bare stays', async () => {
-    const at = await install({ listens: true, mainPidNow: '0' });
-    writeFileSync(join(at.work, 'journal.txt'), `${at.now}.000000 host bun[1]: [inference-failed] a token was refused\n`);
-    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', '\u0085token\u0085']]) });
-    expect(out).toContain('a token was refused');
-    expect(out).not.toContain('<DISC');
-  });
-
-  test('two values that overlap where they\'re read leave no part of either', async () => {
-    const at = await install({ listens: true, mainPidNow: '0' });
-    writeFileSync(join(at.work, 'journal.txt'), `${at.now}.000000 host bun[1]: [inference-failed] key aaQ1-bbQ2-ccQ3 refused\n`);
-    const withhold = JSON.stringify([['FIRST', 'aaQ1-bbQ2'], ['SECOND', 'bbQ2-ccQ3']]);
-    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: withhold });
-    expect(out).toContain('key <FIRST> refused');
-    for (const part of ['aaQ1', 'bbQ2', 'ccQ3']) expect(out).not.toContain(part);
-  });
-
-  test('a value at the start of a file\'s tail, cut through, leaves no part of it', async () => {
+  test('a line a file\'s tail read cuts through is dropped whole, so no part of a value in it shows', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const secret = 'Zq9-STRADDLE-SECRET-41';
     const first = `${'x'.repeat(100)}${secret} tail\n`;
     const cut = Buffer.byteLength(first) - (100 + 10);
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${first}${'y'.repeat(400_000 - cut - 1)}\n`);
-    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', secret]]) });
+    const { out } = ladder(at, ['--findings-json']);
     expect(out).toContain('yyyy');
     expect(out).not.toContain(secret.slice(10));
-  });
-
-  test('a value it withholds is still read as what it is: a call row with that value in it counts, and a channel\'s auto-close stays one', async () => {
-    const at = await install({ listens: true, mainPidNow: '0' });
-    writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'), `${JSON.stringify({
-      timestamp: new Date((at.now - 5) * 1000).toISOString(), kind: 'stream', cached: true, rawResponse: { stop_reason: 'end_turn' } })}\n`);
-    writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({
-      kind: 'subscription-gc-close', channelId: '101', at: new Date().toISOString(), limitChars: 4000, restore: 'channel_open' })}\n`);
-    const withhold = JSON.stringify([['FIRST', 'true'], ['SECOND', 'gc-close']]);
-    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: withhold });
-    expect(out).toMatch(/o inference \(llm call\) .*stop=end_turn/);
-    expect(out).not.toContain('unreadable');
-    expect(out).toMatch(/recent failures in .*failures\.log: none found/);
-  });
-
-  test('a value it withholds that\'s a word of the lines it reads leaves them read as they were: a message\'s channel and preview, and a drop\'s reason', async () => {
-    const at = await install({ listens: true, mainPidNow: '0' });
-    const iso = (s: number) => new Date(s * 1000).toISOString();
-    writeFileSync(join(at.work, 'data', 'discord-mcpl-debug.log'), [
-      `${iso(at.now - 50)} handleDiscordMessage:enter {"channelName":"general","contentPreview":"hello"}`,
-      `${iso(at.now - 45)} handleDiscordMessage:drop {"reason":"channel not in scope"}`,
-      '',
-    ].join('\n'));
-    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['FIRST', 'contentPreview'], ['SECOND', 'reason']]) });
-    expect(out).toMatch(/discord event seen .*#general: hello…/);
-    expect(out).toMatch(/mcpl forward to host .*last drop .*: channel not in scope/);
-  });
-
-  test('a CONNECTOME_DOCTOR_WITHHOLD it can\'t read stops the ladder before it reads anything', async () => {
-    const at = await install({ listens: true, mainPidNow: '0' });
-    const { out, status } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: '{"DISCORD_TOKEN":"x"}' });
-    expect(status).toBe(2);
-    expect(out).toContain("CONNECTOME_DOCTOR_WITHHOLD can't be read");
-    expect(out).not.toContain('400 prompt is too long');
   });
 });
 

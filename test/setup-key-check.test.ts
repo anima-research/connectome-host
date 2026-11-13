@@ -683,8 +683,8 @@ describe('which letters a secret matches in any case', () => {
   test('a Discord token is shown by name with its ASCII letters in any case, and other letters as given', async () => {
     const failing = (said: string) => (async () => { throw new Error(said); }) as unknown as typeof fetch;
     expect(await checkDiscordToken('TOKEN-abc', { fetch: failing('connect failed at token-ABC') }))
-      .toEqual({ kind: 'unanswered', why: 'connect failed at <DISCORD_TOKEN>' });
+      .toEqual({ kind: 'unanswered', timedOut: false, why: 'connect failed at <DISCORD_TOKEN>' });
     expect(await checkDiscordToken('TÖKEN', { fetch: failing('connect failed at tökenhost') }))
-      .toEqual({ kind: 'unanswered', why: 'connect failed at tökenhost' });
+      .toEqual({ kind: 'unanswered', timedOut: false, why: 'connect failed at tökenhost' });
   });
 });

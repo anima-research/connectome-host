@@ -126,6 +126,11 @@ function dotenvFiles(mode: (typeof DOTENV_MODES)[number]): string[] {
   return [`.env.${mode}.local`, ...(mode === 'test' ? [] : ['.env.local']), `.env.${mode}`, '.env'];
 }
 
+export function dotenvFileBefore(dir: string, nodeEnv: string | undefined, name: string): string | null {
+  const mode = nodeEnv === 'production' || nodeEnv === 'test' ? nodeEnv : 'development';
+  return dotenvFiles(mode).slice(0, -1).find((file) => Object.hasOwn(parseEnv(envText(join(dir, file))), name)) ?? null;
+}
+
 export function dotenvNames(dir: string): string[] {
   const names = new Set<string>();
   for (const file of new Set(DOTENV_MODES.flatMap(dotenvFiles))) {
@@ -145,6 +150,23 @@ export function dotenvReferences(dir: string): string[] {
     }
   }
   return [...names];
+}
+
+export function dotenvSettings(dir: string, names: readonly string[]): Record<string, string[]> {
+  const settings: Record<string, string[]> = Object.fromEntries(names.map((name) => [name, []]));
+  for (const file of new Set(DOTENV_MODES.flatMap(dotenvFiles))) {
+    let values: NodeJS.Dict<string>;
+    try {
+      values = parseEnv(envText(join(dir, file)));
+    } catch {
+      for (const name of names) settings[name]!.push(`${file} (setup couldn't read it)`);
+      continue;
+    }
+    for (const name of names) {
+      if (Object.hasOwn(values, name)) settings[name]!.push(`${file} gives ${JSON.stringify(values[name])}`);
+    }
+  }
+  return settings;
 }
 
 const READ_LIMIT_MS = 10_000;

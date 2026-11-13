@@ -3,7 +3,7 @@ import { writeTextAtomic } from '../update/contract.js';
 import { RELEASE_HOST } from '../update/launcher.js';
 import { bindingCheckLines } from '../update/rebind.js';
 import { INSTALL_COMMAND, shellWord, typedCommand } from '../update/typed-command.js';
-import { SHOWN_FILE } from './shown.js';
+import { SHOWN_FILE } from '../setup/commands-shown.js';
 
 export const CLI_IN_RELEASE = ['node_modules', '@animalabs', 'connectome-host', 'src', 'cli', 'connectome.ts'];
 

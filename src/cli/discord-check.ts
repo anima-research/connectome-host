@@ -5,6 +5,9 @@ import {
   type DiscordFailure,
 } from '../setup/discord-read.js';
 import { checkDiscordToken, sentToken } from '../setup/discord-token.js';
+import { dotenvFileBefore } from '../setup/secrets.js';
+import { resolveOverlayEntry, type AgentOverlayEntry } from '../mcpl-config.js';
+import { ENV_REFERENCE } from '../recipe-document.js';
 
 const GATEWAY_MESSAGE_CONTENT = 1 << 18;
 const GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19;
@@ -15,6 +18,51 @@ const REQUEST_LIMIT_MS = 15_000;
 export interface DiscordCheck {
   lines: string[];
   problems: string[];
+}
+
+export interface TokenRoute {
+  id: string;
+  defined: 'overlay' | 'file' | 'recipe';
+  file: string;
+  recipe: string;
+  gets: { by: 'given' } | { by: 'mapped'; name: string; fallback: string | null } | { by: 'inherited' } | { by: 'none' };
+  beneath: 'file' | 'recipe' | null;
+}
+
+export function tokenRoute(id: string, sources: {
+  recipe: string;
+  servers: string;
+  overlay: string;
+  recipeServers: Record<string, unknown>;
+  fileServers: ReadonlyArray<{ id: string } & Record<string, unknown>>;
+  overlayServers: Record<string, AgentOverlayEntry>;
+  inheritEnv: boolean;
+}): TokenRoute {
+  const fields = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const tokenIn = (entry: Record<string, unknown> | null | undefined): unknown => {
+    const env = fields(entry?.env);
+    return env !== null && Object.hasOwn(env, 'DISCORD_TOKEN') ? env.DISCORD_TOKEN : undefined;
+  };
+  const named = Object.hasOwn(sources.recipeServers, id) ? fields(sources.recipeServers[id]) : null;
+  const fileEntry = sources.fileServers.find((server) => server.id === id);
+  const beneath = named === null ? null : fileEntry !== undefined ? 'file' : named.command || named.url ? 'recipe' : null;
+  const base = { id, recipe: sources.recipe };
+  const overlaid = Object.hasOwn(sources.overlayServers, id) ? sources.overlayServers[id] : undefined;
+  if (overlaid !== undefined && resolveOverlayEntry(id, overlaid) !== null) {
+    return { ...base, defined: 'overlay', file: sources.overlay, beneath,
+      gets: tokenIn(fields(overlaid)) === undefined ? { by: 'none' } : { by: 'given' } };
+  }
+  const inherits = { by: sources.inheritEnv ? 'inherited' : 'none' } as const;
+  if (beneath === 'file') {
+    return { ...base, defined: 'file', file: sources.servers, beneath: null,
+      gets: tokenIn(fileEntry) === undefined ? inherits : { by: 'given' } };
+  }
+  const written = tokenIn(named);
+  const mapped = typeof written === 'string' ? new RegExp(`^${ENV_REFERENCE}$`).exec(written) : null;
+  return { ...base, defined: 'recipe', file: sources.recipe, beneath: null,
+    gets: mapped !== null ? { by: 'mapped', name: mapped[1]!, fallback: mapped[2] ?? null }
+      : written === undefined ? inherits : { by: 'given' } };
 }
 
 interface Guild { id: string; name: string; visible: Channel[]; ids: Set<string>; unsendable: Set<string> }
@@ -38,9 +86,65 @@ export async function checkDiscord(
     workingDir: string;
     command: string;
     requestLimitMs?: number;
+    route: TokenRoute;
+    service: Record<string, string | undefined>;
+    nodeEnv?: string;
   },
 ): Promise<DiscordCheck> {
-  const { command } = options;
+  const { command, route } = options;
+  const work = options.workingDir;
+  const entry = `${route.defined === 'recipe' ? 'mcpServers' : 'mcplServers'}.${route.id}`;
+  const portal = 'the bot token from the Developer Portal\'s Bot page';
+  const restore = (name: string): string => {
+    const before = dotenvFileBefore(work, options.nodeEnv, name);
+    return (before !== null
+      ? `${name} is set in ${join(work, before)}, which Bun reads before .env: put ${portal} there`
+      : name === 'DISCORD_TOKEN'
+        ? `Store ${portal} with \`${command} setup discord\`, which stores it in ${join(work, '.env')}`
+        : `Put ${portal} in ${join(work, '.env')} as ${name}`) +
+      `, then restart the service and run \`${command} doctor\` again. Where something other than the dotenv files gives ` +
+      `the service ${name}, doctor's Service section then names it.`;
+  };
+  const filled = (name: string): boolean => (options.service[name] ?? '') !== '';
+  const emptyStep = (): string => {
+    const { gets } = route;
+    if (gets.by === 'mapped') return restore(gets.name);
+    if (gets.by === 'inherited' || !filled('DISCORD_TOKEN')) return restore('DISCORD_TOKEN');
+    if (route.defined === 'overlay') {
+      return `The agent overlay ${route.file} defines the server at ${entry}, and the overlay can neither put in a "\${…}" nor ` +
+        'hand a server the service\'s environment: take that entry out of the overlay, ' +
+        (route.beneath === null
+          ? `and add the server to mcpServers in ${route.recipe}, with its command and "DISCORD_TOKEN": "\${DISCORD_TOKEN}" in its ` +
+            'env, then restart the service.'
+          : `so that ${route.beneath === 'file' ? 'the entry mcpl-servers.json has for it' : 'the recipe\'s entry for it'} defines ` +
+            `the server, then run \`${command} doctor\` again.`);
+    }
+    if (route.defined === 'file') {
+      return (gets.by === 'given' ? `mcpl-servers.json gives DISCORD_TOKEN an empty value at ${entry}.env in ${route.file}, which ` +
+        'replaces the service\'s: take it out of that env, and' : 'mcpl-servers.json defines the server and takes its env as written:') +
+        ` set "inheritEnv": true in mcpServers.${route.id} in ${route.recipe}, which hands the server the service's DISCORD_TOKEN, ` +
+        'then restart the service.';
+    }
+    return `${gets.by === 'given' ? 'Make DISCORD_TOKEN "${DISCORD_TOKEN}" in' : 'Add "DISCORD_TOKEN": "${DISCORD_TOKEN}" to'} the ` +
+      `env of ${entry} in ${route.recipe}, then restart the service.`;
+  };
+  // Keep this a function: it reads the dotenv files, and a token that works reads none.
+  const source = (): string => {
+    const { gets } = route;
+    if (gets.by === 'mapped') {
+      const named = `${entry}.env.DISCORD_TOKEN`;
+      return (!filled(gets.name) && gets.fallback !== null
+        ? `The token is the default that ${named} gives in ${route.recipe}, since the service's ${gets.name} is empty or unset. `
+        : `The token is the service's ${gets.name}${gets.name === 'DISCORD_TOKEN' ? '' : `, which ${named} names in ${route.recipe}`}. `) +
+        restore(gets.name);
+    }
+    if (gets.by === 'given') {
+      return `The token is the value written at ${entry}.env.DISCORD_TOKEN in ${route.file}` + (route.defined === 'recipe'
+        ? `: make it exactly "\${DISCORD_TOKEN}", so the server gets the service's DISCORD_TOKEN. ${restore('DISCORD_TOKEN')}`
+        : `, which takes it as written: replace it with ${portal}, then restart the service.`);
+    }
+    return `The token is the service's DISCORD_TOKEN, which the server inherits. ${restore('DISCORD_TOKEN')}`;
+  };
   const lines: string[] = [];
   const problems: string[] = [];
   const problem = (text: string): void => {
@@ -52,9 +156,7 @@ export async function checkDiscord(
   // discord.js's Client.login drops this prefix before it uses the token (14.16.0 on), so the token is checked so.
   const token = sentToken(given);
   if (token.trim() === '') {
-    problem('The Discord server\'s env has no DISCORD_TOKEN, or an empty one, so discord-mcpl can\'t log in. If .env doesn\'t hold the ' +
-      `bot token yet, store it with \`${command} setup discord\`, which keeps it in ${join(options.workingDir, '.env')}. ` +
-      mappingRemedy('DISCORD_TOKEN', true));
+    problem('The Discord server\'s env has no DISCORD_TOKEN, or an empty one, so discord-mcpl can\'t log in. ' + emptyStep());
     return { lines, problems };
   }
   if (token !== given) {
@@ -73,15 +175,8 @@ export async function checkDiscord(
   const again = `${unchecked}: run ${command} doctor again`;
   const reach = `${unchecked}: check that this machine can resolve and reach discord.com, then run ${command} doctor again`;
   const between = 'Something between this machine and Discord, such as a proxy, may be answering in its place.';
-  const source = 'Where the recipe alone defines the server and maps "${DISCORD_TOKEN}" in its env, or the server is handed ' +
-    'the host\'s whole environment ("inheritEnv": true, in the recipe or mcpl-servers.json) with no DISCORD_TOKEN ' +
-    `of its own, the token is the service's DISCORD_TOKEN. \`${command} setup discord\` stores it in ` +
-    `${join(options.workingDir, '.env')}, and ${BEFORE_ENV_FILE}: a token reset on ` +
-    'the Developer Portal\'s Bot page has to be stored again in whichever gives the service its value. Where the ' +
-    'entry that defines the server gives DISCORD_TOKEN a value itself, that value is the one to replace: ' +
-    'mcpl-servers.json and the agent overlay take it as written, a "${DISCORD_TOKEN}" included, and an overlay ' +
-    'entry or mcpl-servers.json\'s replaces a recipe entry\'s env. Then restart the service.';
-  const refused = `Discord refused the bot token the server is given as DISCORD_TOKEN (401), ${unchecked}. ${source}`;
+  const refused = (): string =>
+    `Discord refused the bot token the server is given as DISCORD_TOKEN (401), ${unchecked}. ${source()}`;
   const reader = discordReader(token, { fetch: options.fetch, limitMs });
   const wordsFor = (failure: DiscordFailure): string => {
     const { path } = failure;
@@ -98,21 +193,21 @@ export async function checkDiscord(
             `${failure.retryAfter !== undefined ? waited(unchecked, failure.retryAfter, command)
               : failure.status === 429 || failure.status >= 500 ? again : unchecked}. ${between}`;
       case 'refused':
-        return refused;
+        return refused();
       case 'answered': {
         const wait = failure.retryAfter === undefined ? undefined : waited(unchecked, failure.retryAfter, command);
         return `Discord answered ${failure.status} to GET ${path}` +
           (failure.said !== null ? `: ${failure.said}${failure.code !== undefined ? ` (code ${failure.code})` : ''}` : ', with no message') +
           `, ${wait ?? (failure.status === 429 || failure.status >= 500 ? again : unchecked)}.` +
           (failure.status === 403 || failure.status === 404
-            ? path.startsWith('/guilds/') ? ` ${listed(command)}` : path === '/applications/@me' ? ` ${between}` : ''
+            ? path.startsWith('/guilds/') ? ` ${listed(command)}` : path === '/applications/@me' || path === '/users/@me' ? ` ${between}` : ''
             : '');
       }
     }
   };
 
   try {
-    const bot = await whoseToken(token, { fetch: options.fetch, limitMs }, { unchecked, again, reach, between, refused, source, command });
+    const bot = await whoseToken(token, { fetch: options.fetch, limitMs }, { unchecked, between, source });
     lines.push(`✓ The token in DISCORD_TOKEN works: the bot is ${bot.name} (${bot.id}).`);
 
     const app = await reader.get<{ flags?: number }>('/applications/@me');
@@ -156,51 +251,37 @@ export async function checkDiscord(
 async function whoseToken(
   token: string,
   options: { fetch: typeof fetch; limitMs: number },
-  words: { unchecked: string; again: string; reach: string; between: string; refused: string; source: string; command: string },
+  words: { unchecked: string; between: string; source: () => string },
 ): Promise<{ name: string; id: string }> {
   const path = '/users/@me';
   const check = await checkDiscordToken(token, options);
+  const after = (wait: number | undefined) => (wait === undefined ? {} : { retryAfter: wait });
   switch (check.kind) {
     case 'accepted': return check;
-    case 'refused': throw new DiscordAnswer(words.refused);
     case 'unsendable':
       throw new DiscordAnswer('The bot token the server is given as DISCORD_TOKEN holds a character a request header ' +
-        `can't carry, so it can't be a bot token and wasn't sent. The Discord checks after it weren't made. ${words.source}`);
-    case 'unanswered': throw new DiscordAnswer(`Discord couldn't be asked GET ${path}: ${check.why}, ${words.reach}.`);
-    case 'redirected':
-      throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}, a redirect, which doctor doesn't follow ` +
-        `with the token, ${words.unchecked}. ${words.between}`);
+        `can't carry, so it can't be a bot token and wasn't sent. The Discord checks after it weren't made. ${words.source()}`);
+    case 'refused': throw new DiscordFailed({ kind: 'refused', path });
+    case 'unanswered': throw new DiscordFailed({ kind: 'unanswered', path, timedOut: check.timedOut, why: check.why });
+    case 'redirected': throw new DiscordFailed({ kind: 'redirected', path, status: check.status });
     case 'unrecognized':
+      throw new DiscordFailed({ kind: 'unrecognized', path, status: check.status, ok: check.status >= 200 && check.status < 300,
+        ...after(check.retryAfter) });
     case 'answered':
-      if (check.kind === 'unrecognized' && (check.status < 200 || check.status >= 300)) {
-        throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path} with something other than JSON, ` +
-          `${check.retryAfter !== undefined ? waited(words.unchecked, check.retryAfter, words.command)
-            : check.status === 429 || check.status >= 500 ? words.again : words.unchecked}. ${words.between}`);
-      }
-      if (check.kind === 'unrecognized' || (check.status >= 200 && check.status < 300)) {
+      if (check.status >= 200 && check.status < 300) {
         throw new DiscordAnswer(`Discord answered GET ${path} with something other than the bot's user, ${words.unchecked}. ` +
           words.between);
       }
-      throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}` +
-        (check.said === null ? ', with no message' : `: ${check.said}${check.code !== undefined ? ` (code ${check.code})` : ''}`) +
-        `, ${check.retryAfter !== undefined ? waited(words.unchecked, check.retryAfter, words.command)
-          : check.status === 429 || check.status >= 500 ? words.again : words.unchecked}.` +
-        (check.status === 403 || check.status === 404 ? ` ${words.between}` : ''));
+      throw new DiscordFailed({ kind: 'answered', path, status: check.status, said: check.said,
+        ...(check.code !== undefined ? { code: check.code } : {}), ...after(check.retryAfter) });
   }
 }
 
-export function mappingRemedy(name: string, envOnly = false): string {
-  return `Name it as "\${${name}}" in the recipe entry of the server that needs it: in its env, as "${name}": ` +
-    `"\${${name}}"${envOnly ? '' : ', or in its args, or, for a server the host dials, in its token or url'}. ` +
-    'mcpl-servers.json and the agent overlay take their values as written, with no ${…} substituted. For a server ' +
-    'mcpl-servers.json starts, a recipe entry can\'t set its env or args: move the server\'s definition out of ' +
-    'mcpl-servers.json into the recipe, or set "inheritEnv": true in its recipe entry, which hands it the host\'s ' +
-    `whole environment, with ${name} left out of the file's env, whose value would replace the host's. An agent ` +
-    'overlay entry replaces the recipe\'s and the file\'s, so the recipe can\'t reach a server the overlay defines ' +
-    'while that entry is there: take the entry out of the overlay, put the server\'s definition, with its command or ' +
-    'url, in the recipe, and out of mcpl-servers.json too where the file has an entry of that name, whose command and ' +
-    'env would stay, or in mcpl-servers.json with a recipe entry that names it, and follow the steps above for ' +
-    'whichever then defines it. Then restart the service.';
+export function secretStep(name: string, envOnly = false): string {
+  return 'Doctor can\'t tell which server needs it: give it to that server in the env' + (envOnly ? '' : ' or args') +
+    ` of the entry that defines it, as ${envOnly ? `"${name}": ` : ''}"\${${name}}" in the recipe, and as its value in ` +
+    'mcpl-servers.json or the agent overlay, which take values as written' +
+    (envOnly ? '' : ', or, for a server the host dials, in its token or url') + '. Then restart the service.';
 }
 
 function channelName(channel: Channel): string {

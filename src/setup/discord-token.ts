@@ -13,7 +13,7 @@ export type TokenCheck =
   | { kind: 'answered'; status: number; said: string | null; code?: string; retryAfter?: number }
   | { kind: 'redirected'; status: number; to: string | null }
   | { kind: 'unrecognized'; status: number; retryAfter?: number }
-  | { kind: 'unanswered'; why: string };
+  | { kind: 'unanswered'; timedOut: boolean; why: string };
 
 /** Discord asks API callers for a User-Agent naming their library; one with none can get a 403 unrelated to its
  *  permissions. */
@@ -38,7 +38,7 @@ export async function checkDiscordToken(
     const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
     const words = timedOut ? `no answer within ${limitMs / 1000} s`
       : error instanceof Error ? error.message : String(error);
-    return { kind: 'unanswered', why: hidden(words, token) };
+    return { kind: 'unanswered', timedOut, why: hidden(words, token) };
   };
   let response: Response;
   try {

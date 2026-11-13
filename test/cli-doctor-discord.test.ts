@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkDiscord } from '../src/cli/discord-check.js';
+import { checkDiscord, type TokenRoute } from '../src/cli/discord-check.js';
 import { DISCORD_API, discordUserAgent } from '../src/setup/discord-token.js';
 
 const TOKEN = 'MTEx.fake-token-value.abc';
@@ -92,13 +92,28 @@ function workdir(): string {
   return mkdtempSync(join(tmpdir(), 'chost-doctor-discord-'));
 }
 
+// The route a recipe entry has that maps "${DISCORD_TOKEN}", and the service's environment the same as the server's.
 async function run(
   env: Record<string, string | undefined>, discord: ReturnType<typeof fakeDiscord>, dir = workdir(), requestLimitMs?: number,
   command = 'connectome',
+  given: { route?: Partial<TokenRoute>; service?: Record<string, string | undefined>; nodeEnv?: string } = {},
 ) {
-  const result = await checkDiscord(env, { fetch: discord.fetch, workingDir: dir, command, ...(requestLimitMs ? { requestLimitMs } : {}) });
+  const route: TokenRoute = {
+    id: 'discord', defined: 'recipe', file: join(dir, 'recipe.json'), recipe: join(dir, 'recipe.json'),
+    gets: { by: 'mapped', name: 'DISCORD_TOKEN', fallback: null }, beneath: null, ...given.route,
+  };
+  const result = await checkDiscord(env, {
+    fetch: discord.fetch, workingDir: dir, command, ...(requestLimitMs ? { requestLimitMs } : {}),
+    route, service: given.service ?? env, ...(given.nodeEnv !== undefined ? { nodeEnv: given.nodeEnv } : {}),
+  });
   return { ...result, text: result.lines.join('\n') };
 }
+
+const restoreStep = (dir: string, name = 'DISCORD_TOKEN'): string => (name === 'DISCORD_TOKEN'
+  ? `Store the bot token from the Developer Portal's Bot page with \`connectome setup discord\`, which stores it in ${join(dir, '.env')}`
+  : `Put the bot token from the Developer Portal's Bot page in ${join(dir, '.env')} as ${name}`) +
+  ', then restart the service and run `connectome doctor` again. Where something other than the dotenv files gives the ' +
+  `service ${name}, doctor's Service section then names it.`;
 
 const scopeOf = (r: { lines: string[] }): string => r.lines.slice(r.lines.findIndex((l) => /^The scope/.test(l))).join('\n');
 
@@ -117,30 +132,109 @@ describe('doctor: Discord', () => {
     expect(r.problems).toEqual([]);
   });
 
-  test('a token Discord refuses is a problem that names its variable and .env, without its value', async () => {
-    const r = await run({ DISCORD_TOKEN: 'wrong-token-value' }, fakeDiscord({ guilds: [HOME] }));
-    expect(r.problems.length).toBe(1);
-    expect(r.problems[0]).toContain('DISCORD_TOKEN');
-    expect(r.problems[0]).toContain('.env');
-    expect(r.problems[0]).toMatch(/^Discord refused the bot token the server is given as DISCORD_TOKEN \(401\), so the Discord checks after it weren't made\./);
-    expect(r.problems[0]).toMatch(/Where the recipe alone defines the server and maps "\$\{DISCORD_TOKEN\}" in its env, or the server is handed the host's whole environment \("inheritEnv": true, in the recipe or mcpl-servers\.json\) with no DISCORD_TOKEN of its own, the token is the service's DISCORD_TOKEN\. `connectome setup discord` stores it in .*\.env, and another of the files Bun reads there, such as \.env\.local or \.env\.development, or the service's own environment, comes before \.env where it sets the name: a token reset on the Developer Portal's Bot page has to be stored again in whichever gives the service its value\./);
-    expect(r.problems[0]).toMatch(/Where the entry that defines the server gives DISCORD_TOKEN a value itself, that value is the one to replace: mcpl-servers\.json and the agent overlay take it as written, a "\$\{DISCORD_TOKEN\}" included, and an overlay entry or mcpl-servers\.json's replaces a recipe entry's env\. Then restart the service\./);
+  test('a token Discord refuses, which the recipe maps from the service\'s DISCORD_TOKEN, is stored again with setup discord, without its value', async () => {
+    const dir = workdir();
+    const r = await run({ DISCORD_TOKEN: 'wrong-token-value' }, fakeDiscord({ guilds: [HOME] }), dir);
+    expect(r.problems).toEqual(['Discord refused the bot token the server is given as DISCORD_TOKEN (401), so the Discord checks after ' +
+      `it weren't made. The token is the service's DISCORD_TOKEN. ${restoreStep(dir)}`]);
     expect(r.text).not.toContain('wrong-token-value');
   });
 
-  test('a server entry with no DISCORD_TOKEN in its env is a problem that says how to store it, and nothing is asked of Discord', async () => {
+  test('a server entry with no DISCORD_TOKEN, where the service has none either, is told to store it first, and nothing is asked of Discord', async () => {
     const discord = fakeDiscord({ guilds: [HOME] });
     const dir = workdir();
-    const r = await run({ DISCORD_GUILD_ID: '100' }, discord, dir);
-    expect(r.problems.length).toBe(1);
-    expect(r.problems[0]).toContain('DISCORD_TOKEN');
-    expect(r.problems[0]).toMatch(/^The Discord server's env has no DISCORD_TOKEN, or an empty one, so discord-mcpl can't log in\./);
-    expect(r.problems[0]).toMatch(/If \.env doesn't hold the bot token yet, store it with `connectome setup discord`, which keeps it in .*\.env\. Name it as "\$\{DISCORD_TOKEN\}" in the recipe entry of the server that needs it: in its env, as "DISCORD_TOKEN": "\$\{DISCORD_TOKEN\}"\. mcpl-servers\.json and the agent overlay take their values as written, .* For a server mcpl-servers\.json starts, a recipe entry can't set its env or args: .*Then restart the service\./);
-    expect(r.problems[0]).not.toContain('or in its args');
+    const r = await run({ DISCORD_GUILD_ID: '100' }, discord, dir, undefined, 'connectome', { route: { gets: { by: 'none' } }, service: {} });
+    expect(r.problems).toEqual(['The Discord server\'s env has no DISCORD_TOKEN, or an empty one, so discord-mcpl can\'t log in. ' +
+      restoreStep(dir)]);
     expect(discord.requests).toEqual([]);
-    const empty = await run({ DISCORD_TOKEN: '', DISCORD_GUILD_ID: '100' }, discord, dir);
+    const empty = await run({ DISCORD_TOKEN: '', DISCORD_GUILD_ID: '100' }, discord, dir, undefined, 'connectome',
+      { route: { gets: { by: 'given' } }, service: {} });
     expect(empty.problems).toEqual(r.problems);
     expect(discord.requests).toEqual([]);
+  });
+
+  test('a recipe entry with no DISCORD_TOKEN, where the service has one, is told to map it in that entry', async () => {
+    const dir = workdir();
+    const r = await run({}, fakeDiscord({ guilds: [HOME] }), dir, undefined, 'connectome',
+      { route: { gets: { by: 'none' } }, service: { DISCORD_TOKEN: TOKEN } });
+    expect(r.problems).toEqual(['The Discord server\'s env has no DISCORD_TOKEN, or an empty one, so discord-mcpl can\'t log in. ' +
+      `Add "DISCORD_TOKEN": "\${DISCORD_TOKEN}" to the env of mcpServers.discord in ${join(dir, 'recipe.json')}, then restart the service.`]);
+  });
+
+  test('an entry mcpl-servers.json defines with no DISCORD_TOKEN is told to inherit it, by the recipe\'s entry', async () => {
+    const dir = workdir();
+    const r = await run({}, fakeDiscord({ guilds: [HOME] }), dir, undefined, 'connectome', {
+      route: { defined: 'file', file: join(dir, 'mcpl-servers.json'), gets: { by: 'none' } }, service: { DISCORD_TOKEN: TOKEN },
+    });
+    expect(r.problems).toEqual(['The Discord server\'s env has no DISCORD_TOKEN, or an empty one, so discord-mcpl can\'t log in. ' +
+      `mcpl-servers.json defines the server and takes its env as written: set "inheritEnv": true in mcpServers.discord in ${join(dir, 'recipe.json')}, ` +
+      'which hands the server the service\'s DISCORD_TOKEN, then restart the service.']);
+  });
+
+  test('an entry the agent overlay defines with no DISCORD_TOKEN is told to come out of the overlay', async () => {
+    const dir = workdir();
+    const overlay = join(dir, 'mcpl-servers.agent.json');
+    const lead = 'The Discord server\'s env has no DISCORD_TOKEN, or an empty one, so discord-mcpl can\'t log in. ' +
+      `The agent overlay ${overlay} defines the server at mcplServers.discord, and the overlay can neither put in a "\${…}" nor ` +
+      'hand a server the service\'s environment: take that entry out of the overlay, ';
+    const alone = await run({}, fakeDiscord({ guilds: [HOME] }), dir, undefined, 'connectome', {
+      route: { defined: 'overlay', file: overlay, gets: { by: 'none' } }, service: { DISCORD_TOKEN: TOKEN },
+    });
+    expect(alone.problems).toEqual([lead + `and add the server to mcpServers in ${join(dir, 'recipe.json')}, with its command and ` +
+      '"DISCORD_TOKEN": "${DISCORD_TOKEN}" in its env, then restart the service.']);
+    const above = await run({}, fakeDiscord({ guilds: [HOME] }), dir, undefined, 'connectome', {
+      route: { defined: 'overlay', file: overlay, gets: { by: 'given' }, beneath: 'file' }, service: { DISCORD_TOKEN: TOKEN },
+    });
+    expect(above.problems).toEqual([lead + 'so that the entry mcpl-servers.json has for it defines the server, then run ' +
+      '`connectome doctor` again.']);
+  });
+
+  test('a refused token that its entry gives is replaced where that entry writes it', async () => {
+    const dir = workdir();
+    const r = await run({ DISCORD_TOKEN: 'wrong-token-value' }, fakeDiscord({ guilds: [HOME] }), dir, undefined, 'connectome', {
+      route: { defined: 'file', file: join(dir, 'mcpl-servers.json'), gets: { by: 'given' } }, service: {},
+    });
+    expect(r.problems).toEqual(['Discord refused the bot token the server is given as DISCORD_TOKEN (401), so the Discord checks after ' +
+      `it weren't made. The token is the value written at mcplServers.discord.env.DISCORD_TOKEN in ${join(dir, 'mcpl-servers.json')}, ` +
+      'which takes it as written: replace it with the bot token from the Developer Portal\'s Bot page, then restart the service.']);
+  });
+
+  test('a refused token that the recipe maps from another name is put in .env as that name, or replaces the default in use', async () => {
+    const dir = workdir();
+    const mapped = { route: { gets: { by: 'mapped' as const, name: 'BOT_TOKEN', fallback: 'spare' } } };
+    const set = await run({ DISCORD_TOKEN: 'wrong-token-value' }, fakeDiscord({ guilds: [HOME] }), dir, undefined, 'connectome',
+      { ...mapped, service: { BOT_TOKEN: 'wrong-token-value' } });
+    expect(set.problems).toEqual(['Discord refused the bot token the server is given as DISCORD_TOKEN (401), so the Discord checks after ' +
+      `it weren't made. The token is the service's BOT_TOKEN, which mcpServers.discord.env.DISCORD_TOKEN names in ${join(dir, 'recipe.json')}. ` +
+      restoreStep(dir, 'BOT_TOKEN')]);
+    const unset = await run({ DISCORD_TOKEN: 'spare' }, fakeDiscord({ guilds: [HOME] }), dir, undefined, 'connectome', { ...mapped, service: {} });
+    expect(unset.problems).toEqual(['Discord refused the bot token the server is given as DISCORD_TOKEN (401), so the Discord checks after ' +
+      `it weren't made. The token is the default that mcpServers.discord.env.DISCORD_TOKEN gives in ${join(dir, 'recipe.json')}, since the ` +
+      `service's BOT_TOKEN is empty or unset. ${restoreStep(dir, 'BOT_TOKEN')}`]);
+  });
+
+  test('a token that works reads no dotenv file, so one that can\'t be read changes nothing in the check', async () => {
+    const dir = workdir();
+    mkdirSync(join(dir, '.env.local'));
+    const r = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100' }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }), dir);
+    expect(r.problems).toEqual([]);
+    expect(r.lines[0]).toStartWith('✓ The token in DISCORD_TOKEN works');
+  });
+
+  test('a refused token that a dotenv file Bun reads before .env sets is put right in that file', async () => {
+    const dir = workdir();
+    writeFileSync(join(dir, '.env.local'), 'DISCORD_TOKEN=wrong-token-value\n');
+    const r = await run({ DISCORD_TOKEN: 'wrong-token-value' }, fakeDiscord({ guilds: [HOME] }), dir);
+    expect(r.problems).toEqual(['Discord refused the bot token the server is given as DISCORD_TOKEN (401), so the Discord checks after ' +
+      `it weren't made. The token is the service's DISCORD_TOKEN. DISCORD_TOKEN is set in ${join(dir, '.env.local')}, which Bun reads ` +
+      'before .env: put the bot token from the Developer Portal\'s Bot page there, then restart the service and run `connectome doctor` ' +
+      'again. Where something other than the dotenv files gives the service DISCORD_TOKEN, doctor\'s Service section then names it.']);
+    const modes = workdir();
+    writeFileSync(join(modes, '.env.development'), 'DISCORD_TOKEN=one\n');
+    writeFileSync(join(modes, '.env.production'), 'DISCORD_TOKEN=other\n');
+    const production = await run({ DISCORD_TOKEN: 'other' }, fakeDiscord({ guilds: [HOME] }), modes, undefined, 'connectome',
+      { nodeEnv: 'production' });
+    expect(production.problems[0]).toContain(`DISCORD_TOKEN is set in ${join(modes, '.env.production')}, which Bun reads before .env`);
   });
 
   test('another refusal is a problem giving Discord\'s own message, or saying it gave none, and that the checks after it weren\'t made, and no raw body', async () => {
@@ -207,9 +301,9 @@ describe('doctor: Discord', () => {
     const bare = /(^|[\s`])connectome (doctor|setup)/;
     const limited = (retry?: number) => () => Response.json({ message: 'You are being rate limited.', ...(retry === undefined ? {} : { retry_after: retry }) }, { status: 429 });
     const cases: Array<[string, Promise<{ lines: string[]; problems: string[] }>, string]> = [
-      ['no token', run({}, fakeDiscord({}), workdir(), undefined, typed), `\`${typed} setup discord\`, which keeps it in`],
+      ['no token', run({}, fakeDiscord({}), workdir(), undefined, typed), `\`${typed} setup discord\`, which stores it in`],
       ['whitespace after the token', run({ DISCORD_TOKEN: `${TOKEN}  ` }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }), workdir(), undefined, typed), `\`${typed} setup discord\` stores it trimmed in`],
-      ['a refused token', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ token: 'other' }), workdir(), undefined, typed), `\`${typed} setup discord\` stores it in`],
+      ['a refused token', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ token: 'other' }), workdir(), undefined, typed), `\`${typed} setup discord\`, which stores it in`],
       ['Discord busy', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: limited() }), workdir(), undefined, typed), `weren't made: run ${typed} doctor again`],
       ['a wait asked for by the first request', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/users/@me': limited(2.5) } }), workdir(), undefined, typed), `so run ${typed} doctor again after that`],
       ['a wait asked for by a later request', run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/applications/@me': limited(2.5) } }), workdir(), undefined, typed), `so run ${typed} doctor again after that`],
@@ -237,7 +331,7 @@ describe('doctor: Discord', () => {
     expect(rejected.problems[0]).toContain('ENOTFOUND');
     expect(rejected.problems[0]).toMatch(/weren't made: check that this machine can resolve and reach discord\.com, then run connectome doctor again/);
     const notJson = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: () => new Response('<html>', { status: 200 }) }));
-    expect(notJson.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
+    expect(notJson.problems).toEqual(['Discord answered GET /users/@me with something other than JSON, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
     const laterNotJson = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/applications/@me': () => new Response('<html>', { status: 200 }) } }));
     expect(laterNotJson.problems).toEqual([expect.stringMatching(/GET \/applications\/@me with something other than JSON/)]);
   });
@@ -260,7 +354,7 @@ describe('doctor: Discord', () => {
   test('Discord that doesn\'t answer within the limit is a problem when the limit runs out', async () => {
     const r = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ fails: 'hang' }), workdir(), 200);
     expect(r.problems.length).toBe(1);
-    expect(r.problems[0]).toMatch(/^Discord couldn't be asked GET \/users\/@me: no answer within 0\.2 s, /);
+    expect(r.problems[0]).toMatch(/^Discord didn't answer GET \/users\/@me within 0\.2 s, /);
     expect(r.problems[0]).toMatch(/weren't made: check that this machine can resolve and reach discord\.com, then run connectome doctor again/);
   });
 
@@ -307,14 +401,14 @@ describe('doctor: Discord', () => {
     expect(r.problems).toEqual(['Discord answered 302 to GET /applications/@me, a redirect, which doctor doesn\'t follow with the token, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
   });
 
-  test('a token a request header can\'t carry is named as such and never sent, with where the service\'s token comes from', async () => {
+  test('a token a request header can\'t carry, which the server inherits, is named as such, never sent, and stored again with setup discord', async () => {
     const discord = fakeDiscord({ guilds: [HOME] });
-    const r = await run({ DISCORD_TOKEN: 'MTEx.part\u2028part' }, discord);
+    const dir = workdir();
+    const r = await run({ DISCORD_TOKEN: 'MTEx.part\u2028part' }, discord, dir, undefined, 'connectome', { route: { gets: { by: 'inherited' } } });
     expect(discord.requests).toEqual([]);
-    expect(r.problems.length).toBe(1);
-    expect(r.problems[0]).toStartWith('The bot token the server is given as DISCORD_TOKEN holds a character a request header can\'t carry, so it can\'t be a bot token and wasn\'t sent. The Discord checks after it weren\'t made.');
-    expect(r.problems[0]).toContain('a token reset on the Developer Portal\'s Bot page has to be stored again in whichever gives the service its value.');
-    expect(r.problems[0]).not.toMatch(/again: run|run connectome doctor again/);
+    expect(r.problems).toEqual(['The bot token the server is given as DISCORD_TOKEN holds a character a request header can\'t carry, so ' +
+      'it can\'t be a bot token and wasn\'t sent. The Discord checks after it weren\'t made. The token is the service\'s DISCORD_TOKEN, ' +
+      `which the server inherits. ${restoreStep(dir)}`]);
   });
 
   test('a token given with the Bot or Bearer prefix discord.js drops at login is checked without it, as the connection uses it, and says so', async () => {
