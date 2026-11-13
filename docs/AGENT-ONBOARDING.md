@@ -164,6 +164,7 @@ Once Discord is set up ("Discord") and any history is imported ("Importing a his
 - **No schedule of its own:** it wakes only when someone talks to it, unless they want it to wake on its own ("The recipe").
 - **The two grants,** each with one line on what it lets the resident do ("What the resident may do to itself").
 - **Where linger is off,** that the start waits on its root line, shown again (below).
+- **Where your prompt's line on the Mac's graphical session gives anything but `0` or `none`,** that install refuses until this user is logged in to the Mac's graphical session, as it does while linger is off. Install's own check decides at the install ("Going live").
 - **With a data directory kept from before,** what an existing filters file admits ("Discord's settings"), and each server entry left in `mcpl-servers.json` or the agent overlay ("The recipe's servers"). Both need the person before the service starts, so its yes settles them too.
 - **With a history, or a data directory kept from before,** that its memory isn't backed up yet, and that you offer backups right after the hello ("Backups").
 
