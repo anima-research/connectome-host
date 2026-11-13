@@ -363,7 +363,6 @@ export async function doctor(
           report.line('It\'s stopped.');
         }
       });
-      // A running process keeps the environment it started with, whatever its unit or plist says since.
       report.line(installed.units.manager === 'launchd'
         ? `Doctor reads the environment ${installed.units.host.file} gives as the plist is on disk, which launchd takes up ` +
           'only at the agent\'s next load, so a value changed there since then isn\'t what a running host has.'
@@ -556,7 +555,6 @@ export async function doctor(
     else {
       await checked(report, 'The counts of its model calls', async () => {
         const answer = await read<unknown>('health', calls);
-        // The service's log holds only the service's own host's stderr.
         const logged = service === null || commands === null || notTheService || pidUntold ? null : units;
         if (answer !== null) uncounted = callLines(report, agentCalls(answer.data), recipe?.agent.name, logged);
       });

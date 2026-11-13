@@ -222,7 +222,6 @@ const unitEnvironment = (at: Install): Record<string, string> => ({
 
 let plists = 0;
 
-/** plutil as install reads a plist's WorkingDirectory with it: `-type`, `-lint` and `-extract … raw`. */
 const PLUTIL_WORKING_DIRECTORY = [
   'if [ "$1" = -type ] && [ "$2" = WorkingDirectory ]; then',
   '  if grep -q "<key>WorkingDirectory</key>" "$3"; then echo string; exit 0; fi',
