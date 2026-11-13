@@ -41,8 +41,8 @@ export function shortLength(value: string): string {
   return `${count} character${count === 1 ? '' : 's'} long${ends}`;
 }
 
-export const SHORT_HIDES = 'Setup hides a stored secret wherever its text appears in what its agent sees, so one this ' +
-  'short also hides parts of ids and of command output.';
+export const SHORT_HIDES = 'Setup hides a stored secret in the output of the commands its agent runs and in the answers ' +
+  'it reads from Discord and from model providers, so one this short also hides parts of ids and of command output.';
 
 export function unwritableValue(value: string): string | null {
   if (value === '') return 'it is empty';

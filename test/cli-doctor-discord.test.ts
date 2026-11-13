@@ -499,6 +499,19 @@ describe('doctor: Discord', () => {
     }
   });
 
+  test('a filters file whose path runs through a regular file is a problem with its error, not one discord-mcpl writes', async () => {
+    const dir = workdir();
+    writeFileSync(join(dir, 'not-a-directory'), '');
+    const r = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100', DISCORD_FILTERS_FILE: 'not-a-directory/filters.json' },
+      fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }), dir);
+    expect(r.problems).toHaveLength(1);
+    expect(r.problems[0]).toContain(`${join(dir, 'not-a-directory', 'filters.json')} (DISCORD_FILTERS_FILE) can't be looked at: `);
+    expect(r.problems[0]).toContain('. discord-mcpl can\'t read it or write it there, so it starts with DISCORD_GUILD_ID\'s scope, ' +
+      'as below. Repair what that path runs through.');
+    expect(r.text).not.toContain('isn\'t there');
+    expect(scopeOf(r)).toMatch(/^The scope discord-mcpl starts with, from DISCORD_GUILD_ID/);
+  });
+
   test('a filters file that isn\'t there is named, with the scope discord-mcpl writes it from when it starts', async () => {
     const dir = workdir();
     const r = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100', DISCORD_FILTERS_FILE: 'filters.json' },

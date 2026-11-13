@@ -219,10 +219,15 @@ function scopeLines(
   let atStart = false;
   if (env.DISCORD_FILTERS_FILE) {
     const path = resolve(workingDir, env.DISCORD_FILTERS_FILE);
-    if (missing(path)) {
+    const failed = statError(path);
+    if (failed?.code === 'ENOENT') {
       lines.push(`${path} (DISCORD_FILTERS_FILE) isn't there. discord-mcpl writes it from DISCORD_GUILD_ID when it ` +
         'starts, so that is the scope it starts with. If a running discord-mcpl had read it, and it was removed since, ' +
         'the last filters it read stay in force until the file is back.');
+      atStart = true;
+    } else if (failed?.code === 'ENOTDIR') {
+      problem(`${path} (DISCORD_FILTERS_FILE) can't be looked at: ${errorText(failed).replace(/\.$/, '')}. discord-mcpl can't read ` +
+        'it or write it there, so it starts with DISCORD_GUILD_ID\'s scope, as below. Repair what that path runs through.');
       atStart = true;
     } else {
       const read = filtersFromFile(path);
@@ -330,12 +335,11 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function missing(path: string): boolean {
+function statError(path: string): NodeJS.ErrnoException | null {
   try {
     statSync(path);
-    return false;
+    return null;
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    return code === 'ENOENT' || code === 'ENOTDIR';
+    return error as NodeJS.ErrnoException;
   }
 }

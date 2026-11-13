@@ -187,10 +187,16 @@ describe('setup--discord', () => {
     expect(data.members.length).toBeLessThan(30);
     expect(data.members.map((m) => m.username)).toEqual(Array.from({ length: data.members.length }, (_, i) => `ada${i}`));
     expect(data.note).toBe(`${data.members.length} of the 30 members that match are shown, since one answer can't hold more: call setup--discord again with more of the username or nickname.`);
+    const oneMore = data.members.length + 1;
+    expect(JSON.stringify({ ...data, members: (all.data as { members: unknown[] }).members.slice(0, oneMore),
+      note: `${oneMore} of the 30 members that match are shown, since one answer can't hold more: call setup--discord again with more of the username or nickname.` }).length).toBeGreaterThan(1_000);
     const most = await capped(install(fakeDiscord([matching(1_001)])).module);
     const top = most.data as { members: unknown[]; note: string };
     expect(JSON.stringify(top).length).toBeLessThanOrEqual(24_000);
     expect(top.note).toBe(`${top.members.length} of the 1000 members that match, the most Discord gives, are shown, since one answer can't hold more, and more may match: call setup--discord again with more of the username or nickname.`);
+    const next = top.members.length;
+    expect(JSON.stringify({ ...top, members: [...top.members, { id: `${10_000 + next}`, username: `ada${next}`, displayName: `Ada the ${next}th`, nickname: `ada of the garden ${next}` }],
+      note: `${next + 1} of the 1000 members that match, the most Discord gives, are shown, since one answer can't hold more, and more may match: call setup--discord again with more of the username or nickname.` }).length).toBeGreaterThan(24_000);
   });
 
   test('given a server alone, it reads that one server as the full read gives it, without listing the others', async () => {
@@ -228,6 +234,10 @@ describe('setup--discord', () => {
     expect(data.servers.length).toBeLessThan(150);
     expect(data.servers.map((s) => s.id)).toEqual(servers.slice(0, data.servers.length).map((s) => s.id));
     expect(data.note).toBe(`${data.servers.length} of 150 servers are shown, since one answer can't hold more, without their channels: call setup--discord with a server's id as server to read its channels. The person can copy the id of a server not shown in Discord: with Developer Mode on (User Settings, Advanced), right-click the server and choose Copy Server ID.`);
+    const n = data.servers.length;
+    const another = { ...data.servers[n - 1]!, id: servers[n]!.id, name: servers[n]!.name };
+    expect(JSON.stringify({ ...data, servers: [...data.servers, another],
+      note: `${n + 1} of 150 servers are shown, since one answer can't hold more, without their channels: call setup--discord with a server's id as server to read its channels. The person can copy the id of a server not shown in Discord: with Developer Mode on (User Settings, Advanced), right-click the server and choose Copy Server ID.` }).length).toBeGreaterThan(24_000);
   });
 
   test('where one server\'s channels would pass what one answer can hold, the first that fit in the tool\'s order come, with how many of how many, and how the person copies another\'s id', async () => {
@@ -239,6 +249,9 @@ describe('setup--discord', () => {
     expect(n).toBeLessThan(400);
     expect(data.server.channels.map((c) => c.name)).toEqual(Array.from({ length: n }, (_, i) => `channel-${i}`));
     expect(data.note).toBe(`${n} of 400 text and announcement channels are shown, since one answer can't hold more. The person can copy the id of a channel not shown in Discord: with Developer Mode on (User Settings, Advanced), right-click the channel and choose Copy Channel ID.`);
+    const another = { ...data.server.channels[n - 1]!, id: `300${String(n).padStart(4, '0')}`, name: `channel-${n}` };
+    expect(JSON.stringify({ ...data, server: { ...data.server, channels: [...data.server.channels, another] },
+      note: `${n + 1} of 400 text and announcement channels are shown, since one answer can't hold more. The person can copy the id of a channel not shown in Discord: with Developer Mode on (User Settings, Advanced), right-click the channel and choose Copy Channel ID.` }).length).toBeGreaterThan(24_000);
   });
 
   test('the person sees the read\'s line before Discord is asked anything, and a secret question asked meanwhile doesn\'t wait for the read', async () => {

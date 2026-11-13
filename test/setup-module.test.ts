@@ -1953,7 +1953,7 @@ describe('setup--ask_secret', () => {
     expect(statSync(holding).mode & 0o777).toBe(0o644);
   });
 
-  test('before it knows which values are secret, each tool refuses a .env that is a link without its target, naming what the person runs in a terminal of their own to see where it leads', async () => {
+  test('before it knows which values are secret, setup--discord, setup--check_model and setup--ask_secret each refuse a .env that is a link without its target, naming what the person runs in a terminal of their own to see where it leads', async () => {
     const SECRET = 'sk-linked-583-secret';
     const call = (module: SetupModule, name: string, input: Record<string, unknown>) =>
       module.handleToolCall({ id: 'c12', name, input } as ToolCall);
@@ -2188,7 +2188,7 @@ describe('setup--ask_secret', () => {
         { purpose: 'a key the local endpoint takes', turned: false },
         { purpose: 'the same value again to keep it, or another one', turned: false },
       ]);
-      expect(shown.filter((line) => line.startsWith(WARNING))).toEqual([`What you typed for ${NAME} is 1 character long. Setup hides a stored secret wherever its text appears in what its agent sees, so one this short also hides parts of ids and of command output. If it was cut short, type the whole value. If the endpoint takes any key, type a longer made-up one: 8 or more random letters and digits, not a word. To keep this one, type it again.`]);
+      expect(shown.filter((line) => line.startsWith(WARNING))).toEqual([`What you typed for ${NAME} is 1 character long. Setup hides a stored secret in the output of the commands its agent runs and in the answers it reads from Discord and from model providers, so one this short also hides parts of ids and of command output. If it was cut short, type the whole value. If the endpoint takes any key, type a longer made-up one: 8 or more random letters and digits, not a word. To keep this one, type it again.`]);
       expect(readEnvFile(join(dir, '.env')).get(NAME)).toBe('0');
       expect(String(result.data)).toEndWith(`The value stored as ${NAME} is shorter than 8 characters, and the person typed it twice to keep it. So <${NAME}> can appear in place of parts of other text, such as ids and command output, and setup--run leaves an environment variable with the same value out of its commands' environment.`);
     });
@@ -3274,7 +3274,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     }
   });
 
-  test('a token Discord answered 403 or 404 in JSON is said with what may be answering in its place, to the agent and the person, as doctor says it; any other status isn\'t', async () => {
+  test('a token Discord answered 403 or 404 in JSON is said with what may be answering in its place, to the agent and the person, as doctor says it; a 400 isn\'t', async () => {
     const BETWEEN = 'something between this machine and Discord may be answering in its place.';
     const AGAIN = 'Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.';
     for (const [status, words, between] of [[404, 'Unknown User', true], [403, 'Missing Access', true], [400, 'Bad Request', false]] as const) {

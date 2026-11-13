@@ -82,8 +82,7 @@ function readNumbers(recipe: Recipe): Numbers | string {
   }
   if (unreadable) return `agent.contextBudgetTokens is ${show(recipe.agent.contextBudgetTokens)}, ${notA(recipe.agent.contextBudgetTokens)} of tokens.`;
   const strategy = recipe.agent.strategy;
-  const type = strategy?.type ?? 'autobiographical';
-  const raw = type === 'autobiographical' || type === 'frontdesk';
+  const raw = keepsRawWindows(recipe);
   const head: unknown = headWindowTokens(recipe);
   const tail: unknown = strategy?.recentWindowTokens ?? undefined;
   const grace: unknown = strategy?.overBudgetGraceRatio;
@@ -119,7 +118,17 @@ function tailOf(x: Numbers, budget: number): number {
     : tail;
 }
 
-export function defaultRecentWindowTokens(recipe: Recipe, model: string): number {
+function keepsRawWindows(recipe: Recipe): boolean {
+  const type = recipe.agent.strategy?.type ?? 'autobiographical';
+  return type === 'autobiographical' || type === 'frontdesk';
+}
+
+export function startingTailTokens(recipe: Recipe, model: string): number | undefined {
+  if (!keepsRawWindows(recipe)) return undefined;
+  return recipe.agent.strategy?.recentWindowTokens ?? defaultRecentWindowTokens(recipe, model);
+}
+
+function defaultRecentWindowTokens(recipe: Recipe, model: string): number {
   const budget = effectiveContextBudgetTokens(recipe, model);
   const x = readNumbers(recipe);
   if (typeof x === 'string') return Math.round(budget * DEFAULT_RECENT_WINDOW_RATIO);

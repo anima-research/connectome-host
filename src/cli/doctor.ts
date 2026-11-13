@@ -5,7 +5,8 @@ import { homedir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
-import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
+import { effectiveContextBudgetTokens, effectiveMaxTokens, startingTailTokens } from '../recipe-fit.js';
+import { withoutHeartbeatMcpl } from '../heartbeat-options.js';
 import { composeMcplChildEnv, openedBy, serversForRecipe } from '../mcpl-config.js';
 import {
   ENV_REFERENCE, loadRecipeDocument, readRecipeDocument, recipeDigest, recipeModel, resolveProvider,
@@ -18,12 +19,12 @@ import {
 } from '../setup/secrets.js';
 import { withSentForms } from '../setup/discord-token.js';
 import { AGENT_OVERLAY_FILE_ENV, agentOverlayPath } from '../update/agent-overlay-path.js';
-import { INSTALL_ROOT_ENV, SUPERVISED_ENV } from '../update/contract.js';
+import { INSTALL_ROOT_ENV, SUPERVISED_ENV, realOrResolved } from '../update/contract.js';
 import { shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
 import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy } from './discord-check.js';
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
-import { typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, typedCommand } from './install-command.js';
 import { checkUnits, heldWithoutFile, ownerProblem, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
 import {
   childEnv as serviceChildEnv, machine, managerOwner, namedElsewhere, recipeHasShell, serviceCommands, serviceLines, stopLine,
@@ -104,7 +105,8 @@ export async function doctor(
   ctx: CliContext,
   parts: DoctorParts = {
     fetch,
-    checkService: (units, work, shell, cmd, stoppedIsFine) => checkUnits(units, work, shell, cmd, machine(), stoppedIsFine),
+    checkService: (units, work, shell, cmd, stoppedIsFine) =>
+      checkUnits(units, work, shell, cmd, { ...machine(), run: limitedRun(ENV_LIMIT_MS) }, stoppedIsFine),
     python: Bun.which('python3'),
     hostLimitMs: HOST_ANSWER_LIMIT_MS,
     ladderLimitMs: LADDER_LIMIT_MS,
@@ -114,7 +116,7 @@ export async function doctor(
     recipeLimitMs: RECIPE_LIMIT_MS,
     plutil: 'plutil',
     launchdGives,
-    servicePid: (units) => servicePid(units, machine()),
+    servicePid: (units) => servicePid(units, { ...machine(), run: limitedRun(ENV_LIMIT_MS) }),
     platform: process.platform,
     home: homedir(),
     uid: process.getuid?.() ?? -1,
@@ -132,8 +134,8 @@ export async function doctor(
   const base = machine();
   const sys: ServiceSystem = {
     ...base, platform: parts.platform, home: parts.home,
-    run: (command, args, env) => base.run(command === 'plutil' ? parts.plutil : command === 'systemctl' ? parts.systemctl
-      : command === 'launchctl' ? parts.launchctl : command, args, env),
+    run: limitedRun(parts.envLimitMs, (command) => command === 'plutil' ? parts.plutil : command === 'systemctl' ? parts.systemctl
+      : command === 'launchctl' ? parts.launchctl : command),
   };
   if (parts.uid === 0) {
     const dir = dirname(root);
@@ -145,7 +147,8 @@ export async function doctor(
     }
     if (owner !== null && owner !== 0) {
       ctx.err(`connectome: ${dir} belongs to uid ${owner}, and doctor runs as root, so it would read root's service and ` +
-        `service manager, not those of the user the resident runs as. Run \`${typed} doctor\` as the user who owns ${dir}, without sudo.`);
+        `service manager, not those of the user the resident runs as. Run \`${shellWord(join(root, INSTALL_COMMAND))} doctor\` as the ` +
+        `user who owns ${dir}, without sudo.`);
       return 1;
     }
   }
@@ -188,11 +191,21 @@ export async function doctor(
         }
       }
     } else if (serviceError === null) {
-      const owner = managerOwner(units.host, units.manager, units.work, sys, serviceChildEnv(sys), false);
+      const env = serviceChildEnv(sys);
+      const owner = managerOwner(units.host, units.manager, units.work, sys, env, false);
       const install = `\`${typed} service install <recipe>\``;
+      const shellFile = pathState(units.shell.file);
+      if (owner.kind === 'ok' && shellElsewhere === null && shellFile !== 'there' && shellFile !== 'gone') {
+        shellElsewhere = `${units.shell.file}, ${units.shell.name}'s ${fileWord(units.manager)}, can't be looked at, and ` +
+          `install reads it whatever the recipe: ${shellFile.why}. ${shellFile.repair}`;
+      } else if (owner.kind === 'ok' && shellElsewhere === null && shellFile === 'gone') {
+        shellElsewhere = ownerProblem(managerOwner(units.shell, units.manager, units.work, sys, env, false), units.shell,
+          units.manager, units.work, sys, install);
+      }
       serviceError = owner.kind === 'ok' && owner.held
-        ? `${heldWithoutFile(units.host)}: ${install} writes the file again. \`${systemctlLine(sys, `status ${units.host.name}`)}\` ` +
-          `shows it, and \`${stopLine(sys, units.manager, units.host.name)}\` stops it if it runs.`
+        ? `${heldWithoutFile(units.host)}${shellElsewhere === null ? `: ${install} writes the file again.` : '.'} ` +
+          `\`${systemctlLine(sys, `status ${units.host.name}`)}\` shows it, and \`${stopLine(sys, units.manager, units.host.name)}\` ` +
+          'stops it if it runs.'
         : ownerProblem(owner, units.host, units.manager, units.work, sys, install);
       if (owner.kind === 'other') elsewhere = true;
       else managerSaid = serviceError !== null;
@@ -235,6 +248,8 @@ export async function doctor(
     storedNames = new StoredSecrets(join(work, '.setup')).read();
     const named = secretNames(join(work, '.setup'), join(work, '.env'));
     guessed = named.guessed;
+    secrets = [...secrets,
+      ...named.names.flatMap((name) => process.env[name] ? withSentForms({ name, value: process.env[name]! }) : [])];
     const known = (from: Record<string, string | undefined>, probes: Record<string, string | undefined>): Secret[] =>
       storedSecrets(work, from, probes);
     secrets = [...secrets, ...envAssignments(join(work, '.env'))
@@ -313,9 +328,12 @@ export async function doctor(
   let serversError: unknown = null;
   if (recipeLoad !== null && !('error' in recipeLoad)) {
     try {
-      servers = serversForRecipe(recipeLoad.recipe.mcpServers, join(work, 'mcpl-servers.json'), agentOverlayPath(work, env))
+      const loaded = serversForRecipe(recipeLoad.recipe.mcpServers, join(work, 'mcpl-servers.json'), agentOverlayPath(work, env))
         .loaded as Server[];
-      secrets = [...secrets, ...servers.flatMap((server) => {
+      const heartbeat = recipeLoad.recipe.modules?.heartbeat;
+      servers = heartbeat === undefined || heartbeat === false ? loaded
+        : withoutHeartbeatMcpl(loaded, (line) => recipeWarnings.push(line));
+      secrets = [...secrets, ...loaded.flatMap((server) => {
         const token = childEnv(server, env).DISCORD_TOKEN;
         return token && !new RegExp(`^${ENV_REFERENCE}$`).test(token)
           ? withSentForms({ name: 'DISCORD_TOKEN', value: token }) : [];
@@ -351,10 +369,13 @@ export async function doctor(
   let uncounted: string | null = null;
   const commands = serviceCommands(root, sys);
   const startCommand = commands?.start ?? `${typed} service install <recipe>`;
-  let dataDir: string | null = null;
+  let recordData: string | null = null;
   try {
-    dataDir = dataDirOf(root);
+    recordData = dataDirOf(root);
   } catch {}
+  const dataDir = service === null ? recordData : resolve(service.work, env.DATA_DIR || './data');
+  const dataNamer = service === null ? 'The install record names' : env.DATA_DIR ? 'The service\'s DATA_DIR names'
+    : 'With no DATA_DIR in the service\'s environment, the host takes';
   try {
     report.section('Service');
     if (serviceError !== null) {
@@ -391,6 +412,11 @@ export async function doctor(
     if (shellElsewhere !== null) report.problem(shellElsewhere);
 
     report.section('Host');
+    if (service !== null && recordData !== null && !sameDirectory(dataDir!, recordData)) {
+      report.problem(`The service's host keeps its data in ${dataDir}, not the install record's ${recordData}. The host makes ` +
+        'its socket there, and this install\'s commands, doctor\'s host checks among them, look for it in the record\'s ' +
+        `directory, so they can't reach it. Set the service's DATA_DIR to ${recordData}, or ask for help.`);
+    }
     try {
       host = await openHost(root);
     } catch (error) {
@@ -439,7 +465,10 @@ export async function doctor(
           `service's host can't be told: ${why.replace(/\.$/, '')}.`);
         pidUntold = true;
       };
-      if (stopped) {
+      if (unitElsewhere) {
+        untold('systemd runs the service\'s unit in another directory, said above, so its main process isn\'t compared with ' +
+          'this host');
+      } else if (stopped) {
         const now = await ownPid();
         if (now !== null && 'why' in now) untold(now.why);
         else if (now !== null && (now.pid !== '0' || !(await stillAnswers()))) changed();
@@ -475,11 +504,15 @@ export async function doctor(
     }
     const dataState = dataDir === null ? null : pathState(dataDir);
     if (dataState === 'gone') {
-      report.problem(`The install record names ${dataDir} as the resident's data directory, and it isn't there. It holds ` +
+      report.problem(`${dataNamer} ${dataDir} as the resident's data directory, and it isn't there. It holds ` +
         'the resident\'s history and memory, and a host started now would begin on an empty one, so put it back if you ' +
         'have it, or ask for help, before starting the service.');
+    } else if (dataDir !== null && dataState === 'there' && statSync(dataDir, { throwIfNoEntry: false })?.isDirectory() === false) {
+      report.problem(`${dataNamer} ${dataDir} as the resident's data directory, and it isn't a directory, so the ` +
+        'host can\'t keep the resident\'s history and memory there. Put the data directory back there if you have it, or ask ' +
+        'for help, before starting the service.');
     } else if (dataState !== null && dataState !== 'there') {
-      report.problem(`The install record names ${dataDir} as the resident's data directory, and it can't be looked at ` +
+      report.problem(`${dataNamer} ${dataDir} as the resident's data directory, and it can't be looked at ` +
         `(${dataState.why}), so whether it's there can't be told. ${dataState.repair}`);
     }
     const running = host;
@@ -528,7 +561,8 @@ export async function doctor(
     if (loaded !== null) {
       await checked(report, 'The fit check', async () => {
         const model = recipeModel(loaded, env.MODEL);
-        const counted = await besideOf(counting, model, effectiveContextBudgetTokens(loaded, model), recipeDigest(loaded));
+        const counted = await besideOf(counting, model, effectiveContextBudgetTokens(loaded, model), startingTailTokens(loaded, model),
+          recipeDigest(loaded));
         const fit = runningFit(loaded, env.MODEL, 'tokens' in counted ? counted.tokens : undefined);
         if (!fit.checked) {
           report.line(fit.line);
@@ -563,10 +597,10 @@ export async function doctor(
       await checked(report, 'The token counts', async () => {
         const answer = await read<CountCheck>('count-check', counting);
         if (answer !== null) {
-          const refused = refusedCredential(credentialOf(await calls?.catch(() => null) ?? null),
-            ['1', 'true'].includes((env.ANTHROPIC_OAUTH_AUTO_REFRESH ?? '').trim().toLowerCase()));
-          countLines(report, answer.data, work, emptyCompressionSaid, recipe !== null && resolveProvider(recipe) === 'anthropic',
-            refused);
+          const onAnthropic = recipe !== null && resolveProvider(recipe) === 'anthropic';
+          const refused = onAnthropic ? refusedCredential(credentialOf(await calls?.catch(() => null) ?? null))
+            : { words: '', problem: true };
+          countLines(report, answer.data, work, emptyCompressionSaid, onAnthropic, refused, typed);
           const sources = [answer.data.agent.source, answer.data.compression?.source];
           uncredentialed = sources.includes('count_tokens_no_credential');
           unanswered = sources.some((source) => source === 'count_tokens_timeout' || source === 'count_tokens_error');
@@ -612,9 +646,16 @@ export async function doctor(
     report.section('Discord');
     if (servers === null) report.line(`Discord isn't checked: ${unknown}.`);
     else {
-      const discord = servers.filter((s) => [s.command, ...(Array.isArray(s.args) ? s.args : [])]
+      const named = servers.filter((s) => [s.command, ...(Array.isArray(s.args) ? s.args : [])]
         .some((part) => typeof part === 'string' && part.includes('discord-mcpl')));
-      if (discord.length === 0) report.line('No server the recipe runs is Discord\'s.');
+      const discord = named.filter((s) => openedBy(s) === 'spawn');
+      for (const server of named) {
+        const opened = openedBy(server);
+        if (opened === 'dial') {
+          report.line(`${server.id} is dialed at its url, not started by the host, so its Discord bot isn't checked here.`);
+        } else if (opened === null) report.line(`${server.id} isn't checked here, since the host refuses its entry.`);
+      }
+      if (named.length === 0) report.line('No server the recipe runs is Discord\'s.');
       for (const server of discord) {
         if (discord.length > 1) report.line(`The entry ${server.id}:`);
         try {
@@ -635,7 +676,7 @@ export async function doctor(
     report.section('Channels the subscription GC closed (logs/failures.log):');
     if (typeof closed === 'string') {
       report.line(`${join(work, 'logs', 'failures.log')} can't be read (${closed}), so which channels the subscription GC ` +
-        'closed isn\'t shown.');
+        `closed isn't shown. To see them, make it a file this user can read, then run ${typed} doctor again.`);
     }
     for (const close of typeof closed === 'string' ? [] : closed.closes) {
       report.line(`Channel ${close.channelId} was auto-closed at ${close.at}, over ${close.limitChars} characters of messages ` +
@@ -668,62 +709,52 @@ export async function doctor(
     report.section('The pipeline ladder needs python3, which isn\'t on PATH. The checks above don\'t.');
   } else if ((tooOld = pythonOlderThan37(parts.python, parts.ladderLimitMs)) !== null) {
     report.section(`The pipeline ladder needs Python 3.7 or later, and python3 on PATH is ${tooOld}. The checks above don't.`);
-  } else if (dataDir === null) {
-    report.section('The ladder reads the host\'s data directory, and where that is can\'t be told (said above), so it ' +
-      'doesn\'t run.');
   } else {
     report.section('Where an incoming message got to (scripts/connectome-doctor):');
-    let ran: SpawnSyncReturns<string> | undefined;
-    try {
-      ran = spawnSync(parts.python, [LADDER, '--findings-json', '--data-dir', dataDir, work, service.units.host.name], {
-        encoding: 'utf-8',
-        timeout: parts.ladderLimitMs,
-        env: {
-          ...process.env,
-          XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}`,
-          CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify(secrets.flatMap((s) => s.value.trim() === s.value
-            ? [[s.name, s.value]] : [[s.name, s.value], [s.name, s.value.trim()]])),
-        },
-      });
-    } catch (error) {
-      report.problem(`The ladder couldn't be started: ${errorText(error)}.`);
+    const ran = spawnSync(parts.python, [LADDER, '--findings-json', '--data-dir', dataDir!, work, service.units.host.name], {
+      encoding: 'utf-8',
+      timeout: parts.ladderLimitMs,
+      env: {
+        ...process.env,
+        XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}`,
+        CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify(secrets.flatMap((s) => s.value.trim() === s.value
+          ? [[s.name, s.value]] : [[s.name, s.value], [s.name, s.value.trim()]])),
+      },
+    });
+    ladderRan = true;
+    const cut = ran.error !== undefined || ran.signal !== null;
+    const breaks = Math.max(0, ...secrets.map(({ value }) => value.split('\n').length - 1));
+    let dropped = 0;
+    const linesOf = (text: string): string[] => {
+      const lines = linesKeepingSecrets(text, secrets);
+      if (cut) dropped += lines.splice(-(breaks + 1)).filter((line) => line !== '').length;
+      return lines;
+    };
+    const said = linesOf(ran.stdout ?? '');
+    const at = said.map((line) => line.startsWith(FINDINGS)).lastIndexOf(true);
+    const findings = at < 0 ? null : said.splice(at, 1)[0].slice(FINDINGS.length);
+    for (const line of [...said, ...linesOf(ran.stderr ?? '')]) if (line !== '') report.line(line);
+    if (dropped > 0) {
+      report.line(`The ladder was ended, and doctor doesn't show ${dropped === 1 ? 'the line' : `the ${dropped} lines`} it ` +
+        'printed last: a secret cut short there couldn\'t be hidden.');
     }
-    if (ran !== undefined) {
-      ladderRan = true;
-      const cut = ran.error !== undefined || ran.signal !== null;
-      const breaks = Math.max(0, ...secrets.map(({ value }) => value.split('\n').length - 1));
-      let dropped = 0;
-      const linesOf = (text: string): string[] => {
-        const lines = linesKeepingSecrets(text, secrets);
-        if (cut) dropped += lines.splice(-(breaks + 1)).filter((line) => line !== '').length;
-        return lines;
-      };
-      const said = linesOf(ran.stdout ?? '');
-      const at = said.map((line) => line.startsWith(FINDINGS)).lastIndexOf(true);
-      const findings = at < 0 ? null : said.splice(at, 1)[0].slice(FINDINGS.length);
-      for (const line of [...said, ...linesOf(ran.stderr ?? '')]) if (line !== '') report.line(line);
-      if (dropped > 0) {
-        report.line(`The ladder was ended, and doctor doesn't show ${dropped === 1 ? 'the line' : `the ${dropped} lines`} it ` +
-          'printed last: a secret cut short there couldn\'t be hidden.');
-      }
-      if (ran.error !== undefined) {
-        const timedOut = (ran.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
-        report.problem(`The ladder didn't finish${timedOut ? ` within ${parts.ladderLimitMs / 1000} s` : `: ${ran.error.message}`}, ` +
-          'so what it would have shown after the lines above isn\'t known.');
-      } else if (ran.signal !== null) {
-        report.problem(`The ladder was ended by ${ran.signal}, so what it would have shown after the lines above isn't known.`);
-      } else if (ran.status !== 0) {
-        report.problem(`The ladder stopped (exit ${ran.status}) before it finished, so what it would have shown after ` +
-          'the lines above isn\'t known.');
-      } else {
-        try {
-          for (const { text, counts } of ladderFindings(findings)) {
-            if (counts) report.problem(text);
-            else report.line(text);
-          }
-        } catch (error) {
-          report.problem(`The ladder finished, but its findings can't be read: ${errorText(error)}.`);
+    if (ran.error !== undefined) {
+      const timedOut = (ran.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
+      report.problem(`The ladder didn't finish${timedOut ? ` within ${parts.ladderLimitMs / 1000} s` : `: ${ran.error.message}`}, ` +
+        'so what it would have shown after the lines above isn\'t known.');
+    } else if (ran.signal !== null) {
+      report.problem(`The ladder was ended by ${ran.signal}, so what it would have shown after the lines above isn't known.`);
+    } else if (ran.status !== 0) {
+      report.problem(`The ladder stopped (exit ${ran.status}) before it finished, so what it would have shown after ` +
+        'the lines above isn\'t known.');
+    } else {
+      try {
+        for (const { text, counts } of ladderFindings(findings)) {
+          if (counts) report.problem(text);
+          else report.line(text);
         }
+      } catch (error) {
+        report.problem(`The ladder finished, but its findings can't be read: ${errorText(error)}.`);
       }
     }
   }
@@ -880,6 +911,7 @@ interface CountCheck {
   compression: { model: string; countModel: string | null; source: string } | null;
   beside?: { tokens: number | null; source: string; error?: string };
   budget?: number | null;
+  tail?: number | null;
   recipeDigest?: string;
 }
 
@@ -893,32 +925,63 @@ interface ShellCheck {
 
 const REPLACE_CREDENTIAL = ' Replace that credential where the service gets it, and restart the service.';
 
-function credentialOf(answer: HostEvent | null): { rotatable: boolean; expiresAt?: number } | null {
-  if (answer?.ok !== true) return null;
-  const credential = (answer.data as { credential?: { rotatable?: unknown; expiresAt?: unknown } } | null)?.credential;
-  if (typeof credential?.rotatable !== 'boolean') return null;
-  const { rotatable, expiresAt } = credential;
-  return typeof expiresAt === 'number' && Number.isFinite(expiresAt) ? { rotatable, expiresAt } : { rotatable };
+type HostCredential =
+  | { rotatable: boolean; expiresAt?: number; autoRefresh?: boolean }
+  | { unread: string }
+  | null;
+
+function credentialOf(answer: HostEvent | null): HostCredential {
+  if (answer === null) return { unread: 'the host didn\'t answer for its health' };
+  if (answer.ok !== true) return { unread: `the host refused its health: ${String(answer.error ?? 'no reason given')}` };
+  const data = answer.data as { credential?: Record<string, unknown>; credentialFailure?: unknown } | null;
+  if (typeof data?.credentialFailure === 'string') return { unread: `reading it on the host failed: ${data.credentialFailure}` };
+  const credential = data?.credential;
+  if (credential === undefined) return null;
+  if (typeof credential?.rotatable !== 'boolean') return { unread: 'the host\'s answer doesn\'t say' };
+  const { rotatable, expiresAt, autoRefresh } = credential;
+  return {
+    rotatable,
+    ...(typeof expiresAt === 'number' && Number.isFinite(expiresAt) ? { expiresAt } : {}),
+    ...(typeof autoRefresh === 'boolean' ? { autoRefresh } : {}),
+  };
 }
 
-function refusedCredential(credential: { rotatable: boolean; expiresAt?: number } | null, autoRefresh: boolean):
-  { words: string; problem: boolean } {
-  if (credential === null || !credential.rotatable) return { words: REPLACE_CREDENTIAL, problem: true };
+const AUTH_REFRESH = 'the host\'s `/auth refresh`, in its terminal or the Web UI\'s command box';
+
+function refusedCredential(credential: HostCredential): { words: string; problem: boolean } {
+  if (credential === null) return { words: REPLACE_CREDENTIAL, problem: true };
+  if ('unread' in credential) {
+    return {
+      words: ` Whether the host's credential can be refreshed can't be told, since ${credential.unread}. A credential with no ` +
+        'refresh token needs replacing where the service gets it, and a restart of the service.',
+      problem: true,
+    };
+  }
+  if (!credential.rotatable) return { words: REPLACE_CREDENTIAL, problem: true };
   const expiry = credential.expiresAt === undefined ? ''
     : ` The host has its access token ${credential.expiresAt < Date.now() ? 'expired' : 'expiring'} at ` +
       `${new Date(credential.expiresAt).toISOString()}.`;
-  return autoRefresh
-    ? {
-      words: ' The host\'s credential has a refresh token and ANTHROPIC_OAUTH_AUTO_REFRESH is on, so its next model call, ' +
-        `refused the same way, tries to refresh it.${expiry} Where that refresh fails, the host's log says why, in a line ` +
-        'that starts "[anthropic-credentials] automatic refresh failed:".',
+  if (credential.autoRefresh === true) {
+    return {
+      words: ' The host\'s credential has a refresh token, and the host runs with ANTHROPIC_OAUTH_AUTO_REFRESH on, so its next ' +
+        `model call, refused the same way, tries to refresh it.${expiry} Where that refresh fails, the host's log says why, in ` +
+        'a line that starts "[anthropic-credentials] automatic refresh failed:".',
       problem: false,
-    }
-    : {
-      words: ' The host\'s credential has a refresh token, but ANTHROPIC_OAUTH_AUTO_REFRESH isn\'t on, so its next model call ' +
-        `is refused too: refresh it with the host's \`/auth refresh\`, in its terminal or the Web UI's command box.${expiry}`,
+    };
+  }
+  if (credential.autoRefresh === false) {
+    return {
+      words: ' The host\'s credential has a refresh token, but the host runs with ANTHROPIC_OAUTH_AUTO_REFRESH off, so its next ' +
+        `model call is refused too: refresh it with ${AUTH_REFRESH}.${expiry}`,
       problem: true,
     };
+  }
+  return {
+    words: ' The host\'s credential has a refresh token, but the host\'s answer doesn\'t say whether it refreshes it by itself, ' +
+      `so whether its next model call is refused too can't be told. ${AUTH_REFRESH[0].toUpperCase()}${AUTH_REFRESH.slice(1)}, ` +
+      `refreshes it.${expiry}`,
+    problem: true,
+  };
 }
 const NO_CREDENTIAL = 'count_tokens had no Anthropic credential to send: the host looks for its subscription login, ' +
   'then ANTHROPIC_AUTH_TOKEN, then ANTHROPIC_API_KEY, and has none.';
@@ -938,7 +1001,8 @@ function countFailure(source: string): string {
 }
 
 function countLines(report: Report, check: CountCheck, work: string, emptyCompressionSaid: boolean,
-  onAnthropic: boolean, refused: { words: string; problem: boolean }): void {
+  onAnthropic: boolean, refused: { words: string; problem: boolean }, typed: string): void {
+  const passes = (source: string) => (passesBy(source) ? ` That can pass by itself: run ${typed} doctor again later.` : '');
   const { agent, compression } = check;
   if (agent.source === 'count_tokens') report.ok(`count_tokens counts with ${agent.countModel}.`);
   else if (agent.source === 'count_tokens_no_credential') report.line(`${NO_CREDENTIAL} So the context's makeup shows no exact total.`);
@@ -952,7 +1016,7 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
       'model answers 404, and the endpoint count_tokens asks (Anthropic\'s API, or the one ANTHROPIC_BASE_URL names) ' +
       'may answer it for a model it doesn\'t serve: set COUNT_TOKENS_MODEL in ' +
       `${join(work, '.env')} to a current Claude model, and restart the service, since the host reads it when it starts. ` +
-      `${BEFORE_ENV}: where one sets it, set it there instead.`) + (passes(agent.source) ? PASSES : '');
+      `${BEFORE_ENV}: where one sets it, set it there instead.`) + passes(agent.source);
     if (onAnthropic && agent.source === 'count_tokens_failed_401' && refused.problem) report.problem(said);
     else report.line(said);
   }
@@ -974,15 +1038,14 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
         : ', or leave it out to compress with the agent\'s model,') +
       ' and restart the service. The endpoint count_tokens asks (Anthropic\'s API, or the one ANTHROPIC_BASE_URL names) ' +
       'may answer 404 for a model it doesn\'t serve too, and then the 404 doesn\'t mean it\'s retired.') +
-      (passes(compression.source) ? PASSES : ''));
+      passes(compression.source));
   }
 }
 
-function passes(source: string): boolean {
+function passesBy(source: string): boolean {
   const status = Number(/^count_tokens_failed_(\d+)$/.exec(source)?.[1]);
   return source === 'count_tokens_timeout' || status === 429 || (status >= 500 && status < 600);
 }
-const PASSES = ' That can pass by itself: run doctor again later.';
 
 function shellLines(report: Report, shell: ShellCheck, commands: ServiceCommands | null): void {
   for (const server of shell.notConnected) {
@@ -1167,6 +1230,14 @@ function failure(ran: SpawnSyncReturns<string>, limitMs: number): string | null 
   return (ran.stderr ?? '').trim() || (ran.status === null ? `it was ended by ${ran.signal}` : `exit ${ran.status}`);
 }
 
+function limitedRun(limitMs: number, route: (command: string) => string = (command) => command): ServiceSystem['run'] {
+  return (command, args, env) => {
+    const ran = spawnSync(route(command), args, { encoding: 'utf-8', env, timeout: limitMs });
+    return ran.error === undefined ? { status: ran.status, stdout: ran.stdout, stderr: ran.stderr }
+      : { status: null, stdout: '', stderr: failure(ran, limitMs)! };
+  };
+}
+
 class ManagerUnread extends Error {
   constructor(message: string, readonly step: string) {
     super(message);
@@ -1316,9 +1387,8 @@ function systemVariables(): Record<string, string> {
 }
 
 // launchd gives each job HOME, USER, LOGNAME and SHELL from the user's account, whatever the environment of the shell
-// that loads it, and TMPDIR as the user's own temporary directory (macOS 26). This function returns those five, the base
-// doctor builds the service's environment on. launchd gives a job others too, such as SSH_AUTH_SOCK, XPC_FLAGS and
-// XPC_SERVICE_NAME, which it leaves out, and a PATH, which install's plist sets over.
+// that loads it, and TMPDIR as the user's own temporary directory (macOS 26). It gives a job others too, such as
+// SSH_AUTH_SOCK, XPC_FLAGS and XPC_SERVICE_NAME, and a PATH, which install's plist sets over.
 function launchdGives(): Record<string, string> {
   const user = userInfo();
   const gives: Record<string, string> = { HOME: user.homedir, USER: user.username, LOGNAME: user.username };
@@ -1399,6 +1469,7 @@ async function besideOf(
   counting: Promise<HostEvent | null> | null,
   model: string,
   budget: number,
+  tail: number | undefined,
   digest: string,
 ): Promise<{ tokens: number } | { why: string }> {
   if (counting === null) return { why: 'no host answers' };
@@ -1424,6 +1495,10 @@ async function besideOf(
       return { why: `the running host's budget is ${n(data.budget)}, not the ${n(budget)} this recipe gives it, as agent ` +
         'settings or a change since its start can leave it' };
     }
+    if (tail !== undefined && typeof data?.tail === 'number' && data.tail !== tail) {
+      return { why: `the running host's recent window is ${n(data.tail)}, not the ${n(tail)} this recipe gives it, as agent ` +
+        'settings or a change since its start can leave it' };
+    }
     if (data?.recipeDigest !== digest) {
       return { why: 'the recipe doesn\'t load for doctor as it did for the running host: an edit since its start, a system ' +
         'prompt its URL now serves differently, or a value doctor\'s rebuilt environment gives otherwise can each leave it so' };
@@ -1444,6 +1519,14 @@ async function besideOf(
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function sameDirectory(a: string, b: string): boolean {
+  try {
+    return realOrResolved(a) === realOrResolved(b);
+  } catch {
+    return resolve(a) === resolve(b);
+  }
 }
 
 function namesElsewhere(file: string, directory: string | null, work: string): string {

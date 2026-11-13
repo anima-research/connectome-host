@@ -743,7 +743,8 @@ function perAgentHealth(
 
 /**
  * The /healthz answer: agent-framework's healthSnapshot, with `credential`
- * on a host with a credential monitor; by agent, compressionQuarantine,
+ * on a host with a credential monitor, or `credentialFailure` where reading
+ * it threw; by agent, compressionQuarantine,
  * compressionDebt, loadRepair, contextComposition and runtimeSettings, and
  * readFailures naming the reads that threw; `callLedger` when a ledger is
  * wired; and `update`. Every read is cheap: no compile, no count_tokens.
@@ -764,7 +765,8 @@ export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
     if (app.credentials) {
       (snapshot as Record<string, unknown>).credential = { agent: resolveAgent(app), ...app.credentials.snapshot() };
     }
-  } catch {
+  } catch (error) {
+    (snapshot as Record<string, unknown>).credentialFailure = describeReadFailure(error);
   }
   // compressionQuarantine: each agent's compression quarantine, as its
   // strategy reports it.
@@ -1176,6 +1178,7 @@ export interface CountCheck {
   compression: { model: string; countModel: string | null; source: string } | null;
   beside: { tokens: number | null; source: string; error?: string };
   budget: number | null;
+  tail: number | null;
   recipeDigest: string;
 }
 
@@ -1216,14 +1219,15 @@ export async function buildCountCheck(app: PanelAppRef, limitMs = COUNT_LIMIT_MS
     : withSent!.tokens !== null && ping.tokens !== null ? { tokens: withSent!.tokens - ping.tokens, source: 'count_tokens' }
     : { tokens: null, source: withSent!.source !== 'count_tokens' ? withSent!.source : ping.source };
   const live = (framework as unknown as {
-    getAgentRuntimeSettings?: (n: string) => { contextBudgetTokens?: number };
-  }).getAgentRuntimeSettings?.(agentName)?.contextBudgetTokens;
+    getAgentRuntimeSettings?: (n: string) => { contextBudgetTokens?: number; tailTokens?: number };
+  }).getAgentRuntimeSettings?.(agentName);
   return {
     agent: { model, countModel, source: ping.source },
     compression: compressionModel === null ? null
       : { model: compressionModel, countModel: compressionCountModel, source: compression!.source },
     beside,
-    budget: typeof live === 'number' && live > 0 ? live : null,
+    budget: typeof live?.contextBudgetTokens === 'number' && live.contextBudgetTokens > 0 ? live.contextBudgetTokens : null,
+    tail: typeof live?.tailTokens === 'number' && live.tailTokens >= 0 ? live.tailTokens : null,
     recipeDigest: loadedRecipeDigest(app.recipe),
   };
 }

@@ -34,6 +34,15 @@ async function processedAt(dir: string): Promise<number> {
   return Number(readFileSync(join(dir, 'processed-at'), 'utf8'));
 }
 
+async function marker(dir: string, name: string, closed: Promise<unknown>): Promise<void> {
+  let exited = false;
+  void closed.then(() => { exited = true; });
+  while (!existsSync(join(dir, name))) {
+    if (exited) throw new Error(`the fixture ended before ${name}`);
+    await Bun.sleep(10);
+  }
+}
+
 function quietFrom(dir: string): number {
   return Number(readFileSync(join(dir, 'quiet-from'), 'utf8'));
 }
@@ -463,16 +472,16 @@ async function turnWorkAndIdle(hold: string): Promise<{ done: number; idle: numb
     await watching.next('ready');
     if (hold === 'shell-check' || hold === 'count-check') {
       watching.send({ type: 'panel-request', op: hold, corrId: `held-${hold}` });
-      while (!existsSync(join(dir, 'hold-entered'))) await Bun.sleep(10);
+      await marker(dir, 'hold-entered', closed);
     }
     writeFileSync(join(dir, 'go'), '');
     const done = Number((await watching.next('turn-work-done')).ts);
     if (hold === 'subagent-streaming') {
       writeFileSync(join(dir, 'scout-go'), '');
-      while (!existsSync(join(dir, 'scout-polled'))) await Bun.sleep(10);
+      await marker(dir, 'scout-polled', closed);
     }
     if (released) {
-      while (!existsSync(join(dir, 'hold-entered'))) await Bun.sleep(10);
+      await marker(dir, 'hold-entered', closed);
       writeFileSync(join(dir, 'release-hold'), '');
     }
     const idle = Number((await watching.next('idle')).ts);
@@ -480,7 +489,7 @@ async function turnWorkAndIdle(hold: string): Promise<{ done: number; idle: numb
     const scoutStarts = watching.starts('spawn-scout');
     watching.close();
     const doneFirst = watching.arrivedBefore('turn-work-done', 'idle');
-    while (!existsSync(join(dir, 'quiet-from'))) await Bun.sleep(10);
+    await marker(dir, 'quiet-from', closed);
     return { done, idle, dones, doneFirst, scoutStarts, turnWorkFrom: Number(readFileSync(join(dir, 'turn-work-from'), 'utf8')), quietFrom: quietFrom(dir) };
   } finally {
     child.kill('SIGTERM');

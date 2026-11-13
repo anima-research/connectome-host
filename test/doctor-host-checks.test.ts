@@ -512,12 +512,12 @@ describe('count-check, with a stand-in for the framework', () => {
         system: '', tools: [TOOL],
         messages: [{ participant: 'Ann', content: [{ type: 'text', text: 'a line of the conversation' }] }],
       }),
-      getAgentRuntimeSettings: () => ({ contextBudgetTokens: 123_456 }),
+      getAgentRuntimeSettings: () => ({ contextBudgetTokens: 123_456, tailTokens: 45_678 }),
     });
     return app;
   };
 
-  test('what the host sends beside the conversation is counted with its tools wherever the formatter puts them, the conversation left out, less the one message, beside the budget the agent is set to', async () => {
+  test('what the host sends beside the conversation is counted with its tools wherever the formatter puts them, the conversation left out, less the one message, beside the budget and recent window the agent is set to', async () => {
     const bodies: string[] = [];
     const server = Bun.serve({
       port: 0,
@@ -533,7 +533,7 @@ describe('count-check, with a stand-in for the framework', () => {
       for (const formatter of [undefined, 'anthropic-xml']) {
         bodies.length = 0;
         const check = await buildCountCheck(previewing(formatter));
-        expect([formatter, check.beside, check.budget]).toEqual([formatter, { tokens: 500, source: 'count_tokens' }, 123_456]);
+        expect([formatter, check.beside, check.budget, check.tail]).toEqual([formatter, { tokens: 500, source: 'count_tokens' }, 123_456, 45_678]);
         expect(bodies.filter((body) => body.includes('listSessions'))).toHaveLength(1);
         expect(bodies.some((body) => body.includes('a line of the conversation'))).toBe(false);
       }
@@ -728,12 +728,14 @@ describe('count-check, in the round on the review of 4a79597ff', () => {
   afterAll(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
 
   test('a count answered 200 with no input_tokens is no count: each source says it failed, and nothing reads as counted', async () => {
-    const server = Bun.serve({ port: 0, hostname: '127.0.0.1', async fetch(req) { await req.text(); return Response.json({}); } });
+    let requests = 0;
+    const server = Bun.serve({ port: 0, hostname: '127.0.0.1', async fetch(req) { requests += 1; await req.text(); return Response.json({}); } });
     try {
       setEnv({ COUNT_TOKENS_MODEL: undefined, ANTHROPIC_API_KEY: 'sk-count-test', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}` });
       const check = await buildCountCheck(appWith(), 2_000);
       expect([check.agent.source, check.compression?.source, check.beside]).toEqual(
         ['count_tokens_error', 'count_tokens_error', { tokens: null, source: 'count_tokens_error' }]);
+      expect(requests).toBe(3);
     } finally {
       server.stop(true);
     }

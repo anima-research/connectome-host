@@ -2,6 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { CredentialMonitor, isAuthFailure, type CredentialSource } from '../src/credential-state.js';
 import { QuotaMeter, type QuotaSource, type QuotaWindow } from '../src/quota-meter.js';
 import { runPanelOp } from '../src/web/panel-data.js';
+import { AnthropicOAuthCredentials } from '../src/anthropic-credentials.js';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const HOUR = 3_600_000;
 
@@ -627,5 +631,28 @@ describe('panel ops', () => {
     expect(JSON.stringify(ok)).not.toContain('sk-ant-new');
     const health = await runPanelOp(app, 'health');
     expect((health as { data: { credential?: { kind: string; agent: string } } }).data.credential).toMatchObject({ kind: 'ok', agent: 'commander' });
+  });
+
+  test('health says whether the host refreshes its credential by itself when a call is refused, where its source says', async () => {
+    for (const autoRefresh of [true, false]) {
+      const file = join(mkdtempSync(join(tmpdir(), 'cred-')), 'creds.json');
+      writeFileSync(file, JSON.stringify({ accessToken: 'an-access', refreshToken: 'a-refresh' }));
+      const creds = new AnthropicOAuthCredentials({ credentialsFile: file, autoRefresh });
+      const monitor = new CredentialMonitor({ source: creds, alert: () => {} });
+      const health = await runPanelOp(panelApp(monitor), 'health');
+      expect([autoRefresh, (health as { data: { credential?: { autoRefresh?: unknown } } }).data.credential?.autoRefresh])
+        .toEqual([autoRefresh, autoRefresh]);
+    }
+    const { monitor } = harness({ source: { canRefresh: () => true } });
+    const health = await runPanelOp(panelApp(monitor), 'health');
+    expect('autoRefresh' in (health as { data: { credential: object } }).data.credential).toBe(false);
+  });
+
+  test('health says the credential couldn\'t be read where reading it threw, in place of leaving it out', async () => {
+    const { monitor } = harness();
+    monitor.snapshot = () => { throw new Error('the monitor broke'); };
+    const health = await runPanelOp(panelApp(monitor), 'health');
+    const data = (health as { data: Record<string, unknown> }).data;
+    expect([data.credential, data.credentialFailure]).toEqual([undefined, 'the monitor broke']);
   });
 });

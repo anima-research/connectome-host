@@ -38,6 +38,9 @@ export interface CredentialState {
   rotatable: boolean;
   /** Epoch ms of the credential's own expiry, when the source knows it. */
   expiresAt?: number;
+  /** The source refreshes the credential by itself when a call is refused
+   *  with it, where the source says. */
+  autoRefresh?: boolean;
   /** Actions the host can run for this state, in the order to offer them. */
   actions: CredentialAction[];
   /** Device-code login in progress (`auth-login-required`). */
@@ -51,6 +54,7 @@ export interface CredentialState {
 
 export interface CredentialSource {
   readonly provider: string;
+  readonly autoRefresh?: boolean;
   canRefresh(): boolean;
   refresh?(): Promise<void>;
   login?(): Promise<void>;
@@ -152,6 +156,7 @@ export class CredentialMonitor {
       ...state,
       ...(state.kind === 'auth-login-required' ? {} : { rotatable: this.source.canRefresh() }),
       ...(expiresAt !== undefined ? { expiresAt } : {}),
+      ...(this.source.autoRefresh !== undefined ? { autoRefresh: this.source.autoRefresh } : {}),
     };
   }
 
