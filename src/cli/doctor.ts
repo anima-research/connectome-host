@@ -190,11 +190,17 @@ export async function doctor(
         }
       }
     } else if (serviceError === null) {
-      const owner = managerOwner(units.host, units.manager, units.work, sys, serviceChildEnv(sys), false);
+      const env = serviceChildEnv(sys);
+      const owner = managerOwner(units.host, units.manager, units.work, sys, env, false);
       const install = `\`${typed} service install <recipe>\``;
+      if (owner.kind === 'ok' && shellElsewhere === null && pathState(units.shell.file) === 'gone') {
+        shellElsewhere = ownerProblem(managerOwner(units.shell, units.manager, units.work, sys, env, false), units.shell,
+          units.manager, units.work, sys, install);
+      }
       serviceError = owner.kind === 'ok' && owner.held
-        ? `${heldWithoutFile(units.host)}: ${install} writes the file again. \`${systemctlLine(sys, `status ${units.host.name}`)}\` ` +
-          `shows it, and \`${stopLine(sys, units.manager, units.host.name)}\` stops it if it runs.`
+        ? `${heldWithoutFile(units.host)}${shellElsewhere === null ? `: ${install} writes the file again.` : '.'} ` +
+          `\`${systemctlLine(sys, `status ${units.host.name}`)}\` shows it, and \`${stopLine(sys, units.manager, units.host.name)}\` ` +
+          'stops it if it runs.'
         : ownerProblem(owner, units.host, units.manager, units.work, sys, install);
       if (owner.kind === 'other') elsewhere = true;
       else managerSaid = serviceError !== null;

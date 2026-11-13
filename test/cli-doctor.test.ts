@@ -2139,14 +2139,15 @@ describe('connectome doctor: the environment the service gets from its manager',
     rmSync(none.unit);
     const platform = fakeManager(none.work);
     await run(none, { systemctl: platform.path, launchctl: platform.path });
-    expect(platform.calls()).toEqual([`--user show --property=${OWNER_QUERY} -- connectome-test.service`, '--user show-environment']);
+    expect(platform.calls()).toEqual([`--user show --property=${OWNER_QUERY} -- connectome-test.service`,
+      `--user show --property=${OWNER_QUERY} -- connectome-test.shell.service`, '--user show-environment']);
     const noPlist = install({ manager: 'launchd' });
     rmSync(noPlist.unit);
     const mac = fakeManager(noPlist.work);
     await run(noPlist, { systemctl: mac.path, launchctl: mac.path });
-    expect(mac.calls()[0]).toBe('list com.animalabs.connectome.test');
-    expect(mac.calls().length).toBeGreaterThan(1);
-    expect(mac.calls().slice(1).every((call) => call.startsWith('getenv '))).toBe(true);
+    expect(mac.calls().slice(0, 2)).toEqual(['list com.animalabs.connectome.test', 'list com.animalabs.connectome.test.shell']);
+    expect(mac.calls().length).toBeGreaterThan(2);
+    expect(mac.calls().slice(2).every((call) => call.startsWith('getenv '))).toBe(true);
     const launchd = install({ manager: 'launchd' });
     const asked = fakeManager(launchd.work);
     await run(launchd, { systemctl: asked.path, launchctl: asked.path });
@@ -2283,7 +2284,8 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     });
     const r = await withHost(at, refusing('the token managed-secret-value was refused'),
       () => run(at, { systemctl: manager.path, launchctl: manager.path }));
-    expect(manager.calls()).toEqual([`--user show --property=${OWNER_QUERY} -- connectome-test.service`, '--user show-environment']);
+    expect(manager.calls()).toEqual([`--user show --property=${OWNER_QUERY} -- connectome-test.service`,
+      `--user show --property=${OWNER_QUERY} -- connectome-test.shell.service`, '--user show-environment']);
     expect(r.out).toContain('the token <MANAGED_SECRET> was refused');
     expect(r.out).not.toContain('managed-secret-value');
   });
@@ -2347,6 +2349,40 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     expect(r.out).not.toContain('service install <recipe>` writes');
     expect(manager.calls()).not.toContain('--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service');
     expect(r.status).toBe(1);
+  });
+
+  test('with both unit files gone, a shell name the manager holds for another install, or can\'t tie to one, gets no install advice', async () => {
+    const at = install();
+    rmSync(at.unit);
+    const manager = fakeManager(at.work, {
+      owners: { 'connectome-test.shell.service': 'LoadState=loaded\nActiveState=active\nWorkingDirectory=/srv/another-install\nFragmentPath=\n' },
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path }));
+    expect(r.out).toContain(`✗ No service is installed for this install: ${at.unit} isn't there.`);
+    expect(r.out).toContain(`✗ systemd runs connectome-test.shell.service in /srv/another-install, not ${at.work}, and its file, `);
+    expect(r.out).not.toContain('service install <recipe>` writes');
+    const mac = install({ manager: 'launchd' });
+    rmSync(mac.unit);
+    const launchd = fakeManager(mac.work, { listed: { 'com.animalabs.connectome.test.shell': '{\n\t"PID" = 502;\n};\n' } });
+    const loaded = await withHost(mac, HEALTHY_HOST, () => run(mac, { systemctl: launchd.path, launchctl: launchd.path }));
+    expect(loaded.out).toContain('✗ com.animalabs.connectome.test.shell is still loaded, but its file, ');
+    expect(loaded.out).not.toContain('service install <recipe>` writes');
+  });
+
+  test('a host unit systemd still holds here with its file gone, beside a shell name held for another install, isn\'t offered install', async () => {
+    const at = install();
+    rmSync(at.unit);
+    const manager = fakeManager(at.work, {
+      owners: {
+        'connectome-test.service': `LoadState=loaded\nActiveState=active\nWorkingDirectory=${at.work}\nFragmentPath=${at.unit}\n`,
+        'connectome-test.shell.service': 'LoadState=loaded\nActiveState=active\nWorkingDirectory=/srv/another-install\nFragmentPath=\n',
+      },
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path }));
+    expect(r.out).toContain(`✗ systemd still holds connectome-test.service as it last loaded it, though its file, ${at.unit}, is ` +
+      'gone. `');
+    expect(r.out).toContain(`✗ systemd runs connectome-test.shell.service in /srv/another-install, not ${at.work}, and its file, `);
+    expect(r.out).not.toContain('writes the file again');
   });
 
   test('a launch agent whose plist is gone while launchd still holds it loaded is a problem with a stop and an inspect line, not no service', async () => {
