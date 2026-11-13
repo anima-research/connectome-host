@@ -319,7 +319,7 @@ test('the pty check opens node-pty where term-sessions-mcp\'s own resolution fin
   }
 });
 
-test('a node-pty that opens no pty is installed again, its copy kept aside meanwhile in a .setup the command makes where it\'s gone, and the command goes on with the new one once it works', async () => {
+test('a node-pty that opens no pty is installed again, with no copy of it kept, and the command goes on with the new one once it works', async () => {
   const { dir, root } = installed();
   const built = (cwd: string) => join(cwd, 'node_modules', 'node-pty', 'pty.node');
   let leftAtInstall: boolean | null = null;
@@ -338,14 +338,14 @@ test('a node-pty that opens no pty is installed again, its copy kept aside meanw
   expect(existsSync(join(dir, '.setup'))).toBe(false);
   expect(await runShell(root, ['install'], made)).toBe(0);
   expect(leftAtInstall).toBe(false);
-  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (Failed to load native module: pty.node, checked: build/Release), so this installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't.`);
+  expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (Failed to load native module: pty.node, checked: build/Release), so this installs it again.`);
   expect(made.seen.ran.find((argv) => args(argv)[0] === 'install')).toEqual([process.execPath, '--no-env-file', 'install']);
-  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
+  expect(existsSync(join(dir, '.setup'))).toBe(false);
   expect(readFileSync(built(dir), 'utf-8')).toBe('built by the install');
   expect(made.seen.out.at(-1)).toContain(`A pty opens in ${dir}`);
 });
 
-test('an install again of node-pty that fails puts back the copy the command found, and says why', async () => {
+test('an install again of node-pty that fails stops the command, says why, and keeps no copy of the one it found', async () => {
   const { dir, root } = installed();
   const made = world(dir, {
     pty: [BROKEN], installed: { status: 1, stdout: '', stderr: 'error: network\n' },
@@ -357,8 +357,7 @@ test('an install again of node-pty that fails puts back the copy the command fou
   });
   expect(await runShell(root, ['install'], made)).toBe(1);
   expect(text(made.seen.err)).toContain('The resident\'s shell runs on node-pty, and here it doesn\'t work: `bun --no-env-file install` didn\'t finish (exit 1).');
-  expect(readFileSync(join(dir, 'node_modules', 'node-pty', 'pty.node'), 'utf-8')).toBe('the copy the command found');
-  expect(existsSync(join(dir, '.setup', 'node-pty-aside'))).toBe(false);
+  expect(existsSync(join(dir, '.setup'))).toBe(false);
 });
 
 test('an install again of node-pty that finishes but leaves one that still doesn\'t work puts back the copy the command found', async () => {
@@ -450,7 +449,7 @@ test('a pty check stopped at its 30 s limit says so, in the repair\'s line and i
     expect(await runShell(root, ['install'], made)).toBe(1);
     const check = made.seen.ran.findIndex((argv) => argv[0] === 'node' && argv[1] === '-e');
     expect(made.seen.options[check]!.timeoutMs).toBe(30_000);
-    expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (its check ran past its 30 s limit and was stopped), so this installs it again, keeping the copy it has at ${join(dir, '.setup', 'node-pty-aside')} until the new one works, and putting it back if it doesn't.`);
+    expect(made.seen.out).toContain(`The resident's shell runs on node-pty, which doesn't work in ${dir} yet (its check ran past its 30 s limit and was stopped), so this installs it again.`);
     expect(made.seen.err[0]).toStartWith('The resident\'s shell runs on node-pty, and here it doesn\'t work: its check ran past its 30 s limit and was stopped. ');
   }
 });
@@ -575,13 +574,24 @@ test('on macOS, a pty stop names macOS, says the command makes spawn-helper exec
   expect(made.seen.err).toEqual(['The resident\'s shell runs on node-pty, and here it doesn\'t work: posix_spawnp failed. On macOS, node-pty runs from binaries it ships prebuilt rather than building them, and this command makes their spawn-helper executable after each install, which node-pty\'s own install doesn\'t. A resident without a shell needs none of this.']);
 });
 
+test('on macOS, an install again that doesn\'t finish stops on the install alone, not on a spawn-helper of the copy it removed', async () => {
+  const { dir, root } = installed();
+  const made = world(dir, {
+    pty: [BROKEN], installed: { status: 1, stdout: '', stderr: 'error: network\n' },
+    atAdd: (cwd) => { rmSync(shipNodePty(cwd)[0]!); },
+  }, { platform: 'darwin' });
+  expect(await runShell(root, ['install'], made)).toBe(1);
+  expect(text(made.seen.err)).toContain('The resident\'s shell runs on node-pty, and here it doesn\'t work: `bun --no-env-file install` didn\'t finish (exit 1).');
+  expect(text(made.seen.err)).not.toContain('spawn-helper');
+});
+
 modeTest('on macOS, a spawn-helper the command can\'t make executable in the copy it leaves in place is named in the stop, with what to do', async () => {
   const { dir, root, line } = installed();
   const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
   let shut = '';
   const made = world(dir, {
-    pty: [broken, broken], atInstall: shipNodePty,
-    atAdd: (cwd) => { shipNodePty(cwd); shut = join(cwd, 'node_modules', 'node-pty', 'prebuilds', 'darwin-arm64'); chmodSync(shut, 0o600); },
+    pty: [broken, broken], atAdd: shipNodePty,
+    atInstall: (cwd) => { shipNodePty(cwd); shut = join(cwd, 'node_modules', 'node-pty', 'prebuilds', 'darwin-arm64'); chmodSync(shut, 0o600); },
   }, { platform: 'darwin' });
   try {
     expect(await runShell(root, ['install'], made)).toBe(1);
@@ -596,8 +606,8 @@ modeTest('on macOS, a prebuilds directory the command can\'t list is named in th
   const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
   let shut = '';
   const made = world(dir, {
-    pty: [broken, broken], atInstall: shipNodePty,
-    atAdd: (cwd) => { shipNodePty(cwd); shut = join(cwd, 'node_modules', 'node-pty', 'prebuilds'); chmodSync(shut, 0o000); },
+    pty: [broken, broken], atAdd: shipNodePty,
+    atInstall: (cwd) => { shipNodePty(cwd); shut = join(cwd, 'node_modules', 'node-pty', 'prebuilds'); chmodSync(shut, 0o000); },
   }, { platform: 'darwin' });
   try {
     expect(await runShell(root, ['install'], made)).toBe(1);
@@ -612,8 +622,8 @@ test('on macOS, a prebuilt binary with no spawn-helper is named in the stop as n
   const broken = { status: 1, stdout: '', stderr: 'posix_spawnp failed.\n' };
   let missing = '';
   const made = world(dir, {
-    pty: [broken, broken], atInstall: shipNodePty,
-    atAdd: (cwd) => { [missing] = shipNodePty(cwd); rmSync(missing); },
+    pty: [broken, broken], atAdd: shipNodePty,
+    atInstall: (cwd) => { [missing] = shipNodePty(cwd); rmSync(missing); },
   }, { platform: 'darwin' });
   expect(await runShell(root, ['install'], made)).toBe(1);
   expect(statSync(join(dir, 'node_modules', 'node-pty', 'prebuilds', 'darwin-x64', 'spawn-helper')).mode & 0o777).toBe(0o755);
