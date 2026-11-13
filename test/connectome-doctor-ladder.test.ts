@@ -70,6 +70,8 @@ interface Unit {
   neverStarted?: boolean;
   active?: string;
   text?: string;
+  mainPid?: string | null;
+  showFails?: boolean;
   mainPidNow?: string;
 }
 
@@ -80,7 +82,8 @@ function systemctl(at: Install, unit: Unit = {}): void {
     'case "$*" in',
     `  *FragmentPath*) echo ${join(at.work, 'unit.txt')} ;;`,
     `  *--value*) echo ${unit.mainPidNow ?? at.mainPidNow ?? at.host.process.pid} ;;`,
-    `  *) printf "ActiveState=${unit.active ?? 'active'}\\nSubState=running\\nNRestarts=${unit.restarts ?? '0'}\\nExecMainStartTimestamp=${startStamp}\\nMainPID=${at.host.process.pid}\\n" ;;`,
+    ...(unit.showFails ? ['  *) exit 1 ;;'] : []),
+    `  *) printf "ActiveState=${unit.active ?? 'active'}\\nSubState=running\\nNRestarts=${unit.restarts ?? '0'}\\nExecMainStartTimestamp=${startStamp}\\n${unit.mainPid === null ? '' : `MainPID=${unit.mainPid ?? at.host.process.pid}\\n`}" ;;`,
     'esac',
   ].join('\n'));
 }
@@ -655,6 +658,38 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
     const none = ladder(at).out;
     expect(none).toMatch(/gate dump: not asked: the unit has no main process now/);
     expect(none).not.toContain('the gate dump wasn\'t asked for');
+    await settled(at.host);
+    expect(signalled(at.host)).toBe(false);
+  });
+
+  test('an active unit with no main process at its first read says the dump wasn\'t asked, with no finding; a main process id that can\'t be read, at either read, is also a finding that doesn\'t count', async () => {
+    const at = await install({ listens: true });
+    const NONE = 'the unit has no main process now';
+    const UNREAD = 'the unit\'s main process id can\'t be read';
+    for (const [unit, why, finding] of [[{ mainPid: '0' }, NONE, false], [{ mainPid: null }, UNREAD, true],
+      [{ mainPidNow: '' }, UNREAD, true]] as const) {
+      const label = JSON.stringify(unit);
+      systemctl(at, unit);
+      const { out } = ladder(at);
+      expect(out, label).toContain(`live gate dump: not asked: ${why}`);
+      const line = ladder(at, ['--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
+      const findings = JSON.parse(line.slice('connectome-doctor findings: '.length)) as Array<{ text: string; counts: boolean }>;
+      expect(findings.filter((f) => f.text.startsWith('the gate dump wasn\'t asked for')), label).toEqual(finding
+        ? [{ text: `the gate dump wasn't asked for, since ${why}, so the gate dump isn't known`, counts: false }] : []);
+    }
+    await settled(at.host);
+    expect(signalled(at.host)).toBe(false);
+  });
+
+  test('a unit whose state can\'t be read isn\'t signalled, and the dump not asked is said, with a finding that doesn\'t count', async () => {
+    const at = await install({ listens: true });
+    systemctl(at, { showFails: true });
+    const WHY = 'the unit\'s state can\'t be read';
+    const { out } = ladder(at);
+    expect(out).toContain(`live gate dump: not asked: ${WHY}`);
+    const line = ladder(at, ['--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
+    expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
+      text: `the gate dump wasn't asked for, since ${WHY}, so the gate dump isn't known`, counts: false });
     await settled(at.host);
     expect(signalled(at.host)).toBe(false);
   });
