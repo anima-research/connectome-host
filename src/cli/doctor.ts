@@ -216,6 +216,7 @@ export async function doctor(
   const manager = units?.manager ?? managerFor(parts.platform);
   let managerUnread: string | null = null;
   let envFiles: string[] = [];
+  let refusedUnit: string | null = null;
   try {
     storedNames = new StoredSecrets(join(work, '.setup')).read();
     const named = secretNames(join(work, '.setup'), join(work, '.env'));
@@ -259,6 +260,7 @@ export async function doctor(
     }
     const unit = service === null ? null : read;
     envFiles = read === null ? [] : read.files;
+    refusedUnit = service === null && read !== null ? units!.host.file : null;
     const given = { ...(manager === 'launchd' ? parts.launchdGives() : {}), ...managed };
     const built = serviceEnv(work, root, given, unit === null ? null : unit.env, parts.envLimitMs,
       service?.bun ?? process.execPath, typed, unit === null ? [] : unit.unset);
@@ -582,7 +584,7 @@ export async function doctor(
       unknown = 'the recipe\'s server list doesn\'t resolve';
     }
     await checked(report, 'The stored secrets\' check', () => {
-      filesUnread = storedSecretLines(report, work, env, servers, uses, unknown, storedNames, envFiles);
+      filesUnread = storedSecretLines(report, work, env, servers, uses, unknown, storedNames, envFiles, refusedUnit);
     });
 
     report.section('Discord');
@@ -983,6 +985,7 @@ function storedSecretLines(
   unknown: string,
   names: string[] | null,
   envFiles: string[],
+  refusedUnit: string | null,
 ): boolean {
   if (names === null) {
     const { guessed } = secretNames(join(work, '.setup'), join(work, '.env'));
@@ -1009,6 +1012,9 @@ function storedSecretLines(
         `environment, but its unit also reads ${envFiles.join(' and ')}, whose values doctor can't see, so whether the ` +
         'service has one isn\'t known.');
       filesUnread = true;
+    } else if (!env[name] && refusedUnit !== null) {
+      report.line(`${name} is in setup's list of stored secrets and has no value in what doctor reads of the service's ` +
+        `environment, but ${refusedUnit}, which doctor can't use, may set it, so whether the service has one isn't known.`);
     } else if (!env[name] && !inDotenv.has(name)) {
       report.problem(`${name} is in setup's list of stored secrets (${join(work, '.setup', 'stored-secrets.json')}), and ` +
         `no file Bun reads for the service gives it a value, ${join(work, '.env')} included: put it in ` +

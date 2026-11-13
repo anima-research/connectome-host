@@ -3154,4 +3154,18 @@ describe('connectome doctor, where whose unit it is is read as install reads it,
     expect(r.out).not.toContain('OTHER_SECRET is in setup\'s list of stored secrets');
     expect(r.out).not.toContain('other-secret-value');
   });
+
+  test('a stored secret with no value under a unit doctor refuses is said as not known, since that unit may set it', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'UNIT_SECRET'] });
+    writeFileSync(at.unit, `[Service]\nWorkingDirectory=${at.work}\nExecStart=bun start.js recipe.json\n`);
+    const manager = fakeManager(at.work, {
+      unit: [...Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`), 'UNIT_SECRET=unit-secret-value'].join(' '),
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).toContain('isn\'t the unit file service install writes');
+    expect(r.out).toContain(`UNIT_SECRET is in setup's list of stored secrets and has no value in what doctor reads of the ` +
+      `service's environment, but ${at.unit}, which doctor can't use, may set it, so whether the service has one isn't known.`);
+    expect(r.out).not.toContain('UNIT_SECRET is in setup\'s list of stored secrets (');
+    expect(r.out).not.toContain('unit-secret-value');
+  });
 });
