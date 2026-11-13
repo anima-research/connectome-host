@@ -1442,6 +1442,26 @@ describe('connectome doctor', () => {
     expect(over.status).toBe(1);
   });
 
+  test('the host\'s count is used for the fit only where the host runs the recent window the recipe gives it', async () => {
+    const at = install();
+    writeFileSync(join(at.work, 'recipe.json'), JSON.stringify({
+      ...RECIPE(at.work), agent: { name: 'ember', model: 'claude-haiku-4-5', systemPrompt: '', strategy: { recentWindowTokens: 40_000 } },
+    }));
+    const recipeDigest = await digestOf(at);
+    const counted = (tail?: number) => ({ ...HEALTHY_HOST, 'count-check': {
+      ...COUNTED, agent: { ...COUNTED.agent, model: 'claude-haiku-4-5' }, beside: { tokens: 20_000, source: 'count_tokens' }, budget: 168_000,
+      recipeDigest, ...(tail === undefined ? {} : { tail }),
+    } });
+    const same = await withHost(at, counted(40_000), () => run(at));
+    expect(same.out).toContain('the system prompt and tools the host sends count 20,000.');
+    const older = await withHost(at, counted(), () => run(at));
+    expect(older.out).toContain('the system prompt and tools the host sends count 20,000.');
+    const moved = await withHost(at, counted(90_000), () => run(at));
+    expect(moved.out).toContain('✓ It fits claude-haiku-4-5\'s window.\n  The system prompt and tools the host sends weren\'t ' +
+      'counted (the running host\'s recent window is 90,000, not the 40,000 this recipe gives it, as agent settings or a change ' +
+      'since its start can leave it), so this is the check the host makes at load, by estimate.');
+  });
+
   test('with what the host sends beside the conversation not counted, the fit is the load\'s, by estimate, and says why', async () => {
     const at = install();
     writeFileSync(join(at.work, 'recipe.json'), JSON.stringify({

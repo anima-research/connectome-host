@@ -5,7 +5,7 @@ import { homedir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
-import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
+import { effectiveContextBudgetTokens, effectiveMaxTokens, startingTailTokens } from '../recipe-fit.js';
 import { withoutHeartbeatMcpl } from '../heartbeat-options.js';
 import { composeMcplChildEnv, openedBy, serversForRecipe } from '../mcpl-config.js';
 import {
@@ -538,7 +538,8 @@ export async function doctor(
     if (loaded !== null) {
       await checked(report, 'The fit check', async () => {
         const model = recipeModel(loaded, env.MODEL);
-        const counted = await besideOf(counting, model, effectiveContextBudgetTokens(loaded, model), recipeDigest(loaded));
+        const counted = await besideOf(counting, model, effectiveContextBudgetTokens(loaded, model), startingTailTokens(loaded, model),
+          recipeDigest(loaded));
         const fit = runningFit(loaded, env.MODEL, 'tokens' in counted ? counted.tokens : undefined);
         if (!fit.checked) {
           report.line(fit.line);
@@ -897,6 +898,7 @@ interface CountCheck {
   compression: { model: string; countModel: string | null; source: string } | null;
   beside?: { tokens: number | null; source: string; error?: string };
   budget?: number | null;
+  tail?: number | null;
   recipeDigest?: string;
 }
 
@@ -1446,6 +1448,7 @@ async function besideOf(
   counting: Promise<HostEvent | null> | null,
   model: string,
   budget: number,
+  tail: number | undefined,
   digest: string,
 ): Promise<{ tokens: number } | { why: string }> {
   if (counting === null) return { why: 'no host answers' };
@@ -1469,6 +1472,10 @@ async function besideOf(
     }
     if (typeof data?.budget === 'number' && data.budget !== budget) {
       return { why: `the running host's budget is ${n(data.budget)}, not the ${n(budget)} this recipe gives it, as agent ` +
+        'settings or a change since its start can leave it' };
+    }
+    if (tail !== undefined && typeof data?.tail === 'number' && data.tail !== tail) {
+      return { why: `the running host's recent window is ${n(data.tail)}, not the ${n(tail)} this recipe gives it, as agent ` +
         'settings or a change since its start can leave it' };
     }
     if (data?.recipeDigest !== digest) {

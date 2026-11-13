@@ -512,12 +512,12 @@ describe('count-check, with a stand-in for the framework', () => {
         system: '', tools: [TOOL],
         messages: [{ participant: 'Ann', content: [{ type: 'text', text: 'a line of the conversation' }] }],
       }),
-      getAgentRuntimeSettings: () => ({ contextBudgetTokens: 123_456 }),
+      getAgentRuntimeSettings: () => ({ contextBudgetTokens: 123_456, tailTokens: 45_678 }),
     });
     return app;
   };
 
-  test('what the host sends beside the conversation is counted with its tools wherever the formatter puts them, the conversation left out, less the one message, beside the budget the agent is set to', async () => {
+  test('what the host sends beside the conversation is counted with its tools wherever the formatter puts them, the conversation left out, less the one message, beside the budget and recent window the agent is set to', async () => {
     const bodies: string[] = [];
     const server = Bun.serve({
       port: 0,
@@ -533,7 +533,7 @@ describe('count-check, with a stand-in for the framework', () => {
       for (const formatter of [undefined, 'anthropic-xml']) {
         bodies.length = 0;
         const check = await buildCountCheck(previewing(formatter));
-        expect([formatter, check.beside, check.budget]).toEqual([formatter, { tokens: 500, source: 'count_tokens' }, 123_456]);
+        expect([formatter, check.beside, check.budget, check.tail]).toEqual([formatter, { tokens: 500, source: 'count_tokens' }, 123_456, 45_678]);
         expect(bodies.filter((body) => body.includes('listSessions'))).toHaveLength(1);
         expect(bodies.some((body) => body.includes('a line of the conversation'))).toBe(false);
       }
