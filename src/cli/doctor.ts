@@ -37,6 +37,8 @@ import {
 const LADDER = fileURLToPath(new URL('../../scripts/connectome-doctor', import.meta.url));
 const LADDER_LIMIT_MS = 60_000;
 const FINDINGS = 'connectome-doctor findings: ';
+const GATE_DUMP = 'live gate dump (SIGUSR2): ';
+const LADDER_WIDTH = 300;
 const HOST_ANSWER_LIMIT_MS = 60_000;
 const ENV_LIMIT_MS = 60_000;
 const RECIPE_LIMIT_MS = 60_000;
@@ -79,7 +81,7 @@ class Report {
 
   constructor(
     private readonly print: (line: string) => void,
-    readonly redact: (text: string) => string,
+    readonly redact: (text: string, width?: number) => string,
   ) {}
 
   section(title: string): void {
@@ -87,8 +89,8 @@ class Report {
     this.print(this.redact(title));
   }
 
-  line(text: string): void {
-    this.print(this.redact(`  ${text}`));
+  line(text: string, width?: number): void {
+    this.print(this.redact(`  ${text}`, width === undefined ? undefined : width + 2));
   }
 
   ok(text: string): void {
@@ -227,10 +229,12 @@ export async function doctor(
   let secrets: Secret[] = [...PROVIDER_SECRETS, 'DISCORD_TOKEN']
     .flatMap((name) => process.env[name] ? [{ name, value: process.env[name]! }] : []).flatMap(withSentForms);
   let guessed: string[] = [];
-  const redact = (text: string): string => {
+  const redact = (text: string, width?: number): string => {
     const bytes = Buffer.from(text, 'utf-8');
     const replaced = new Set<string>();
-    const shown = redactWindow(bytes, 0, bytes.length, secrets, replaced).text;
+    const hid = redactWindow(bytes, 0, bytes.length, secrets, replaced).text;
+    const points = [...hid];
+    const shown = width !== undefined && points.length > width ? `${points.slice(0, width).join('')}…` : hid;
     const hidden = guessed.filter((name) => replaced.has(name) || text.includes(`<${name}>`)).sort();
     if (hidden.length === 0) return shown;
     const mark = Buffer.from(` (it holds ${hidden.length === 1 ? 'a value' : 'values'} of ` +
@@ -735,7 +739,9 @@ export async function doctor(
     const said = linesOf(ran.stdout ?? '');
     const at = said.map((line) => line.startsWith(FINDINGS)).lastIndexOf(true);
     const findings = at < 0 ? null : said.splice(at, 1)[0].slice(FINDINGS.length);
-    for (const line of [...said, ...linesOf(ran.stderr ?? '')]) if (line !== '') report.line(line);
+    for (const line of [...said, ...linesOf(ran.stderr ?? '')]) {
+      if (line !== '') report.line(line, line.startsWith(GATE_DUMP) ? undefined : LADDER_WIDTH);
+    }
     if (dropped > 0) {
       report.line(`The ladder was ended, and doctor doesn't show ${dropped === 1 ? 'the line' : `the ${dropped} lines`} it ` +
         'printed last: a secret cut short there couldn\'t be hidden.');

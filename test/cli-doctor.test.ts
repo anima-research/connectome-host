@@ -771,6 +771,20 @@ describe('connectome doctor', () => {
     expectNoSecret(r.out + r.err);
   });
 
+  test('a ladder line is cut at 300 characters after doctor hides it, so no part of a value shows, while the gate dump\'s line shows whole', async () => {
+    const at = install();
+    const python = join(at.work, 'python3-long');
+    const dump = `{"gate":{"inferring":false},"pad":"${'g'.repeat(400)}"}`;
+    writeFileSync(python, ['#!/bin/sh', `echo "${'x'.repeat(295)}${SECRETS.DISCORD_TOKEN}tail"`, `echo "${'w'.repeat(300)}"`,
+      `echo 'live gate dump (SIGUSR2): ${dump}'`, 'printf \'%s\\n\' \'connectome-doctor findings: []\'', 'exit 0'].join('\n'));
+    chmodSync(python, 0o755);
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { python }));
+    expect(r.out).toContain(`\n  ${'x'.repeat(295)}<DISC…\n`);
+    expect(r.out).toContain(`\n  ${'w'.repeat(300)}\n`);
+    expect(r.out).toContain(`\n  live gate dump (SIGUSR2): ${dump}\n`);
+    expectNoSecret(r.out + r.err);
+  });
+
   test('with no stored-secrets list, every value of a name in its dotenv files that setup doesn\'t know is hidden, as setup--run hides it, and doctor says why', async () => {
     const at = install({ env: { LONELY_SECRET: SECRETS.LONELY_SECRET } });
     rmSync(join(at.work, '.setup', 'stored-secrets.json'));

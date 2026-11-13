@@ -207,8 +207,9 @@ the working directory):
   The ladder cuts a message's preview at 40 characters, a model call's error
   at 80 and each failure line at 150, and hides nothing. `--findings-json`
   prints those three whole, since `connectome doctor`, which passes it,
-  replaces each stored value in every line of the ladder's it shows. It
-  also prints the findings, once the ladder finishes, as its last line,
+  replaces each stored value in every line of the ladder's it shows, then
+  cuts each line but the gate dump's at 300 characters. It also prints the
+  findings, once the ladder finishes, as its last line,
   `connectome-doctor findings: ` and a JSON list of `{"text", "counts"}`, with
   no findings block or closing line, leaves the service's own state (its row,
   a unit that isn't active, or a recent start) to its caller, and exits 0.
