@@ -226,7 +226,7 @@ export async function doctor(
       ...readSecrets(named.names, join(work, '.env'), process.env, [])].flatMap(withSentForms);
     const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
     const names = [...named.names, 'MODEL', AGENT_OVERLAY_FILE_ENV, 'DISCORD_GUILD_ID', 'DISCORD_FILTERS_FILE', 'NODE_ENV',
-      ...dotenvReferences(work), ...(document === null ? [] : namesIn(document))];
+      'BUN_OPTIONS', ...dotenvReferences(work), ...(document === null ? [] : namesIn(document))];
     const managedRead: Record<string, string> = {};
     let managed: Record<string, string> = {};
     let unread: unknown = null;

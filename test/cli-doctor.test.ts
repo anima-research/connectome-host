@@ -3144,4 +3144,14 @@ describe('connectome doctor, where whose unit it is is read as install reads it,
     expect(failed).toContain('starts `[inference-failed] agent=');
     expect(failed).not.toContain('journalctl');
   });
+
+  test('BUN_OPTIONS that launchd gives is asked for, so a dotenv file it names is read for the stored secrets', async () => {
+    const at = install({ manager: 'launchd', stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'OTHER_SECRET'] });
+    writeFileSync(join(at.work, 'other.env'), 'OTHER_SECRET=other-secret-value\n');
+    const manager = fakeManager(at.work, { launchd: { BUN_OPTIONS: '--env-file=other.env' } });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { launchctl: manager.path }));
+    expect(manager.calls()).toContain('getenv BUN_OPTIONS');
+    expect(r.out).not.toContain('OTHER_SECRET is in setup\'s list of stored secrets');
+    expect(r.out).not.toContain('other-secret-value');
+  });
 });
