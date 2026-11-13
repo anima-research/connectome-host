@@ -1316,9 +1316,8 @@ function systemVariables(): Record<string, string> {
 }
 
 // launchd gives each job HOME, USER, LOGNAME and SHELL from the user's account, whatever the environment of the shell
-// that loads it, and TMPDIR as the user's own temporary directory (macOS 26). This function returns those five, the base
-// doctor builds the service's environment on. launchd gives a job others too, such as SSH_AUTH_SOCK, XPC_FLAGS and
-// XPC_SERVICE_NAME, which it leaves out, and a PATH, which install's plist sets over.
+// that loads it, and TMPDIR as the user's own temporary directory (macOS 26). It gives a job others too, such as
+// SSH_AUTH_SOCK, XPC_FLAGS and XPC_SERVICE_NAME, and a PATH, which install's plist sets over.
 function launchdGives(): Record<string, string> {
   const user = userInfo();
   const gives: Record<string, string> = { HOME: user.homedir, USER: user.username, LOGNAME: user.username };
