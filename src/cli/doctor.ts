@@ -919,7 +919,6 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
   }
 }
 
-/** A count that timed out, or that count_tokens answered with 429 or a 5xx, can pass by itself. */
 function passes(source: string): boolean {
   const status = Number(/^count_tokens_failed_(\d+)$/.exec(source)?.[1]);
   return source === 'count_tokens_timeout' || status === 429 || (status >= 500 && status < 600);
@@ -930,9 +929,8 @@ function shellLines(report: Report, shell: ShellCheck, commands: ServiceCommands
   for (const server of shell.notConnected) {
     report.problem(`The server ${server.id} isn't connected` + (server.refused !== null
       ? `: the host refuses its configuration: ${server.refused}.`
-      : server.retrying
-        ? '; the host is still retrying it.'
-        : `, and the host isn't retrying it. Its stderr is in the data directory, in sessions/<session>/mcpl-stderr/${server.id}.log.`));
+      : `${server.retrying ? '; the host is still retrying it.' : ', and the host isn\'t retrying it.'} Its stderr is in the data ` +
+        `directory, in sessions/<session>/mcpl-stderr/${server.id}.log.`));
   }
   for (const id of shell.closedTabs) {
     report.line(`The server ${id} is a closed tab: the host connects it when an agent opens it, so its connection isn't checked.`);

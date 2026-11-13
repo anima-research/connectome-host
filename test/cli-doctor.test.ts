@@ -1083,7 +1083,7 @@ describe('connectome doctor', () => {
     expect(r.out).not.toMatch(/shell3 [^\n]*starts the shell daemon/);
     expect(r.out).toMatch(/✗.*shell2.*Tool call denied by the allowlist\.$/m);
     expect(r.out).toMatch(/✗ shell3 didn't reach its daemon: Connection timeout\..*"Connection timeout" a daemon that isn't running/);
-    expect(r.out).toMatch(/✗.*discord isn't connected.*still retrying/);
+    expect(r.out).toMatch(/✗ The server discord isn't connected; the host is still retrying it\. Its stderr is in the data directory, in sessions\/<session>\/mcpl-stderr\/discord\.log\.$/m);
     expect(r.out).toMatch(/✗.*old isn't connected.*its command is empty/);
     expect(r.out).toMatch(/✗ The server dying isn't connected, and the host isn't retrying it\. Its stderr is in the data directory/);
     expect(r.out).toMatch(/\n {2}count_tokens couldn't count with claude-small-window: .*\. So the context's makeup shows no exact total\. A retired model answers 404, and the endpoint count_tokens asks \(Anthropic's API, or the one ANTHROPIC_BASE_URL names\) may answer it for a model it doesn't serve: set COUNT_TOKENS_MODEL in .*\.env to a current Claude model, and restart the service, since the host reads it when it starts\./);
@@ -1728,6 +1728,15 @@ describe('connectome doctor: the environment the service gets from its manager',
     for (const [unset, model] of [['MODEL=claude-manager-model', 'claude-dotenv-model'], ['MODEL=claude-other-model', 'claude-manager-model']]) {
       const at = install({ env: { MODEL: 'claude-dotenv-model' } });
       const manager = fakeManager(at.work, { env: ['MODEL=claude-manager-model'], unset });
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+      expect([unset, r.out]).toEqual([unset, expect.stringContaining(`fit ${model}'s window`)]);
+    }
+  });
+
+  test('on systemd, UnsetEnvironment takes out what the unit\'s own Environment sets too, a name or an assignment whose value it is', async () => {
+    for (const [unset, model] of [['MODEL', 'claude-dotenv-model'], ['MODEL=claude-unit-model', 'claude-dotenv-model'], ['MODEL=claude-other-model', 'claude-unit-model']]) {
+      const at = install({ env: { MODEL: 'claude-dotenv-model' } });
+      const manager = fakeManager(at.work, { unit: `${unitWords(join(at.work, 'data'))} MODEL=claude-unit-model`, unset });
       const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
       expect([unset, r.out]).toEqual([unset, expect.stringContaining(`fit ${model}'s window`)]);
     }
