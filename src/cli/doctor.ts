@@ -721,8 +721,6 @@ export async function doctor(
       env: {
         ...process.env,
         XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}`,
-        CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify(secrets.flatMap((s) => s.value.trim() === s.value
-          ? [[s.name, s.value]] : [[s.name, s.value], [s.name, s.value.trim()]])),
       },
     });
     ladderRan = true;

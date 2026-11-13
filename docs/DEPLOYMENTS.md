@@ -204,20 +204,18 @@ the working directory):
   default action ends it. It waits up to 5 s for the host's `[diagnostics]`
   line. `--data-dir`
   names the host's data directory, `INSTALL_DIR/data` when left out.
-  `CONNECTOME_DOCTOR_WITHHOLD`, a JSON list of `[name, value]` pairs, has each
-  value replaced by `<name>` in what the ladder cuts short before it prints
-  it: a message's preview, a model call's error and a failure line. It parses
-  what it reads as it was read, and leaves a whole value in anything else it
-  prints to its caller, as `connectome doctor` replaces each stored value in
-  every line of the ladder's it shows. `--findings-json`
-  prints the findings, once the ladder finishes, as its last line,
+  The ladder cuts a message's preview at 40 characters, a model call's error
+  at 80 and each failure line at 150, and hides nothing. `--findings-json`
+  prints those three whole, since `connectome doctor`, which passes it,
+  replaces each stored value in every line of the ladder's it shows. It
+  also prints the findings, once the ladder finishes, as its last line,
   `connectome-doctor findings: ` and a JSON list of `{"text", "counts"}`, with
   no findings block or closing line, leaves the service's own state (its row,
   a unit that isn't active, or a recent start) to its caller, and exits 0.
   `counts` is false for a finding about what the ladder can't see, and for the
-  resident's own sleep. `connectome doctor` runs the ladder with `--data-dir`,
-  `--findings-json` and `CONNECTOME_DOCTOR_WITHHOLD` for a service `connectome
-  service install` set up under systemd.
+  resident's own sleep. `connectome doctor` runs the ladder with `--data-dir`
+  and `--findings-json` for a service `connectome service install` set up
+  under systemd.
 
 ---
 

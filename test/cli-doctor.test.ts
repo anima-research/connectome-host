@@ -188,7 +188,9 @@ function fakePython(dir: string, opts: { holds?: true; end?: 'findings' | 'lines
     'if [ "$1" = -c ]; then echo "the stand-in answers only doctor\'s version probe" >&2; exit 1; fi',
     'shift',
     'echo "ladder args: $*"',
-    `printf '%s' "$CONNECTOME_DOCTOR_WITHHOLD" > '${join(dir, 'withheld.json')}'`,
+    `: > '${join(dir, 'ladder-ran')}'`,
+    `if [ -n "\${CONNECTOME_DOCTOR_WITHHOLD+x}" ]; then : > '${join(dir, 'withhold-given')}'; fi`,
+    `if [ -f '${join(dir, 'ladder-says.txt')}' ]; then sed 's/^/ladder says: /' '${join(dir, 'ladder-says.txt')}'; fi`,
     'echo "ladder XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"',
     `echo "recent failure: Error token=${SECRETS.DISCORD_TOKEN}"`,
     ...(opts.holds ? HOLD(join(dir, 'held.pids')) : []),
@@ -345,8 +347,9 @@ function expectNoSecret(text: string): void {
 }
 
 describe('connectome doctor', () => {
-  test('a healthy install: every check made passes, the fit is said not checked for a model whose window isn\'t known, the ladder runs with the data directory, the working directory and the unit, withholding the stored values, and the exit is 0', async () => {
+  test('a healthy install: every check made passes, the fit is said not checked for a model whose window isn\'t known, the ladder runs with the data directory, the working directory and the unit, is given no values, and has its lines shown with the stored values hidden, and the exit is 0', async () => {
     const at = install();
+    writeFileSync(join(at.work, 'ladder-says.txt'), `${SECRETS.DISCORD_TOKEN}\n${SECRETS.SESSION_SERVER_TOKEN}\n${SECRETS.ANTHROPIC_API_KEY}\n`);
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).toContain('connectome-test.service is active');
     expect(r.out).toContain('pid 4242');
@@ -355,9 +358,9 @@ describe('connectome doctor', () => {
     expect(r.out).toContain('#general (101)');
     expect(r.out).not.toContain('where it can\'t send');
     expect(r.out).toContain(`ladder args: --findings-json --data-dir ${at.data} ${at.work} connectome-test.service`);
-    const withheld = JSON.parse(readFileSync(join(at.work, 'withheld.json'), 'utf-8')) as Array<[string, string]>;
+    expect(existsSync(join(at.work, 'withhold-given'))).toBe(false);
     for (const name of ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'ANTHROPIC_API_KEY'] as const) {
-      expect(withheld).toContainEqual([name, SECRETS[name]]);
+      expect(r.out).toContain(`ladder says: <${name}>\n`);
     }
     expect(r.out).toContain('<DISCORD_TOKEN>');
     expect(r.out).toContain('[fit] Not checked: whether agent.contextBudgetTokens and agent.maxTokens fit claude-test-model\'s window.');
@@ -688,12 +691,12 @@ describe('connectome doctor', () => {
     writeFileSync(join(at.work, '.env.local'), 'MY_TOKEN=${DOCTOR_ONLY_PREFIX}z9suffix\n');
     const saved = process.env.DOCTOR_ONLY_PREFIX;
     process.env.DOCTOR_ONLY_PREFIX = 'p7-prefix-';
+    writeFileSync(join(at.work, 'ladder-says.txt'), 'p7-prefix-z9suffix\n');
     try {
       const r = await withHost(at, HEALTHY_HOST, () => run(at, {
         checkService: async () => ({ passed: true, here: true as const, lines: ['The unit said: token p7-prefix-z9suffix refused.'] }),
       }));
-      const withheld = JSON.parse(readFileSync(join(at.work, 'withheld.json'), 'utf-8')) as Array<[string, string]>;
-      expect(withheld).toContainEqual(['MY_TOKEN', 'p7-prefix-z9suffix']);
+      expect(r.out).toContain('ladder says: <MY_TOKEN>\n');
       expect(r.out).toContain('token <MY_TOKEN> refused');
       expect(r.out).not.toContain('p7-prefix-');
     } finally {
@@ -753,20 +756,18 @@ describe('connectome doctor', () => {
       recipe: { ...RECIPE(''), modules: { heartbeat: true } },
       overlay: { heartbeat: { command: '/x/node_modules/.bin/heartbeat-mcpl', env: { LONELY_SECRET: 'lonely-value-1', DISCORD_TOKEN: 'a-left-out-heartbeat-token' } } },
     });
+    writeFileSync(join(at.work, 'ladder-says.txt'), 'a-left-out-heartbeat-token\n');
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).toContain('[heartbeat] modules.heartbeat is on, so the MCPL server "heartbeat" (heartbeat-mcpl, from mcpl-servers.json or the agent\'s overlay) is left out');
     expect(r.out).not.toContain('LONELY_SECRET reaches heartbeat');
     expect(r.out).toContain('LONELY_SECRET is in setup\'s list of stored secrets, and doctor finds no server given it');
-    const withheld = JSON.parse(readFileSync(join(at.work, 'withheld.json'), 'utf-8')) as Array<[string, string]>;
-    expect(withheld).toContainEqual(['DISCORD_TOKEN', 'a-left-out-heartbeat-token']);
+    expect(r.out).toContain('ladder says: <DISCORD_TOKEN>\n');
   });
 
-  test('a DISCORD_TOKEN in .env that setup didn\'t store is withheld too: doctor hides it in its lines, and names it for the ladder to withhold where it cuts', async () => {
+  test('a DISCORD_TOKEN in .env that setup didn\'t store is withheld too: doctor hides it in its lines, the ladder\'s included', async () => {
     const at = install({ stored: ['SESSION_SERVER_TOKEN'] });
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
-    const withheld = JSON.parse(readFileSync(join(at.work, 'withheld.json'), 'utf-8')) as Array<[string, string]>;
-    expect(withheld).toContainEqual(['DISCORD_TOKEN', SECRETS.DISCORD_TOKEN]);
-    expect(r.out).toContain('<DISCORD_TOKEN>');
+    expect(r.out).toContain('recent failure: Error token=<DISCORD_TOKEN>\n');
     expectNoSecret(r.out + r.err);
   });
 
@@ -1026,7 +1027,7 @@ describe('connectome doctor', () => {
     expect(r.out).toContain('Which recipe the service runs is in its unit, so it isn\'t checked without one.');
     expect(r.out).toContain('The ladder reads the service\'s unit and log, so it runs once a service is installed.');
     expect(r.out).not.toContain('ladder args');
-    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
+    expect(existsSync(join(at.work, 'ladder-ran'))).toBe(false);
     expect(r.out).not.toContain('ember (900)');
     expect(r.status).toBe(1);
     const nowhere = await withHost(at, HEALTHY_HOST, () => run(at, { platform: 'win32' }));
@@ -1041,7 +1042,7 @@ describe('connectome doctor', () => {
     expect(r.out).toContain(`✗ ${at.unit} isn't the unit file service install writes: `);
     expect(r.out).toContain(`\`${join(at.root, 'connectome')} service install <recipe>\` writes it anew, or says why it can't.`);
     expect(r.out).not.toContain('ladder args');
-    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
+    expect(existsSync(join(at.work, 'ladder-ran'))).toBe(false);
     const ladder = 'The ladder reads the service\'s unit, so it doesn\'t run while doctor can\'t use that unit.';
     expect(r.out).toContain(ladder);
     expect(r.out).toMatch(/Discord isn't checked: .*the service's unit names, and doctor can't use that unit/);
@@ -1052,7 +1053,7 @@ describe('connectome doctor', () => {
     const other = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(other.out).toContain(`✗ ${at.unit} doesn't run this install's start.js, ${join(at.root, 'start.js')}, right after its Bun, with a recipe after it, as the one service install writes does.`);
     expect(other.out).not.toContain('ladder args');
-    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
+    expect(existsSync(join(at.work, 'ladder-ran'))).toBe(false);
     expect(other.out).toContain(ladder);
     rmSync(at.unit);
     mkdirSync(at.unit);
@@ -1948,7 +1949,7 @@ describe('connectome doctor', () => {
     const at = install({ manager: 'launchd' });
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).not.toContain('ladder args');
-    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
+    expect(existsSync(join(at.work, 'ladder-ran'))).toBe(false);
     expect(r.out).toMatch(/launchd/);
     expect(r.out).toMatch(/Doctor found no problem, though the ladder didn't run and the fit wasn't checked, as said above\.$/);
     expect(r.status).toBe(0);
@@ -2787,13 +2788,14 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     expect(r.out + r.err).not.toContain(derived);
   });
 
-  test('each secret\'s form with its ends trimmed as JavaScript trims them is named for the ladder to withhold, beside the value', async () => {
+  test('each secret\'s form with its ends trimmed as JavaScript trims them is hidden in the ladder\'s lines, beside the value', async () => {
     const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'PADDED_KEY'] });
     writeFileSync(join(at.work, '.env.local'), 'PADDED_KEY="\uFEFFpadded-key-value\uFEFF"\n');
-    await withHost(at, HEALTHY_HOST, () => run(at));
-    const withheld = JSON.parse(readFileSync(join(at.work, 'withheld.json'), 'utf-8')) as Array<[string, string]>;
-    expect(withheld).toContainEqual(['PADDED_KEY', '\uFEFFpadded-key-value\uFEFF']);
-    expect(withheld).toContainEqual(['PADDED_KEY', 'padded-key-value']);
+    writeFileSync(join(at.work, 'ladder-says.txt'), 'whole \uFEFFpadded-key-value\uFEFF end\ntrimmed padded-key-value end\n');
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain('ladder says: whole <PADDED_KEY> end\n');
+    expect(r.out).toContain('ladder says: trimmed <PADDED_KEY> end\n');
+    expect(r.out).not.toContain('padded-key-value');
   });
 });
 
@@ -3640,7 +3642,7 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
     expect(r.out).toContain('The ladder reads the service\'s journal and signals its main process, so it doesn\'t run while ' +
       'systemd runs the service in another directory, said above: that process isn\'t this install\'s host.');
     expect(r.out).not.toContain('Where an incoming message got to');
-    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
+    expect(existsSync(join(at.work, 'ladder-ran'))).toBe(false);
   });
 
   test('where systemd runs the service in another directory, the host that answers isn\'t compared with that unit\'s main process', async () => {
@@ -3667,7 +3669,7 @@ describe('connectome doctor, its round on the review of af5b59f95', () => {
       'install\'s host.');
     expect(r.out).not.toContain('Where an incoming message got to');
     expect(r.out).not.toContain('ladder args');
-    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
+    expect(existsSync(join(at.work, 'ladder-ran'))).toBe(false);
   });
 
   test('the service\'s section says that doctor reads the unit or plist as loaded or on disk, not the running host\'s own environment', async () => {
@@ -3724,7 +3726,7 @@ describe('connectome doctor, where whose unit it is is read as install reads it,
     expect(old.out).toContain('The pipeline ladder needs Python 3.7 or later, and python3 on PATH is 3.6. The checks above don\'t.');
     expect(old.out).not.toContain('ladder args');
     expect(old.out).not.toMatch(/✗ The pipeline ladder/);
-    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
+    expect(existsSync(join(at.work, 'ladder-ran'))).toBe(false);
     const enough = install();
     const ran = await withHost(enough, HEALTHY_HOST, () => run(enough, { python: fakePython(enough.work, { version: '3.7' }) }));
     expect(ran.out).toContain('ladder args');
@@ -3751,7 +3753,7 @@ describe('connectome doctor, where whose unit it is is read as install reads it,
     expect(r.out).toContain(`✗ ${at.unit} doesn't run this install's start.js, ${join(at.root, 'start.js')}, right after its Bun, with a recipe ` +
       'after it, as the one service install writes does.');
     expect(r.out).not.toContain('ladder args');
-    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
+    expect(existsSync(join(at.work, 'ladder-ran'))).toBe(false);
   });
 
   test('a failed turn under a unit doctor refuses names its line\'s start but no search of the service\'s log, since whose host answers isn\'t told', async () => {

@@ -63,43 +63,8 @@ def warn(msg, counts=True):
     WARNINGS.append((msg, counts))
 
 
-try:
-    WITHHOLD = json.loads(os.environ.get("CONNECTOME_DOCTOR_WITHHOLD") or "[]")
-    if not isinstance(WITHHOLD, list) or not all(
-            isinstance(p, list) and len(p) == 2 and all(isinstance(s, str) for s in p) for p in WITHHOLD):
-        raise ValueError("not a list of [name, value] pairs")
-except ValueError as e:
-    print(f"connectome-doctor: CONNECTOME_DOCTOR_WITHHOLD can't be read ({e}), so what it names can't be "
-          "withheld, and nothing is read.")
-    sys.exit(2)
-WITHHOLD = [(k, v) for k, v in WITHHOLD if v]
-
-
-ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
-
-
-def withheld(text):
-    found = []
-    folded = text.translate(ASCII_FOLD)
-    for name, value in WITHHOLD:
-        needle = value.translate(ASCII_FOLD)
-        at = folded.find(needle) if needle else -1
-        while at >= 0:
-            found.append((at, at + len(needle), name))
-            at = folded.find(needle, at + 1)
-    found.sort(key=lambda span: (span[0], -span[1]))
-    spans = []
-    for start, end, name in found:
-        if spans and start < spans[-1][1]:
-            spans[-1][1] = max(spans[-1][1], end)
-        else:
-            spans.append([start, end, name])
-    out, at = [], 0
-    for start, end, name in spans:
-        out += [text[at:start], f"<{name}>"]
-        at = end
-    out.append(text[at:])
-    return "".join(out)
+def shown(text, width):
+    return text if findings_json else text[:width]
 
 
 def run(cmd, timeout=15, no_match=None, cut_is_end=False):
@@ -284,7 +249,8 @@ else:
         enter_ts = parse_iso(ln.split(" ", 1)[0])
         mm = re.search(r'"channelName":"?([^",]*)"?.*?"contentPreview":"((?:[^"\\]|\\.)*)', ln)
         if mm:
-            enter_detail = f"#{mm.group(1)}: {withheld(mm.group(2))[:40]}…"
+            enter_detail = (f"#{mm.group(1)}: {mm.group(2)}" if findings_json
+                            else f"#{mm.group(1)}: {mm.group(2)[:40]}…")
     ln = last_in_dbg(r'gateway:message-create-drop (?!.*"reason":"self-authored")')
     if ln:
         dts = parse_iso(ln.split(" ", 1)[0])
@@ -498,7 +464,7 @@ if llm_files:
         err = resp.get("error") or call.get("error")
         stop = "" if sr is None else f"stop={sr}  "
         if call.get("type") == "error" or err:
-            llm_detail = f"{stop}{C_RED}err={withheld(err_text(err))[:80] or '(no text)'}{C_OFF}"
+            llm_detail = f"{stop}{C_RED}err={shown(err_text(err), 80) or '(no text)'}{C_OFF}"
         else:
             llm_detail = stop.strip() or "answered"
         if sr == "refusal":
@@ -680,7 +646,7 @@ for where, found, why, unread in sources:
     elif found:
         print(f"recent failures in {where}:")
         for ln in found[-5:]:
-            print(f"  {C_RED}{withheld(ln)[:150]}{C_OFF}")
+            print(f"  {C_RED}{shown(ln, 150)}{C_OFF}")
         if len(found) > 5:
             print(f"  and {len(found) - 5} more, older")
     else:
