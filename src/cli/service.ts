@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, type Stats,
+  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, type Stats,
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
@@ -332,10 +332,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       if (loaded) await bootout(ctx, sys, env, unit,
         'Repeat this service install command with the same recipe to load its rewritten agents.');
       ownedOrFree(unit, manager, work, sys, env, loaded ? `${unit.name} was already unloaded. ` : '');
-      const rotate = loaded || stateBefore.kind === 'unloaded';
-      if (stateBefore.kind === 'unknown') ctx.out(`The state of ${unit.name} couldn't be read: ${stateBefore.why}. ` +
-        'This run kept its log in place; it can hold earlier loads.');
-      const ran = loadAgent(sys, env, unit, unit === names.host ? logPath : join(work, 'logs', 'shell.log'), rotate);
+      const ran = sys.run('launchctl', ['bootstrap', `gui/${sys.uid}`, unit.file], env);
       if (ran.status !== 0) {
         const state = agentState(sys, env, unit);
         const subject = unit === names.host ? "resident's service" : "resident's shell daemon";
@@ -691,11 +688,6 @@ function agentState(sys: ServiceSystem, env: Record<string, string>, unit: Servi
   return pid === undefined
     ? { kind: 'loaded', exit: /"LastExitStatus"\s*=\s*(-?\d+);/.exec(listed.stdout)?.[1] }
     : { kind: 'running', pid };
-}
-
-function loadAgent(sys: ServiceSystem, env: Record<string, string>, unit: ServiceUnit, log: string, rotate: boolean): Ran {
-  if (rotate && existsSync(log)) renameSync(log, `${log}.previous`);
-  return sys.run('launchctl', ['bootstrap', `gui/${sys.uid}`, unit.file], env);
 }
 
 function mayRunHere(sys: ServiceSystem, manager: Manager, unit: ServiceUnit, work: string): boolean {

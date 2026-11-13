@@ -1312,22 +1312,15 @@ test('on macOS a re-run loads again an agent that is loaded but has exited', asy
   expect(f.systemd.bootstraps).toEqual(['com.animalabs.connectome.my-resident', 'com.animalabs.connectome.my-resident']);
 });
 
-test('on macOS install sets the earlier log aside before it loads the agent', async () => {
+test('on macOS install leaves an earlier log as it is when it loads the agent', async () => {
   const at = install();
   const log = join(at.work, 'logs', 'agent.log');
   mkdirSync(dirname(log), { recursive: true });
   writeFileSync(log, 'Fatal error: an earlier load\n');
   const f = fake(at, { platform: 'darwin', linger: null });
-  const run = f.system.run;
-  let logAtLoad: boolean | undefined;
-  f.system.run = (command, args, env) => {
-    if (command === 'launchctl' && args[0] === 'bootstrap' && args[2] === agentPlist(at)) logAtLoad = existsSync(log);
-    return run(command, args, env);
-  };
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
-  expect(logAtLoad).toBe(false);
-  expect(readFileSync(`${log}.previous`, 'utf-8')).toContain('an earlier load');
-  expect(existsSync(log)).toBe(false);
+  expect(readFileSync(log, 'utf-8')).toBe('Fatal error: an earlier load\n');
+  expect(existsSync(`${log}.previous`)).toBe(false);
 });
 
 test('on macOS a launch agent launchctl won\'t load reports its failure and how to retry', async () => {
@@ -1488,12 +1481,9 @@ test('on macOS brief unload waits are quiet and a visible pause gets one notice'
   }
 });
 
-test('an unknown launchd state includes its reason while install keeps the log in place and loads the agent', async () => {
+test('an unknown launchd state before the load doesn\'t stop install from loading the agent', async () => {
   const at = install();
   const f = fake(at, { platform: 'darwin' });
-  const log = join(at.work, 'logs', 'agent.log');
-  mkdirSync(dirname(log), { recursive: true });
-  writeFileSync(log, 'earlier-load');
   const run = f.system.run;
   let once = true;
   f.system.run = (cmd, args, env) => {
@@ -1503,25 +1493,19 @@ test('an unknown launchd state includes its reason while install keeps the log i
     }
     return run(cmd, args, env);
   };
-  f.out.length = 0;
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
-  expect(f.out.join('\n')).toContain('unknown-state detail');
-  expect(readFileSync(log, 'utf-8')).toBe('earlier-load');
+  expect(f.out).toContain(`Loaded com.animalabs.connectome.my-resident from ${agentPlist(at)}.`);
 });
 
-test('a re-run that can\'t read launchd\'s state refuses before it touches the agent or its log', async () => {
+test('a re-run that can\'t read launchd\'s state refuses before it touches the agent', async () => {
   const at = install();
   const f = fake(at, { platform: 'darwin', linger: null });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
-  const log = join(at.work, 'logs', 'agent.log');
-  writeFileSync(log, 'the running agent still writes here\n');
   const run = f.system.run;
   f.system.run = (command, args, env) => command === 'launchctl' && args[0] === 'list' &&
     args[1] === 'com.animalabs.connectome.my-resident'
     ? { status: 1, stdout: '', stderr: 'cannot query launchd' } : run(command, args, env);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(existsSync(log + '.previous')).toBe(false);
-  expect(readFileSync(log, 'utf-8')).toBe('the running agent still writes here\n');
   expect(f.err.join('\n')).toContain('runs the host that answers can\'t be told: cannot query launchd. Nothing was written.');
 });
 
