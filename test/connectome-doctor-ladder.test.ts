@@ -1098,9 +1098,12 @@ describe.skipIf(ladderUnrunnable)('what the ladder withholds', () => {
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ reason: `Error: ${'y'.repeat(120)}${secret}` })}\n`);
     writeFileSync(join(at.work, 'data', 'discord-mcpl-debug.log'),
       `${new Date(at.now * 1000).toISOString()} handleDiscordMessage:enter {"channelName":"general","contentPreview":"${'p'.repeat(35)}${secret} more"}\n`);
+    writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'), `${JSON.stringify({
+      timestamp: new Date(at.now * 1000).toISOString(), kind: 'stream', type: 'error', error: { message: `${'z'.repeat(75)}${secret} more` } })}\n`);
     const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', secret]]) });
     expect(out).toContain('<DISC');
     expect(out).toMatch(/discord event seen .*#general: p{35}<DISC…/);
+    expect(out).toMatch(/err=z{75}<DISC/);
     expect(out).not.toContain('Zq9');
   });
 
