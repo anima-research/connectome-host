@@ -448,7 +448,7 @@ export async function doctor(
           report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, though the service ` +
             'is stopped, so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below ' +
             `are of it. Stop it before \`${startCommand}\`, since a host the service starts takes this install's socket ` +
-            'from one that holds it.');
+            `from one that holds it. ${findThenKill(answering.ready.pid) ?? `\`kill ${answering.ready.pid}\` stops it.`}`);
         }
       } else {
         const own = await ownPid();

@@ -2279,9 +2279,22 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     }));
     expect(r.out).toContain('✗ A host answers, pid 4242, recipe Ember, though the service is stopped, so it isn\'t the service\'s');
     expect(r.out).toMatch(/Stop it before `(XDG_RUNTIME_DIR=\S+ )?systemctl --user start connectome-test\.service`, since a host the service starts takes this install's socket/);
+    expect(r.out).toMatch(/takes this install's socket from one that holds it\. Run `(XDG_RUNTIME_DIR=\S+ )?systemctl --user status 4242` first: where the host runs in a unit of this user's systemd, it names that unit\. Then `kill 4242` stops it\. If a host answers again, doctor's next run names its pid\./);
     expect(r.out).not.toMatch(/systemctl --user start connectome-test\.service` starts it/);
     expect(r.out).not.toContain('✓ The host answers');
     expect(r.status).toBe(1);
+  });
+
+  test('a host that answers while a launchd service is stopped is said with the kill that stops it', async () => {
+    const at = install({ manager: 'launchd' });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      checkService: async () => ({ passed: true, here: true as const, lines: ['The agent is stopped.'], stopped: true }),
+      python: fakePython(at.work, { end: 'clean' }),
+      servicePid: async () => ({ pid: '0' }),
+    }));
+    expect(r.out).toContain('though the service is stopped, so it isn\'t the service\'s');
+    expect(r.out).toContain('takes this install\'s socket from one that holds it. `kill 4242` stops it.');
+    expect(r.out).not.toContain('status 4242');
   });
 
   test('a literal DISCORD_TOKEN in a server\'s own entry is withheld too', async () => {
