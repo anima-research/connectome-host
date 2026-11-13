@@ -100,8 +100,7 @@ platform's timeout is ended by SIGKILL, and what was still in flight is cut
 off: on macOS that timeout is the exit timeout `launchctl print
 gui/$(id -u)/<label>` shows, 5 s for these agents on macOS 26, and under
 systemd it's the unit's `TimeoutStopSec`, 90 s by default. The host's own stop
-has no time limit. An idle host stopped within 0.1 s in each of 20 tries, on
-Linux and macOS.
+has no time limit.
 
 A restart can make auxiliary model calls before any user message: agent-framework
 immediately drains restored Context Manager compression/merge debt. This happens only

@@ -6,14 +6,16 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { SETUP_BUN_FLOOR, SETUP_SUMMARY, costLine, firstLine, realWorld, setup, setupDirectory, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/cli/setup.js';
+import { SETUP_SUMMARY, costLine, firstLine, setup, setupDirectory } from '../src/cli/setup.js';
+import { SETUP_BUN_FLOOR } from '../src/setup/packages.js';
+import { realWorld, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/setup/world.js';
 import { bunBelowFloor } from '../src/bun-floor.js';
 import { ANTHROPIC_PRICING_VERSION } from '../src/call-pricing.js';
 import { defaultTrusted } from '../src/setup/default-trusted.js';
 import { checkKey, type KeyCheck, type KeyCheckOptions } from '../src/setup/key-check.js';
 import { lingerOf } from '../src/setup/linger.js';
 import { SetupModule } from '../src/modules/setup-module.js';
-import { readEnvFile } from '../src/setup/secrets.js';
+import { dotenvSettings, readEnvFile } from '../src/setup/secrets.js';
 import { SETUP_RECIPE, writeInstallCommand } from '../src/cli/install-command.js';
 import { ENTRY_POINT, EXTRA_STATE_LINE, LIST_A_PLACE, WRITE_RECORD_AGAIN, installPaths } from '../src/update/contract.js';
 import { entryPointText } from '../src/update/setup.js';
@@ -178,10 +180,12 @@ function world(dir: string, script: Script = {}, over: Partial<SetupWorld> = {})
       user: 'alice',
       env: { PATH: '/usr/bin:/bin', HOME: dir },
       cwd: dir,
+      timeZone: 'Pacific/Auckland',
       execArgv: [],
       bun: { path: process.execPath, version: '1.4.4' },
       hasSudo: true,
       lingerOf: () => true,
+      macSession: () => null,
       userExists: () => false,
       ask: async (question) => {
         seen.asked.push(question);
@@ -912,11 +916,26 @@ test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies 
   expect(text(made.seen.out)).not.toContain('Blocked');
 });
 
-test('on macOS, setup says the service stops when the user logs out of the Mac\'s graphical session, not when an ssh session ends, and starts only while they\'re logged in there', async () => {
-  const dir = directory();
-  const made = world(dir, { answers: [], secrets: [KEY] }, { platform: 'darwin' });
-  expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.out).toContain('On macOS, a service of alice\'s stops when alice logs out of the Mac\'s graphical session, not when an ssh session ends, and launchd starts it only while alice is logged in there, so over ssh with no one logged in to the Mac, it can\'t start until they are. `who` lists alice on console while alice is logged in there.');
+const MAC_CHECK = `launchctl print gui/${process.getuid!()}`;
+const MAC_RULE = 'It gives 0 only while alice is logged in there, and the service\'s install refuses until it does, so setup goes on ' +
+  'meanwhile.';
+
+test('on macOS, setup says the service stops when the user logs out of the Mac\'s graphical session, not when an ssh session ends, and starts when they log in there, and what launchctl gave for that session now, with no cause the check doesn\'t show', async () => {
+  const common = 'On macOS, a service of alice\'s stops when alice logs out of the Mac\'s graphical session, not when an ssh ' +
+    'session ends, and launchd starts it when alice logs in there.';
+  const cantStart = 'it couldn\'t be started (spawnSync launchctl ENOENT)';
+  for (const [ended, now] of [
+    [null, ' alice is logged in there now.'],
+    ['exit 112', ` \`${MAC_CHECK}\` didn't give 0 for alice's graphical session (exit 112). ${MAC_RULE}`],
+    [cantStart, ` \`${MAC_CHECK}\` didn't give 0 for alice's graphical session (${cantStart}). ${MAC_RULE}`],
+  ] as const) {
+    const dir = directory();
+    const made = world(dir, { answers: [], secrets: [KEY] }, { platform: 'darwin', macSession: () => ended });
+    expect(await runSetup(dir, ['discord'], made)).toBe(0);
+    expect(made.seen.out, String(ended)).toContain(common + now);
+    expect(text(made.seen.out), String(ended)).not.toContain('`who`');
+    expect(text(made.seen.out), String(ended)).not.toContain('isn\'t logged in');
+  }
 });
 
 test('setup installs the host and discord-mcpl alone: it adds no shell, checks no node-pty, and a Node above 24 doesn\'t stop it, whose words name that ceiling as the shell\'s', async () => {
@@ -1340,7 +1359,7 @@ test('kept answers setup can\'t read are moved aside as they were, before setup 
 });
 
 async function script(body: string): Promise<{ status: number | null; out: string; err: string }> {
-  const load = `const { realWorld } = await import(${JSON.stringify(join(REPO, 'src', 'cli', 'setup.ts'))});`;
+  const load = `const { realWorld } = await import(${JSON.stringify(join(REPO, 'src', 'setup', 'world.ts'))});`;
   const child = spawn(process.execPath, ['-e', `${load}\n${body}`], { cwd: directory(), stdio: ['pipe', 'pipe', 'pipe'] });
   let out = '';
   let err = '';
@@ -1958,6 +1977,136 @@ test('setup\'s prompt gives each line setup has to show, and "none" for each it 
   expect(await runSetup(all.world.cwd, ['discord'], all)).toBe(0);
   const full = await promptOf(all.seen.launched!);
   expect(full).toContain(`\n- The line that makes the resident a user of its own: ${OWN_LINE}\n- What setup says beside that line: ${USER_UNKNOWN_NOTE}\n- The root line that turns linger on for alice: sudo loginctl enable-linger alice`);
+});
+
+const FACT_NAMES = [
+  'CONNECTOME_SETUP_TIME_ZONE', 'CONNECTOME_SETUP_FILES_SETTING_MODEL', 'CONNECTOME_SETUP_FILES_SETTING_MCPL_AGENT_OVERLAY_FILE',
+  'CONNECTOME_SETUP_MAC_SESSION',
+];
+
+test('setup hands its agent the time zone it runs in, and each dotenv file in the install\'s directory that sets MODEL or MCPL_AGENT_OVERLAY_FILE with the value written there, as they stand at each run', async () => {
+  const dir = directory();
+  const made = world(dir, { answers: [''], secrets: [KEY] }, { timeZone: 'Asia/Tokyo' });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect(FACT_NAMES.map((name) => made.seen.launched!.env[name])).toEqual(['Asia/Tokyo', undefined, undefined, undefined]);
+  writeFileSync(join(dir, '.env.local'), '\ufeffexport MODEL=${ANTHROPIC_API_KEY}-x\nMCPL_AGENT_OVERLAY_FILE=$HOME/ov.json\n');
+  writeFileSync(join(dir, '.env.production'), 'MODEL=\n');
+  writeFileSync(join(dir, '.env.test'), 'OTHER=1\n');
+  const again = world(dir, { secrets: [KEY] }, { timeZone: 'Europe/Berlin' });
+  expect(await runSetup(dir, ['discord'], again)).toBe(0);
+  expect(FACT_NAMES.map((name) => again.seen.launched!.env[name])).toEqual([
+    'Europe/Berlin', '.env.local gives "${ANTHROPIC_API_KEY}-x", .env.production gives ""', '.env.local gives "$HOME/ov.json"', undefined,
+  ]);
+  writeFileSync(join(dir, '.env'), `${readFileSync(join(dir, '.env'), 'utf-8')}MODEL=claude-opus-4-6\n`);
+  const third = world(dir, { secrets: [KEY] });
+  expect(await runSetup(dir, ['discord'], third)).toBe(0);
+  const facts = FACT_NAMES.map((name) => third.seen.launched!.env[name]);
+  expect(facts).toEqual([
+    'Pacific/Auckland', '.env.local gives "${ANTHROPIC_API_KEY}-x", .env gives "claude-opus-4-6", .env.production gives ""',
+    '.env.local gives "$HOME/ov.json"', undefined,
+  ]);
+  expect(facts.join('\n')).not.toContain(KEY);
+});
+
+test('on macOS, setup hands its agent what launchctl gave for the user\'s graphical session, from the one check whose answer its sentence to the person gives', async () => {
+  for (const [first, other] of [[null, 'exit 112'], ['exit 112', null]] as const) {
+    const value = (ended: string | null) => ended ?? '0';
+    const dir = directory();
+    let calls = 0;
+    const made = world(dir, { answers: [], secrets: [KEY] }, { platform: 'darwin', macSession: () => (calls += 1) === 1 ? first : other });
+    expect(await runSetup(dir, ['discord'], made)).toBe(0);
+    expect(calls, String(first)).toBe(1);
+    expect(made.seen.launched!.env.CONNECTOME_SETUP_MAC_SESSION, String(first)).toBe(value(first));
+    expect(text(made.seen.out), String(first)).toContain(first === null ? 'alice is logged in there now.'
+      : `\`${MAC_CHECK}\` didn't give 0 for alice's graphical session (exit 112).`);
+    calls = 0;
+    const again = world(dir, { secrets: [KEY] }, { platform: 'darwin', macSession: () => (calls += 1) === 1 ? other : first });
+    expect(await runSetup(dir, ['discord'], again)).toBe(0);
+    expect(again.seen.launched!.env.CONNECTOME_SETUP_MAC_SESSION, `${first}, again`).toBe(value(other));
+  }
+});
+
+const factLines = (dir: string, zone: string, model: string, overlay: string, session: string) =>
+  `\n\nSetup also gives you four facts as they stood when this conversation started or resumed, each "none" where there is none:\n` +
+  `- The time zone setup runs in: ${zone}\n` +
+  `- The dotenv files in ${dir} that have a \`MODEL\` line, each with its value as written there: ${model}\n` +
+  `- The dotenv files in ${dir} that have an \`MCPL_AGENT_OVERLAY_FILE\` line, each with its value as written there: ${overlay}\n` +
+  `- What \`launchctl print gui/$(id -u)\` gave for alice's graphical session, which is 0 only while alice is logged in there: ${session}\n\n`;
+
+test('setup\'s prompt gives the time zone setup runs in, the dotenv files with a MODEL or MCPL_AGENT_OVERLAY_FILE line and their values, and what launchctl gave for the user\'s graphical session, and "none" for each it hasn\'t', async () => {
+  const bareDir = directory();
+  const none = world(bareDir, { answers: [''], secrets: [KEY] }, { timeZone: undefined });
+  expect(await runSetup(bareDir, ['discord'], none)).toBe(0);
+  const bare = await promptOf(none.seen.launched!);
+  expect(bare).toContain(factLines(bareDir, 'none', 'none', 'none', 'none'));
+  expect(bare).not.toContain('${');
+  const fullDir = directory();
+  expect(await runSetup(fullDir, ['discord'], world(fullDir, { answers: [''], secrets: [KEY] }))).toBe(0);
+  writeFileSync(join(fullDir, '.env.development.local'), 'MODEL=claude-sonnet-4-5\nMCPL_AGENT_OVERLAY_FILE="${CONNECTOME_SETUP_DIR}/o, v.json"\n');
+  const all = world(fullDir, { secrets: [KEY] }, { timeZone: 'Asia/Tokyo' });
+  expect(await runSetup(fullDir, ['discord'], all)).toBe(0);
+  expect(await promptOf(all.seen.launched!)).toContain(factLines(fullDir, 'Asia/Tokyo', '.env.development.local gives "claude-sonnet-4-5"',
+    '.env.development.local gives "${CONNECTOME_SETUP_DIR}/o, v.json"', 'none'));
+  const macDir = directory();
+  const mac = world(macDir, { secrets: [KEY] }, { platform: 'darwin', macSession: () => 'exit 112' });
+  expect(await runSetup(macDir, ['discord'], mac)).toBe(0);
+  expect(await promptOf(mac.seen.launched!)).toContain(factLines(macDir, 'Pacific/Auckland', 'none', 'none', 'exit 112'));
+});
+
+test('the dotenv files that set a name are read in Bun\'s order, each of the eight, with each value as written and quoted, and one setup can\'t read is named as such', () => {
+  const dir = directory();
+  const files = ['.env.test', '.env.test.local', '.env.production', '.env.production.local', '.env', '.env.development', '.env.local', '.env.development.local'];
+  for (const file of files) writeFileSync(join(dir, file), `MODEL=${file}\n`);
+  writeFileSync(join(dir, '.env.local'), 'MODEL=\'say "a, b"\'\nOVERLAY=$HOME/x\n');
+  expect(dotenvSettings(dir, ['MODEL', 'OVERLAY', 'OTHER'])).toEqual({
+    MODEL: [...files].reverse().map((file) => (file === '.env.local' ? '.env.local gives "say \\"a, b\\""' : `${file} gives "${file}"`)),
+    OVERLAY: ['.env.local gives "$HOME/x"'],
+    OTHER: [],
+  });
+  rmSync(join(dir, '.env.development'));
+  mkdirSync(join(dir, '.env.development'));
+  writeFileSync(join(dir, '.env'), 'OTHER=1\n');
+  const unreadable = '.env.development (setup couldn\'t read it)';
+  expect(dotenvSettings(dir, ['MODEL', 'OTHER'])).toEqual({
+    MODEL: [
+      '.env.development.local gives ".env.development.local"', '.env.local gives "say \\"a, b\\""', unreadable,
+      '.env.production.local gives ".env.production.local"', '.env.production gives ".env.production"',
+      '.env.test.local gives ".env.test.local"', '.env.test gives ".env.test"',
+    ],
+    OTHER: [unreadable, '.env gives "1"'],
+  });
+});
+
+test('the time zone setup runs in is its own process\'s, the machine\'s where nothing sets TZ, and a TZ from a dotenv file where it started where one does', () => {
+  const env = { PATH: process.env.PATH ?? '/usr/bin:/bin' };
+  const read = `const { realWorld } = await import(${JSON.stringify(join(REPO, 'src', 'setup', 'world.ts'))}); console.log(realWorld().timeZone);`;
+  const zoneIn = (cwd: string, argv: string[]) => Bun.spawnSync([process.execPath, ...argv], { cwd, env }).stdout.toString().trim();
+  const plain = directory();
+  const machine = zoneIn(plain, ['--no-env-file', '-e', 'console.log(Intl.DateTimeFormat().resolvedOptions().timeZone)']);
+  expect(machine).not.toBe('undefined');
+  expect(zoneIn(plain, ['-e', read])).toBe(machine);
+  const dir = directory();
+  writeFileSync(join(dir, '.env'), `TZ=${machine === 'Asia/Tokyo' ? 'Europe/Berlin' : 'Asia/Tokyo'}\n`);
+  expect(zoneIn(dir, ['-e', read])).toBe(machine === 'Asia/Tokyo' ? 'Europe/Berlin' : 'Asia/Tokyo');
+});
+
+test('realWorld checks the Mac\'s graphical session with launchctl print gui/<uid>: null where it exits 0, and how it ended otherwise, a signal and a launchctl that can\'t start included', () => {
+  const read = `const { realWorld } = await import(${JSON.stringify(join(REPO, 'src', 'setup', 'world.ts'))}); ` +
+    'console.log(JSON.stringify(realWorld().macSession()));';
+  const gave = (path: string) => JSON.parse(Bun.spawnSync([process.execPath, '--no-env-file', '-e', read], { env: { PATH: path } })
+    .stdout.toString()) as string | null;
+  const bin = directory();
+  const launchctl = (status: number) => {
+    writeFileSync(join(bin, 'launchctl'), `#!/bin/sh\n[ "$1 $2" = "print gui/${process.getuid!()}" ] || exit 3\nexit ${status}\n`);
+    chmodSync(join(bin, 'launchctl'), 0o755);
+  };
+  launchctl(112);
+  expect(gave(bin)).toBe('exit 112');
+  launchctl(0);
+  expect(gave(bin)).toBe(null);
+  writeFileSync(join(bin, 'launchctl'), '#!/bin/sh\nkill -TERM $$\n');
+  expect(gave(bin)).toBe('it was ended by SIGTERM');
+  expect(gave(directory())).toStartWith('it couldn\'t be started (');
 });
 
 test('setup\'s recipe lets its agent use the setup module\'s tools and the clock, and none of a resident\'s', () => {

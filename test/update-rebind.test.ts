@@ -11,7 +11,8 @@ import {
   type InstallRecord, type LockRecord,
 } from '../src/update/contract.js';
 import { dataItems, liveChildren, machineOps } from '../src/update/launcher.js';
-import { ENTRY_POINT, parseArgs, setup, type ServiceUnits, type SetupOptions } from '../src/update/setup.js';
+import { ENTRY_POINT, parseArgs, setup, type SetupOptions } from '../src/update/setup.js';
+import type { ServiceUnits } from '../src/update/systemd-units.js';
 import { modeTest } from './mode-test.js';
 
 let dir: string;

@@ -26,9 +26,9 @@ import { BEFORE_ENV_FILE, checkDiscord, secretStep, tokenRoute } from './discord
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
 import { checkUnits, heldWithoutFile, ownerProblem, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
+import { childEnv as serviceChildEnv, managerOwner, systemctlLine } from './service-manager.js';
 import {
-  childEnv as serviceChildEnv, machine, managerOwner, namedElsewhere, recipeHasShell, serviceCommands, serviceLines, stopLine,
-  systemctlLine, type ServiceCommands, type ServiceSystem,
+  machine, namedElsewhere, recipeHasShell, serviceCommands, serviceLines, stopLine, type ServiceCommands, type ServiceSystem,
 } from './service.js';
 import {
   managerFor, readUnit, serviceUnits, systemdWorkingDirectory, type Manager, type ServiceUnits,

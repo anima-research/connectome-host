@@ -152,6 +152,23 @@ export function dotenvReferences(dir: string): string[] {
   return [...names];
 }
 
+export function dotenvSettings(dir: string, names: readonly string[]): Record<string, string[]> {
+  const settings: Record<string, string[]> = Object.fromEntries(names.map((name) => [name, []]));
+  for (const file of new Set(DOTENV_MODES.flatMap(dotenvFiles))) {
+    let values: NodeJS.Dict<string>;
+    try {
+      values = parseEnv(envText(join(dir, file)));
+    } catch {
+      for (const name of names) settings[name]!.push(`${file} (setup couldn't read it)`);
+      continue;
+    }
+    for (const name of names) {
+      if (Object.hasOwn(values, name)) settings[name]!.push(`${file} gives ${JSON.stringify(values[name])}`);
+    }
+  }
+  return settings;
+}
+
 const READ_LIMIT_MS = 10_000;
 
 export class DotenvTimeoutError extends Error {}
