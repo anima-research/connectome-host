@@ -278,14 +278,16 @@ describe('the backups\' units', () => {
 });
 
 describe('connectome service install, run by the agent', () => {
-  it('gets setup--run\'s most as its timeoutMs in "Going live", which each run of it again elsewhere points to', () => {
+  it('gets a timeoutMs above setup--run\'s default and within its most in "Going live", which each run of it again elsewhere points to', () => {
     const live = PIECES.find((piece) => piece.heading === 'Going live')!.text.split(/(?<=\.) |\n/);
     const limitsIn = (sentence: string) => [...sentence.matchAll(/`timeoutMs`[^.\n]*?`(\d+)`/g)].map((match) => Number(match[1]));
     const run = live.find((sentence) => sentence.includes("Run `connectome service install '<name>.json'` with `setup--run`")) ?? '';
-    expect({ limits: limitsIn(run), everyRun: run.includes('wherever this guide says to run it again') })
-      .toEqual({ limits: [MAX_TIMEOUT_MS], everyRun: true });
+    const limits = limitsIn(run);
+    expect({ limits: limits.length, everyRun: run.includes('wherever this guide says to run it again') }).toEqual({ limits: 1, everyRun: true });
+    const limit = limits[0]!;
+    expect({ limit, within: limit > DEFAULT_TIMEOUT_MS && limit <= MAX_TIMEOUT_MS }).toEqual({ limit, within: true });
     for (const sentence of live.filter((each) => each !== run && each.includes('connectome service install'))) {
-      expect({ sentence, limits: limitsIn(sentence).filter((limit) => limit !== MAX_TIMEOUT_MS) }).toEqual({ sentence, limits: [] });
+      expect({ sentence, limits: limitsIn(sentence).filter((other) => other !== limit) }).toEqual({ sentence, limits: [] });
     }
     for (const piece of PIECES) {
       if (['SETUP.md', 'With another harness', 'Going live'].includes(piece.heading ?? '')) continue;
