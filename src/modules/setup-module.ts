@@ -312,8 +312,10 @@ export class SetupModule implements Module {
           `command closes at most about a second after the command ends, and a write ` +
           `there after that ends it by SIGPIPE unless it ignores that signal. A command still running at its time limit, or when the host shuts down (as at /quit), is stopped: its process group gets ` +
           `SIGTERM, and SIGKILL 5 s later if any of it is left. The value of a stored secret, a provider credential or ` +
-          `a provider's base URL that appears in the output as it was stored comes back as <NAME>; an encoded or split ` +
-          `one isn't recognized.`,
+          `a provider's base URL that appears in the output as it was stored or trimmed comes back as <NAME>; an encoded ` +
+          `or split one isn't recognized. A match ignores ASCII case, and a <NAME> inside an id or a word means the ` +
+          `value's text occurred there as part of something longer, which for a stored value under ${SHORT_CHARACTERS} ` +
+          `characters can be by chance.`,
         inputSchema: {
           type: 'object',
           properties: {
