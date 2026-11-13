@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import {
   chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync,
@@ -1514,6 +1514,115 @@ test('a key that fails names the cause and asks again, and Enter alone stops wit
   expect(await runSetup(other, ['discord'], stopping)).toBe(1);
   expect(existsSync(join(other, '.env'))).toBe(false);
   expect(stopping.seen.launched).toBeNull();
+});
+
+describe('a key shorter than 8 characters', () => {
+  const GATEWAY = 'https://gateway.example/anthropic';
+  const FIRST = 'An API key that https://gateway.example accepts, typed hidden (Enter alone stops setup)';
+  const AGAIN = 'The same key again to keep it, or another, typed hidden (Enter alone stops setup)';
+  const WARNING = 'That key is ';
+  const gatewayDir = (env = '') => {
+    const dir = directory();
+    mkdirSync(join(dir, '.setup'));
+    writeFileSync(join(dir, '.setup', 'setup.lock'), '');
+    writeFileSync(join(dir, '.env'), `ANTHROPIC_BASE_URL=${GATEWAY}\n${env}`);
+    return dir;
+  };
+  const hiddenAsked = (seen: Seen) => seen.asked.filter((each) => each.includes('typed hidden'));
+  const warnings = (seen: Seen) => seen.out.filter((each) => each.startsWith(WARNING));
+
+  test('typed where a base URL is set, is told and asked again before its check: the same again is kept', async () => {
+    const dir = gatewayDir();
+    const made = world(dir, { answers: [''], secrets: ['0', '0'] });
+    expect(await runSetup(dir, ['discord'], made)).toBe(0);
+    expect(hiddenAsked(made.seen)).toEqual([FIRST, AGAIN]);
+    expect(warnings(made.seen)).toEqual(['That key is 1 character long. Setup hides a stored secret wherever its text appears in what its agent sees, so one this short also hides parts of ids and of command output. If it was cut short, type the whole key. If https://gateway.example takes any key, type a longer made-up one: 8 or more random letters and digits, not a word. To keep this one, type it again.']);
+    expect(made.seen.checked.map((each) => each.key)).toEqual(['0']);
+    expect(readEnvFile(join(dir, '.env')).get('ANTHROPIC_API_KEY')).toBe('0');
+  });
+
+  test('another key at the second ask is judged afresh, and Enter alone there stops with nothing stored', async () => {
+    const longer = gatewayDir();
+    const replaced = world(longer, { answers: [''], secrets: ['0', 'q7Rz2kW9pX'] });
+    expect(await runSetup(longer, ['discord'], replaced)).toBe(0);
+    expect(replaced.seen.checked.map((each) => each.key)).toEqual(['q7Rz2kW9pX']);
+    expect(warnings(replaced.seen).length).toBe(1);
+
+    const short = gatewayDir();
+    const twice = world(short, { answers: [''], secrets: ['0', '  ab  ', '  ab  '] });
+    expect(await runSetup(short, ['discord'], twice)).toBe(0);
+    expect(hiddenAsked(twice.seen)).toEqual([FIRST, AGAIN, AGAIN]);
+    expect(warnings(twice.seen).map((each) => each.split('.')[0])).toEqual(['That key is 1 character long', 'That key is 2 characters long, not counting the whitespace at its ends']);
+    expect(twice.seen.checked.map((each) => each.key)).toEqual(['  ab  ']);
+
+    const stop = gatewayDir();
+    const stopping = world(stop, { answers: [''], secrets: ['0', ''] });
+    expect(await runSetup(stop, ['discord'], stopping)).toBe(1);
+    expect(stopping.seen.checked).toEqual([]);
+    expect(readEnvFile(join(stop, '.env')).get('ANTHROPIC_API_KEY')).toBeUndefined();
+  });
+
+  test('kept once, isn\'t asked about again when the person types it again after a failed check', async () => {
+    const dir = gatewayDir();
+    const refused = { ok: false as const, cause: 'gateway.example refused the key (401).', anotherKeyMayHelp: true };
+    const made = world(dir, { answers: [''], secrets: ['0', '0', '0'], keys: [refused, { ok: true }] });
+    expect(await runSetup(dir, ['discord'], made)).toBe(0);
+    expect(hiddenAsked(made.seen)).toEqual([FIRST, AGAIN, FIRST]);
+    expect(warnings(made.seen).length).toBe(1);
+    expect(made.seen.checked.map((each) => each.key)).toEqual(['0', '0']);
+  });
+
+  test('isn\'t asked about without a base URL, from .env, or at 8 characters', async () => {
+    const own = directory();
+    const anthropic = world(own, { answers: ['', ''], secrets: ['0'] });
+    await runSetup(own, ['discord'], anthropic);
+    expect(warnings(anthropic.seen)).toEqual([]);
+    expect(anthropic.seen.checked.map((each) => each.key)).toEqual(['0']);
+
+    const stored = gatewayDir('ANTHROPIC_API_KEY=abc\n');
+    const fromEnv = world(stored, { answers: [''] });
+    expect(await runSetup(stored, ['discord'], fromEnv)).toBe(0);
+    expect(warnings(fromEnv.seen)).toEqual([]);
+    expect(fromEnv.seen.checked.map((each) => each.key)).toEqual(['abc']);
+
+    const eight = gatewayDir();
+    const enough = world(eight, { answers: [''], secrets: ['12345678'] });
+    expect(await runSetup(eight, ['discord'], enough)).toBe(0);
+    expect(hiddenAsked(enough.seen)).toEqual([FIRST]);
+    expect(warnings(enough.seen)).toEqual([]);
+
+    const shell = directory();
+    const exported = world(shell, { answers: ['', ''] }, { env: { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'abc' } });
+    await runSetup(shell, ['discord'], exported);
+    expect(exported.seen.asked.filter((each) => each.startsWith('An ANTHROPIC_API_KEY'))).toEqual([`An ANTHROPIC_API_KEY is exported in this shell. Use it for setup's agent? Setup writes it to ${join(shell, '.env')}, readable by you alone. The resident uses it too, unless you change it. (yes/no) [yes] `]);
+  });
+
+  test('exported in the shell where a base URL is set, the yes/no says how long it is first, and a yes keeps it', async () => {
+    const dir = gatewayDir();
+    const made = world(dir, { answers: ['', ''] }, { env: { PATH: '/usr/bin', HOME: dir, ANTHROPIC_API_KEY: 'abc' } });
+    expect(await runSetup(dir, ['discord'], made)).toBe(0);
+    expect(made.seen.asked.filter((each) => each.startsWith('An ANTHROPIC_API_KEY'))).toEqual([`An ANTHROPIC_API_KEY is exported in this shell. It is 3 characters long. Setup hides a stored secret wherever its text appears in what its agent sees, so one this short also hides parts of ids and of command output. Answer no to type another. Use it for setup's agent? Setup writes it to ${join(dir, '.env')}, readable by you alone. The resident uses it too, unless you change it. (yes/no) [yes] `]);
+    expect(warnings(made.seen)).toEqual([]);
+    expect(made.seen.checked.map((each) => each.key)).toEqual(['abc']);
+  });
+
+  test('exported of only whitespace is no key: no yes/no is asked about it, and the person types one', async () => {
+    const dir = gatewayDir();
+    const made = world(dir, { answers: ['', ''], secrets: [KEY] }, { env: { PATH: '/usr/bin', HOME: dir, ANTHROPIC_API_KEY: '   ' } });
+    expect(await runSetup(dir, ['discord'], made)).toBe(0);
+    expect(made.seen.asked.filter((each) => each.startsWith('An ANTHROPIC_API_KEY'))).toEqual([]);
+    expect(hiddenAsked(made.seen)).toEqual([FIRST]);
+    expect(made.seen.checked.map((each) => each.key)).toEqual([KEY]);
+  });
+});
+
+test('a key of only whitespace is said to be none, then asked for again, neither checked nor stored', async () => {
+  const dir = directory();
+  const made = world(dir, { answers: [''], secrets: [' \t ', KEY] });
+  expect(await runSetup(dir, ['discord'], made)).toBe(0);
+  expect(made.seen.err).toContain('That was only whitespace, which isn\'t a key, so it wasn\'t checked or stored.');
+  expect(made.seen.asked.filter((each) => each.includes('typed hidden')).length).toBe(2);
+  expect(made.seen.checked.map((each) => each.key)).toEqual([KEY]);
 });
 
 test('before its agent starts, setup names its model and prices, and what five test setups cost at them', async () => {

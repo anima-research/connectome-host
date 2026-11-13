@@ -405,6 +405,15 @@ describe('setup--discord', () => {
     expect(found.data).toMatchObject({ username: '<OPENAI_API_KEY>', members: [{ id: '702', username: '<OPENAI_API_KEY>-fan' }] });
   });
 
+  test('a token stored with the `Bot ` prefix discord.js drops is sent as discord.js sends it, and comes by its name without the prefix', async () => {
+    const named: FakeServer = { ...HOME, name: `Home ${TOKEN}` };
+    const discord = fakeDiscord([named]);
+    const whole = await read(install(discord, `DISCORD_TOKEN="Bot ${TOKEN}"\n`).module);
+    expect(whole.success, whole.error).toBe(true);
+    expect(JSON.stringify(whole.data)).not.toContain(TOKEN);
+    expect((whole.data as { servers: Array<{ name: string }> }).servers[0]!.name).toBe('Home <DISCORD_TOKEN>');
+  });
+
   test('a call that carries the framework\'s lowest cap, 1,000, gets an answer that fits it, saying how many are shown; a call with none fits 24,000', async () => {
     const discord = fakeDiscord([big('300', 50), big('400', 50)]);
     const { module } = install(discord);

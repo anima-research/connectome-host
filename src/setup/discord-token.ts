@@ -1,7 +1,7 @@
 import { HOST_PACKAGE_JSON } from '../bun-floor-check.js';
 import { hostVersionOf } from '../update/update.js';
 import { JSON_TYPE, redirectTarget } from './provider-key.js';
-import { DISCORD_TOKEN, shownByName } from './secrets.js';
+import { DISCORD_TOKEN, shownByName, type Secret } from './secrets.js';
 
 export const DISCORD_API = 'https://discord.com/api/v10';
 const REQUEST_LIMIT_MS = 15_000;
@@ -93,4 +93,14 @@ export function retryWait(response: Response, body: unknown): number | undefined
 // Its ASCII letters in any case, since a server that puts the token in a URL's host gives it back lowercased.
 export function hidden(words: string, token: string): string {
   return shownByName(words, [{ name: DISCORD_TOKEN, value: token }]);
+}
+
+export function sentToken(given: string): string {
+  return given.replace(/^(Bot|Bearer)\s*/i, '');
+}
+
+export function withSentForms(secret: Secret): Secret[] {
+  if (secret.name !== DISCORD_TOKEN) return [secret];
+  const sent = sentToken(secret.value);
+  return [secret, ...[sent, sent.trim()].filter((value) => value !== '').map((value) => ({ name: secret.name, value }))];
 }

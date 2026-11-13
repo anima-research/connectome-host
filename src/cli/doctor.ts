@@ -16,11 +16,12 @@ import {
   secretNames, storedSecrets,
   type Secret,
 } from '../setup/secrets.js';
+import { withSentForms } from '../setup/discord-token.js';
 import { AGENT_OVERLAY_FILE_ENV, agentOverlayPath } from '../update/agent-overlay-path.js';
 import { INSTALL_ROOT_ENV, SUPERVISED_ENV } from '../update/contract.js';
 import { shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
-import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy, sentToken } from './discord-check.js';
+import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy } from './discord-check.js';
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { typedCommand } from './install-command.js';
 import { checkUnits, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
@@ -1091,12 +1092,6 @@ function namesIn(document: RecipeDocument): string[] {
   return [...JSON.stringify(document.raw).matchAll(new RegExp(ENV_REFERENCE, 'g'))].map(([, name]) => name!);
 }
 
-function withSentForms(secret: Secret): Secret[] {
-  if (secret.name !== 'DISCORD_TOKEN') return [secret];
-  const sent = sentToken(secret.value);
-  return [secret, ...[sent, sent.trim()].filter((value) => value !== '').map((value) => ({ name: secret.name, value }))];
-}
-
 function failure(ran: SpawnSyncReturns<string>, limitMs: number): string | null {
   if (ran.error !== undefined) {
     return (ran.error as NodeJS.ErrnoException).code === 'ETIMEDOUT' ? `it didn't answer within ${limitMs / 1000} s`
@@ -1255,7 +1250,9 @@ function systemVariables(): Record<string, string> {
 }
 
 // launchd gives each job HOME, USER, LOGNAME and SHELL from the user's account, whatever the environment of the shell
-// that loads it, and TMPDIR as the user's own temporary directory (macOS 26).
+// that loads it, and TMPDIR as the user's own temporary directory (macOS 26). This function returns those five, the base
+// doctor builds the service's environment on. launchd gives a job others too, such as SSH_AUTH_SOCK, XPC_FLAGS and
+// XPC_SERVICE_NAME, which it leaves out, and a PATH, which install's plist sets over.
 function launchdGives(): Record<string, string> {
   const user = userInfo();
   const gives: Record<string, string> = { HOME: user.homedir, USER: user.username, LOGNAME: user.username };
