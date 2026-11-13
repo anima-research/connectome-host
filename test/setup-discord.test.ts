@@ -295,7 +295,7 @@ describe('setup--discord', () => {
     expect(own.error).toBe('Discord answered 403 to GET /applications/@me: Missing Access (code 50001), so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
 
     const user = await read(install(fakeDiscord([HOME], { '/users/@me': () => Response.json({ message: 'Unknown User', code: 10013 }, { status: 404 }) })).module);
-    expect(user.error).toBe('Discord answered 404 to GET /users/@me: Unknown User, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
+    expect(user.error).toBe('Discord answered 404 to GET /users/@me: Unknown User (code 10013), so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
 
     const page = await read(install(fakeDiscord([HOME], { '/applications/@me': () => new Response('<html>sign in</html>', { status: 200, headers: { 'content-type': 'text/html' } }) })).module);
     expect(page.error).toBe('Discord answered GET /applications/@me with something other than JSON, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');

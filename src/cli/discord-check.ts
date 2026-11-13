@@ -182,7 +182,7 @@ async function whoseToken(
           words.between);
       }
       throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}` +
-        (check.said === null ? ', with no message' : `: ${check.said}`) +
+        (check.said === null ? ', with no message' : `: ${check.said}${check.code !== undefined ? ` (code ${check.code})` : ''}`) +
         `, ${check.retryAfter !== undefined ? waited(words.unchecked, check.retryAfter, words.command)
           : check.status === 429 || check.status >= 500 ? words.again : words.unchecked}.` +
         (check.status === 403 || check.status === 404 ? ` ${words.between}` : ''));

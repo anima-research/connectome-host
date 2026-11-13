@@ -15,7 +15,7 @@ import type {
 import {
   DISCORD_TOKEN, SHORT_CHARACTERS, SHORT_HIDES, StoredSecrets, addSecret, commandEnvOf, isSecretName, isShort,
   readEnvFile, readSecrets, redactWindow, secretNames, secretValues, shortLength, unwritableValue, writeEnvValue,
-  DotenvTimeoutError, EnvFormError, EnvLinkError, envForm, envLink, type Secret,
+  DotenvReadError, DotenvTimeoutError, EnvFormError, EnvLinkError, envForm, envLink, type Secret,
 } from '../setup/secrets.js';
 import { checkDiscordToken, hidden, sentToken, withSentForms, type TokenCheck } from '../setup/discord-token.js';
 import {
@@ -310,7 +310,7 @@ function tokenFailure(check: Exclude<TokenCheck, { kind: 'accepted' } | { kind: 
     case 'unanswered': return { kind: 'unanswered', path, timedOut: false, why: check.why };
     case 'redirected': return { kind: 'redirected', path, status: check.status };
     case 'unrecognized': return { kind: 'unrecognized', path, status: check.status, ok: check.status >= 200 && check.status < 300, ...(check.retryAfter === undefined ? {} : { retryAfter: check.retryAfter }) };
-    case 'answered': return { kind: 'answered', path, status: check.status, said: check.said, ...(check.retryAfter === undefined ? {} : { retryAfter: check.retryAfter }) };
+    case 'answered': return { kind: 'answered', path, status: check.status, said: check.said, ...(check.code === undefined ? {} : { code: check.code }), ...(check.retryAfter === undefined ? {} : { retryAfter: check.retryAfter }) };
   }
 }
 
@@ -593,6 +593,12 @@ export class SetupModule implements Module {
     if (error instanceof DotenvTimeoutError) {
       return failed(`${what}: ${error.message}. A slow disk can pass, so call again once; if it runs out of time again, ` +
         'ask the person to look at the dotenv files there.');
+    }
+    if (error instanceof DotenvReadError) {
+      return failed(`${what}: ${error.reason}, and its error isn't passed on, since it can hold the files' values. Ask the ` +
+        `person to run \`${error.command}\` in that directory, in their terminal, to see it and put it right, though ` +
+        'their shell\'s other variables may differ from the ones that read had; you can\'t, since setup--run runs nothing ' +
+        'meanwhile.');
     }
     if (error instanceof EnvFormError) {
       return failed(`${what}: ${error.message}. While .env holds such a line, what Bun reads from it, and so what a ` +
