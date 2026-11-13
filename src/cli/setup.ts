@@ -9,7 +9,7 @@ import { bunBelowFloor } from '../bun-floor.js';
 import { priceAnthropicCall } from '../call-pricing.js';
 import { ANTHROPIC_API, originOf, withSecretsHidden } from '../setup/key-check.js';
 import {
-  EnvFormError, SHORT_CHARACTERS, SHORT_HIDES, dotenvValues, envForm, isShort, readEnvFile, shortLength,
+  EnvFormError, SHORT_CHARACTERS, SHORT_HIDES, dotenvSettings, dotenvValues, envForm, isShort, readEnvFile, shortLength,
   storedSecretsIn, unwritableValue, writeEnvValue, type Secret,
 } from '../setup/secrets.js';
 import { readSetupState, type KeptState, type SetupState } from '../setup/state.js';
@@ -25,6 +25,7 @@ import {
   ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, readWithoutWaiting,
   realOrResolved, releaseDir, writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
+import { AGENT_OVERLAY_FILE_ENV } from '../update/agent-overlay-path.js';
 import { HOST_ENTRY, RELEASE_HOST, isUnder, shellWord } from '../update/launcher.js';
 import {
   MOVED_ASIDE_AFTERWARDS, bindingOf, childPathsOf, keptAccount, keptInRoot, mapPath, moveAsideByHand, movesPlaces, movingAside,
@@ -362,6 +363,16 @@ function linesForAgent(world: SetupWorld, linger: boolean | null): Record<string
   return lines;
 }
 
+function factsForAgent(world: SetupWorld, dir: string, session: boolean | null): Record<string, string> {
+  const facts: Record<string, string> = {};
+  if (world.timeZone) facts.CONNECTOME_SETUP_TIME_ZONE = world.timeZone;
+  for (const [name, files] of Object.entries(dotenvSettings(dir, ['MODEL', AGENT_OVERLAY_FILE_ENV]))) {
+    if (files.length > 0) facts[`CONNECTOME_SETUP_FILES_SETTING_${name}`] = files.join(', ');
+  }
+  if (session !== null) facts.CONNECTOME_SETUP_MAC_SESSION = session ? 'yes' : 'no';
+  return facts;
+}
+
 function goOnAsOwnUser(out: (line: string) => void): void {
   out(`Setup needs Node ${packageJson().engines.node.replace('>=', '')} or later there too, and at most Node ` +
     `${SHELL_NODE_TOP} if the resident may get a shell: if this machine's Node is installed for your user alone, as ` +
@@ -384,6 +395,7 @@ async function installAndStart(
   const { out, err } = ctx;
   const envFile = join(dir, '.env');
   const linger = world.lingerOf(world.user);
+  const session = world.platform === 'darwin' ? world.macSession() : null;
   if (linger === null && world.platform === 'linux') {
     out('This machine doesn\'t run systemd, so the resident can\'t run as a systemd user service here, the way its ' +
       'guide sets it up. Another service manager can run it: one that starts the install\'s start.js and restarts it ' +
@@ -397,7 +409,7 @@ async function installAndStart(
     out(`  ${lingerLine(world)}`);
   } else if (world.platform === 'darwin') {
     out(`On macOS, a service of ${world.user}'s stops when ${world.user} logs out of the Mac's graphical session, not ` +
-      `when an ssh session ends, and launchd starts it when ${world.user} logs in there. ${world.macSession()
+      `when an ssh session ends, and launchd starts it when ${world.user} logs in there. ${session
         ? `${world.user} is logged in there now.`
         : `${world.user} isn't logged in there now, so the service's install refuses until ${world.user} is, and setup ` +
           'goes on meanwhile.'}`);
@@ -760,6 +772,7 @@ async function installAndStart(
       CONNECTOME_SETUP_GUIDE: join(host, 'docs', 'AGENT-ONBOARDING.md'),
       CONNECTOME_SETUP_USER: world.user,
       ...linesForAgent(world, linger),
+      ...factsForAgent(world, dir, session),
       CONNECTOME_SETUP_COMMAND: shellWord(join(root, INSTALL_COMMAND)),
       CONNECTOME_UPDATE_CHECK: '0',
     },

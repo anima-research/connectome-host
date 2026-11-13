@@ -39,6 +39,7 @@ export interface SetupWorld {
   hasSudo: boolean;
   lingerOf(user: string): boolean | null;
   macSession(): boolean;
+  timeZone: string | undefined;
   userExists(user: string): boolean | null;
   ask(question: string): Promise<string | null>;
   askHidden(label: string): Promise<string | null>;
@@ -116,6 +117,7 @@ export function realWorld(): SetupWorld {
     hasSudo: Bun.which('sudo') !== null,
     lingerOf: (user) => lingerOf(user),
     macSession: () => spawnSync('launchctl', ['print', `gui/${process.getuid!()}`], { stdio: 'ignore' }).status === 0,
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     userExists: (user) => {
       const found = spawnSync('getent', ['passwd', user], { stdio: 'ignore', env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
       return found.status === 0 ? true : found.status === 2 ? false : null;
