@@ -1104,13 +1104,22 @@ describe.skipIf(ladderUnrunnable)('what the ladder withholds', () => {
     expect(out).not.toContain('Zq9');
   });
 
-  test('a value is withheld in the forms doctor\'s redactor matches: in another ASCII case, and trimmed', async () => {
+  test('a value is withheld in the forms doctor\'s redactor matches: in another ASCII case, and trimmed where doctor passes that form', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const long = `[inference-failed] ${'x'.repeat(125)}zQ9-CASE-SECRET-55 and the rest`;
     writeFileSync(join(at.work, 'journal.txt'), `${at.now}.000000 host bun[1]: ${long}\n`);
-    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', '  Zq9-case-secret-55 ']]) });
+    const withhold = JSON.stringify([['DISCORD_TOKEN', '  Zq9-case-secret-55 '], ['DISCORD_TOKEN', 'Zq9-case-secret-55']]);
+    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: withhold });
     expect(out).toContain('<DISC');
     expect(out.toLowerCase()).not.toContain('zq9');
+  });
+
+  test('a value is withheld only in the forms it\'s given, so a word inside one that only Python\'s strip would bare stays', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'journal.txt'), `${at.now}.000000 host bun[1]: [inference-failed] a token was refused\n`);
+    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', '\u0085token\u0085']]) });
+    expect(out).toContain('a token was refused');
+    expect(out).not.toContain('<DISC');
   });
 
   test('two values that overlap where they\'re read leave no part of either', async () => {
