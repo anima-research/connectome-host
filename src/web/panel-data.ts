@@ -743,7 +743,8 @@ function perAgentHealth(
 
 /**
  * The /healthz answer: agent-framework's healthSnapshot, with `credential`
- * on a host with a credential monitor; by agent, compressionQuarantine,
+ * on a host with a credential monitor, or `credentialFailure` where reading
+ * it threw; by agent, compressionQuarantine,
  * compressionDebt, loadRepair, contextComposition and runtimeSettings, and
  * readFailures naming the reads that threw; `callLedger` when a ledger is
  * wired; and `update`. Every read is cheap: no compile, no count_tokens.
@@ -764,7 +765,8 @@ export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
     if (app.credentials) {
       (snapshot as Record<string, unknown>).credential = { agent: resolveAgent(app), ...app.credentials.snapshot() };
     }
-  } catch {
+  } catch (error) {
+    (snapshot as Record<string, unknown>).credentialFailure = describeReadFailure(error);
   }
   // compressionQuarantine: each agent's compression quarantine, as its
   // strategy reports it.

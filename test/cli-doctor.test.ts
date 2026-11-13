@@ -469,14 +469,21 @@ describe('connectome doctor', () => {
     }
   });
 
-  test('the agent count\'s 401 is a problem where the resident runs on Anthropic, and a line where it runs on another provider', async () => {
-    const refused = { ...COUNTED, agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_failed_401' } };
+  test('the agent count\'s 401 is a problem where the resident runs on Anthropic, and a line where it runs on another provider, with no words on the credential the resident\'s calls don\'t send', async () => {
+    const refused = { ...COUNTED, agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_failed_401' },
+      compression: { model: 'claude-old', countModel: 'claude-old', source: 'count_tokens_failed_401' } };
     const anthropic = install();
     const own = await withHost(anthropic, { ...HEALTHY_HOST, 'count-check': refused }, () => run(anthropic));
     expect(own.out).toContain('✗ count_tokens couldn\'t count with claude-small-window: count_tokens refused the credential');
+    expect(own.out).toContain('Replace that credential');
     const other = install({ recipe: { ...RECIPE(''), agent: { name: 'ember', provider: 'openrouter', model: 'claude-small-window', systemPrompt: 'hi' } } });
-    const elsewhere = await withHost(other, { ...HEALTHY_HOST, 'count-check': refused }, () => run(other));
-    expect(elsewhere.out).toContain('\n  count_tokens couldn\'t count with claude-small-window: count_tokens refused the credential');
+    const elsewhere = await withHost(other, { ...HEALTHY_HOST, 'count-check': refused,
+      health: { ...HEALTH, credential: { kind: 'ok', rotatable: true, autoRefresh: false } } }, () => run(other));
+    const said = 'count_tokens refused the credential the host sent (401): its subscription login when it has one, else ' +
+      'ANTHROPIC_AUTH_TOKEN, else ANTHROPIC_API_KEY.';
+    expect(elsewhere.out).toContain(`\n  count_tokens couldn't count with claude-small-window: ${said} So the context's makeup ` +
+      'shows no exact total.\n');
+    expect(elsewhere.out).toContain(`\n  count_tokens couldn't count with the compression model, claude-old: ${said}\n`);
     expect(elsewhere.out).not.toContain('✗ count_tokens');
     const unloaded = install({ recipe: { ...RECIPE(''), agent: { name: 'ember', provider: 'not-a-provider', model: 'claude-small-window', systemPrompt: 'hi' } } });
     const unknown = await withHost(unloaded, { ...HEALTHY_HOST, 'count-check': refused }, () => run(unloaded));
@@ -1246,27 +1253,64 @@ describe('connectome doctor', () => {
     expect(r.status).toBe(1);
   });
 
-  test('a count refused where the host\'s credential has a refresh token says what the host does with it, a problem only where auto-refresh is off', async () => {
+  test('a count refused where the host\'s credential has a refresh token says what the answering host does with it, by the host\'s own answer, a problem except where it refreshes by itself', async () => {
     const refused = { beside: STANDIN_BESIDE,
       agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_failed_401' },
       compression: { model: 'claude-old', countModel: 'claude-old', source: 'count_tokens_failed_401' } };
     const expiresAt = Date.parse('2026-11-12T05:00:00.000Z');
     const host = (credential: Record<string, unknown>) => ({ ...HEALTHY_HOST, 'count-check': refused, health: { ...HEALTH, credential } });
-    const on = install({ env: { ANTHROPIC_OAUTH_AUTO_REFRESH: 'true' } });
-    const auto = await withHost(on, host({ kind: 'ok', rotatable: true, expiresAt }), () => run(on));
-    const tries = ' The host\'s credential has a refresh token and ANTHROPIC_OAUTH_AUTO_REFRESH is on, so its next model call, ' +
-      'refused the same way, tries to refresh it. The host has its access token expired at 2026-11-12T05:00:00.000Z. Where ' +
-      'that refresh fails, the host\'s log says why, in a line that starts "[anthropic-credentials] automatic refresh failed:".';
+    const refusedLine = 'count_tokens refused the credential the host sent (401): its subscription login when it has one, ' +
+      'else ANTHROPIC_AUTH_TOKEN, else ANTHROPIC_API_KEY.';
+
+    const unset = install();
+    const auto = await withHost(unset, host({ kind: 'ok', rotatable: true, expiresAt, autoRefresh: true }), () => run(unset));
+    const tries = ' The host\'s credential has a refresh token, and the host runs with ANTHROPIC_OAUTH_AUTO_REFRESH on, so its ' +
+      'next model call, refused the same way, tries to refresh it. The host has its access token expired at ' +
+      '2026-11-12T05:00:00.000Z. Where that refresh fails, the host\'s log says why, in a line that starts ' +
+      '"[anthropic-credentials] automatic refresh failed:".';
     expect(auto.out).toContain(`So the context's makeup shows no exact total.${tries}`);
-    expect(auto.out).toContain(`count_tokens couldn't count with the compression model, claude-old: count_tokens refused the credential the host sent (401): its subscription login when it has one, else ANTHROPIC_AUTH_TOKEN, else ANTHROPIC_API_KEY.${tries}`);
+    expect(auto.out).toContain(`count_tokens couldn't count with the compression model, claude-old: ${refusedLine}${tries}`);
     expect(auto.out).not.toMatch(/✗.*401/);
     expect(auto.out).not.toContain('Replace that credential');
-    const off = install();
-    const manual = await withHost(off, host({ kind: 'ok', rotatable: true }), () => run(off));
-    expect(manual.out).toMatch(/✗ count_tokens couldn't count with claude-small-window: .* So the context's makeup shows no exact total\. The host's credential has a refresh token, but ANTHROPIC_OAUTH_AUTO_REFRESH isn't on, so its next model call is refused too: refresh it with the host's `\/auth refresh`, in its terminal or the Web UI's command box\.$/m);
+
+    const on = install({ env: { ANTHROPIC_OAUTH_AUTO_REFRESH: 'true' } });
+    const manual = await withHost(on, host({ kind: 'ok', rotatable: true, autoRefresh: false }), () => run(on));
+    expect(manual.out).toContain(`✗ count_tokens couldn't count with claude-small-window: ${refusedLine} So the context's makeup ` +
+      'shows no exact total. The host\'s credential has a refresh token, but the host runs with ANTHROPIC_OAUTH_AUTO_REFRESH ' +
+      'off, so its next model call is refused too: refresh it with the host\'s `/auth refresh`, in its terminal or the Web ' +
+      'UI\'s command box.\n');
+
+    const older = install({ env: { ANTHROPIC_OAUTH_AUTO_REFRESH: 'true' } });
+    const unsaid = await withHost(older, host({ kind: 'ok', rotatable: true }), () => run(older));
+    expect(unsaid.out).toContain(`✗ count_tokens couldn't count with claude-small-window: ${refusedLine} So the context's makeup ` +
+      'shows no exact total. The host\'s credential has a refresh token, but the host\'s answer doesn\'t say whether it ' +
+      'refreshes it by itself, so whether its next model call is refused too can\'t be told. The host\'s `/auth refresh`, in ' +
+      'its terminal or the Web UI\'s command box, refreshes it.\n');
+
     const fixed = install({ env: { ANTHROPIC_OAUTH_AUTO_REFRESH: 'true' } });
-    const plain = await withHost(fixed, host({ kind: 'ok', rotatable: false }), () => run(fixed));
+    const plain = await withHost(fixed, host({ kind: 'ok', rotatable: false, autoRefresh: true }), () => run(fixed));
     expect(plain.out).toMatch(/✗ count_tokens couldn't count with claude-small-window: .* Replace that credential where the service gets it, and restart the service\.$/m);
+  });
+
+  test('a count refused where whether the host\'s credential can be refreshed can\'t be read says so, and a host with no credential monitor is told to replace it', async () => {
+    const refused = { ...COUNTED, agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_failed_401' } };
+    const unread = (why: string) => '✗ count_tokens couldn\'t count with claude-small-window: count_tokens refused the credential ' +
+      'the host sent (401): its subscription login when it has one, else ANTHROPIC_AUTH_TOKEN, else ANTHROPIC_API_KEY. So the ' +
+      `context's makeup shows no exact total. Whether the host's credential can be refreshed can't be told, since ${why}. A ` +
+      'credential with no refresh token needs replacing where the service gets it, and a restart of the service.\n';
+    const silent = install();
+    const noHealth = await withHost(silent, { ...HEALTHY_HOST, 'count-check': refused, health: undefined }, () => run(silent));
+    expect(noHealth.out).toContain(unread('the host refused its health: unknown panel op: health'));
+    expect(noHealth.out).not.toContain('Replace that credential');
+    const broken = install();
+    const threw = await withHost(broken, {
+      ...HEALTHY_HOST, 'count-check': refused, health: { ...HEALTH, credentialFailure: 'the monitor broke' },
+    }, () => run(broken));
+    expect(threw.out).toContain(unread('reading it on the host failed: the monitor broke'));
+    const bare = install();
+    const none = await withHost(bare, { ...HEALTHY_HOST, 'count-check': refused }, () => run(bare));
+    expect(none.out).toContain('So the context\'s makeup shows no exact total. Replace that credential where the service gets ' +
+      'it, and restart the service.\n');
   });
 
   test('a count that fails, or an agent with no model, is said in words', async () => {

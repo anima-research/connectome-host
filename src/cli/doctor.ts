@@ -573,10 +573,10 @@ export async function doctor(
       await checked(report, 'The token counts', async () => {
         const answer = await read<CountCheck>('count-check', counting);
         if (answer !== null) {
-          const refused = refusedCredential(credentialOf(await calls?.catch(() => null) ?? null),
-            ['1', 'true'].includes((env.ANTHROPIC_OAUTH_AUTO_REFRESH ?? '').trim().toLowerCase()));
-          countLines(report, answer.data, work, emptyCompressionSaid, recipe !== null && resolveProvider(recipe) === 'anthropic',
-            refused, typed);
+          const onAnthropic = recipe !== null && resolveProvider(recipe) === 'anthropic';
+          const refused = onAnthropic ? refusedCredential(credentialOf(await calls?.catch(() => null) ?? null))
+            : { words: '', problem: true };
+          countLines(report, answer.data, work, emptyCompressionSaid, onAnthropic, refused, typed);
           const sources = [answer.data.agent.source, answer.data.compression?.source];
           uncredentialed = sources.includes('count_tokens_no_credential');
           unanswered = sources.some((source) => source === 'count_tokens_timeout' || source === 'count_tokens_error');
@@ -910,32 +910,63 @@ interface ShellCheck {
 
 const REPLACE_CREDENTIAL = ' Replace that credential where the service gets it, and restart the service.';
 
-function credentialOf(answer: HostEvent | null): { rotatable: boolean; expiresAt?: number } | null {
-  if (answer?.ok !== true) return null;
-  const credential = (answer.data as { credential?: { rotatable?: unknown; expiresAt?: unknown } } | null)?.credential;
-  if (typeof credential?.rotatable !== 'boolean') return null;
-  const { rotatable, expiresAt } = credential;
-  return typeof expiresAt === 'number' && Number.isFinite(expiresAt) ? { rotatable, expiresAt } : { rotatable };
+type HostCredential =
+  | { rotatable: boolean; expiresAt?: number; autoRefresh?: boolean }
+  | { unread: string }
+  | null;
+
+function credentialOf(answer: HostEvent | null): HostCredential {
+  if (answer === null) return { unread: 'the host didn\'t answer for its health' };
+  if (answer.ok !== true) return { unread: `the host refused its health: ${String(answer.error ?? 'no reason given')}` };
+  const data = answer.data as { credential?: Record<string, unknown>; credentialFailure?: unknown } | null;
+  if (typeof data?.credentialFailure === 'string') return { unread: `reading it on the host failed: ${data.credentialFailure}` };
+  const credential = data?.credential;
+  if (credential === undefined) return null;
+  if (typeof credential?.rotatable !== 'boolean') return { unread: 'the host\'s answer doesn\'t say' };
+  const { rotatable, expiresAt, autoRefresh } = credential;
+  return {
+    rotatable,
+    ...(typeof expiresAt === 'number' && Number.isFinite(expiresAt) ? { expiresAt } : {}),
+    ...(typeof autoRefresh === 'boolean' ? { autoRefresh } : {}),
+  };
 }
 
-function refusedCredential(credential: { rotatable: boolean; expiresAt?: number } | null, autoRefresh: boolean):
-  { words: string; problem: boolean } {
-  if (credential === null || !credential.rotatable) return { words: REPLACE_CREDENTIAL, problem: true };
+const AUTH_REFRESH = 'the host\'s `/auth refresh`, in its terminal or the Web UI\'s command box';
+
+function refusedCredential(credential: HostCredential): { words: string; problem: boolean } {
+  if (credential === null) return { words: REPLACE_CREDENTIAL, problem: true };
+  if ('unread' in credential) {
+    return {
+      words: ` Whether the host's credential can be refreshed can't be told, since ${credential.unread}. A credential with no ` +
+        'refresh token needs replacing where the service gets it, and a restart of the service.',
+      problem: true,
+    };
+  }
+  if (!credential.rotatable) return { words: REPLACE_CREDENTIAL, problem: true };
   const expiry = credential.expiresAt === undefined ? ''
     : ` The host has its access token ${credential.expiresAt < Date.now() ? 'expired' : 'expiring'} at ` +
       `${new Date(credential.expiresAt).toISOString()}.`;
-  return autoRefresh
-    ? {
-      words: ' The host\'s credential has a refresh token and ANTHROPIC_OAUTH_AUTO_REFRESH is on, so its next model call, ' +
-        `refused the same way, tries to refresh it.${expiry} Where that refresh fails, the host's log says why, in a line ` +
-        'that starts "[anthropic-credentials] automatic refresh failed:".',
+  if (credential.autoRefresh === true) {
+    return {
+      words: ' The host\'s credential has a refresh token, and the host runs with ANTHROPIC_OAUTH_AUTO_REFRESH on, so its next ' +
+        `model call, refused the same way, tries to refresh it.${expiry} Where that refresh fails, the host's log says why, in ` +
+        'a line that starts "[anthropic-credentials] automatic refresh failed:".',
       problem: false,
-    }
-    : {
-      words: ' The host\'s credential has a refresh token, but ANTHROPIC_OAUTH_AUTO_REFRESH isn\'t on, so its next model call ' +
-        `is refused too: refresh it with the host's \`/auth refresh\`, in its terminal or the Web UI's command box.${expiry}`,
+    };
+  }
+  if (credential.autoRefresh === false) {
+    return {
+      words: ' The host\'s credential has a refresh token, but the host runs with ANTHROPIC_OAUTH_AUTO_REFRESH off, so its next ' +
+        `model call is refused too: refresh it with ${AUTH_REFRESH}.${expiry}`,
       problem: true,
     };
+  }
+  return {
+    words: ' The host\'s credential has a refresh token, but the host\'s answer doesn\'t say whether it refreshes it by itself, ' +
+      `so whether its next model call is refused too can't be told. ${AUTH_REFRESH[0].toUpperCase()}${AUTH_REFRESH.slice(1)}, ` +
+      `refreshes it.${expiry}`,
+    problem: true,
+  };
 }
 const NO_CREDENTIAL = 'count_tokens had no Anthropic credential to send: the host looks for its subscription login, ' +
   'then ANTHROPIC_AUTH_TOKEN, then ANTHROPIC_API_KEY, and has none.';
