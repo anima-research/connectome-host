@@ -147,9 +147,9 @@ const HEALTHY_HOST = {
 };
 
 const OTHER_TOKEN = 'other-token-value';
-const BOTS: Record<string, { id: string; username: string }> = {
-  [`Bot ${SECRETS.DISCORD_TOKEN}`]: { id: '900', username: 'ember' },
-  [`Bot ${OTHER_TOKEN}`]: { id: '901', username: 'second' },
+const BOTS: Record<string, { id: string; username: string; bot: true }> = {
+  [`Bot ${SECRETS.DISCORD_TOKEN}`]: { id: '900', username: 'ember', bot: true },
+  [`Bot ${OTHER_TOKEN}`]: { id: '901', username: 'second', bot: true },
 };
 
 const discordFetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -2247,7 +2247,7 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
       discord: { command: join(at.work, 'node_modules/.bin/discord-mcpl'), env: { DISCORD_TOKEN: literal, DISCORD_GUILD_ID: '100' } },
     } }));
     const echoing = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> =>
-      new URL(String(input)).pathname.endsWith('/users/@me') ? Response.json({ id: '902', username: 'literal' })
+      new URL(String(input)).pathname.endsWith('/users/@me') ? Response.json({ id: '902', username: 'literal', bot: true })
         : Response.json({ message: `proxy refused ${new Headers(init?.headers).get('authorization')}`, code: 0 }, { status: 403 })) as typeof fetch;
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { fetch: echoing }));
     expect(r.out).toContain('proxy refused Bot <DISCORD_TOKEN>');

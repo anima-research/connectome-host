@@ -305,8 +305,10 @@ describe('setup--discord', () => {
     const unanswered = await read(silent.module);
     expect(unanswered.error).toBe('Discord couldn\'t be asked GET /users/@me (fetch failed: getaddrinfo ENOTFOUND discord.com), so the read stopped there. Call setup--discord again, and if it fails the same way, tell the person: their connection to discord.com is theirs to check.');
 
-    const notBot = await read(install(fakeDiscord([HOME], { '/users/@me': () => Response.json({}) })).module);
-    expect(notBot.error).toBe('Discord answered GET /users/@me with something other than the bot\'s user, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
+    for (const answer of [{}, { id: '700', username: 'ada_l', bot: false }, { id: '700', username: 'ada_l' }]) {
+      const notBot = await read(install(fakeDiscord([HOME], { '/users/@me': () => Response.json(answer) })).module);
+      expect(notBot.error).toBe('Discord answered GET /users/@me with something other than the bot\'s user, so the read stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
+    }
   });
 
   test('a 401 to a read after the token check is decided by its type before its body, as the token check decides one: typed JSON is a refusal, any other type isn\'t Discord\'s', async () => {

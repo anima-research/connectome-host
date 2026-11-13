@@ -265,11 +265,13 @@ describe('doctor: Discord', () => {
   });
 
   test('a 200 that isn\'t the bot\'s user stops the checks, rather than naming a bot it can\'t name', async () => {
-    const discord = fakeDiscord({ answers: { '/users/@me': () => Response.json({ message: 'ok' }) }, guilds: [HOME] });
-    const r = await run({ DISCORD_TOKEN: TOKEN }, discord);
-    expect(r.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
-    expect(r.text).not.toContain('undefined');
-    expect(discord.requests.map((each) => each.path)).toEqual(['/users/@me']);
+    for (const answer of [{ message: 'ok' }, { id: '700', username: 'alice', bot: false }, { id: '700', username: 'alice' }]) {
+      const discord = fakeDiscord({ answers: { '/users/@me': () => Response.json(answer) }, guilds: [HOME] });
+      const r = await run({ DISCORD_TOKEN: TOKEN }, discord);
+      expect(r.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
+      expect(r.text).not.toContain('undefined');
+      expect(discord.requests.map((each) => each.path)).toEqual(['/users/@me']);
+    }
   });
 
   test('an answer doctor can\'t read the way it reads Discord\'s stops the check, and what it found before is still said', async () => {
