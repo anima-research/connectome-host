@@ -131,6 +131,10 @@ export function dotenvNames(dir: string): string[] {
   return [...names];
 }
 
+export function dotenvSettings(_dir: string, names: readonly string[]): Record<string, string[]> {
+  return Object.fromEntries(names.map((name) => [name, []]));
+}
+
 const READ_LIMIT_MS = 10_000;
 
 export class DotenvTimeoutError extends Error {}
