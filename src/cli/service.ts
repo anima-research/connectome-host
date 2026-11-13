@@ -181,10 +181,9 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   if (manager === 'launchd') {
     const domain = sys.run('launchctl', ['print', `gui/${sys.uid}`], childEnv(sys));
     if (domain.status !== 0) {
-      throw new Refusal(`launchctl print gui/${sys.uid} failed: ${launchctlFailure(domain)}. launchd starts a user's ` +
-        `agents only in that user's graphical session, so while ${sys.user} isn't logged in to the Mac's graphical ` +
-        `session there's none to start them in. Repeat this command once ${sys.user} is logged in to it. Nothing was ` +
-        'written.');
+      throw new Refusal(`launchctl print gui/${sys.uid} failed: ${launchctlFailure(domain)}. launchd loads this ` +
+        `service's agents, which name no session type, only once ${sys.user} has logged in to the Mac's graphical ` +
+        `session. Repeat this command once ${sys.user} is logged in to it. Nothing was written.`);
     }
   }
   const names = serviceUnits(root, sys.platform, sys.home);
