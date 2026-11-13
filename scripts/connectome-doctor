@@ -722,12 +722,19 @@ def usr2_listener(pid):
     return None
 
 
-if pid not in ("0", "", None) and active in ("active", "running"):
-    pid = sh(f"systemctl --user show {unit_q} -p MainPID --value") or "0"
-    listening = usr2_listener(pid) if pid != "0" else None
+if active in ("active", "running"):
+    if "MainPID" not in props:
+        pid = ""
+    elif pid not in ("0", ""):
+        pid = sh(f"systemctl --user show {unit_q} -p MainPID --value")
+    listening = usr2_listener(pid) if pid not in ("0", "") else None
     print()
     if pid == "0":
         print(f"live gate dump: {C_DIM}not asked: the unit has no main process now{C_OFF}")
+    elif pid == "":
+        print(f"live gate dump: {C_DIM}not asked: the unit's main process id can't be read{C_OFF}")
+        warn("the gate dump wasn't asked for, since the unit's main process id can't be read, so the gate dump isn't known",
+             counts=False)
     elif listening is None:
         print(f"live gate dump: {C_DIM}not asked: /proc/{pid}/status can't be read, so whether SIGUSR2 would end "
               f"the host isn't known{C_OFF}")
@@ -795,6 +802,10 @@ if pid not in ("0", "", None) and active in ("active", "running"):
                   f"catches and answers by writing that line{C_OFF}")
             warn(f"no [diagnostics] line was seen within {DUMP_WAIT} s of SIGUSR2, so the gate dump isn't known",
                  counts=False)
+elif "ActiveState" not in props:
+    print()
+    print(f"live gate dump: {C_DIM}not asked: the unit's state can't be read{C_OFF}")
+    warn("the gate dump wasn't asked for, since the unit's state can't be read, so the gate dump isn't known", counts=False)
 
 if findings_json:
     print("connectome-doctor findings: " + json.dumps([{"text": w, "counts": counts} for w, counts in WARNINGS]))

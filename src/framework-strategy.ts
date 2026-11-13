@@ -9,7 +9,7 @@ import {
 import type { Recipe, RecipeKvUnifiedConfig, RecipeStrategy } from './recipe.js';
 import { anthropicCacheReadMultiplier, openaiCacheMultipliers } from './call-pricing.js';
 import { resolvePromptCaching } from './framework-agent-config.js';
-import { defaultRecentWindowTokens, headWindowTokens } from './recipe-fit.js';
+import { headWindowTokens, startingTailTokens } from './recipe-fit.js';
 import { FrontdeskStrategy } from './strategies/frontdesk-strategy.js';
 import { isBuiltinStrategyType, type ExtensionRegistry } from './extensions.js';
 
@@ -152,7 +152,7 @@ export function buildFrameworkStrategy(
   }
   const autobiographicalOpts: Record<string, unknown> = {
     headWindowTokens: headWindowTokens(recipe),
-    recentWindowTokens: strategyConfig?.recentWindowTokens ?? defaultRecentWindowTokens(recipe, model),
+    recentWindowTokens: startingTailTokens(recipe, model),
     compressionModel: compressionModelOf(recipe, model) ?? model,
     ...(strategyConfig?.compressionMaxTokens !== undefined
       ? { compressionMaxTokens: strategyConfig.compressionMaxTokens }

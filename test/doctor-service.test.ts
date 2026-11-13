@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { checkUnits, servicePid } from '../src/cli/doctor-service.js';
 import type { ServiceSystem } from '../src/cli/service.js';
 import { serviceUnits, type ServiceUnits } from '../src/cli/service-unit.js';
@@ -116,7 +116,11 @@ test('a shell unit file the recipe names that\'s gone isn\'t said to be written 
   const result = checkUnits(at.units, at.work, true, 'connectome', sys);
   expect(result.passed).toBe(false);
   expect(result.lines).toContain(`The recipe names a shell, and ${at.units.shell.file}, ${at.units.shell.name}'s unit file, is gone.`);
-  expect(result.lines).toContain(`systemd runs ${at.units.shell.name} in /another-install, not ${at.work}.`);
+  const systemctl = 'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user';
+  expect(result.lines).toContain(`systemd runs ${at.units.shell.name} in /another-install, not ${at.work}, and its file, ` +
+    `${at.units.shell.file}, is gone: \`${systemctl} status ${at.units.shell.name}\` shows what it runs. If nothing uses it, ` +
+    `\`${systemctl} stop ${at.units.shell.name}\` and then \`${systemctl} daemon-reload\` free its name. Otherwise set this ` +
+    'install up again in a directory of another name, since the unit\'s name comes from this directory\'s name.');
   expect(result.lines.join('\n')).not.toContain('writes it, or names what it needs first');
 });
 
@@ -208,8 +212,13 @@ test('a shell unit systemd runs in another directory fails as install refuses it
 
 test('a host unit systemd can\'t show, or hasn\'t loaded, isn\'t seen running here', () => {
   const at = place('linux', ['host']);
-  const unshown = system(at.home, {});
-  expect(checkUnits(at.units, at.work, false, 'connectome', unshown.sys).here).toBeUndefined();
+  const unshown = system(at.home, {
+    [`systemctl ${at.units.host.name}`]: { status: 1, stderr: 'Failed to connect to bus: No medium found' },
+  });
+  const failed = checkUnits(at.units, at.work, false, 'connectome', unshown.sys);
+  expect(failed.lines).toContain(`systemd couldn't be asked about ${at.units.host.name}: Failed to connect to bus: No medium ` +
+    `found (XDG_RUNTIME_DIR=/run/user/1000 systemctl --user show ${at.units.host.name}).`);
+  expect(failed.here).toBeUndefined();
   const unloaded = system(at.home, { [`systemctl ${at.units.host.name}`]: 'LoadState=not-found\nActiveState=active\n' });
   expect(checkUnits(at.units, at.work, false, 'connectome', unloaded.sys).here).toBeUndefined();
 });
@@ -426,8 +435,32 @@ test('with a recipe that names no shell, a shell unit of this name that systemd 
   });
   const result = checkUnits(at.units, at.work, false, 'connectome', sys);
   expect(result.passed).toBe(false);
-  expect(result.lines).toContain(`systemd runs ${at.units.shell.name} in /another-install, not ${at.work}.`);
+  const systemctl = 'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user';
+  expect(result.lines).toContain(`systemd runs ${at.units.shell.name} in /another-install, not ${at.work}, and its file, ` +
+    `${at.units.shell.file}, is gone: \`${systemctl} status ${at.units.shell.name}\` shows what it runs. If nothing uses it, ` +
+    `\`${systemctl} stop ${at.units.shell.name}\` and then \`${systemctl} daemon-reload\` free its name. Otherwise set this ` +
+    'install up again in a directory of another name, since the unit\'s name comes from this directory\'s name.');
   expect(asked.some(([, ...args]) => args.includes(at.units.shell.name))).toBe(true);
+});
+
+test.skipIf(process.getuid?.() === 0)('a unit systemd holds in another directory, under a directory this user can\'t search, isn\'t said to have a file that\'s gone', () => {
+  const at = place('linux', ['host']);
+  const locked = join(at.home, 'locked');
+  mkdirSync(locked);
+  const units = { ...at.units, shell: { ...at.units.shell, file: join(locked, at.units.shell.name) } };
+  chmodSync(locked, 0o000);
+  try {
+    const { sys } = system(at.home, {
+      [`systemctl ${at.units.host.name}`]: activeHost(at.work),
+      [`systemctl ${at.units.shell.name}`]: activeHost('/another-install'),
+    });
+    const result = checkUnits(units, at.work, true, 'connectome', sys);
+    expect(result.passed).toBe(false);
+    expect(result.lines).toContain(`systemd runs ${at.units.shell.name} in /another-install, not ${at.work}.`);
+    expect(result.lines.join('\n')).not.toContain('is gone');
+  } finally {
+    chmodSync(locked, 0o755);
+  }
 });
 
 test('with a recipe that names no shell, a shell agent launchd still holds with its plist gone fails the check, with a stop and an inspect line', () => {
@@ -457,4 +490,58 @@ test('with a recipe that names no shell, a shell unit systemd still holds as las
       `loaded it, though its file, ${at.units.shell.file}, is gone, and the recipe names no shell. \`connectome service install ` +
       `<recipe>\` doesn't stop it: if it runs, \`XDG_RUNTIME_DIR=/run/user/1000 systemctl --user stop ${at.units.shell.name}\` stops it.`])]);
   }
+});
+
+test('a unit file whose path runs through a regular file can\'t be looked at, with its error, and isn\'t said as gone', () => {
+  const at = place('linux', ['host']);
+  const blocker = join(at.home, 'not-a-directory');
+  writeFileSync(blocker, '');
+  const units = { ...at.units, shell: { ...at.units.shell, file: join(blocker, basename(at.units.shell.file)) } };
+  const { sys } = system(at.home, { [`systemctl ${at.units.host.name}`]: activeHost(at.work) });
+  const result = checkUnits(units, at.work, true, 'connectome', sys);
+  expect(result.passed).toBe(false);
+  const line = result.lines.find((each) => each.includes(units.shell.file)) ?? '';
+  expect(line).toContain(`${units.shell.file}, ${units.shell.name}'s unit file, can't be looked at, so whether it's there can't ` +
+    'be told: ');
+  expect(line).toContain('. Repair what that path runs through, and run this again.');
+  expect(line).not.toContain('is gone');
+});
+
+test('a unit systemd holds in another directory, whose file can\'t be looked at, isn\'t said to have a file that\'s gone', () => {
+  const at = place('linux', ['host']);
+  const blocker = join(at.home, 'not-a-directory');
+  writeFileSync(blocker, '');
+  const units = { ...at.units, shell: { ...at.units.shell, file: join(blocker, basename(at.units.shell.file)) } };
+  const { sys } = system(at.home, {
+    [`systemctl ${at.units.host.name}`]: activeHost(at.work),
+    [`systemctl ${at.units.shell.name}`]: activeHost('/another-install'),
+  });
+  const result = checkUnits(units, at.work, true, 'connectome', sys);
+  expect(result.passed).toBe(false);
+  expect(result.lines).toContain(`systemd runs ${at.units.shell.name} in /another-install, not ${at.work}.`);
+  expect(result.lines.join('\n')).not.toContain('is gone');
+});
+
+test('with a recipe that names no shell, a shell unit file whose path can\'t be looked at fails the check, since install reads it whatever the recipe', () => {
+  const mac = place('darwin', ['host']);
+  const macBlocker = join(mac.home, 'not-a-directory');
+  writeFileSync(macBlocker, '');
+  const macUnits = { ...mac.units, shell: { ...mac.units.shell, file: join(macBlocker, basename(mac.units.shell.file)) } };
+  const onMac = checkUnits(macUnits, mac.work, false, 'connectome', system(mac.home, {
+    [`launchctl ${mac.units.host.name}`]: '{\n\t"PID" = 501;\n};\n',
+  }).sys);
+  expect(onMac.passed).toBe(false);
+  expect(onMac.lines.find((each) => each.includes(macUnits.shell.file)) ?? '').toContain(`The recipe names no shell, but ` +
+    `${macUnits.shell.file}, ${mac.units.shell.name}'s plist, can't be looked at, and install reads it whatever the recipe: `);
+  const at = place('linux', ['host']);
+  const blocker = join(at.home, 'not-a-directory');
+  writeFileSync(blocker, '');
+  const units = { ...at.units, shell: { ...at.units.shell, file: join(blocker, basename(at.units.shell.file)) } };
+  const { sys } = system(at.home, { [`systemctl ${at.units.host.name}`]: activeHost(at.work) });
+  const result = checkUnits(units, at.work, false, 'connectome', sys);
+  expect(result.passed).toBe(false);
+  const line = result.lines.find((each) => each.includes(units.shell.file)) ?? '';
+  expect(line).toContain(`The recipe names no shell, but ${units.shell.file}, ${units.shell.name}'s unit file, can't be looked at, ` +
+    'and install reads it whatever the recipe: ');
+  expect(line).toContain('. Repair what that path runs through, and run this again.');
 });

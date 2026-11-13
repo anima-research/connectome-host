@@ -59,7 +59,7 @@ export class AnthropicOAuthCredentials implements CredentialSource {
   private fileShape: FileShape = 'nested';
   private readonly tokenEndpoint: string;
   private readonly clientId: string;
-  private readonly autoRefresh: boolean;
+  readonly autoRefresh: boolean;
   private readonly baseURL: string;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;

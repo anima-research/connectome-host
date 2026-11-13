@@ -56,7 +56,11 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
     return owner.kind === 'other' ? ownerProblem(owner, unit, units.manager, work, sys, install) : null;
   };
   const shellFile = pathState(units.shell.file);
-  if (shell === false && (shellFile === 'there' || shellFile === 'gone')) {
+  if (shell === false && shellFile !== 'there' && shellFile !== 'gone') {
+    fail(`The recipe names no shell, but ${units.shell.file}, ${units.shell.name}'s ` +
+      `${units.manager === 'systemd-user' ? 'unit file' : 'plist'}, can't be looked at, and ` +
+      `install reads it whatever the recipe: ${shellFile.why}. ${shellFile.repair}`);
+  } else if (shell === false) {
     const owner = managerOwner(units.shell, units.manager, work, sys, env, shellFile === 'there');
     const problem = owner.kind === 'ok' && owner.held
       ? `${heldWithoutFile(units.shell)}, and the recipe names no shell. ${install} doesn't stop it: if it runs, ` +
@@ -168,8 +172,13 @@ export function ownerProblem(owner: Owner, unit: ServiceUnit, manager: Manager, 
       `\`${stopLine(sys, manager, unit.name)}\`.`;
   }
   return systemd
-    ? `systemd runs ${unit.name} in ${owner.runsIn ?? 'no set directory'}, not ${work}.` +
-      (owner.loadedOnly ? ` ${reloadLine(sys, unit, work, `run ${install}`)}` : '')
+    ? `systemd runs ${unit.name} in ${owner.runsIn ?? 'no set directory'}, not ${work}` + (owner.loadedOnly
+      ? `. ${reloadLine(sys, unit, work, `run ${install}`)}`
+      : pathState(unit.file) !== 'gone' ? '.'
+      : `, and its file, ${unit.file}, is gone: \`${systemctlLine(sys, `status ${unit.name}`)}\` shows what it runs. If ` +
+        `nothing uses it, \`${stopLine(sys, manager, unit.name)}\` and then \`${systemctlLine(sys, 'daemon-reload')}\` free its ` +
+        'name. Otherwise set this install up again in a directory of another name, since the unit\'s name comes from this ' +
+        'directory\'s name.')
     : `${owner.from} names ${owner.runsIn ?? 'no directory'} as the directory it runs in, not ${work}.`;
 }
 
@@ -199,7 +208,7 @@ export function pathState(path: string): 'there' | 'gone' | { why: string; repai
     return 'there';
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return 'gone';
+    if (code === 'ENOENT') return 'gone';
     return {
       why: errorText(error).replace(/\.$/, ''),
       repair: code === 'EACCES' || code === 'EPERM'
