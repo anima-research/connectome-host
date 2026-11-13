@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
+import { withoutHeartbeatMcpl } from '../heartbeat-options.js';
 import { composeMcplChildEnv, openedBy, serversForRecipe } from '../mcpl-config.js';
 import {
   ENV_REFERENCE, loadRecipeDocument, readRecipeDocument, recipeDigest, recipeModel, resolveProvider,
@@ -315,9 +316,12 @@ export async function doctor(
   let serversError: unknown = null;
   if (recipeLoad !== null && !('error' in recipeLoad)) {
     try {
-      servers = serversForRecipe(recipeLoad.recipe.mcpServers, join(work, 'mcpl-servers.json'), agentOverlayPath(work, env))
+      const loaded = serversForRecipe(recipeLoad.recipe.mcpServers, join(work, 'mcpl-servers.json'), agentOverlayPath(work, env))
         .loaded as Server[];
-      secrets = [...secrets, ...servers.flatMap((server) => {
+      const heartbeat = recipeLoad.recipe.modules?.heartbeat;
+      servers = heartbeat === undefined || heartbeat === false ? loaded
+        : withoutHeartbeatMcpl(loaded, (line) => recipeWarnings.push(line));
+      secrets = [...secrets, ...loaded.flatMap((server) => {
         const token = childEnv(server, env).DISCORD_TOKEN;
         return token && !new RegExp(`^${ENV_REFERENCE}$`).test(token)
           ? withSentForms({ name: 'DISCORD_TOKEN', value: token }) : [];
@@ -618,9 +622,16 @@ export async function doctor(
     report.section('Discord');
     if (servers === null) report.line(`Discord isn't checked: ${unknown}.`);
     else {
-      const discord = servers.filter((s) => [s.command, ...(Array.isArray(s.args) ? s.args : [])]
+      const named = servers.filter((s) => [s.command, ...(Array.isArray(s.args) ? s.args : [])]
         .some((part) => typeof part === 'string' && part.includes('discord-mcpl')));
-      if (discord.length === 0) report.line('No server the recipe runs is Discord\'s.');
+      const discord = named.filter((s) => openedBy(s) === 'spawn');
+      for (const server of named) {
+        const opened = openedBy(server);
+        if (opened === 'dial') {
+          report.line(`${server.id} is dialed at its url, not started by the host, so its Discord bot isn't checked here.`);
+        } else if (opened === null) report.line(`${server.id} isn't checked here, since the host refuses its entry.`);
+      }
+      if (named.length === 0) report.line('No server the recipe runs is Discord\'s.');
       for (const server of discord) {
         if (discord.length > 1) report.line(`The entry ${server.id}:`);
         try {

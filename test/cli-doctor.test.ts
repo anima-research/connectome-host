@@ -736,6 +736,21 @@ describe('connectome doctor', () => {
     expect(r2.out).not.toMatch(/✗.*SESSION_SERVER_TOKEN/);
   });
 
+  test('with modules.heartbeat on, an overlay heartbeat-mcpl server is left out as the host leaves it out, so no stored secret reaches it', async () => {
+    const at = install({
+      stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'],
+      env: { LONELY_SECRET: 'lonely-value-1' },
+      recipe: { ...RECIPE(''), modules: { heartbeat: true } },
+      overlay: { heartbeat: { command: '/x/node_modules/.bin/heartbeat-mcpl', env: { LONELY_SECRET: 'lonely-value-1', DISCORD_TOKEN: 'a-left-out-heartbeat-token' } } },
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain('[heartbeat] modules.heartbeat is on, so the MCPL server "heartbeat" (heartbeat-mcpl, from mcpl-servers.json or the agent\'s overlay) is left out');
+    expect(r.out).not.toContain('LONELY_SECRET reaches heartbeat');
+    expect(r.out).toContain('LONELY_SECRET is in setup\'s list of stored secrets, and doctor finds no server given it');
+    const withheld = JSON.parse(readFileSync(join(at.work, 'withheld.json'), 'utf-8')) as Array<[string, string]>;
+    expect(withheld).toContainEqual(['DISCORD_TOKEN', 'a-left-out-heartbeat-token']);
+  });
+
   test('a DISCORD_TOKEN in .env that setup didn\'t store is withheld too: doctor hides it in its lines, and names it for the ladder to withhold where it cuts', async () => {
     const at = install({ stored: ['SESSION_SERVER_TOKEN'] });
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
@@ -1637,6 +1652,30 @@ describe('connectome doctor', () => {
     expect(r.out).toContain('✗ Discord refused the bot token');
     expect(r.out).not.toContain('"<DISCORD_TOKEN>"');
     expect(r.out).toContain('mcpl-servers.json and the agent overlay take it as written, a "${DISCORD_TOKEN}" included');
+  });
+
+  test('a discord-mcpl entry the host dials at its url isn\'t checked as one it starts, and is said as dialed', async () => {
+    const at = install({ recipe: { ...RECIPE(''), mcpServers: { discord: { url: 'ws://127.0.0.1:9/mcpl', transport: 'websocket' }, shell: RECIPE('').mcpServers.shell } } });
+    writeFileSync(join(at.work, 'mcpl-servers.json'), JSON.stringify({ mcplServers: { discord: {
+      command: '/x/node_modules/.bin/discord-mcpl', env: { DISCORD_TOKEN: 'a-token-nothing-starts-with', DISCORD_GUILD_ID: '100' },
+    } } }));
+    const asked: string[] = [];
+    const recording = (async (input: string | URL | Request, init?: RequestInit) => {
+      asked.push(String(input));
+      return discordFetch(input, init);
+    }) as typeof fetch;
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { fetch: recording }));
+    expect(r.out).toContain('discord is dialed at its url, not started by the host, so its Discord bot isn\'t checked here.');
+    expect(r.out).not.toContain('No server the recipe runs is Discord\'s.');
+    expect(asked).toEqual([]);
+
+    const refused = install({ recipe: { ...RECIPE(''), mcpServers: { discord: { transport: 'websocket' }, shell: RECIPE('').mcpServers.shell } } });
+    writeFileSync(join(refused.work, 'mcpl-servers.json'), JSON.stringify({ mcplServers: { discord: {
+      command: '/x/node_modules/.bin/discord-mcpl', env: { DISCORD_TOKEN: 'a-token-nothing-starts-with', DISCORD_GUILD_ID: '100' },
+    } } }));
+    const r2 = await withHost(refused, HEALTHY_HOST, () => run(refused, { fetch: recording }));
+    expect(r2.out).toContain('discord isn\'t checked here, since the host refuses its entry.');
+    expect(asked).toEqual([]);
   });
 
   test('a recipe that doesn\'t load is a problem in the loader\'s words', async () => {
