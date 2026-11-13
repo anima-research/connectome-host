@@ -40,14 +40,16 @@ interface Host {
   ticks: string;
 }
 
-async function standInHost(dir: string, listens: boolean, dumpsTo?: string, dumpDelay?: number): Promise<Host> {
+async function standInHost(dir: string, listens: boolean, dumpsTo?: string, dumpAfterRead?: boolean): Promise<Host> {
   const signals = join(dir, 'signals');
   const ticks = join(dir, 'ticks');
   const dump = join(dir, 'dump-line');
   writeFileSync(dump, '[diagnostics] {"activeStreams":[],"gate":{"inferring":false}}\n');
   const writesDump = dumpsTo ? `cat ${dump} >> ${dumpsTo}; `
     : `printf "%s.000000 host bun[1]: %s\\n" "$(date +%s)" "$(cat ${dump})" >> ${join(dir, 'journal.txt')}; `;
-  const trap = listens ? `trap '${dumpDelay ? `sleep ${dumpDelay}; ` : ''}${writesDump}echo usr2 >> ${signals}' USR2; ` : '';
+  const waits = dumpAfterRead
+    ? `n=0; while [ ! -s ${join(dir, 'dump-reads')} ] && [ $n -lt 80 ]; do sleep 0.05; n=$((n + 1)); done; ` : '';
+  const trap = listens ? `trap '${waits}${writesDump}echo usr2 >> ${signals}' USR2; ` : '';
   const process = spawn('sh', ['-c', `${trap}while :; do echo t >> ${ticks}; sleep 0.05; done`], { stdio: 'ignore' });
   children.push(process);
   await waitFor(() => lines(ticks) > 0, 'the stand-in host to start');
@@ -85,7 +87,7 @@ function systemctl(at: Install, unit: Unit = {}): void {
 
 async function install(opts: {
   listens: boolean; journalFails?: string; dumpReadFails?: boolean; dumpReadHangs?: boolean; dumpsTo?: string;
-  grepRefused?: string; dumpDelay?: number; mainPidNow?: string;
+  grepRefused?: string; dumpAfterRead?: boolean; mainPidNow?: string;
 }): Promise<Install> {
   const work = mkdtempSync(join(tmpdir(), 'chost-ladder-'));
   dirs.push(work);
@@ -93,7 +95,7 @@ async function install(opts: {
   mkdirSync(join(work, 'logs'));
   const bins = join(work, 'bin');
   mkdirSync(bins);
-  const host = await standInHost(work, opts.listens, opts.dumpsTo && join(work, opts.dumpsTo), opts.dumpDelay);
+  const host = await standInHost(work, opts.listens, opts.dumpsTo && join(work, opts.dumpsTo), opts.dumpAfterRead);
   const now = Math.floor(Date.now() / 1000);
   const at = { work, bins, host, started: now - 60, now, mainPidNow: opts.mainPidNow };
   systemctl(at);
@@ -111,7 +113,7 @@ async function install(opts: {
       opts.dumpReadFails
         ? '  "$unit -o cat --no-pager --since @"*) echo "Failed to open the journal: Permission denied" >&2; exit 1 ;;'
         : opts.dumpReadHangs ? '  "$unit -o cat --no-pager --since @"*) exec sleep 10 ;;'
-        : `  "$unit -o cat --no-pager --since @"*) echo read >> ${join(work, 'dump-reads')}; awk -v since="\${8#@}" '$1 + 0 >= since { sub(/^[^ ]+ [^ ]+ [^ ]+ /, ""); print }' ${journal} ;;`,
+        : `  "$unit -o cat --no-pager --since @"*) awk -v since="\${8#@}" '$1 + 0 >= since { sub(/^[^ ]+ [^ ]+ [^ ]+ /, ""); print }' ${journal}; echo read >> ${join(work, 'dump-reads')} ;;`,
       '  *) echo "journalctl stand-in: arguments it doesn\'t answer: $*" >&2; exit 2 ;;',
       'esac',
     ].join('\n'));
@@ -705,11 +707,12 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
     expect(out).toMatch(/=== findings ===[\s\S]*no read of connectome-test\.service's journal finished within 5 s, so the gate dump isn't known/);
   }, 20_000);
 
-  test('a host that answers its SIGUSR2 a second late still has its dump read', async () => {
-    const at = await install({ listens: true, dumpDelay: 1 });
+  test('a host that answers its SIGUSR2 only after the ladder\'s first read of its journal still has its dump read', async () => {
+    const at = await install({ listens: true, dumpAfterRead: true });
     const { out } = ladder(at);
     await settled(at.host);
     expect(out).toContain('live gate dump (SIGUSR2): {"activeStreams":[]');
+    expect(lines(join(at.work, 'dump-reads'))).toBeGreaterThan(1);
   });
 });
 
@@ -1098,9 +1101,22 @@ describe.skipIf(ladderUnrunnable)('what the ladder withholds', () => {
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ reason: `Error: ${'y'.repeat(120)}${secret}` })}\n`);
     writeFileSync(join(at.work, 'data', 'discord-mcpl-debug.log'),
       `${new Date(at.now * 1000).toISOString()} handleDiscordMessage:enter {"channelName":"general","contentPreview":"${'p'.repeat(35)}${secret} more"}\n`);
+    writeFileSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'), `${JSON.stringify({
+      timestamp: new Date(at.now * 1000).toISOString(), kind: 'stream', type: 'error', error: { message: `${'z'.repeat(75)}${secret} more` } })}\n`);
     const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', secret]]) });
     expect(out).toContain('<DISC');
     expect(out).toMatch(/discord event seen .*#general: p{35}<DISC…/);
+    expect(out).toMatch(/err=z{75}<DISC/);
+    expect(out).not.toContain('Zq9');
+  });
+
+  test('a value that holds a line separator other than a newline is withheld whole in a message\'s preview', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    const secret = 'Zq9\u2028SEC-77';
+    writeFileSync(join(at.work, 'data', 'discord-mcpl-debug.log'),
+      `${new Date(at.now * 1000).toISOString()} handleDiscordMessage:enter {"channelName":"general","contentPreview":"pre ${secret} more"}\n`);
+    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', secret]]) });
+    expect(out).toMatch(/discord event seen .*#general: pre <DISCORD_TOKEN> more…/);
     expect(out).not.toContain('Zq9');
   });
 

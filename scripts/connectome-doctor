@@ -273,7 +273,7 @@ if discord_unknown:
                     "names it")
     fwd_detail = "it's read from the same debug log"
 else:
-    dbg_lines = dbg_text.splitlines()
+    dbg_lines = dbg_text.split("\n")
 
     def last_in_dbg(pattern):
         matches = [ln for ln in dbg_lines if re.search(pattern, ln)]
