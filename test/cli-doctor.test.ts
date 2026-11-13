@@ -3289,6 +3289,18 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     }
   });
 
+  test('a host the service\'s pid doesn\'t match, whose main process then can\'t be read, is said as changed, with no kill', async () => {
+    const at = install();
+    let asked = 0;
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, {
+      servicePid: async () => (++asked === 1 ? { pid: '5151' } : { why: 'Failed to connect to bus' }),
+    }));
+    expect(asked).toBe(2);
+    expect(r.out).toContain('A host answers, pid 4242, recipe Ember, but the service\'s host changed during the check');
+    expect(r.out).not.toContain('Failed to connect to bus');
+    expect(r.out).not.toContain('kill 4242');
+  });
+
   test('a host the service\'s pid matches only once, or found while a service read as stopped starts, is said as changed, with no kill', async () => {
     const at = install();
     for (const second of ['4242', '6161']) {

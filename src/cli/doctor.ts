@@ -139,6 +139,108 @@ export async function doctor(
     run: limitedRun(parts.envLimitMs, (command) => command === 'plutil' ? parts.plutil : command === 'systemctl' ? parts.systemctl
       : command === 'launchctl' ? parts.launchctl : command),
   };
+  if (asRootOfAnother(ctx, parts, root)) return 1;
+  const found = findService(root, typed, units, sys, parts);
+  const work = found.service?.work ?? units?.work ?? join(root, '..');
+  const recipePath = found.service === null ? null
+    : /^https?:\/\//.test(found.service.recipe) ? found.service.recipe : resolve(work, found.service.recipe);
+  const r: Run = {
+    ctx, parts, root, typed, units, sys, ...found, work, recipePath, recipeRead: await recipeAt(recipePath, parts),
+    secrets: [...PROVIDER_SECRETS, 'DISCORD_TOKEN']
+      .flatMap((name) => process.env[name] ? [{ name, value: process.env[name]! }] : []).flatMap(withSentForms),
+    guessed: [], env: {}, storedNames: null, manager: units?.manager ?? managerFor(parts.platform), managerUnread: null,
+    envFiles: [], refusedUnit: null, passedOver: [], recipeWarnings: [], recipeLoad: null, servers: null,
+    serversError: null, report: null!, host: { reason: 'it wasn\'t asked', down: false }, stopped: false,
+    serviceRuns: false, unitElsewhere: false, unitHere: false, fitUnchecked: false, fitEstimated: false, filesUnread: false,
+    pidUntold: false, notTheService: false, uncredentialed: false, unanswered: false, closedTabs: false,
+    shellUnchecked: false, shellBarred: false, uncounted: null, commands: null, startCommand: '', recordData: null,
+    dataDir: null, dataNamer: '', counting: null, calls: null, recipe: null, uses: null, emptyCompressionSaid: false,
+    unknown: '', closed: { closes: [], undecoded: 0 }, ladderRan: false,
+  };
+  if (!readEnvironment(r)) return 1;
+  await loadRecipe(r);
+  r.report = new Report(ctx.out, (text, width) => redacted(r, text, width));
+  placeData(r);
+  try {
+    await serviceSection(r);
+    await hostSection(r);
+    ask(r);
+    await recipeSection(r);
+    await tokenCountsSection(r);
+    await modelCallsSection(r);
+    await serversSection(r);
+    await discordSection(r);
+  } finally {
+    if (!('reason' in r.host)) r.host.close();
+  }
+  await channelsSection(r);
+  ladderSection(r);
+  return closingLine(r);
+}
+
+interface Run {
+  ctx: CliContext;
+  parts: DoctorParts;
+  root: string;
+  typed: string;
+  units: ServiceUnits | null;
+  sys: ServiceSystem;
+  service: InstalledService | null;
+  serviceError: string | null;
+  elsewhere: boolean;
+  managerSaid: boolean;
+  shellElsewhere: string | null;
+  work: string;
+  recipePath: string | null;
+  recipeRead: { document: RecipeDocument } | { error: unknown } | null;
+  secrets: Secret[];
+  guessed: string[];
+  env: Record<string, string | undefined>;
+  storedNames: string[] | null;
+  manager: Manager | null;
+  managerUnread: string | null;
+  envFiles: string[];
+  refusedUnit: string | null;
+  passedOver: string[];
+  recipeWarnings: string[];
+  recipeLoad: { recipe: Recipe; persistable: Record<string, unknown> } | { error: unknown } | null;
+  servers: Server[] | null;
+  serversError: unknown;
+  report: Report;
+  host: HostClient | NoHost;
+  stopped: boolean;
+  serviceRuns: boolean;
+  unitElsewhere: boolean;
+  unitHere: boolean;
+  fitUnchecked: boolean;
+  fitEstimated: boolean;
+  filesUnread: boolean;
+  pidUntold: boolean;
+  notTheService: boolean;
+  uncredentialed: boolean;
+  unanswered: boolean;
+  closedTabs: boolean;
+  shellUnchecked: boolean;
+  shellBarred: boolean;
+  uncounted: string | null;
+  commands: ServiceCommands | null;
+  startCommand: string;
+  recordData: string | null;
+  dataDir: string | null;
+  dataNamer: string;
+  counting: Promise<HostEvent | null> | null;
+  calls: Promise<HostEvent | null> | null;
+  recipe: Recipe | null;
+  uses: Map<string, string[]> | null;
+  emptyCompressionSaid: boolean;
+  unknown: string;
+  closed: { closes: GcClose[]; undecoded: number } | string;
+  ladderRan: boolean;
+}
+
+type InstalledService = { units: ServiceUnits; recipe: string; work: string; bun: string };
+
+function asRootOfAnother(ctx: CliContext, parts: DoctorParts, root: string): boolean {
   if (parts.uid === 0) {
     const dir = dirname(root);
     let owner: number | null = null;
@@ -151,10 +253,16 @@ export async function doctor(
       ctx.err(`connectome: ${dir} belongs to uid ${owner}, and doctor runs as root, so it would read root's service and ` +
         `service manager, not those of the user the resident runs as. Run \`${shellWord(join(root, INSTALL_COMMAND))} doctor\` as the ` +
         `user who owns ${dir}, without sudo.`);
-      return 1;
+      return true;
     }
   }
-  let service: { units: ServiceUnits; recipe: string; work: string; bun: string } | null = null;
+  return false;
+}
+
+function findService(root: string, typed: string, units: ServiceUnits | null, sys: ServiceSystem, parts: DoctorParts):
+  { service: InstalledService | null; serviceError: string | null; elsewhere: boolean; managerSaid: boolean;
+    shellElsewhere: string | null } {
+  let service: InstalledService | null = null;
   let serviceError: string | null = null;
   let elsewhere = false;
   let managerSaid = false;
@@ -213,9 +321,11 @@ export async function doctor(
       else managerSaid = serviceError !== null;
     }
   }
-  const work = service?.work ?? units?.work ?? join(root, '..');
-  const recipePath = service === null ? null
-    : /^https?:\/\//.test(service.recipe) ? service.recipe : resolve(work, service.recipe);
+  return { service, serviceError, elsewhere, managerSaid, shellElsewhere };
+}
+
+async function recipeAt(recipePath: string | null, parts: DoctorParts):
+  Promise<{ document: RecipeDocument } | { error: unknown } | null> {
   let recipeRead: { document: RecipeDocument } | { error: unknown } | null = null;
   if (recipePath !== null) {
     try {
@@ -225,41 +335,38 @@ export async function doctor(
       recipeRead = { error };
     }
   }
+  return recipeRead;
+}
+
+function redacted(r: Run, text: string, width?: number): string {
+  const bytes = Buffer.from(text, 'utf-8');
+  const replaced = new Set<string>();
+  const hid = redactWindow(bytes, 0, bytes.length, r.secrets, replaced).text;
+  const points = [...hid];
+  const shown = width !== undefined && points.length > width ? `${points.slice(0, width).join('')}…` : hid;
+  const hidden = r.guessed.filter((name) => replaced.has(name) || text.includes(`<${name}>`)).sort();
+  if (hidden.length === 0) return shown;
+  const mark = Buffer.from(` (it holds ${hidden.length === 1 ? 'a value' : 'values'} of ` +
+    `${hidden.map((name) => `\`${name}\``).join(' and ')}, which doctor hides while the names list is missing, so it ` +
+    'isn\'t shown as a command to run)', 'utf-8');
+  return shown + redactWindow(mark, 0, mark.length, r.secrets, new Set()).text;
+}
+
+function readEnvironment(r: Run): boolean {
+  const { ctx, parts, root, typed, units, sys, service, serviceError, elsewhere, managerSaid, work, recipePath,
+    recipeRead, manager } = r;
   const banner = `connectome doctor: the install at ${root}`;
-  let secrets: Secret[] = [...PROVIDER_SECRETS, 'DISCORD_TOKEN']
-    .flatMap((name) => process.env[name] ? [{ name, value: process.env[name]! }] : []).flatMap(withSentForms);
-  let guessed: string[] = [];
-  const redact = (text: string, width?: number): string => {
-    const bytes = Buffer.from(text, 'utf-8');
-    const replaced = new Set<string>();
-    const hid = redactWindow(bytes, 0, bytes.length, secrets, replaced).text;
-    const points = [...hid];
-    const shown = width !== undefined && points.length > width ? `${points.slice(0, width).join('')}…` : hid;
-    const hidden = guessed.filter((name) => replaced.has(name) || text.includes(`<${name}>`)).sort();
-    if (hidden.length === 0) return shown;
-    const mark = Buffer.from(` (it holds ${hidden.length === 1 ? 'a value' : 'values'} of ` +
-      `${hidden.map((name) => `\`${name}\``).join(' and ')}, which doctor hides while the names list is missing, so it ` +
-      'isn\'t shown as a command to run)', 'utf-8');
-    return shown + redactWindow(mark, 0, mark.length, secrets, new Set()).text;
-  };
-  let env: Record<string, string | undefined>;
-  let storedNames: string[] | null;
-  const manager = units?.manager ?? managerFor(parts.platform);
-  let managerUnread: string | null = null;
-  let envFiles: string[] = [];
-  let refusedUnit: string | null = null;
-  let passedOver: string[] = [];
   try {
-    storedNames = new StoredSecrets(join(work, '.setup')).read();
+    r.storedNames = new StoredSecrets(join(work, '.setup')).read();
     const named = secretNames(join(work, '.setup'), join(work, '.env'));
-    guessed = named.guessed;
-    secrets = [...secrets,
+    r.guessed = named.guessed;
+    r.secrets = [...r.secrets,
       ...named.names.flatMap((name) => process.env[name] ? withSentForms({ name, value: process.env[name]! }) : [])];
     const known = (from: Record<string, string | undefined>, probes: Record<string, string | undefined>): Secret[] =>
       storedSecrets(work, from, probes);
-    secrets = [...secrets, ...envAssignments(join(work, '.env'))
+    r.secrets = [...r.secrets, ...envAssignments(join(work, '.env'))
       .flatMap(({ name, value }) => value && named.names.includes(name) ? withSentForms({ name, value }) : [])];
-    secrets = [...secrets, ...known(process.env, systemVariables()),
+    r.secrets = [...r.secrets, ...known(process.env, systemVariables()),
       ...readSecrets(named.names, join(work, '.env'), process.env, [])].flatMap(withSentForms);
     const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
     const names = [...named.names, 'MODEL', AGENT_OVERLAY_FILE_ENV, 'DISCORD_GUILD_ID', 'DISCORD_FILTERS_FILE', 'NODE_ENV',
@@ -272,17 +379,17 @@ export async function doctor(
     } catch (error) {
       unread = error;
     }
-    secrets = [...secrets,
+    r.secrets = [...r.secrets,
       ...named.names.flatMap((name) => managedRead[name] ? withSentForms({ name, value: managedRead[name] }) : [])];
     if (unread !== null) {
       if (service !== null || (serviceError !== null && !elsewhere)) throw unread;
-      managerUnread = unread instanceof ManagerUnread ? unread.step : errorText(unread);
+      r.managerUnread = unread instanceof ManagerUnread ? unread.step : errorText(unread);
     }
     const read = units === null || elsewhere || managerSaid || (service === null && serviceError === null) ? null
       : unitEnv(units, parts);
     const set = read?.env;
     if (set !== undefined) {
-      secrets = [...secrets, ...named.names.flatMap((name) => set[name] ? withSentForms({ name, value: set[name] }) : [])];
+      r.secrets = [...r.secrets, ...named.names.flatMap((name) => set[name] ? withSentForms({ name, value: set[name] }) : [])];
     }
     if (read !== null && 'why' in read) {
       const { name, file } = units!.host;
@@ -296,61 +403,80 @@ export async function doctor(
           'the unit anew or says why it can\'t.');
     }
     const unit = service === null ? null : read;
-    envFiles = read === null ? [] : read.files;
-    refusedUnit = service === null && read !== null ? units!.host.file : null;
+    r.envFiles = read === null ? [] : read.files;
+    r.refusedUnit = service === null && read !== null ? units!.host.file : null;
     const given = { ...(manager === 'launchd' ? parts.launchdGives() : {}), ...managed };
     const built = serviceEnv(work, root, given, unit === null ? null : unit.env, parts.envLimitMs,
       service?.bun ?? process.execPath, typed, unit === null ? [] : unit.unset);
-    env = built.env;
-    passedOver = passedOverLines(work, root, given, unit === null ? null : unit.env, unit === null ? [] : unit.unset,
+    r.env = built.env;
+    r.passedOver = passedOverLines(work, root, given, unit === null ? null : unit.env, unit === null ? [] : unit.unset,
       built, manager, parts.envLimitMs, service?.bun ?? process.execPath, typed);
     const refusedHere = service === null && read !== null
       ? serviceEnv(work, root, given, read.env, parts.envLimitMs, process.execPath, typed, read.unset) : null;
-    secrets = [...secrets, ...known(env, built.base), ...(refusedHere === null ? [] : known(refusedHere.env, refusedHere.base))]
+    r.secrets = [...r.secrets, ...known(r.env, built.base), ...(refusedHere === null ? [] : known(refusedHere.env, refusedHere.base))]
       .flatMap(withSentForms)
       .filter((s, i, all) => all.findIndex((t) => t.name === s.name && t.value === s.value) === i);
   } catch (error) {
-    ctx.out(redact(banner));
-    ctx.out(redact(`  ✗ ${errorText(error)}`));
-    ctx.out(redact('Doctor stops here: it can\'t tell which values are secret, so it prints no check\'s output.'));
-    return 1;
+    ctx.out(redacted(r, banner));
+    ctx.out(redacted(r, `  ✗ ${errorText(error)}`));
+    ctx.out(redacted(r, 'Doctor stops here: it can\'t tell which values are secret, so it prints no check\'s output.'));
+    return false;
   }
-  ctx.out(redact(banner));
-  const recipeWarnings: string[] = [];
-  let recipeLoad: { recipe: Recipe; persistable: Record<string, unknown> } | { error: unknown } | null = null;
+  ctx.out(redacted(r, banner));
+  return true;
+}
+
+async function loadRecipe(r: Run): Promise<void> {
+  const { parts, work, recipePath, recipeRead, env, recipeWarnings } = r;
   if (recipePath !== null) {
     const warn = console.warn;
     console.warn = (...args: unknown[]) => { recipeWarnings.push(args.map(String).join(' ')); };
     try {
       if (recipeRead === null || 'error' in recipeRead) throw recipeRead?.error;
-      recipeLoad = await within(parts.recipeLimitMs, loadRecipeDocument(recipeRead.document, recipePath, { env }),
+      r.recipeLoad = await within(parts.recipeLimitMs, loadRecipeDocument(recipeRead.document, recipePath, { env }),
         'the fetch of its system prompt didn\'t answer in time');
     } catch (error) {
-      recipeLoad = { error };
+      r.recipeLoad = { error };
     } finally {
       console.warn = warn;
     }
   }
-  let servers: Server[] | null = null;
-  let serversError: unknown = null;
+  const recipeLoad = r.recipeLoad;
   if (recipeLoad !== null && !('error' in recipeLoad)) {
     try {
       const loaded = serversForRecipe(recipeLoad.recipe.mcpServers, join(work, 'mcpl-servers.json'), agentOverlayPath(work, env))
         .loaded as Server[];
       const heartbeat = recipeLoad.recipe.modules?.heartbeat;
-      servers = heartbeat === undefined || heartbeat === false ? loaded
+      r.servers = heartbeat === undefined || heartbeat === false ? loaded
         : withoutHeartbeatMcpl(loaded, (line) => recipeWarnings.push(line));
-      secrets = [...secrets, ...loaded.flatMap((server) => {
+      r.secrets = [...r.secrets, ...loaded.flatMap((server) => {
         const token = childEnv(server, env).DISCORD_TOKEN;
         return token && !new RegExp(`^${ENV_REFERENCE}$`).test(token)
           ? withSentForms({ name: 'DISCORD_TOKEN', value: token }) : [];
       })];
     } catch (error) {
-      serversError = error;
+      r.serversError = error;
     }
   }
 
-  const report = new Report(ctx.out, redact);
+}
+
+function placeData(r: Run): void {
+  const { root, sys, typed, service, env } = r;
+  r.commands = serviceCommands(root, sys);
+  r.startCommand = r.commands?.start ?? `${typed} service install <recipe>`;
+  try {
+    r.recordData = dataDirOf(root);
+  } catch {}
+  r.dataDir = service === null ? r.recordData : resolve(service.work, env.DATA_DIR || './data');
+  r.dataNamer = service === null ? 'The install record names' : env.DATA_DIR ? 'The service\'s DATA_DIR names'
+    : 'With no DATA_DIR in the service\'s environment, the host takes';
+}
+
+async function serviceSection(r: Run): Promise<void> {
+  const { report, parts, typed, units, service, serviceError, elsewhere, managerSaid, shellElsewhere, recipeRead,
+    manager, managerUnread, passedOver } = r;
+  let { serviceRuns, unitElsewhere, unitHere, stopped } = r;
   if (managerUnread !== null) {
     const asked = manager === 'launchd' ? 'launchd' : 'systemd\'s user manager';
     report.line(`With no service installed, doctor asked ${asked}, which a service installed here would ` +
@@ -358,327 +484,341 @@ export async function doctor(
       'known to doctor or hidden in what it prints.');
   }
 
-  let host: HostClient | NoHost = { reason: 'it wasn\'t asked', down: false };
-  let stopped = false;
-  let serviceRuns = false;
-  let unitElsewhere = false;
-  let unitHere = false;
-  let fitUnchecked = false;
-  let fitEstimated = false;
-  let filesUnread = false;
-  let pidUntold = false;
-  let notTheService = false;
-  let uncredentialed = false;
-  let unanswered = false;
-  let closedTabs = false;
-  let shellUnchecked = false;
-  let shellBarred = false;
-  let uncounted: string | null = null;
-  const commands = serviceCommands(root, sys);
-  const startCommand = commands?.start ?? `${typed} service install <recipe>`;
-  let recordData: string | null = null;
-  try {
-    recordData = dataDirOf(root);
-  } catch {}
-  const dataDir = service === null ? recordData : resolve(service.work, env.DATA_DIR || './data');
-  const dataNamer = service === null ? 'The install record names' : env.DATA_DIR ? 'The service\'s DATA_DIR names'
-    : 'With no DATA_DIR in the service\'s environment, the host takes';
-  try {
-    report.section('Service');
-    if (serviceError !== null) {
-      report.problem(elsewhere || managerSaid ? serviceError
-        : `${serviceError} \`${typed} service install <recipe>\` writes it anew, or says why it can't.`);
-    } else if (service === null) {
-      report.problem(units === null
-        ? `No service is installed for this install: \`${typed} service install\` writes one only on Linux and macOS, ` +
-          'for a directory whose name has a letter or digit.'
-        : `No service is installed for this install: ${units.host.file} isn't there.` +
-          (shellElsewhere === null ? ` \`${typed} service install <recipe>\` writes one and checks it.` : ''));
-    } else {
-      const installed = service;
-      await checked(report, 'The service check', async () => {
-        const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
-        const result = await parts.checkService(installed.units, installed.work, shellElsewhere !== null ? 'other'
-          : document === null ? null : recipeHasShell(document.raw), typed, true);
-        for (const line of result.lines) report.line(line);
-        if (!result.passed) report.problem('The service check above didn\'t pass.');
-        serviceRuns = result.passed && result.stopped !== true;
-        unitElsewhere = result.elsewhere === true;
-        unitHere = result.here === true;
-        if (result.stopped === true) {
-          stopped = true;
-          report.line('It\'s stopped.');
-        }
-      });
-      report.line(installed.units.manager === 'launchd'
-        ? `Doctor reads the environment ${installed.units.host.file} gives as the plist is on disk, which launchd takes up ` +
-          'only at the agent\'s next load, so a value changed there since then isn\'t what a running host has.'
-        : 'Doctor reads the environment the unit gives as systemd last loaded it, so a value a daemon-reload took up ' +
-          'after the host started isn\'t what a running host has.');
-    }
-    for (const line of passedOver) report.line(line);
-    if (shellElsewhere !== null) report.problem(shellElsewhere);
+  report.section('Service');
+  if (serviceError !== null) {
+    report.problem(elsewhere || managerSaid ? serviceError
+      : `${serviceError} \`${typed} service install <recipe>\` writes it anew, or says why it can't.`);
+  } else if (service === null) {
+    report.problem(units === null
+      ? `No service is installed for this install: \`${typed} service install\` writes one only on Linux and macOS, ` +
+        'for a directory whose name has a letter or digit.'
+      : `No service is installed for this install: ${units.host.file} isn't there.` +
+        (shellElsewhere === null ? ` \`${typed} service install <recipe>\` writes one and checks it.` : ''));
+  } else {
+    const installed = service;
+    await checked(report, 'The service check', async () => {
+      const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
+      const result = await parts.checkService(installed.units, installed.work, shellElsewhere !== null ? 'other'
+        : document === null ? null : recipeHasShell(document.raw), typed, true);
+      for (const line of result.lines) report.line(line);
+      if (!result.passed) report.problem('The service check above didn\'t pass.');
+      serviceRuns = result.passed && result.stopped !== true;
+      unitElsewhere = result.elsewhere === true;
+      unitHere = result.here === true;
+      if (result.stopped === true) {
+        stopped = true;
+        report.line('It\'s stopped.');
+      }
+    });
+    report.line(installed.units.manager === 'launchd'
+      ? `Doctor reads the environment ${installed.units.host.file} gives as the plist is on disk, which launchd takes up ` +
+        'only at the agent\'s next load, so a value changed there since then isn\'t what a running host has.'
+      : 'Doctor reads the environment the unit gives as systemd last loaded it, so a value a daemon-reload took up ' +
+        'after the host started isn\'t what a running host has.');
+  }
+  for (const line of passedOver) report.line(line);
+  if (shellElsewhere !== null) report.problem(shellElsewhere);
+  Object.assign(r, { serviceRuns, unitElsewhere, unitHere, stopped });
+}
 
-    report.section('Host');
-    if (service !== null && recordData !== null && !sameDirectory(dataDir!, recordData)) {
-      report.problem(`The service's host keeps its data in ${dataDir}, not the install record's ${recordData}. The host makes ` +
-        'its socket there, and this install\'s commands, doctor\'s host checks among them, look for it in the record\'s ' +
-        `directory, so they can't reach it. Set the service's DATA_DIR to ${recordData}, or ask for help.`);
+async function hostSection(r: Run): Promise<void> {
+  const { report, parts, typed, root, sys, service, recordData, dataDir, dataNamer, serviceRuns, stopped, unitElsewhere,
+    startCommand } = r;
+  let { host, pidUntold, notTheService } = r;
+  report.section('Host');
+  if (service !== null && recordData !== null && !sameDirectory(dataDir!, recordData)) {
+    report.problem(`The service's host keeps its data in ${dataDir}, not the install record's ${recordData}. The host makes ` +
+      'its socket there, and this install\'s commands, doctor\'s host checks among them, look for it in the record\'s ' +
+      `directory, so they can't reach it. Set the service's DATA_DIR to ${recordData}, or ask for help.`);
+  }
+  try {
+    host = await openHost(root);
+  } catch (error) {
+    host = { reason: errorText(error), down: false };
+  }
+  if ('reason' in host && stopped && host.down) {
+    report.line(`No host answers, since its service is stopped: \`${startCommand}\` starts it.`);
+  } else if ('reason' in host) {
+    report.problem(`No host answers: ${host.reason}.`);
+    if (host.down && serviceRuns) {
+      report.line(`The service is running, so its host may still be starting: run ${typed} doctor again in a minute. If it ` +
+        'still doesn\'t answer then, its log says why.');
     }
-    try {
-      host = await openHost(root);
-    } catch (error) {
-      host = { reason: errorText(error), down: false };
+    if (host.down && service !== null) {
+      await checked(report, 'Naming the service\'s own lines', () => {
+        for (const line of serviceLines(root, sys) ?? []) report.line(line);
+      });
     }
-    if ('reason' in host && stopped && host.down) {
-      report.line(`No host answers, since its service is stopped: \`${startCommand}\` starts it.`);
-    } else if ('reason' in host) {
-      report.problem(`No host answers: ${host.reason}.`);
-      if (host.down && serviceRuns) {
-        report.line(`The service is running, so its host may still be starting: run ${typed} doctor again in a minute. If it ` +
-          'still doesn\'t answer then, its log says why.');
+  } else {
+    const answering = host;
+    let open = true;
+    void answering.closed.then(() => { open = false; });
+    const ownPid = async (): Promise<{ pid: string } | { why: string } | null> => {
+      if (service === null) return null;
+      try {
+        return await parts.servicePid(service.units);
+      } catch (error) {
+        return { why: errorText(error) };
       }
-      if (host.down && service !== null) {
-        await checked(report, 'Naming the service\'s own lines', () => {
-          for (const line of serviceLines(root, sys) ?? []) report.line(line);
-        });
+    };
+    // A close that comes while a synchronous read of the manager holds the event loop isn't seen until the loop
+    // turns.
+    const stillAnswers = async (): Promise<boolean> =>
+      open && await answering.request({ type: 'describe' }, parts.hostLimitMs) !== null;
+    const reread = async (pid: string): Promise<'holds' | 'changed' | { why: string }> => {
+      const now = await ownPid();
+      if (now !== null && 'why' in now) return now;
+      return now !== null && now.pid === pid && await stillAnswers() ? 'holds' : 'changed';
+    };
+    const changed = () => {
+      report.line(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, but the service's host ` +
+        `changed during the check, so whether it's the service's can't be told: run ${typed} doctor again.`);
+      pidUntold = true;
+    };
+    const findThenKill = (pid: number): string | null => service!.units.manager === 'systemd-user'
+      ? `Run \`${systemctlLine(sys, `status ${pid}`)}\` first: where the host runs in a unit of this user's systemd, it ` +
+        `names that unit. Then \`kill ${pid}\` stops it. If a host answers again, doctor's next run names its pid.`
+      : null;
+    const untold = (why: string) => {
+      report.line(`The host answers: pid ${answering.ready.pid}, recipe ${answering.ready.recipe}. Whether it's the ` +
+        `service's host can't be told: ${why.replace(/\.$/, '')}.`);
+      pidUntold = true;
+    };
+    if (unitElsewhere) {
+      untold('systemd runs the service\'s unit in another directory, said above, so its main process isn\'t compared with ' +
+        'this host');
+    } else if (stopped) {
+      const now = await reread('0');
+      if (now === 'changed') changed();
+      else if (now !== 'holds') untold(now.why);
+      else {
+        notTheService = true;
+        report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, though the service ` +
+          'is stopped, so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below ' +
+          `are of it. Stop it before \`${startCommand}\`, since a host the service starts takes this install's socket ` +
+          `from one that holds it. ${findThenKill(answering.ready.pid) ?? `\`kill ${answering.ready.pid}\` stops it.`}`);
       }
     } else {
-      const answering = host;
-      let open = true;
-      void answering.closed.then(() => { open = false; });
-      const ownPid = async (): Promise<{ pid: string } | { why: string } | null> => {
-        if (service === null) return null;
-        try {
-          return await parts.servicePid(service.units);
-        } catch (error) {
-          return { why: errorText(error) };
-        }
-      };
-      // A close that comes while a synchronous read of the manager holds the event loop isn't seen until the loop
-      // turns.
-      const stillAnswers = async (): Promise<boolean> =>
-        open && await answering.request({ type: 'describe' }, parts.hostLimitMs) !== null;
-      const changed = () => {
-        report.line(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, but the service's host ` +
-          `changed during the check, so whether it's the service's can't be told: run ${typed} doctor again.`);
-        pidUntold = true;
-      };
-      const findThenKill = (pid: number): string | null => service!.units.manager === 'systemd-user'
-        ? `Run \`${systemctlLine(sys, `status ${pid}`)}\` first: where the host runs in a unit of this user's systemd, it ` +
-          `names that unit. Then \`kill ${pid}\` stops it. If a host answers again, doctor's next run names its pid.`
-        : null;
-      const untold = (why: string) => {
-        report.line(`The host answers: pid ${answering.ready.pid}, recipe ${answering.ready.recipe}. Whether it's the ` +
-          `service's host can't be told: ${why.replace(/\.$/, '')}.`);
-        pidUntold = true;
-      };
-      if (unitElsewhere) {
-        untold('systemd runs the service\'s unit in another directory, said above, so its main process isn\'t compared with ' +
-          'this host');
-      } else if (stopped) {
-        const now = await ownPid();
-        if (now !== null && 'why' in now) untold(now.why);
-        else if (now !== null && (now.pid !== '0' || !(await stillAnswers()))) changed();
+      const own = await ownPid();
+      if (own !== null && 'pid' in own && own.pid !== String(answering.ready.pid)) {
+        if (await reread(own.pid) !== 'holds') changed();
         else {
           notTheService = true;
-          report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, though the service ` +
-            'is stopped, so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below ' +
-            `are of it. Stop it before \`${startCommand}\`, since a host the service starts takes this install's socket ` +
-            `from one that holds it. ${findThenKill(answering.ready.pid) ?? `\`kill ${answering.ready.pid}\` stops it.`}`);
+          report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, but ` +
+            `${own.pid === '0' ? `${service!.units.host.name} has no main process` : `${service!.units.host.name}'s main process is ${own.pid}`}, ` +
+            'so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of ' +
+            'it. Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
+            'service\'s own host can\'t be reached while it does' +
+            (findThenKill(answering.ready.pid) === null ? `: \`kill ${answering.ready.pid}\` stops it.`
+              : `. ${findThenKill(answering.ready.pid)}`));
+        }
+      } else if (own !== null && 'why' in own) {
+        untold(own.why);
+      } else {
+        report.ok(`The host answers: pid ${answering.ready.pid}, recipe ${answering.ready.recipe}.`);
+      }
+    }
+    answering.subscribe([]);
+  }
+  const dataState = dataDir === null ? null : pathState(dataDir);
+  if (dataState === 'gone') {
+    report.problem(`${dataNamer} ${dataDir} as the resident's data directory, and it isn't there. It holds ` +
+      'the resident\'s history and memory, and a host started now would begin on an empty one, so put it back if you ' +
+      'have it, or ask for help, before starting the service.');
+  } else if (dataDir !== null && dataState === 'there' && statSync(dataDir, { throwIfNoEntry: false })?.isDirectory() === false) {
+    report.problem(`${dataNamer} ${dataDir} as the resident's data directory, and it isn't a directory, so the ` +
+      'host can\'t keep the resident\'s history and memory there. Put the data directory back there if you have it, or ask ' +
+      'for help, before starting the service.');
+  } else if (dataState !== null && dataState !== 'there') {
+    report.problem(`${dataNamer} ${dataDir} as the resident's data directory, and it can't be looked at ` +
+      `(${dataState.why}), so whether it's there can't be told. ${dataState.repair}`);
+  }
+  Object.assign(r, { host, pidUntold, notTheService });
+}
+
+function ask(r: Run): void {
+  r.counting = asked(r, 'count-check');
+  r.counting?.catch(() => {});
+  r.calls = asked(r, 'health');
+  r.calls?.catch(() => {});
+}
+
+function asked(r: Run, op: keyof typeof CHECKS): Promise<HostEvent | null> | null {
+  const running = r.host;
+  return 'reason' in running ? null : running.request({ type: 'panel-request', op }, r.parts.hostLimitMs);
+}
+
+async function read<T>(r: Run, op: keyof typeof CHECKS, answering: Promise<HostEvent | null> | null):
+  Promise<{ data: T } | null> {
+  const { report, parts, typed, commands } = r;
+    if (answering === null) return null;
+    const answer = await answering;
+    if (answer === null) {
+      report.problem(`The host didn't answer ${CHECKS[op]} within ${parts.hostLimitMs / 1000} s, or its connection ` +
+        `closed first. Run ${typed} doctor again` + (commands === null ? '.' : `; \`${commands.log}\` follows the host's log.`));
+      return null;
+    }
+    if (answer.ok !== true) {
+      const error = String(answer.error ?? 'no reason given');
+      report.problem(`The host refused ${CHECKS[op]}: ${error}.` + (!error.startsWith('unknown panel op') ? ''
+        : ' The running host is an older release than this command, so it doesn\'t know this check: restarting the ' +
+          `${commands === null ? 'host' : `service (\`${commands.stop}\`, then \`${commands.start}\`)`} starts it on this release.`));
+      return null;
+    }
+    return { data: answer.data as T };
+}
+
+async function recipeSection(r: Run): Promise<void> {
+  const { report, parts, service, recipeLoad, recipePath, recipeWarnings, env, counting } = r;
+  let { recipe, uses, fitUnchecked, fitEstimated, emptyCompressionSaid } = r;
+  report.section('Recipe');
+  if (service === null) {
+    report.line('Which recipe the service runs is in its unit, so it isn\'t checked without one.');
+  } else if (recipeLoad !== null && !('error' in recipeLoad)) {
+    recipe = recipeLoad.recipe;
+    uses = namedOutsideServers(recipeLoad.persistable);
+    report.ok(`${recipePath} loads.`);
+    for (const line of recipeWarnings) report.line(line);
+  } else {
+    const error = recipeLoad?.error;
+    report.problem(error instanceof Late ? `${recipePath} didn't load within ${parts.recipeLimitMs / 1000} s: ${error.message}.`
+      : `${recipePath} doesn't load: ${errorText(error)}`);
+    for (const line of recipeWarnings) report.line(line);
+  }
+  const loaded = recipe;
+  if (loaded !== null) {
+    await checked(report, 'The fit check', async () => {
+      const model = recipeModel(loaded, env.MODEL);
+      const counted = await besideOf(counting, model, effectiveContextBudgetTokens(loaded, model), startingTailTokens(loaded, model),
+        recipeDigest(loaded));
+      const fit = runningFit(loaded, env.MODEL, 'tokens' in counted ? counted.tokens : undefined);
+      if (!fit.checked) {
+        report.line(fit.line);
+        fitUnchecked = true;
+      } else if (!fit.fits) report.problem(fit.refusal);
+      else if ('tokens' in counted && fit.spare !== undefined) {
+        report.ok(`It fits ${model}'s window, with about ${n(fit.spare)} tokens left for the reply and for what modules add ` +
+          `at each turn, by context-manager's estimate of the conversation: the system prompt and tools the host sends ` +
+          `count ${n(counted.tokens)}.`);
+        if (fit.spare < effectiveMaxTokens(loaded)) {
+          report.line(`That's less than the ${n(effectiveMaxTokens(loaded))} tokens agent.maxTokens lets a reply take, so a ` +
+            'reply that long wouldn\'t fit in what\'s left, by this estimate.');
         }
       } else {
-        const own = await ownPid();
-        if (own !== null && 'pid' in own && own.pid !== String(answering.ready.pid)) {
-          const again = await ownPid();
-          if (again === null || !('pid' in again) || again.pid !== own.pid || !(await stillAnswers())) changed();
-          else {
-            notTheService = true;
-            report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, but ` +
-              `${own.pid === '0' ? `${service!.units.host.name} has no main process` : `${service!.units.host.name}'s main process is ${own.pid}`}, ` +
-              'so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of ' +
-              'it. Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
-              'service\'s own host can\'t be reached while it does' +
-              (findThenKill(answering.ready.pid) === null ? `: \`kill ${answering.ready.pid}\` stops it.`
-                : `. ${findThenKill(answering.ready.pid)}`));
-          }
-        } else if (own !== null && 'why' in own) {
-          untold(own.why);
-        } else {
-          report.ok(`The host answers: pid ${answering.ready.pid}, recipe ${answering.ready.recipe}.`);
+        report.ok(`It fits ${model}'s window.`);
+        if ('why' in counted) {
+          if (counting !== null) fitEstimated = true;
+          report.line(`The system prompt and tools the host sends weren't counted (${counted.why}), so this is the check the ` +
+            'host makes at load, by estimate.');
         }
       }
-      answering.subscribe([]);
-    }
-    const dataState = dataDir === null ? null : pathState(dataDir);
-    if (dataState === 'gone') {
-      report.problem(`${dataNamer} ${dataDir} as the resident's data directory, and it isn't there. It holds ` +
-        'the resident\'s history and memory, and a host started now would begin on an empty one, so put it back if you ' +
-        'have it, or ask for help, before starting the service.');
-    } else if (dataDir !== null && dataState === 'there' && statSync(dataDir, { throwIfNoEntry: false })?.isDirectory() === false) {
-      report.problem(`${dataNamer} ${dataDir} as the resident's data directory, and it isn't a directory, so the ` +
-        'host can\'t keep the resident\'s history and memory there. Put the data directory back there if you have it, or ask ' +
-        'for help, before starting the service.');
-    } else if (dataState !== null && dataState !== 'there') {
-      report.problem(`${dataNamer} ${dataDir} as the resident's data directory, and it can't be looked at ` +
-        `(${dataState.why}), so whether it's there can't be told. ${dataState.repair}`);
-    }
-    const running = host;
-    const asked = (op: keyof typeof CHECKS): Promise<HostEvent | null> | null =>
-      'reason' in running ? null : running.request({ type: 'panel-request', op }, parts.hostLimitMs);
-    const read = async <T>(op: keyof typeof CHECKS, answering: Promise<HostEvent | null> | null): Promise<{ data: T } | null> => {
-      if (answering === null) return null;
-      const answer = await answering;
-      if (answer === null) {
-        report.problem(`The host didn't answer ${CHECKS[op]} within ${parts.hostLimitMs / 1000} s, or its connection ` +
-          `closed first. Run ${typed} doctor again` + (commands === null ? '.' : `; \`${commands.log}\` follows the host's log.`));
-        return null;
-      }
-      if (answer.ok !== true) {
-        const error = String(answer.error ?? 'no reason given');
-        report.problem(`The host refused ${CHECKS[op]}: ${error}.` + (!error.startsWith('unknown panel op') ? ''
-          : ' The running host is an older release than this command, so it doesn\'t know this check: restarting the ' +
-            `${commands === null ? 'host' : `service (\`${commands.stop}\`, then \`${commands.start}\`)`} starts it on this release.`));
-        return null;
-      }
-      return { data: answer.data as T };
-    };
-    const counting = asked('count-check');
-    counting?.catch(() => {});
-    const calls = asked('health');
-    calls?.catch(() => {});
-
-    report.section('Recipe');
-    let recipe: Recipe | null = null;
-    let uses: Map<string, string[]> | null = null;
-    if (service === null) {
-      report.line('Which recipe the service runs is in its unit, so it isn\'t checked without one.');
-    } else if (recipeLoad !== null && !('error' in recipeLoad)) {
-      recipe = recipeLoad.recipe;
-      uses = namedOutsideServers(recipeLoad.persistable);
-      report.ok(`${recipePath} loads.`);
-      for (const line of recipeWarnings) report.line(line);
-    } else {
-      const error = recipeLoad?.error;
-      report.problem(error instanceof Late ? `${recipePath} didn't load within ${parts.recipeLimitMs / 1000} s: ${error.message}.`
-        : `${recipePath} doesn't load: ${errorText(error)}`);
-      for (const line of recipeWarnings) report.line(line);
-    }
-    const loaded = recipe;
-    let emptyCompressionSaid = false;
-    if (loaded !== null) {
-      await checked(report, 'The fit check', async () => {
-        const model = recipeModel(loaded, env.MODEL);
-        const counted = await besideOf(counting, model, effectiveContextBudgetTokens(loaded, model), startingTailTokens(loaded, model),
-          recipeDigest(loaded));
-        const fit = runningFit(loaded, env.MODEL, 'tokens' in counted ? counted.tokens : undefined);
-        if (!fit.checked) {
-          report.line(fit.line);
-          fitUnchecked = true;
-        } else if (!fit.fits) report.problem(fit.refusal);
-        else if ('tokens' in counted && fit.spare !== undefined) {
-          report.ok(`It fits ${model}'s window, with about ${n(fit.spare)} tokens left for the reply and for what modules add ` +
-            `at each turn, by context-manager's estimate of the conversation: the system prompt and tools the host sends ` +
-            `count ${n(counted.tokens)}.`);
-          if (fit.spare < effectiveMaxTokens(loaded)) {
-            report.line(`That's less than the ${n(effectiveMaxTokens(loaded))} tokens agent.maxTokens lets a reply take, so a ` +
-              'reply that long wouldn\'t fit in what\'s left, by this estimate.');
-          }
-        } else {
-          report.ok(`It fits ${model}'s window.`);
-          if ('why' in counted) {
-            if (counting !== null) fitEstimated = true;
-            report.line(`The system prompt and tools the host sends weren't counted (${counted.why}), so this is the check the ` +
-              'host makes at load, by estimate.');
-          }
-        }
-      });
-      if (compressionModelOf(loaded, recipeModel(loaded, env.MODEL)) === '') {
-        report.problem(EMPTY_COMPRESSION);
-        emptyCompressionSaid = true;
-      }
-    }
-
-    report.section('Token counts');
-    if ('reason' in host) report.line('count_tokens wasn\'t asked: that needs the host running.');
-    else {
-      await checked(report, 'The token counts', async () => {
-        const answer = await read<CountCheck>('count-check', counting);
-        if (answer !== null) {
-          const onAnthropic = recipe !== null && resolveProvider(recipe) === 'anthropic';
-          const refused = onAnthropic ? refusedCredential(credentialOf(await calls?.catch(() => null) ?? null))
-            : { words: '', problem: true };
-          countLines(report, answer.data, work, emptyCompressionSaid, onAnthropic, refused, typed);
-          const sources = [answer.data.agent.source, answer.data.compression?.source];
-          uncredentialed = sources.includes('count_tokens_no_credential');
-          unanswered = sources.some((source) => source === 'count_tokens_timeout' || source === 'count_tokens_error');
-        }
-      });
-    }
-
-    report.section('Model calls');
-    if ('reason' in host) report.line('The host\'s counts of its model calls weren\'t asked: that needs the host running.');
-    else {
-      await checked(report, 'The counts of its model calls', async () => {
-        const answer = await read<unknown>('health', calls);
-        const logged = service === null || commands === null || notTheService || pidUntold ? null : units;
-        if (answer !== null) uncounted = callLines(report, agentCalls(answer.data), recipe?.agent.name, logged);
-      });
-    }
-
-    report.section('Servers');
-    if ('reason' in host) report.line('The shell\'s real call wasn\'t made: that needs the host running.');
-    else {
-      await checked(report, 'The shell\'s call', async () => {
-        const answer = await read<ShellCheck>('shell-check', asked('shell-check'));
-        if (answer !== null) {
-          shellLines(report, answer.data, commands);
-          closedTabs = answer.data.closedTabs.length > 0;
-          shellUnchecked = (answer.data.unchecked ?? []).length > 0;
-          shellBarred = (answer.data.notAllowed ?? []).length > 0;
-        }
-      });
-    }
-    let unknown = serviceError !== null
-      ? 'which servers run is in the recipe the service\'s unit names, and doctor can\'t use that unit'
-      : service === null ? 'which servers run is in the recipe the service\'s unit names, and there\'s no unit'
-        : 'which servers run is in the recipe, which didn\'t load';
-    if (serversError !== null) {
-      report.problem(`The recipe's server list doesn't resolve: ${errorText(serversError)}`);
-      unknown = 'the recipe\'s server list doesn\'t resolve';
-    }
-    await checked(report, 'The stored secrets\' check', () => {
-      filesUnread = storedSecretLines(report, work, env, servers, uses, unknown, storedNames, envFiles, refusedUnit);
     });
+    if (compressionModelOf(loaded, recipeModel(loaded, env.MODEL)) === '') {
+      report.problem(EMPTY_COMPRESSION);
+      emptyCompressionSaid = true;
+    }
+  }
+  Object.assign(r, { recipe, uses, fitUnchecked, fitEstimated, emptyCompressionSaid });
+}
 
-    report.section('Discord');
-    if (servers === null) report.line(`Discord isn't checked: ${unknown}.`);
-    else {
-      const named = servers.filter((s) => [s.command, ...(Array.isArray(s.args) ? s.args : [])]
-        .some((part) => typeof part === 'string' && part.includes('discord-mcpl')));
-      const discord = named.filter((s) => openedBy(s) === 'spawn');
-      for (const server of named) {
-        const opened = openedBy(server);
-        if (opened === 'dial') {
-          report.line(`${server.id} is dialed at its url, not started by the host, so its Discord bot isn't checked here.`);
-        } else if (opened === null) report.line(`${server.id} isn't checked here, since the host refuses its entry.`);
+async function tokenCountsSection(r: Run): Promise<void> {
+  const { report, host, counting, calls, recipe, work, emptyCompressionSaid, typed } = r;
+  let { uncredentialed, unanswered } = r;
+  report.section('Token counts');
+  if ('reason' in host) report.line('count_tokens wasn\'t asked: that needs the host running.');
+  else {
+    await checked(report, 'The token counts', async () => {
+      const answer = await read<CountCheck>(r, 'count-check', counting);
+      if (answer !== null) {
+        const onAnthropic = recipe !== null && resolveProvider(recipe) === 'anthropic';
+        const refused = onAnthropic ? refusedCredential(credentialOf(await calls?.catch(() => null) ?? null))
+          : { words: '', problem: true };
+        countLines(report, answer.data, work, emptyCompressionSaid, onAnthropic, refused, typed);
+        const sources = [answer.data.agent.source, answer.data.compression?.source];
+        uncredentialed = sources.includes('count_tokens_no_credential');
+        unanswered = sources.some((source) => source === 'count_tokens_timeout' || source === 'count_tokens_error');
       }
-      if (named.length === 0) report.line('No server the recipe runs is Discord\'s.');
-      for (const server of discord) {
-        if (discord.length > 1) report.line(`The entry ${server.id}:`);
-        try {
-          const checked = await checkDiscord(childEnv(server, env), { fetch: parts.fetch, workingDir: work, command: typed });
-          for (const line of checked.lines) report.line(line);
-          report.problems += checked.problems.length;
-        } catch (error) {
-          report.problem(`The Discord check of ${server.id} failed: ${errorText(error)}`);
-        }
+    });
+  }
+  Object.assign(r, { uncredentialed, unanswered });
+}
+
+async function modelCallsSection(r: Run): Promise<void> {
+  const { report, host, calls, service, commands, notTheService, pidUntold, units, recipe } = r;
+  let { uncounted } = r;
+  report.section('Model calls');
+  if ('reason' in host) report.line('The host\'s counts of its model calls weren\'t asked: that needs the host running.');
+  else {
+    await checked(report, 'The counts of its model calls', async () => {
+      const answer = await read<unknown>(r, 'health', calls);
+      const logged = service === null || commands === null || notTheService || pidUntold ? null : units;
+      if (answer !== null) uncounted = callLines(report, agentCalls(answer.data), recipe?.agent.name, logged);
+    });
+  }
+  Object.assign(r, { uncounted });
+}
+
+async function serversSection(r: Run): Promise<void> {
+  const { report, host, commands, serviceError, service, serversError, work, env, servers, uses, storedNames, envFiles,
+    refusedUnit } = r;
+  let { closedTabs, shellUnchecked, shellBarred, filesUnread, unknown } = r;
+  report.section('Servers');
+  if ('reason' in host) report.line('The shell\'s real call wasn\'t made: that needs the host running.');
+  else {
+    await checked(report, 'The shell\'s call', async () => {
+      const answer = await read<ShellCheck>(r, 'shell-check', asked(r, 'shell-check'));
+      if (answer !== null) {
+        shellLines(report, answer.data, commands);
+        closedTabs = answer.data.closedTabs.length > 0;
+        shellUnchecked = (answer.data.unchecked ?? []).length > 0;
+        shellBarred = (answer.data.notAllowed ?? []).length > 0;
+      }
+    });
+  }
+  unknown = serviceError !== null
+    ? 'which servers run is in the recipe the service\'s unit names, and doctor can\'t use that unit'
+    : service === null ? 'which servers run is in the recipe the service\'s unit names, and there\'s no unit'
+      : 'which servers run is in the recipe, which didn\'t load';
+  if (serversError !== null) {
+    report.problem(`The recipe's server list doesn't resolve: ${errorText(serversError)}`);
+    unknown = 'the recipe\'s server list doesn\'t resolve';
+  }
+  await checked(report, 'The stored secrets\' check', () => {
+    filesUnread = storedSecretLines(report, work, env, servers, uses, unknown, storedNames, envFiles, refusedUnit);
+  });
+  Object.assign(r, { closedTabs, shellUnchecked, shellBarred, filesUnread, unknown });
+}
+
+async function discordSection(r: Run): Promise<void> {
+  const { report, parts, servers, unknown, env, work, typed } = r;
+  report.section('Discord');
+  if (servers === null) report.line(`Discord isn't checked: ${unknown}.`);
+  else {
+    const named = servers.filter((s) => [s.command, ...(Array.isArray(s.args) ? s.args : [])]
+      .some((part) => typeof part === 'string' && part.includes('discord-mcpl')));
+    const discord = named.filter((s) => openedBy(s) === 'spawn');
+    for (const server of named) {
+      const opened = openedBy(server);
+      if (opened === 'dial') {
+        report.line(`${server.id} is dialed at its url, not started by the host, so its Discord bot isn't checked here.`);
+      } else if (opened === null) report.line(`${server.id} isn't checked here, since the host refuses its entry.`);
+    }
+    if (named.length === 0) report.line('No server the recipe runs is Discord\'s.');
+    for (const server of discord) {
+      if (discord.length > 1) report.line(`The entry ${server.id}:`);
+      try {
+        const checked = await checkDiscord(childEnv(server, env), { fetch: parts.fetch, workingDir: work, command: typed });
+        for (const line of checked.lines) report.line(line);
+        report.problems += checked.problems.length;
+      } catch (error) {
+        report.problem(`The Discord check of ${server.id} failed: ${errorText(error)}`);
       }
     }
-  } finally {
-    if (!('reason' in host)) host.close();
   }
+}
 
+async function channelsSection(r: Run): Promise<void> {
+  const { report, work, typed } = r;
   const closed = await channelsClosed(join(work, 'logs', 'failures.log'));
   if (typeof closed === 'string' || closed.closes.length > 0 || closed.undecoded > 0) {
     report.section('Channels the subscription GC closed (logs/failures.log):');
@@ -698,8 +838,11 @@ export async function doctor(
         `${closed.undecoded === 1 ? 'it' : 'they'} would name may have been closed too.`);
     }
   }
+  r.closed = closed;
+}
 
-  let ladderRan = false;
+function ladderSection(r: Run): void {
+  const { report, parts, serviceError, service, unitHere, unitElsewhere, dataDir, work, secrets } = r;
   let tooOld: string | null = null;
   if (serviceError !== null) {
     report.section('The ladder reads the service\'s unit, so it doesn\'t run while doctor can\'t use that unit.');
@@ -727,7 +870,7 @@ export async function doctor(
         XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}`,
       },
     });
-    ladderRan = true;
+    r.ladderRan = true;
     const cut = ran.error !== undefined || ran.signal !== null;
     const breaks = Math.max(0, ...secrets.map(({ value }) => value.split('\n').length - 1));
     let dropped = 0;
@@ -766,7 +909,11 @@ export async function doctor(
       }
     }
   }
+}
 
+function closingLine(r: Run): number {
+  const { ctx, report, host, uncounted, ladderRan, storedNames, filesUnread, fitUnchecked, fitEstimated, closed,
+    uncredentialed, unanswered, closedTabs, pidUntold, shellUnchecked, shellBarred } = r;
   const unmade = [
     ...('reason' in host ? ['the host\'s checks weren\'t made'] : []),
     ...(uncounted === null ? [] : [`${uncounted}'s model calls weren't checked`]),
