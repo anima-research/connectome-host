@@ -50,7 +50,6 @@ export interface ServiceSystem {
   bun: string;
   owner(path: string): number;
   cgroup(): string | null;
-  environ(pid: string): string;
   which(name: string): string | null;
   run(command: string, args: string[], env: Record<string, string>): Ran;
   readRecipe(recipe: string): Promise<unknown>;
@@ -82,7 +81,6 @@ export function machine(): ServiceSystem {
         return null;
       }
     },
-    environ: (pid) => readFileSync(`/proc/${pid}/environ`, 'utf-8'),
     which: (name) => Bun.which(name),
     run: (command, args, env) => {
       try {
@@ -212,13 +210,13 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   if (shellBin !== null) envWritable(envFile);
   const shell = shellBin === null ? null : await shellPlan(sys, work, shellBin);
   if (shell !== null) {
-    if (!shell.newPort && !(await sys.portFree(Number(shell.port))) &&
-      heldPort(sys, manager, env, names.shell) !== Number(shell.port)) {
-      throw new Refusal(`SESSION_SERVER_PORT in ${envFile} is ${shell.port}, and something other than this install's ` +
-        `shell daemon, ${names.shell.name}, is listening on it, as a copied install's original daemon would be. This ` +
-        `install's shell clients would reach that process, with ${shell.newToken ? 'a new' : 'the stored'} token. Give ` +
-        `this install a port of its own as SESSION_SERVER_PORT in ${envFile}, or take that line away to have one ` +
-        'picked, then repeat this service install command. Nothing was written.');
+    if (!shell.newPort && !(await sys.portFree(Number(shell.port))) && !shellRuns(sys, manager, env, names.shell)) {
+      throw new Refusal(`SESSION_SERVER_PORT in ${envFile} is ${shell.port}. Something is listening on it, and ` +
+        `${manager === 'launchd' ? 'launchd' : 'systemd'} doesn't show this install's shell daemon, ${names.shell.name}, ` +
+        'running, as when another install took that port while this one was down. This install\'s shell clients would ' +
+        `reach that listener, with ${shell.newToken ? 'a new' : 'the stored'} token. Give this install a port of its own ` +
+        `as SESSION_SERVER_PORT in ${envFile}, or take that line away to have one picked, then repeat this service ` +
+        'install command. Nothing was written.');
     }
     if (!shell.newPort || !shell.newToken) {
       const kept = [...(shell.newPort ? [] : [`SESSION_SERVER_PORT ${shell.port}`]),
@@ -716,39 +714,11 @@ export function unitElsewhere(root: string, sys: ServiceSystem = machine()): { u
   return null;
 }
 
-/** The SESSION_SERVER_PORT the shell daemon's running process started with, or null when none runs. systemd shows a
- *  unit as it last loaded it, which a daemon-reload changes under a running process (systemd 259), and launchd starts
- *  each process of a loaded agent with the environment it was loaded with, which `launchctl print` shows, whatever its
- *  plist says since (macOS 26). */
-function heldPort(sys: ServiceSystem, manager: Manager, env: Record<string, string>, unit: ServiceUnit): number | null {
-  const cannotTell = (why: string) => new Refusal(`whether this install's shell daemon, ${unit.name}, holds the ` +
-    `stored SESSION_SERVER_PORT can't be told: ${why}. Nothing was written. Once that's put right, or that daemon is ` +
-    `stopped (${stopLine(sys, manager, unit.name)}), repeat this service install command with the same recipe.`);
-  if (manager === 'launchd') {
-    const state = agentState(sys, env, unit);
-    if (state.kind === 'unknown') throw cannotTell(`launchctl list ${unit.name} failed: ${state.why}`);
-    if (state.kind !== 'running') return null;
-    const target = `gui/${sys.uid}/${unit.name}`;
-    const shown = sys.run('launchctl', ['print', target], env);
-    if (shown.status !== 0) throw cannotTell(`launchctl print ${target} failed: ${launchctlFailure(shown)}`);
-    const loaded = /^\tenvironment = \{\n((?:\t\t.*\n)*)\t\}$/m.exec(shown.stdout)?.[1] ?? '';
-    const port = /^\t\tSESSION_SERVER_PORT => (.*)$/m.exec(loaded)?.[1];
-    if (port === undefined) throw cannotTell('launchd shows no SESSION_SERVER_PORT in the environment it runs it with');
-    return Number(port);
-  }
-  const shown = showUnit(sys, env, unit.name, ['MainPID']);
-  if (typeof shown === 'string') throw cannotTell(shown);
-  const pid = shown.get('MainPID') || '0';
-  if (pid === '0') return null;
-  let environ: string;
-  try {
-    environ = sys.environ(pid);
-  } catch (error) {
-    throw cannotTell(`the environment of its process, pid ${pid}, can't be read: ${errorText(error)}`);
-  }
-  const port = /(?:^|\0)SESSION_SERVER_PORT=([^\0]*)/.exec(environ)?.[1];
-  if (port === undefined) throw cannotTell(`its process, pid ${pid}, has no SESSION_SERVER_PORT in its environment`);
-  return Number(port);
+/** systemd shows a unit as activating between its restarts, as when its daemon can't bind its port. */
+function shellRuns(sys: ServiceSystem, manager: Manager, env: Record<string, string>, unit: ServiceUnit): boolean {
+  if (manager === 'launchd') return agentState(sys, env, unit).kind === 'running';
+  const shown = showUnit(sys, env, unit.name, ['ActiveState']);
+  return typeof shown !== 'string' && shown.get('ActiveState') === 'active';
 }
 
 function fileDirectory(sys: ServiceSystem, env: Record<string, string>, manager: Manager,
