@@ -5,8 +5,7 @@ import {
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { ContractError, RESTART_EXIT_CODE, SUPERVISED_ENV, realOrResolved, writeTextAtomic } from '../update/contract.js';
-import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/setup.js';
+import { ContractError, RESTART_EXIT_CODE, SUPERVISED_ENV, writeTextAtomic } from '../update/contract.js';
 import { shellWord } from '../update/launcher.js';
 import { lingerOf } from '../setup/linger.js';
 import { StoredSecrets, envForm, envLink, readEnvFile, writeEnvValue } from '../setup/secrets.js';
@@ -14,6 +13,9 @@ import { readRecipeDocument } from '../recipe-document.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import {
+  type ManagerSystem, RESTART_PROPERTIES, agentState, childEnv, fileDirectory, launchctlFailure, ownerOf, readOr, restartPolicy, runsFrom, runsHere, showUnit, stateOf, stderrOf, systemctlLine, systemdUnits,
+} from './service-manager.js';
 import { Refusal, plain, plist, serviceUnits, systemdUnit, type Manager, type ServiceUnit } from './service-unit.js';
 import { shownToPerson } from './shown.js';
 
@@ -31,27 +33,16 @@ const READY_WAIT_MS = 60_000;
 const EXIT_TIMEOUT_S = 5;
 const UNLOAD_POLL_MS = 100;
 const serviceUsage = (cmd: string) => `${cmd} service install <recipe>`;
+// Keep this install's own: a unit in one of these states has its process up, or coming up.
 const RUNNING = new Set(['active', 'activating', 'reloading']);
-const STOPPING = new Set([...RUNNING, 'deactivating']);
 
-export interface Ran {
-  status: number | null;
-  stdout: string;
-  stderr: string;
-}
-
-export interface ServiceSystem {
-  platform: NodeJS.Platform;
+export interface ServiceSystem extends ManagerSystem {
   user: string;
-  uid: number;
-  home: string;
   cwd: string;
-  env: Record<string, string | undefined>;
   bun: string;
   owner(path: string): number;
   cgroup(): string | null;
   which(name: string): string | null;
-  run(command: string, args: string[], env: Record<string, string>): Ran;
   readRecipe(recipe: string): Promise<unknown>;
   linger(user: string): boolean | null;
   portFree(port: number): Promise<boolean>;
@@ -568,10 +559,6 @@ function insideNeither(sys: ServiceSystem, manager: Manager,
     'service, such as over ssh.');
 }
 
-function runsHere(directory: string | null, work: string): boolean {
-  return directory !== null && realOrResolved(directory) === realOrResolved(work);
-}
-
 function noOtherUnit(ctx: CliContext, work: string, names: { host: ServiceUnit; shell: ServiceUnit },
   sys: ServiceSystem, env: Record<string, string>): void {
   const run = (args: string[]) => {
@@ -681,19 +668,6 @@ function insideOf(sys: ServiceSystem, manager: Manager, units: ServiceUnit[]): S
     : sys.env.XPC_SERVICE_NAME === unit.name);
 }
 
-type AgentState = { kind: 'unloaded' } | { kind: 'loaded'; exit?: string } |
-  { kind: 'running'; pid: string } | { kind: 'unknown'; why: string };
-
-function agentState(sys: ServiceSystem, env: Record<string, string>, unit: ServiceUnit): AgentState {
-  const listed = sys.run('launchctl', ['list', unit.name], env);
-  if (listed.status === 113) return { kind: 'unloaded' };
-  if (listed.status !== 0) return { kind: 'unknown', why: launchctlFailure(listed) };
-  const pid = pidOf(listed.stdout);
-  return pid === undefined
-    ? { kind: 'loaded', exit: /"LastExitStatus"\s*=\s*(-?\d+);/.exec(listed.stdout)?.[1] }
-    : { kind: 'running', pid };
-}
-
 function mayRunHere(sys: ServiceSystem, manager: Manager, unit: ServiceUnit, work: string): boolean {
   return namedElsewhere(sys, manager, unit, work) === undefined;
 }
@@ -725,62 +699,6 @@ function shellRuns(sys: ServiceSystem, manager: Manager, env: Record<string, str
   if (manager === 'launchd') return agentState(sys, env, unit).kind === 'running';
   const shown = showUnit(sys, env, unit.name, ['ActiveState']);
   return typeof shown !== 'string' && shown.get('ActiveState') === 'active';
-}
-
-function fileDirectory(sys: ServiceSystem, env: Record<string, string>, manager: Manager,
-  unit: ServiceUnit, text: string): string | null {
-  const set = manager === 'systemd-user'
-    ? [...text.matchAll(/^WorkingDirectory=(.*)$/gm)].at(-1)?.[1]?.replace(/^-/, '').replace(/%%/g, '%') ?? null
-    : plistField(sys, env, unit.file, 'WorkingDirectory');
-  return set === null || set === '' ? null : realOrResolved(set === '~' ? sys.home : set);
-}
-
-function plistField(sys: ServiceSystem, env: Record<string, string>, path: string, key: string): string | null {
-  const type = sys.run('plutil', ['-type', key, path], env);
-  if (type.status !== 0) {
-    const lint = sys.run('plutil', ['-lint', path], env);
-    if (lint.status !== 0) throw new Error(lint.stderr.trim() || lint.stdout.trim() || `plutil exited with ${lint.status}`);
-    return null;
-  }
-  if (type.stdout !== 'string\n') return null;
-  const raw = sys.run('plutil', ['-extract', key, 'raw', '-o', '-', path], env);
-  if (raw.status !== 0) throw new Error(raw.stderr.trim() || raw.stdout.trim() || `plutil exited with ${raw.status}`);
-  // plutil raw adds one LF; spaces and any newline in the value itself remain part of that value.
-  return raw.stdout.replace(/\n$/, '');
-}
-
-/** systemctl show (systemd 257) gives WorkingDirectory=-/x as !/x, ~ as ~, and an unset one under the user manager as
- *  ! and the home, its default. */
-function runsFrom(shown: string, home: string): string | null {
-  const set = shown.replace(/^[-!+@:]+/, '');
-  if (set === '' || (shown.startsWith('!') && realOrResolved(set) === realOrResolved(home))) return null;
-  return realOrResolved(set === '~' ? home : set);
-}
-
-type Owner = { kind: 'ok' } | { kind: 'other'; runsIn: string | null; from: string; loadedOnly?: boolean } | { kind: 'untold' }
-  | { kind: 'unshown'; shown: string };
-
-function ownerOf(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
-  env: Record<string, string>): Owner {
-  const text = readOr(unit.file);
-  if (text !== null) {
-    const runsIn = fileDirectory(sys, env, manager, unit, text);
-    if (!runsHere(runsIn, work)) return { kind: 'other', runsIn, from: unit.file };
-  }
-  if (manager !== 'systemd-user') {
-    if (text !== null) return { kind: 'ok' };
-    const state = agentState(sys, env, unit);
-    if (state.kind === 'unknown') return { kind: 'unshown', shown: `launchctl list ${unit.name} failed: ${state.why}` };
-    return state.kind === 'unloaded' ? { kind: 'ok' } : { kind: 'untold' };
-  }
-  const shown = showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'WorkingDirectory', 'FragmentPath']);
-  if (typeof shown === 'string') return { kind: 'unshown', shown };
-  if (shown.get('LoadState') === 'not-found') {
-    return STOPPING.has(shown.get('ActiveState') ?? '') ? { kind: 'untold' } : { kind: 'ok' };
-  }
-  const runsIn = runsFrom(shown.get('WorkingDirectory') ?? '', sys.home);
-  return runsHere(runsIn, work) ? { kind: 'ok' }
-    : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file, loadedOnly: text !== null };
 }
 
 function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
@@ -940,60 +858,11 @@ function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, sh
   }
 }
 
-function childEnv(sys: ServiceSystem): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(sys.env)) if (value !== undefined) env[key] = value;
-  if (sys.platform === 'linux' && !env.XDG_RUNTIME_DIR) env.XDG_RUNTIME_DIR = `/run/user/${sys.uid}`;
-  return env;
-}
-
-function launchctlFailure(ran: Ran): string {
-  return stderrOf({ ...ran, stderr: ran.stderr.split('\n').filter((line) =>
-    line.trim() !== 'Try re-running the command as root for richer errors.').join('\n') });
-}
-
-function stderrOf(ran: Ran): string {
-  return (ran.stderr.trim() || `exit ${ran.status}`).replace(/\.$/, '');
-}
-
-function systemctlLine(sys: Pick<ServiceSystem, 'env' | 'uid'>, args: string): string {
-  return `${sys.env.XDG_RUNTIME_DIR ? '' : `XDG_RUNTIME_DIR=/run/user/${sys.uid} `}systemctl --user ${args}`;
-}
-
 function systemctl(sys: ServiceSystem, env: Record<string, string>, args: string[]): void {
   const ran = sys.run('systemctl', ['--user', ...args], env);
   if (ran.status !== 0) {
     throw new Refusal(`systemctl --user ${args.join(' ')} failed: ${stderrOf(ran)}. Once that's put right, repeat ` +
       'this service install command with the same recipe.');
-  }
-}
-
-function pidOf(listed: string): string | undefined {
-  return /"PID"\s*=\s*(\d+);/.exec(listed)?.[1];
-}
-
-function stateOf(shown: Map<string, string>): string {
-  const [active, sub] = [shown.get('ActiveState') || '?', shown.get('SubState') || '?'];
-  return sub === active ? active : `${active} (${sub})`;
-}
-
-function showUnit(sys: ServiceSystem, env: Record<string, string>, name: string,
-  properties: string[]): Map<string, string> | string {
-  const ran = sys.run('systemctl', ['--user', 'show', `--property=${properties.join(',')}`, '--', name], env);
-  if (ran.status !== 0) {
-    return `systemd couldn't be asked about ${name}: ${stderrOf(ran)} ` +
-      `(${systemctlLine(sys, `show ${name}`)})`;
-  }
-  return new Map(ran.stdout.split('\n').filter((line) => line.includes('='))
-    .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
-}
-
-function readOr(path: string): string | null {
-  try {
-    return readFileSync(path, 'utf-8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
   }
 }
 
