@@ -1107,6 +1107,16 @@ describe.skipIf(ladderUnrunnable)('what the ladder withholds', () => {
     expect(out).not.toContain('Zq9');
   });
 
+  test('a value that holds a line separator other than a newline is withheld whole in a message\'s preview', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    const secret = 'Zq9\u2028SEC-77';
+    writeFileSync(join(at.work, 'data', 'discord-mcpl-debug.log'),
+      `${new Date(at.now * 1000).toISOString()} handleDiscordMessage:enter {"channelName":"general","contentPreview":"pre ${secret} more"}\n`);
+    const { out } = ladder(at, [], { CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify([['DISCORD_TOKEN', secret]]) });
+    expect(out).toMatch(/discord event seen .*#general: pre <DISCORD_TOKEN> more…/);
+    expect(out).not.toContain('Zq9');
+  });
+
   test('a value is withheld in the forms doctor\'s redactor matches: in another ASCII case, and trimmed where doctor passes that form', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const long = `[inference-failed] ${'x'.repeat(125)}zQ9-CASE-SECRET-55 and the rest`;
