@@ -38,7 +38,6 @@ export interface SetupWorld {
   bun: { path: string; version: string };
   hasSudo: boolean;
   lingerOf(user: string): boolean | null;
-  /** How the Mac's session check ended where it didn't exit 0, in ended()'s words, or null where it did. */
   macSession(): string | null;
   timeZone: string | undefined;
   userExists(user: string): boolean | null;
