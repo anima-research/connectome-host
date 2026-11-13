@@ -214,7 +214,7 @@ function fakeManager(dir: string, opts: {
     ...(opts.fails === undefined ? [] : [`echo '${opts.fails}' >&2`, 'exit 1']),
     ...(opts.envFails === undefined ? [] : [`if [ "$*" = "--user show-environment" ] || [ "$1" = getenv ]; then echo '${opts.envFails}' >&2; exit 1; fi`]),
     ...(opts.ownersFail === undefined ? [] : [`if [ "$1 $2 $3" = "--user show --property=LoadState,ActiveState,WorkingDirectory,FragmentPath" ] || [ "$1" = list ]; then echo '${opts.ownersFail}' >&2; exit 1; fi`]),
-    `if [ "$1 $2 $3 $4" = "--user show --property=LoadState,ActiveState,WorkingDirectory,FragmentPath --" ] && [ $# -eq 5 ]; then if [ -f "${join(at, 'owners')}/$5" ]; then cat "${join(at, 'owners')}/$5"; else printf 'LoadState=not-found\nActiveState=inactive\nWorkingDirectory=\nFragmentPath=\n'; fi; exit 0; fi`,
+    `if [ "$1 $2 $3 $4" = "--user show --property=LoadState,ActiveState,WorkingDirectory,FragmentPath --" ] && [ $# -eq 5 ]; then if [ -f "${join(at, 'owners')}/$5" ]; then grep -E '^(LoadState|ActiveState|WorkingDirectory|FragmentPath)=' "${join(at, 'owners')}/$5"; else printf 'LoadState=not-found\nActiveState=inactive\nWorkingDirectory=\nFragmentPath=\n'; fi; exit 0; fi`,
     `if [ "$1" = list ] && [ $# -eq 2 ]; then if [ -f "${join(at, 'listed')}/$2" ]; then cat "${join(at, 'listed')}/$2"; exit 0; fi; echo "Could not find service \"$2\" in domain for port" >&2; exit 113; fi`,
     `if [ "$*" = "--user show-environment" ]; then cat ${join(at, 'environment')}; exit 0; fi`,
     ...(opts.unitFails === undefined ? [] : [`if [ "$*" = "--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service" ]; then echo '${opts.unitFails}' >&2; exit 1; fi`]),
