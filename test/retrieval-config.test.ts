@@ -112,6 +112,7 @@ describe('the config a host builds its retrieval module from', () => {
       membrane,
       retrievalModel: 'test-model',
       retrievalReasoning: undefined,
+      deterministic: true,
       maxInjectedLessons: 3,
       maxMessageTokens: 10_000,
     });

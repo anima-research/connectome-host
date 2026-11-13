@@ -16,7 +16,7 @@ import { createWriteStream, mkdirSync } from 'node:fs';
 import { sessionMarker } from './session-marker.js';
 import type { AgentFramework, SessionUsage } from '@animalabs/agent-framework';
 import { continuesBody, type AutobiographicalStrategy, type StoredMessage } from '@animalabs/context-manager';
-import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
+import type { Membrane } from '@animalabs/membrane';
 import type { SubagentModule, ActiveSubagent } from './modules/subagent-module.js';
 import { FleetTreeAggregator } from './state/fleet-tree-aggregator.js';
 import type { AgentNode } from './state/agent-tree-reducer.js';
@@ -34,6 +34,7 @@ import { handleCommand, resetBranchState } from './commands.js';
 import { refusedWhileSwitching, trackOperatorWork } from './session-switch.js';
 import { formatQuotaReadout } from './quota-meter.js';
 import { recipeModel } from './recipe.js';
+import { activitySummaryRequest } from './activity-summary.js';
 import { takeRecipeWarnings } from './recipe-warnings.js';
 import { bunFloorNotice } from './bun-floor-check.js';
 import { hostUpdate } from './update/update.js';
@@ -561,16 +562,7 @@ export async function runTui(app: AppContext): Promise<void> {
 
     summaryPending.add(agentName);
     try {
-      const window = transcript.slice(-SUMMARY_WINDOW);
-      const request: NormalizedRequest = {
-        messages: [{
-          participant: 'user',
-          content: [{ type: 'text', text: `Agent activity stream:\n\n${window}\n\nWhat is this agent doing right now? Answer in 5-10 words.` }],
-        }],
-        system: 'You distill an agent\'s activity into a terse status phrase. 5-10 words max. No punctuation. Specific, not generic.',
-        config: { model: 'claude-haiku-4-5-20251001', maxTokens: 40, temperature: 0.3 },
-      };
-      const response = await membrane.complete(request);
+      const response = await membrane.complete(activitySummaryRequest(app.recipe, transcript.slice(-SUMMARY_WINDOW)));
       const text = response.content
         .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
         .map(b => b.text).join('').trim();
