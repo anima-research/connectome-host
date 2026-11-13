@@ -1566,21 +1566,23 @@ describe('connectome doctor', () => {
   test('a ladder ended partway through a line doesn\'t have that line shown, so a secret cut short there isn\'t either', async () => {
     const at = install({ drop: ['ANTHROPIC_API_KEY'] });
     const r = await withKey('sk-secret-key', () => withHost(at, HEALTHY_HOST, () =>
-      run(at, { python: ladderSaying(at, 'echo "a whole line"\nprintf "sk-secret-k"\nsleep 5'), ladderLimitMs: 1000 })));
+      run(at, { python: ladderSaying(at, 'echo "a whole line"\nprintf "sk-secret-k"\nkill -TERM $$') })));
     expect(r.out).toContain('a whole line');
     expect(r.out).not.toContain('sk-secret-k');
     expect(r.out).toContain('The ladder was ended, and doctor doesn\'t show the line it printed last: a secret cut short ' +
       'there couldn\'t be hidden.');
+    expect(r.out).toContain('The ladder was ended by SIGTERM');
   }, 20_000);
 
   test('a ladder ended just after the line break of a secret that holds one doesn\'t have that secret\'s first line shown', async () => {
     const at = install({ drop: ['ANTHROPIC_API_KEY'] });
     const r = await withKey('sk-part-one\nsk-part-two', () => withHost(at, HEALTHY_HOST, () =>
-      run(at, { python: ladderSaying(at, 'echo "a whole line"\nprintf "sk-part-one\\n"\nsleep 5'), ladderLimitMs: 1000 })));
+      run(at, { python: ladderSaying(at, 'echo "a whole line"\nprintf "sk-part-one\\n"\nkill -TERM $$') })));
     expect(r.out).toContain('a whole line');
     expect(r.out).not.toContain('sk-part-one');
     expect(r.out).toContain('The ladder was ended, and doctor doesn\'t show the line it printed last: a secret cut short ' +
       'there couldn\'t be hidden.');
+    expect(r.out).toContain('The ladder was ended by SIGTERM');
   }, 20_000);
 
   test('the ladder runs with XDG_RUNTIME_DIR, the user manager\'s default when doctor\'s shell has none', async () => {
