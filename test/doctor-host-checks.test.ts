@@ -449,18 +449,36 @@ describe('count-check, with a stand-in for the framework', () => {
   });
 
   test('a count whose answer stops partway through its body is reported as timed out when the limit runs out, too', async () => {
+    const start = '{"input_tokens":';
     let asked = 0;
-    const server = Bun.serve({ port: 0, hostname: '127.0.0.1', fetch: () => {
-      asked += 1;
-      return new Response(new ReadableStream({ start: (body) => body.enqueue(new TextEncoder().encode('{"input_tokens":')) }),
-        { headers: { 'content-type': 'application/json' } });
+    let sentAt: number | null = null;
+    const server = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: {
+      data(socket) {
+        if (sentAt !== null) return;
+        asked += 1;
+        const head = `HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 64\r\n\r\n${start}`;
+        if (socket.write(head) === head.length) sentAt = Date.now();
+      },
     } });
+    const realFetch = globalThis.fetch;
+    let headAt: number | null = null;
+    globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+      const answer = await realFetch(...args);
+      headAt = Date.now();
+      return answer;
+    }) as unknown as typeof fetch;
     try {
       setEnv({ COUNT_TOKENS_MODEL: undefined, ANTHROPIC_API_KEY: 'sk-count-test', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.port}` });
+      const began = Date.now();
       const check = await buildCountCheck(appWith('claude-agent-test', { type: 'passthrough' }), 300);
       expect(asked).toBe(1);
+      expect(sentAt).not.toBeNull();
+      expect(sentAt! - began).toBeLessThan(300);
+      expect(headAt).not.toBeNull();
+      expect(headAt! - began).toBeLessThan(300);
       expect(check.agent.source).toBe('count_tokens_timeout');
     } finally {
+      globalThis.fetch = realFetch;
       server.stop(true);
     }
   });
