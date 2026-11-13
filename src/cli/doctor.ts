@@ -1326,7 +1326,7 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
   });
   if ((ran.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
     throw new Error(`Bun didn't finish reading the service's environment in ${work} within ${limitMs / 1000} s: something ` +
-      'it runs as it starts, such as a bunfig.toml preload, didn\'t end. `bun -e 0`, run there, shows whether it ends, ' +
+      `it runs as it starts, such as a bunfig.toml preload, didn't end. \`${shellWord(bun)} -e 0\`, run there, shows whether it ends, ` +
       'though with your shell\'s environment, not the service\'s.');
   }
   if (ran.error !== undefined) {
@@ -1335,7 +1335,7 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
   }
   if (ran.status !== 0) {
     throw new Error(`Bun ${ran.status === null ? `was ended by ${ran.signal}` : `exited ${ran.status}`} in ${work} as it read ` +
-      'the service\'s environment, and its error isn\'t shown, since it can hold .env\'s values: run `bun -e 0` there to ' +
+      `the service's environment, and its error isn't shown, since it can hold .env's values: run \`${shellWord(bun)} -e 0\` there to ` +
       'see it, though it runs with your shell\'s environment, not the service\'s.');
   }
   let env: Record<string, string>;
@@ -1343,7 +1343,7 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
     env = JSON.parse(ran.stdout) as Record<string, string>;
   } catch {
     throw new Error(`Bun's answer in ${work} wasn't an environment doctor could read: something else wrote to its ` +
-      'output, as a bunfig.toml preload can. `bun -e 0`, run there, shows what writes, though with your shell\'s ' +
+      `output, as a bunfig.toml preload can. \`${shellWord(bun)} -e 0\`, run there, shows what writes, though with your shell's ` +
       `environment, not the service's; once nothing does, run ${typed} doctor again.`);
   }
   env[INSTALL_ROOT_ENV] = root;

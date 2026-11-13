@@ -86,6 +86,14 @@ function writeUnit(at: Install, recipe: string, work = at.work, bun = process.ex
     : plist(units.host.name, work, argv, env, join(work, 'logs', 'agent.log')));
 }
 
+function serviceBun(at: Install): string {
+  const path = join(at.work, 'service-bun');
+  writeFileSync(path, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`);
+  chmodSync(path, 0o755);
+  writeUnit(at, join(at.work, 'recipe.json'), at.work, path);
+  return path;
+}
+
 interface FakeHost { stop: () => void; received: string[] }
 
 function fakeHost(at: Install, answers: Record<string, unknown>, opts: { closeOnRequest?: boolean } = {}): FakeHost {
@@ -587,11 +595,12 @@ describe('connectome doctor', () => {
 
   test('when Bun fails in the working directory, doctor stops quoting none of its error, says how to see it, and withholds the install\'s path', async () => {
     const at = install({ prefix: `chost-${SECRETS.LONELY_SECRET}-`, stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'] });
+    serviceBun(at);
     writeFileSync(join(at.work, 'bunfig.toml'), 'preload = ["./pre.ts"]\n');
     writeFileSync(join(at.work, 'pre.ts'), 'throw new Error(`refused ${process.env.DISCORD_TOKEN}`);\n');
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(r.out).toMatch(/^connectome doctor: the install at .*<LONELY_SECRET>/);
-    expect(r.out).toMatch(/✗ Bun exited 1 in .*<LONELY_SECRET>.* as it read the service's environment, and its error isn't shown, since it can hold \.env's values: run `bun -e 0` there to see it, though it runs with your shell's environment, not the service's\./);
+    expect(r.out).toMatch(/✗ Bun exited 1 in .*<LONELY_SECRET>.* as it read the service's environment, and its error isn't shown, since it can hold \.env's values: run `\S*<LONELY_SECRET>\S*\/service-bun -e 0` there to see it, though it runs with your shell's environment, not the service's\./);
     expect(r.out + r.err).not.toContain('refused');
     expect(r.out).toContain('Doctor stops here');
     expect(r.out.slice(r.out.indexOf('Doctor stops here')).split('\n').length).toBe(1);
@@ -2011,8 +2020,10 @@ describe('connectome doctor: its waits, its remedies and its last line', () => {
       writeFileSync(join(at.work, 'hang.ts'),
         `require('node:fs').appendFileSync(${JSON.stringify(pids)}, process.pid + '\\n');\nfor (;;) Bun.sleepSync(60_000);\n`);
       writeFileSync(join(at.work, 'bunfig.toml'), 'preload = ["./hang.ts"]\n');
+      const bun = serviceBun(at);
       const r = await run(at, { envLimitMs: 500 });
       expect(r.out).toContain(`Bun didn't finish reading the service's environment in ${at.work} within 0.5 s`);
+      expect(r.out).toContain(`\`${bun} -e 0\`, run there, shows whether it ends`);
       expect(r.out).toContain('Doctor stops here');
       expect(r.status).toBe(1);
       expect(heldPids(pids).filter(running)).toEqual([]);
@@ -2317,10 +2328,11 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     expect(domain.out).toMatch(/Run `launchctl getenv \S+` as this user to see why, then run \S+ doctor again\./);
     expect(domain.out).toContain(`as this user to see why, then run ${join(launchd.root, 'connectome')} doctor again.`);
     const preloaded = install();
+    const bun = serviceBun(preloaded);
     writeFileSync(join(preloaded.work, 'preload.ts'), 'process.stdout.write("hello from a preload\\n");\n');
     writeFileSync(join(preloaded.work, 'bunfig.toml'), 'preload = ["./preload.ts"]\n');
     const noisy = await run(preloaded);
-    expect(noisy.out).toContain('`bun -e 0`, run there, shows what writes, though with your shell\'s environment, not the ' +
+    expect(noisy.out).toContain(`\`${bun} -e 0\`, run there, shows what writes, though with your shell's environment, not the ` +
       `service's; once nothing does, run ${join(preloaded.root, 'connectome')} doctor again.`);
   });
 });
