@@ -290,7 +290,7 @@ describe('connectome service install, run by the agent', () => {
       expect({ sentence, limits: limitsIn(sentence).filter((other) => other !== limit) }).toEqual({ sentence, limits: [] });
     }
     for (const piece of PIECES) {
-      if (['SETUP.md', 'With another harness', 'Going live'].includes(piece.heading ?? '')) continue;
+      if (['SETUP.md', 'SETUP.md, its other lines', 'With another harness', 'Going live'].includes(piece.heading ?? '')) continue;
       for (const sentence of piece.text.split(/(?<=\.) |\n/)) {
         if (!/connectome service install[^`]*` again/.test(sentence)) continue;
         expect({ sentence, routed: sentence.includes('("Going live")') }).toEqual({ sentence, routed: true });
