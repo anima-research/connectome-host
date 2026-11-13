@@ -1330,9 +1330,8 @@ test('on macOS install refuses before it writes where launchd shows no graphical
   f.systemd.graphicalSession = false;
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain('launchctl print gui/1001 failed: Could not find domain for user gui. launchd ' +
-    'starts a user\'s agents only in that user\'s graphical session, so while resident isn\'t logged in to the Mac\'s ' +
-    'graphical session there\'s none to start them in. Repeat this command once resident is logged in to it. Nothing ' +
-    'was written.');
+    'loads this service\'s agents, which name no session type, only once resident has logged in to the Mac\'s ' +
+    'graphical session. Repeat this command once resident is logged in to it. Nothing was written.');
   expect(f.systemd.calls).toEqual(['launchctl print gui/1001']);
   expect(existsSync(agentPlist(at))).toBe(false);
   expect(existsSync(join(at.work, '.env'))).toBe(false);
