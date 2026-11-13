@@ -3218,6 +3218,12 @@ export function validateRecipe(raw: unknown): Recipe {
       if (options.lifecycleReach !== undefined && options.lifecycleReach !== 'subtree' && options.lifecycleReach !== 'all') {
         throw new Error(`Recipe modules.subagents.lifecycleReach is ${JSON.stringify(options.lifecycleReach)}; it must be "subtree" or "all".`);
       }
+      // As agent.maxTokens: JSON 1e309 is Infinity, which the saved recipe
+      // wrote back as null, and a null here left every subagent on the
+      // framework's 4,096 after the next start, not on anything the recipe said.
+      if (typeof options.defaultMaxTokens === 'number' && !Number.isFinite(options.defaultMaxTokens)) {
+        throw new Error(`Recipe modules.subagents.defaultMaxTokens must be a finite number of tokens, got ${shown(options.defaultMaxTokens)}.`);
+      }
     }
 
     const history = mods.history;
