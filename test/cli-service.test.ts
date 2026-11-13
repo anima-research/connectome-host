@@ -517,6 +517,29 @@ test('the host unit runs start.js with the recipe from the working directory, wi
   expect(f.out).toContain(`Enabled ${HOST}, so systemd starts it at boot.`);
 });
 
+test('the host\'s unit, as install first writes it and in its supervised form, has systemd send its stop\'s SIGTERM to the host alone', async () => {
+  const at = install();
+  mkdirSync(`${hostUnit(at)}.d`, { recursive: true });
+  writeFileSync(join(`${hostUnit(at)}.d`, 'override.conf'), '[Service]\nRestart=no\n');
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  const first = readFileSync(hostUnit(at), 'utf-8');
+  expect(first).not.toContain('CONNECTOME_SUPERVISED');
+  expect(first).toContain('KillMode=mixed\n');
+  rmSync(`${hostUnit(at)}.d`, { recursive: true });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const supervised = readFileSync(hostUnit(at), 'utf-8');
+  expect(supervised).toContain('CONNECTOME_SUPERVISED=1');
+  expect(supervised).toContain('KillMode=mixed\n');
+});
+
+test('the shell daemon\'s unit leaves its stop to systemd\'s default', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  expect(readFileSync(shellUnit(at), 'utf-8')).not.toContain('KillMode');
+});
+
 test('the host\'s unit gives the host the data directory install.json names', async () => {
   const at = install();
   const kept = join(dirname(at.work), 'kept data');
