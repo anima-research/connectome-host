@@ -3248,11 +3248,15 @@ describe('connectome doctor, where whose unit it is is read as install reads it,
 
   test('BUN_OPTIONS that launchd gives is asked for, so a dotenv file it names is read for the stored secrets', async () => {
     const at = install({ manager: 'launchd', stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'OTHER_SECRET'] });
-    writeFileSync(join(at.work, 'other.env'), 'OTHER_SECRET=other-secret-value\n');
+    // Bun reads only the file --env-file names, so other.env carries .env's values too.
+    writeFileSync(join(at.work, 'other.env'), `${readFileSync(join(at.work, '.env'), 'utf-8')}\nOTHER_SECRET=other-secret-value\n`);
     const manager = fakeManager(at.work, { launchd: { BUN_OPTIONS: '--env-file=other.env' } });
-    const r = await withHost(at, HEALTHY_HOST, () => run(at, { launchctl: manager.path }));
+    const host = { ...HEALTHY_HOST, 'shell-check': { shells: [{ server: 'shell', answered: false, error: 'echoed other-secret-value' }],
+      notConnected: [], closedTabs: [] } };
+    const r = await withHost(at, host, () => run(at, { launchctl: manager.path }));
     expect(manager.calls()).toContain('getenv BUN_OPTIONS');
-    expect(r.out).not.toContain('OTHER_SECRET is in setup\'s list of stored secrets');
+    expect(r.out).toContain('shell\'s listSessions call failed: echoed <OTHER_SECRET>.');
+    expect(r.out).toMatch(/\n {2}OTHER_SECRET is in setup's list of stored secrets, and doctor finds no server given it: /);
     expect(r.out).not.toContain('other-secret-value');
   });
 
