@@ -151,7 +151,7 @@ describe('setup--discord', () => {
   });
 
   test('given a server and a username, it asks Discord for up to 1,000 members, its most, whose username or nickname starts with it, and gives them', async () => {
-    const discord = fakeDiscord([HOME]);
+    const discord = fakeDiscord([{ ...HOME, members: [...HOME.members, { id: '703', username: 'lovelace', global_name: 'Countess', nick: 'ada of the hall' }] }]);
     const { module } = install(discord);
     const r = await read(module, { server: '100', username: 'ada' });
     expect(r.success).toBe(true);
@@ -160,6 +160,7 @@ describe('setup--discord', () => {
       members: [
         { id: '700', username: 'ada_l', displayName: 'Ada', nickname: 'ada in home' },
         { id: '701', username: 'adam.k', displayName: 'Adam', nickname: null },
+        { id: '703', username: 'lovelace', displayName: 'Countess', nickname: 'ada of the hall' },
       ],
     });
     expect(discord.asked).toContain('/guilds/100/members/search?query=ada&limit=1000');
@@ -346,7 +347,7 @@ describe('setup--discord', () => {
 
   test('a call outside setup--discord\'s shapes is refused naming the value it refused, a stored secret by its name', async () => {
     const discord = fakeDiscord([HOME]);
-    const { module } = install(discord, `DISCORD_TOKEN="${TOKEN}"\nOPENAI_API_KEY="sk-test-secret-value"\n`);
+    const { module } = install(discord, `DISCORD_TOKEN="${TOKEN}"\nOPENAI_API_KEY="sk-test-secret-value"\nOTHER_SECRET='sk-quote"secret-value'\n`);
     const shapes = 'setup--discord searches members given both server, a server\'s id as it gives them, and username, ' +
       'the start of a username or server nickname. Call it with server alone to read that server, or with neither to ' +
       'read the servers and channels.';
@@ -354,9 +355,11 @@ describe('setup--discord', () => {
       [{ server: 'general' }, 'server is "general", which isn\'t a server\'s id: one is digits, given as text.'],
       [{ server: 100 }, 'server is 100, which isn\'t a server\'s id: one is digits, given as text.'],
       [{ server: 'sk-test-secret-value' }, 'server is "<OPENAI_API_KEY>", which isn\'t a server\'s id: one is digits, given as text.'],
+      [{ server: 'sk-quote"secret-value' }, 'server is "<OTHER_SECRET>", which isn\'t a server\'s id: one is digits, given as text.'],
       [{ username: 'ada' }, 'username is "ada", given without server, the server whose members to search.'],
       [{ server: '100', username: '  ' }, 'username is "  ", which holds no start of a name to search for.'],
       [{ server: '100', username: 7 }, 'username is 7, which holds no start of a name to search for.'],
+      [{ server: '100', username: 'ada\uD800' }, 'username holds a lone UTF-16 surrogate, so it isn\'t well-formed Unicode and can\'t be sent to Discord.'],
     ];
     for (const [input, says] of cases) {
       const r = await read(module, input);
