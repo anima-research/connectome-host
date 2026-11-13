@@ -128,8 +128,8 @@ export async function checkDiscord(
     return `${gets.by === 'given' ? 'Make DISCORD_TOKEN "${DISCORD_TOKEN}" in' : 'Add "DISCORD_TOKEN": "${DISCORD_TOKEN}" to'} the ` +
       `env of ${entry} in ${route.recipe}, then restart the service.`;
   };
-  // The one step for a token Discord refuses or a header can't carry, where it comes from.
-  const source = ((): string => {
+  // Keep this a function: it reads the dotenv files, and a token that works reads none.
+  const source = (): string => {
     const { gets } = route;
     if (gets.by === 'mapped') {
       const named = `${entry}.env.DISCORD_TOKEN`;
@@ -144,7 +144,7 @@ export async function checkDiscord(
         : `, which takes it as written: replace it with ${portal}, then restart the service.`);
     }
     return `The token is the service's DISCORD_TOKEN, which the server inherits. ${restore('DISCORD_TOKEN')}`;
-  })();
+  };
   const lines: string[] = [];
   const problems: string[] = [];
   const problem = (text: string): void => {
@@ -175,7 +175,8 @@ export async function checkDiscord(
   const again = `${unchecked}: run ${command} doctor again`;
   const reach = `${unchecked}: check that this machine can resolve and reach discord.com, then run ${command} doctor again`;
   const between = 'Something between this machine and Discord, such as a proxy, may be answering in its place.';
-  const refused = `Discord refused the bot token the server is given as DISCORD_TOKEN (401), ${unchecked}. ${source}`;
+  const refused = (): string =>
+    `Discord refused the bot token the server is given as DISCORD_TOKEN (401), ${unchecked}. ${source()}`;
   const reader = discordReader(token, { fetch: options.fetch, limitMs });
   const wordsFor = (failure: DiscordFailure): string => {
     const { path } = failure;
@@ -192,21 +193,21 @@ export async function checkDiscord(
             `${failure.retryAfter !== undefined ? waited(unchecked, failure.retryAfter, command)
               : failure.status === 429 || failure.status >= 500 ? again : unchecked}. ${between}`;
       case 'refused':
-        return refused;
+        return refused();
       case 'answered': {
         const wait = failure.retryAfter === undefined ? undefined : waited(unchecked, failure.retryAfter, command);
         return `Discord answered ${failure.status} to GET ${path}` +
           (failure.said !== null ? `: ${failure.said}${failure.code !== undefined ? ` (code ${failure.code})` : ''}` : ', with no message') +
           `, ${wait ?? (failure.status === 429 || failure.status >= 500 ? again : unchecked)}.` +
           (failure.status === 403 || failure.status === 404
-            ? path.startsWith('/guilds/') ? ` ${listed(command)}` : path === '/applications/@me' ? ` ${between}` : ''
+            ? path.startsWith('/guilds/') ? ` ${listed(command)}` : path === '/applications/@me' || path === '/users/@me' ? ` ${between}` : ''
             : '');
       }
     }
   };
 
   try {
-    const bot = await whoseToken(token, { fetch: options.fetch, limitMs }, { unchecked, again, reach, between, refused, source, command });
+    const bot = await whoseToken(token, { fetch: options.fetch, limitMs }, { unchecked, between, source });
     lines.push(`✓ The token in DISCORD_TOKEN works: the bot is ${bot.name} (${bot.id}).`);
 
     const app = await reader.get<{ flags?: number }>('/applications/@me');
@@ -250,36 +251,29 @@ export async function checkDiscord(
 async function whoseToken(
   token: string,
   options: { fetch: typeof fetch; limitMs: number },
-  words: { unchecked: string; again: string; reach: string; between: string; refused: string; source: string; command: string },
+  words: { unchecked: string; between: string; source: () => string },
 ): Promise<{ name: string; id: string }> {
   const path = '/users/@me';
   const check = await checkDiscordToken(token, options);
+  const after = (wait: number | undefined) => (wait === undefined ? {} : { retryAfter: wait });
   switch (check.kind) {
     case 'accepted': return check;
-    case 'refused': throw new DiscordAnswer(words.refused);
     case 'unsendable':
       throw new DiscordAnswer('The bot token the server is given as DISCORD_TOKEN holds a character a request header ' +
-        `can't carry, so it can't be a bot token and wasn't sent. The Discord checks after it weren't made. ${words.source}`);
-    case 'unanswered': throw new DiscordAnswer(`Discord couldn't be asked GET ${path}: ${check.why}, ${words.reach}.`);
-    case 'redirected':
-      throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}, a redirect, which doctor doesn't follow ` +
-        `with the token, ${words.unchecked}. ${words.between}`);
+        `can't carry, so it can't be a bot token and wasn't sent. The Discord checks after it weren't made. ${words.source()}`);
+    case 'refused': throw new DiscordFailed({ kind: 'refused', path });
+    case 'unanswered': throw new DiscordFailed({ kind: 'unanswered', path, timedOut: check.timedOut, why: check.why });
+    case 'redirected': throw new DiscordFailed({ kind: 'redirected', path, status: check.status });
     case 'unrecognized':
+      throw new DiscordFailed({ kind: 'unrecognized', path, status: check.status, ok: check.status >= 200 && check.status < 300,
+        ...after(check.retryAfter) });
     case 'answered':
-      if (check.kind === 'unrecognized' && (check.status < 200 || check.status >= 300)) {
-        throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path} with something other than JSON, ` +
-          `${check.retryAfter !== undefined ? waited(words.unchecked, check.retryAfter, words.command)
-            : check.status === 429 || check.status >= 500 ? words.again : words.unchecked}. ${words.between}`);
-      }
-      if (check.kind === 'unrecognized' || (check.status >= 200 && check.status < 300)) {
+      if (check.status >= 200 && check.status < 300) {
         throw new DiscordAnswer(`Discord answered GET ${path} with something other than the bot's user, ${words.unchecked}. ` +
           words.between);
       }
-      throw new DiscordAnswer(`Discord answered ${check.status} to GET ${path}` +
-        (check.said === null ? ', with no message' : `: ${check.said}${check.code !== undefined ? ` (code ${check.code})` : ''}`) +
-        `, ${check.retryAfter !== undefined ? waited(words.unchecked, check.retryAfter, words.command)
-          : check.status === 429 || check.status >= 500 ? words.again : words.unchecked}.` +
-        (check.status === 403 || check.status === 404 ? ` ${words.between}` : ''));
+      throw new DiscordFailed({ kind: 'answered', path, status: check.status, said: check.said,
+        ...(check.code !== undefined ? { code: check.code } : {}), ...after(check.retryAfter) });
   }
 }
 

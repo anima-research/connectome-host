@@ -213,6 +213,14 @@ describe('doctor: Discord', () => {
       `service's BOT_TOKEN is empty or unset. ${restoreStep(dir, 'BOT_TOKEN')}`]);
   });
 
+  test('a token that works reads no dotenv file, so one that can\'t be read changes nothing in the check', async () => {
+    const dir = workdir();
+    mkdirSync(join(dir, '.env.local'));
+    const r = await run({ DISCORD_TOKEN: TOKEN, DISCORD_GUILD_ID: '100' }, fakeDiscord({ flags: GATEWAY_MESSAGE_CONTENT, guilds: [HOME] }), dir);
+    expect(r.problems).toEqual([]);
+    expect(r.lines[0]).toStartWith('✓ The token in DISCORD_TOKEN works');
+  });
+
   test('a refused token that a dotenv file Bun reads before .env sets is put right in that file', async () => {
     const dir = workdir();
     writeFileSync(join(dir, '.env.local'), 'DISCORD_TOKEN=wrong-token-value\n');
