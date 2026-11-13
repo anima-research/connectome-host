@@ -2251,7 +2251,8 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
     expect(r.out).toContain('✗ A host answers, pid 4242, recipe Ember, but connectome-test.service\'s main process is 5151, so ' +
       'it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of it.');
     expect(r.out).toContain('Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
-      'service\'s own host can\'t be reached while it does: `kill 4242` stops it.');
+      'service\'s own host can\'t be reached while it does. `systemctl --user status 4242` names the unit it runs in, so run ' +
+      'it first.');
     expect(r.out).not.toContain('✓ The host answers');
     expect(r.status).toBe(1);
   });
@@ -2659,8 +2660,8 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
   test('a host that isn\'t the service\'s is said with how to find what starts it again, where systemd runs the service', async () => {
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { servicePid: async () => ({ pid: '5151' }) }));
-    expect(r.out).toContain('`kill 4242` stops it. If something starts it again, `systemctl --user status 4242` names the unit ' +
-      'it runs in, which is what to stop.');
+    expect(r.out).toContain('`systemctl --user status 4242` names the unit it runs in, so run it first. Then `kill 4242` stops ' +
+      'it. If something starts it again, that unit is what to stop.');
   });
 
   test('a host the service\'s pid matches only once, or found while a service read as stopped starts, is said as changed, with no kill', async () => {

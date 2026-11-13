@@ -439,11 +439,11 @@ export async function doctor(
               `${own.pid === '0' ? `${service!.units.host.name} has no main process` : `${service!.units.host.name}'s main process is ${own.pid}`}, ` +
               'so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of ' +
               'it. Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
-              `service's own host can't be reached while it does: \`kill ${answering.ready.pid}\` stops it.` +
+              'service\'s own host can\'t be reached while it does' +
               (service!.units.manager === 'systemd-user'
-                ? ` If something starts it again, \`systemctl --user status ${answering.ready.pid}\` names the unit it ` +
-                  'runs in, which is what to stop.'
-                : ''));
+                ? `. \`systemctl --user status ${answering.ready.pid}\` names the unit it runs in, so run it first. ` +
+                  `Then \`kill ${answering.ready.pid}\` stops it. If something starts it again, that unit is what to stop.`
+                : `: \`kill ${answering.ready.pid}\` stops it.`));
           }
         } else if (own !== null && 'why' in own) {
           untold(own.why);
