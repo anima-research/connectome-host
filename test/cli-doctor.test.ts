@@ -2659,6 +2659,14 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     expect(r.out).not.toContain(`claude-${at.root}`);
   });
 
+  test('a mode file the first Bun\'s read selects is read by the second with the install root, as the launcher starts the host\'s Bun', async () => {
+    const at = install({ env: { NODE_ENV: 'production' } });
+    writeFileSync(join(at.work, '.env.production'), 'MODEL=claude-${CONNECTOME_INSTALL_ROOT:-root-unset}\n');
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain(`claude-${at.root}`);
+    expect(r.out).not.toContain('claude-root-unset');
+  });
+
   test('a host that isn\'t the service\'s is said with how to find what starts it again, where systemd runs the service', async () => {
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { servicePid: async () => ({ pid: '5151' }) }));
