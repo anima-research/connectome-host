@@ -1210,6 +1210,29 @@ describe('connectome doctor', () => {
     expect(r.status).toBe(1);
   });
 
+  test('a count refused where the host\'s credential has a refresh token says what the host does with it, a problem only where auto-refresh is off', async () => {
+    const refused = { beside: STANDIN_BESIDE,
+      agent: { model: 'claude-small-window', countModel: 'claude-small-window', source: 'count_tokens_failed_401' },
+      compression: { model: 'claude-old', countModel: 'claude-old', source: 'count_tokens_failed_401' } };
+    const expiresAt = Date.parse('2026-11-12T05:00:00.000Z');
+    const host = (credential: Record<string, unknown>) => ({ ...HEALTHY_HOST, 'count-check': refused, health: { ...HEALTH, credential } });
+    const on = install({ env: { ANTHROPIC_OAUTH_AUTO_REFRESH: 'true' } });
+    const auto = await withHost(on, host({ kind: 'ok', rotatable: true, expiresAt }), () => run(on));
+    const tries = ' The host\'s credential has a refresh token and ANTHROPIC_OAUTH_AUTO_REFRESH is on, so its next model call, ' +
+      'refused the same way, tries to refresh it. The host has its access token expired at 2026-11-12T05:00:00.000Z. Where ' +
+      'that refresh fails, the host\'s log says why, in a line that starts "[anthropic-credentials] automatic refresh failed:".';
+    expect(auto.out).toContain(`So the context's makeup shows no exact total.${tries}`);
+    expect(auto.out).toContain(`count_tokens couldn't count with the compression model, claude-old: count_tokens refused the credential the host sent (401): its subscription login when it has one, else ANTHROPIC_AUTH_TOKEN, else ANTHROPIC_API_KEY.${tries}`);
+    expect(auto.out).not.toMatch(/✗.*401/);
+    expect(auto.out).not.toContain('Replace that credential');
+    const off = install();
+    const manual = await withHost(off, host({ kind: 'ok', rotatable: true }), () => run(off));
+    expect(manual.out).toMatch(/✗ count_tokens couldn't count with claude-small-window: .* So the context's makeup shows no exact total\. The host's credential has a refresh token, but ANTHROPIC_OAUTH_AUTO_REFRESH isn't on, so its next model call is refused too: refresh it with the host's `\/auth refresh`, in its terminal or the Web UI's command box\.$/m);
+    const fixed = install({ env: { ANTHROPIC_OAUTH_AUTO_REFRESH: 'true' } });
+    const plain = await withHost(fixed, host({ kind: 'ok', rotatable: false }), () => run(fixed));
+    expect(plain.out).toMatch(/✗ count_tokens couldn't count with claude-small-window: .* Replace that credential where the service gets it, and restart the service\.$/m);
+  });
+
   test('a count that fails, or an agent with no model, is said in words', async () => {
     const at = install();
     const r = await withHost(at, {

@@ -561,7 +561,10 @@ export async function doctor(
       await checked(report, 'The token counts', async () => {
         const answer = await read<CountCheck>('count-check', counting);
         if (answer !== null) {
-          countLines(report, answer.data, work, emptyCompressionSaid, recipe !== null && resolveProvider(recipe) === 'anthropic');
+          const refused = refusedCredential(credentialOf(await calls?.catch(() => null) ?? null),
+            ['1', 'true'].includes((env.ANTHROPIC_OAUTH_AUTO_REFRESH ?? '').trim().toLowerCase()));
+          countLines(report, answer.data, work, emptyCompressionSaid, recipe !== null && resolveProvider(recipe) === 'anthropic',
+            refused);
           const sources = [answer.data.agent.source, answer.data.compression?.source];
           uncredentialed = sources.includes('count_tokens_no_credential');
           unanswered = sources.some((source) => source === 'count_tokens_timeout' || source === 'count_tokens_error');
@@ -887,6 +890,34 @@ interface ShellCheck {
 }
 
 const REPLACE_CREDENTIAL = ' Replace that credential where the service gets it, and restart the service.';
+
+function credentialOf(answer: HostEvent | null): { rotatable: boolean; expiresAt?: number } | null {
+  if (answer?.ok !== true) return null;
+  const credential = (answer.data as { credential?: { rotatable?: unknown; expiresAt?: unknown } } | null)?.credential;
+  if (typeof credential?.rotatable !== 'boolean') return null;
+  const { rotatable, expiresAt } = credential;
+  return typeof expiresAt === 'number' && Number.isFinite(expiresAt) ? { rotatable, expiresAt } : { rotatable };
+}
+
+function refusedCredential(credential: { rotatable: boolean; expiresAt?: number } | null, autoRefresh: boolean):
+  { words: string; problem: boolean } {
+  if (credential === null || !credential.rotatable) return { words: REPLACE_CREDENTIAL, problem: true };
+  const expiry = credential.expiresAt === undefined ? ''
+    : ` The host has its access token ${credential.expiresAt < Date.now() ? 'expired' : 'expiring'} at ` +
+      `${new Date(credential.expiresAt).toISOString()}.`;
+  return autoRefresh
+    ? {
+      words: ' The host\'s credential has a refresh token and ANTHROPIC_OAUTH_AUTO_REFRESH is on, so its next model call, ' +
+        `refused the same way, tries to refresh it.${expiry} Where that refresh fails, the host's log says why, in a line ` +
+        'that starts "[anthropic-credentials] automatic refresh failed:".',
+      problem: false,
+    }
+    : {
+      words: ' The host\'s credential has a refresh token, but ANTHROPIC_OAUTH_AUTO_REFRESH isn\'t on, so its next model call ' +
+        `is refused too: refresh it with the host's \`/auth refresh\`, in its terminal or the Web UI's command box.${expiry}`,
+      problem: true,
+    };
+}
 const NO_CREDENTIAL = 'count_tokens had no Anthropic credential to send: the host looks for its subscription login, ' +
   'then ANTHROPIC_AUTH_TOKEN, then ANTHROPIC_API_KEY, and has none.';
 
@@ -905,7 +936,7 @@ function countFailure(source: string): string {
 }
 
 function countLines(report: Report, check: CountCheck, work: string, emptyCompressionSaid: boolean,
-  onAnthropic: boolean): void {
+  onAnthropic: boolean, refused: { words: string; problem: boolean }): void {
   const { agent, compression } = check;
   if (agent.source === 'count_tokens') report.ok(`count_tokens counts with ${agent.countModel}.`);
   else if (agent.source === 'count_tokens_no_credential') report.line(`${NO_CREDENTIAL} So the context's makeup shows no exact total.`);
@@ -914,13 +945,13 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
       : `${agent.model} isn't a Claude model it counts`}.`);
   } else {
     const said = `count_tokens couldn't count with ${agent.countModel}: ${countFailure(agent.source)}. So the ` +
-      'context\'s makeup shows no exact total.' + (agent.source === 'count_tokens_failed_401' ? REPLACE_CREDENTIAL : '') +
+      'context\'s makeup shows no exact total.' + (agent.source === 'count_tokens_failed_401' ? refused.words : '') +
       (agent.source !== 'count_tokens_failed_404' ? '' : ' A retired ' +
       'model answers 404, and the endpoint count_tokens asks (Anthropic\'s API, or the one ANTHROPIC_BASE_URL names) ' +
       'may answer it for a model it doesn\'t serve: set COUNT_TOKENS_MODEL in ' +
       `${join(work, '.env')} to a current Claude model, and restart the service, since the host reads it when it starts. ` +
       `${BEFORE_ENV}: where one sets it, set it there instead.`) + (passes(agent.source) ? PASSES : '');
-    if (onAnthropic && agent.source === 'count_tokens_failed_401') report.problem(said);
+    if (onAnthropic && agent.source === 'count_tokens_failed_401' && refused.problem) report.problem(said);
     else report.line(said);
   }
   if (compression === null) {
@@ -933,7 +964,7 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
     report.line(`The compression model, ${compression.model}, isn't a Claude model count_tokens counts, so it isn't checked.`);
   } else {
     report.line(`count_tokens couldn't count with the compression model, ${compression.model}: ` +
-      `${countFailure(compression.source)}.` + (compression.source === 'count_tokens_failed_401' ? REPLACE_CREDENTIAL : '') +
+      `${countFailure(compression.source)}.` + (compression.source === 'count_tokens_failed_401' ? refused.words : '') +
       (compression.source !== 'count_tokens_failed_404' ? '' : ' A retired ' +
       'model answers 404, and with a retired compression model folding stalls and the context can\'t compress under ' +
       'the window: change the recipe\'s agent.strategy.compressionModel to a current model' +
