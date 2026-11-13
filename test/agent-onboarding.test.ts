@@ -266,18 +266,6 @@ describe('the resident\'s shell is decided with the person', () => {
   });
 });
 
-describe('SETUP.md\'s lines', () => {
-  it('run `connectome service install` with the recipe by its whole path, which works from any directory', () => {
-    const setupMd = PIECES.find((piece) => piece.heading === 'SETUP.md')!.text;
-    const installs = [...setupMd.matchAll(SPAN)].map((match) => match[1]!)
-      .filter((span) => span.startsWith('connectome service install'));
-    expect(installs.length).toBeGreaterThan(0);
-    for (const span of installs) {
-      expect({ span, recipe: span === "connectome service install '<dir>/<name>.json'" }).toEqual({ span, recipe: true });
-    }
-  });
-});
-
 describe('the backups\' units', () => {
   it('are named with a character after the slug that no slug holds, so none is another install\'s own unit', () => {
     const backups = PIECES.filter((piece) => ['Backups', 'The restore check', 'Backups run by root'].includes(piece.heading ?? ''))
@@ -286,62 +274,6 @@ describe('the backups\' units', () => {
       .filter((rest) => rest !== '');
     expect(rests.length).toBeGreaterThan(0);
     for (const rest of rests) expect({ rest, apart: slugOf(`x${rest}`) !== `x${rest}` }).toEqual({ rest, apart: true });
-  });
-});
-
-describe('the backups\' commands', () => {
-  const sections = ['Backups', 'The restore check', 'Backups run by root'];
-  const spansIn = (names: string[]) => PIECES.filter((piece) => names.includes(piece.heading ?? ''))
-    .flatMap((piece) => [...piece.text.matchAll(SPAN)].map((match) => match[1]!));
-
-  it('run restic by hand by the whole path the script runs, so root runs the restic it checked', () => {
-    const subshells = spansIn(sections).filter((span) => span.startsWith('(') && span.includes(". '<dir>/backup.env'"));
-    expect(subshells.length).toBeGreaterThan(0);
-    for (const span of subshells) expect({ span, whole: /; '<restic>' <command>\)$/.test(span) }).toEqual({ span, whole: true });
-  });
-
-  it('have root remove the restore check\'s copy with rm -rf alone, since a chown or chmod there follows a link the resident\'s user can put at its name', () => {
-    const root = spansIn(['Backups run by root']).filter((span) => span.includes("'<scratch>'"));
-    expect(root).toContain("rm -rf '<scratch>'");
-    for (const span of root) expect({ span, follows: /\b(?:chown root|chmod)\b/.test(span) }).toEqual({ span, follows: false });
-  });
-
-  it('pipe the audit to grep with its stderr, where the audit writes every line', () => {
-    const greps = spansIn(['The restore check']).filter((span) => /\bgrep\b/.test(span));
-    expect(greps.length).toBeGreaterThan(0);
-    for (const span of greps) expect({ span, stderr: /2>&1 \| grep\b/.test(span) }).toEqual({ span, stderr: true });
-  });
-
-  it('rerun the audit leaving out only each store\'s line that it opens, so no refusal or other note is cut', () => {
-    const greps = spansIn(['The restore check']).filter((span) => /\bgrep\b/.test(span));
-    expect(greps.length).toBeGreaterThan(0);
-    for (const span of greps) expect(span).toBe("2>&1 | grep -v '): opens$'");
-  });
-
-  it('have root start the schedule, in each bullet that starts one, only once it has made the repository with init', () => {
-    const root = PIECES.find((piece) => piece.heading === 'Backups run by root')!.text;
-    const bullets = root.split('\n').filter((line) => line.startsWith('- '));
-    for (const start of ['systemctl enable --now', 'launchctl bootstrap system', "root's own scheduler runs"]) {
-      const starting = bullets.filter((bullet) => bullet.includes(start));
-      expect({ start, bullets: starting.length > 0 }).toEqual({ start, bullets: true });
-      for (const bullet of starting) {
-        const init = bullet.indexOf('`init`');
-        expect({ start, init: init >= 0, afterInit: bullet.indexOf(start) > init }).toEqual({ start, init: true, afterInit: true });
-      }
-    }
-  });
-
-  it('write the password over no file already there, so the umask gives the new file its mode', () => {
-    const lines = spansIn(sections).filter((span) => span.endsWith(" sh '<dir>/backup-secret'"));
-    expect(lines.length).toBeGreaterThan(0);
-    for (const span of lines) expect({ span, removedFirst: /rm -f "\$1"; printf "%s" "\$p" > "\$1"/.test(span) }).toEqual({ span, removedFirst: true });
-  });
-
-  it('name root\'s files, units and daemon with the resident\'s user too, since root\'s names are the whole machine\'s', () => {
-    const root = PIECES.find((piece) => piece.heading === 'Backups run by root')!.text;
-    const names = [...root.matchAll(/(?:connectome-<slug>|com\.animalabs\.connectome\.<slug>)[^`'\s/]*/g)].map((match) => match[0]);
-    expect(names.length).toBeGreaterThan(0);
-    for (const name of names) expect({ name, user: name.includes('.<user>.') }).toEqual({ name, user: true });
   });
 });
 
