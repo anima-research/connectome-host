@@ -15,7 +15,7 @@ import { HOST_ENTRY, LAUNCHER, readInstall, type LauncherOps } from '../src/upda
 import {
   ENTRY_POINT, entryPointText, parseArgs, passwdHome, setup, systemdUnits, type ServiceUnits, type SetupOptions,
 } from '../src/update/setup.js';
-import { INSTALL_COMMAND } from '../src/cli/install-command.js';
+import { INSTALL_COMMAND } from '../src/update/typed-command.js';
 
 let dir: string;
 let install: string;

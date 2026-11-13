@@ -7,7 +7,6 @@ import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { ContractError, RESTART_EXIT_CODE, SUPERVISED_ENV, realOrResolved, writeTextAtomic } from '../update/contract.js';
 import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/setup.js';
-import { shellWord } from '../update/launcher.js';
 import { lingerOf } from '../setup/linger.js';
 import { StoredSecrets, envForm, readEnvFile, writeEnvValue } from '../setup/secrets.js';
 import { readRecipeDocument } from '../recipe-document.js';
@@ -16,7 +15,7 @@ import { agentOverlayPath } from '../update/agent-overlay-path.js';
 import { THINKING_BINDING_PROBE_MS } from '../thinking-binding-bound.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
-import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, shellWord, typedCommand } from '../update/typed-command.js';
 import {
   Refusal, plain, plist, serviceUnits, systemdUnit, systemdWorkingDirectory, type Manager, type ServiceUnit,
 } from './service-unit.js';

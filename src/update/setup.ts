@@ -52,7 +52,8 @@ import {
   childrenRewrite, keptAccount, keptInRoot, lockForBinding, mapPath, moveAside, moveAsideByHand, movesPlaces, movingAside,
   sameDirectory, unfinishedWords, workingDirOf, type Moved, type Place,
 } from './rebind.js';
-import { INSTALL_COMMAND, typedCommand, writeInstallCommand } from '../cli/install-command.js';
+import { writeInstallCommand } from '../cli/install-command.js';
+import { INSTALL_COMMAND, typedCommand } from './typed-command.js';
 
 export { ENTRY_POINT };
 

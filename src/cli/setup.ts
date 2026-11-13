@@ -23,13 +23,14 @@ import {
   ContractError, EXTRA_STATE_LINE, WRITE_RECORD_AGAIN, keptOutsideLines, readCurrent, readRecord, readWithoutWaiting,
   realOrResolved, releaseDir, writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
-import { HOST_ENTRY, RELEASE_HOST, isUnder, shellWord } from '../update/launcher.js';
+import { HOST_ENTRY, RELEASE_HOST, isUnder } from '../update/launcher.js';
 import {
   MOVED_ASIDE_AFTERWARDS, bindingOf, childPathsOf, keptAccount, keptInRoot, mapPath, moveAsideByHand, movesPlaces, movingAside,
   unfinishedWords, type Binding, type KeptInRoot, type Place,
 } from '../update/rebind.js';
 import type { CliContext } from './connectome.js';
-import { INSTALL_COMMAND, SETUP_RECIPE, typedCommand } from './install-command.js';
+import { SETUP_RECIPE } from './install-command.js';
+import { INSTALL_COMMAND, shellWord, typedCommand } from '../update/typed-command.js';
 
 export const SETUP_USAGE = 'connectome setup discord';
 

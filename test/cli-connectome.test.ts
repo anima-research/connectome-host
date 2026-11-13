@@ -13,7 +13,8 @@ import { openHost } from '../src/cli/host-socket.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
 import { SHOWN_FILE } from '../src/cli/shown.js';
 import { installPaths } from '../src/update/contract.js';
-import { machineOps, shellWord, type LauncherOps } from '../src/update/launcher.js';
+import { machineOps, type LauncherOps } from '../src/update/launcher.js';
+import { shellWord } from '../src/update/typed-command.js';
 import type { UpdateStatus } from '../src/web/update-text.js';
 
 const REPO = resolve(import.meta.dir, '..');

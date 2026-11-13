@@ -8,7 +8,8 @@ import { HEALTH_STRINGS, keepNamedStrings } from '../src/modules/web-ui-observer
 import { SELF_RESTART_FILE, SelfRestartState } from '../src/self-restart.js';
 import { appendJournal, copyLabelPath, installPaths, moveCurrent, readMark, realOrResolved } from '../src/update/contract.js';
 import type { InstallOps } from '../src/update/install.js';
-import { RELEASE_HOST, shellWord } from '../src/update/launcher.js';
+import { RELEASE_HOST } from '../src/update/launcher.js';
+import { shellWord } from '../src/update/typed-command.js';
 import type { SwitchFleet, SwitchRequest } from '../src/update/quiesce.js';
 import { HostUpdate, type SwitchFramework } from '../src/update/update.js';
 import { COMMAND_WAYS, PAGE_WAYS, cliWays, statusLines, type UpdateStatus } from '../src/web/update-text.js';

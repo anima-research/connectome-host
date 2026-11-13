@@ -6,14 +6,14 @@ import { dirname, join, resolve } from 'node:path';
 import { ENTRY_POINT, readCurrent } from '../update/contract.js';
 import { EXACT_VERSION } from '../update/install.js';
 import {
-  KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRecord, shellWord, type LauncherOps,
+  KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRecord, type LauncherOps,
 } from '../update/launcher.js';
 import {
   COMMAND_WAYS, cliWays, statusLines, type UpdateStatus,
 } from '../web/update-text.js';
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
-import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, shellWord, typedCommand } from '../update/typed-command.js';
 import { serviceCommand, serviceCommands, serviceLines, unitElsewhere } from './service.js';
 import { serviceUnits } from './service-unit.js';
 import { ROOT_IN_WORKDIR, SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, packageCommand, setup, setupDirectory } from './setup.js';

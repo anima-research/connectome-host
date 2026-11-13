@@ -10,7 +10,7 @@ import {
 import type { ReleaseHere } from './host.js';
 import { EXACT_VERSION, hostProblem, installRelease, machineInstallOps, type InstallOps } from './install.js';
 import { RELEASE_HOST, goBackOffer, isUnder, readInstallRecord } from './launcher.js';
-import { installCommandAt } from '../cli/install-command.js';
+import { installCommandAt } from './typed-command.js';
 import {
   NOT_THE_SWITCHS, SERVING, fleetChanged, lookAtChildren, quiesceForSwitch, releaseHolds, resumeAfterSwitchQuiesce, takeLastLook,
   type Looked, type QuiesceFramework, type SwitchFleet,

@@ -20,11 +20,10 @@ import {
 import { withSentForms } from '../setup/discord-token.js';
 import { AGENT_OVERLAY_FILE_ENV, agentOverlayPath } from '../update/agent-overlay-path.js';
 import { INSTALL_ROOT_ENV, SUPERVISED_ENV, realOrResolved } from '../update/contract.js';
-import { shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
 import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy } from './discord-check.js';
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
-import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, shellWord, typedCommand } from '../update/typed-command.js';
 import { checkUnits, heldWithoutFile, ownerProblem, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
 import {
   childEnv as serviceChildEnv, machine, managerOwner, namedElsewhere, recipeHasShell, serviceCommands, serviceLines, stopLine,

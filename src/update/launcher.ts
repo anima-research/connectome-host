@@ -16,6 +16,7 @@ import {
   spaceTaken, syncEntries, syncPath, type FileKeep,
 } from './data-swap.js';
 import { agentOverlayPath } from './agent-overlay-path.js';
+import { shellWord, typedCommand } from './typed-command.js';
 
 /** Where a release's host is inside its directory, one npm install of the
  *  package. The entry point imports the launcher from here, so neither path
@@ -1126,16 +1127,27 @@ export function goBackLine(root: string, offer: { to: string; since: string }): 
 }
 
 export async function goBackFromStart(root: string, args: string[], ops: LauncherOps): Promise<number> {
-  const back = await Promise.all([import('../cli/install-command.js'), import('../web/update-text.js')])
-    .then(([{ typedCommand }, { cliWays }]) => cliWays(typedCommand(root)).back)
+  const back = await import('../web/update-text.js')
+    .then(({ cliWays }) => cliWays(typedCommand(root)).back)
     .catch(() => null);
   return back === null ? goBackFromShell(root, args, ops) : goBackFromShell(root, args, ops, undefined, back);
 }
 
-export function shellWord(word: string): string {
-  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
-}
-
+/**
+ * `start.js --go-back [--keep-data]`, or the install's `connectome update back
+ * keep|restore` when no host answers, run from a shell: ask the next start to
+ * go back, for an operator whose host doesn't stay up to ask it, as when the
+ * release it committed keeps exiting. Returns the exit status.
+ *
+ * It waits up to GO_BACK_LOCK_WAIT_MS for the install's lock, which the
+ * install's host holds while it runs. A host that keeps exiting gives it up
+ * between its exit and the service's next start. With the lock, it checks
+ * that a Go back is offered, to `expected` when that's given, and that no
+ * request is under way, writes the mark, and gives the lock up: the
+ * service's next start goes back. A host that holds the lock the whole time
+ * is up, so its own Go back, which quiesces first, is the way, and `back`
+ * names it to this caller's reader.
+ */
 export function goBackFromShell(root: string, args: string[], ops: LauncherOps, expected?: string,
   back = '/update back'): number {
   const unknown = args.filter((arg) => arg !== KEEP_DATA_FLAG);

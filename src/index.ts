@@ -90,7 +90,7 @@ import { setCallLogPath } from './bug-report.js';
 import { SessionManager } from './session-manager.js';
 import { startFramework } from './start-framework.js';
 import { StartRefusal, currentForStart, releaseHere, type ReleaseHere } from './update/host.js';
-import { installCommandAt } from './cli/install-command.js';
+import { installCommandAt } from './update/typed-command.js';
 import { childrenFilePath, trialPlaces } from './update/contract.js';
 import { hostUpdate, hostVersionOf } from './update/update.js';
 import { armTrialLog } from './update/trial-log.js';
