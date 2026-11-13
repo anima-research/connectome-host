@@ -107,6 +107,34 @@ test('a recipe that names a shell with no shell unit fails, and a shell unit the
     '`connectome service install <recipe>` stops and removes it.');
 });
 
+test('a shell unit file the recipe names that\'s gone isn\'t said to be written by install where systemd runs that unit in another directory', () => {
+  const at = place('linux', ['host']);
+  const { sys } = system(at.home, {
+    [`systemctl ${at.units.host.name}`]: activeHost(at.work),
+    [`systemctl ${at.units.shell.name}`]: activeHost('/another-install'),
+  });
+  const result = checkUnits(at.units, at.work, true, 'connectome', sys);
+  expect(result.passed).toBe(false);
+  expect(result.lines).toContain(`The recipe names a shell, and ${at.units.shell.file}, ${at.units.shell.name}'s unit file, is gone.`);
+  expect(result.lines).toContain(`systemd runs ${at.units.shell.name} in /another-install, not ${at.work}.`);
+  expect(result.lines.join('\n')).not.toContain('writes it, or names what it needs first');
+});
+
+test('a shell plist the recipe names that\'s gone, while launchd still holds that agent, gets install\'s words for an agent it can\'t tie to an install', () => {
+  const at = place('darwin', ['host']);
+  const { sys } = system(at.home, {
+    [`launchctl ${at.units.host.name}`]: '{\n\t"PID" = 501;\n};\n',
+    [`launchctl ${at.units.shell.name}`]: '{\n\t"PID" = 502;\n};\n',
+  });
+  const result = checkUnits(at.units, at.work, true, 'connectome', sys);
+  expect(result.passed).toBe(false);
+  expect(result.lines).toContain(`The recipe names a shell, and ${at.units.shell.name} is still loaded, but its file, ` +
+    `${at.units.shell.file}, is gone, so which install it runs can't be told: \`launchctl print gui/1000/` +
+    `${at.units.shell.name}\` shows what it runs. If it's this install's, stop it with \`launchctl bootout gui/1000/` +
+    `${at.units.shell.name}\`.`);
+  expect(result.lines.join('\n')).not.toContain('writes it, or names what it needs first');
+});
+
 test('a host that failed fails with the journal line to read, and no log text is quoted', () => {
   const at = place('linux', ['host']);
   const { sys, asked } = system(at.home, {
