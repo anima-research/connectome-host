@@ -261,9 +261,9 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     ? {
       shell: shell === null ? null
         : systemdUnit(`connectome-host resident's shell daemon in ${work}`, work, shellArgv, shellVars, null),
-      host: systemdUnit(`connectome-host resident in ${work}`, work, hostArgv, hostVars, wants),
+      host: systemdUnit(`connectome-host resident in ${work}`, work, hostArgv, hostVars, wants, 'mixed'),
       supervised: systemdUnit(`connectome-host resident in ${work}`, work, hostArgv,
-        [...hostVars, [SUPERVISED_ENV, '1']], wants),
+        [...hostVars, [SUPERVISED_ENV, '1']], wants, 'mixed'),
     }
     : {
       shell: shell === null ? null : plist(names.shell.name, work, shellArgv, shellVars, join(work, 'logs', 'shell.log')),

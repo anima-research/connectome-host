@@ -66,7 +66,7 @@ function assignment(name: string, value: string): string {
 }
 
 export function systemdUnit(description: string, work: string, argv: string[], env: Array<[string, string]>,
-  wants: string | null): string {
+  wants: string | null, killMode: 'mixed' | null = null): string {
   const named = `The working directory ${JSON.stringify(work)}`;
   if (/[ \\]$/.test(work)) {
     throw new Refusal(`${named} ends in a space or a backslash. systemd drops a space at the end of a unit's line and ` +
@@ -76,7 +76,8 @@ export function systemdUnit(description: string, work: string, argv: string[], e
   const unit = [`Description=${plain(description, named).replace(/%/g, '%%')}`,
     ...(wants === null ? [] : [`Wants=${wants}`, `After=${wants}`])];
   const service = [`WorkingDirectory=${plain(work, named).replace(/%/g, '%%')}`, `ExecStart=${argv.map(word).join(' ')}`,
-    ...env.map(([name, value]) => assignment(name, value)), 'Restart=on-failure'];
+    ...env.map(([name, value]) => assignment(name, value)), 'Restart=on-failure',
+    ...(killMode === null ? [] : [`KillMode=${killMode}`])];
   return `[Unit]\n${unit.join('\n')}\n\n[Service]\n${service.join('\n')}\n\n[Install]\nWantedBy=default.target\n`;
 }
 
