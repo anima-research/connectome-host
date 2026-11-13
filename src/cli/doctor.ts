@@ -24,8 +24,11 @@ import type { CliContext } from './connectome.js';
 import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy } from './discord-check.js';
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { typedCommand } from './install-command.js';
-import { checkUnits, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
-import { machine, namedElsewhere, recipeHasShell, serviceCommands, serviceLines, type ServiceCommands, type ServiceSystem } from './service.js';
+import { checkUnits, heldWithoutFile, ownerProblem, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
+import {
+  childEnv as serviceChildEnv, machine, managerOwner, namedElsewhere, recipeHasShell, serviceCommands, serviceLines, stopLine,
+  systemctlLine, type ServiceCommands, type ServiceSystem,
+} from './service.js';
 import {
   managerFor, readUnit, serviceUnits, systemdWorkingDirectory, type Manager, type ServiceUnits,
 } from './service-unit.js';
@@ -129,7 +132,8 @@ export async function doctor(
   const base = machine();
   const sys: ServiceSystem = {
     ...base, platform: parts.platform, home: parts.home,
-    run: (command, args, env) => base.run(command === 'plutil' ? parts.plutil : command, args, env),
+    run: (command, args, env) => base.run(command === 'plutil' ? parts.plutil : command === 'systemctl' ? parts.systemctl
+      : command === 'launchctl' ? parts.launchctl : command, args, env),
   };
   if (parts.uid === 0) {
     const dir = dirname(root);
@@ -148,6 +152,7 @@ export async function doctor(
   let service: { units: ServiceUnits; recipe: string; work: string; bun: string } | null = null;
   let serviceError: string | null = null;
   let elsewhere = false;
+  let managerSaid = false;
   let shellElsewhere: string | null = null;
   if (units !== null) {
     shellElsewhere = shellOfAnother(units, sys);
@@ -182,6 +187,15 @@ export async function doctor(
           service = { units, recipe: read.argv[2]!, work: runsIn, bun: read.argv[0]! };
         }
       }
+    } else if (serviceError === null) {
+      const owner = managerOwner(units.host, units.manager, units.work, sys, serviceChildEnv(sys), false);
+      const install = `\`${typed} service install <recipe>\``;
+      serviceError = owner.kind === 'ok' && owner.held
+        ? `${heldWithoutFile(units.host)}: ${install} writes the file again. \`${systemctlLine(sys, `status ${units.host.name}`)}\` ` +
+          `shows it, and \`${stopLine(sys, units.manager, units.host.name)}\` stops it if it runs.`
+        : ownerProblem(owner, units.host, units.manager, units.work, sys, install);
+      if (owner.kind === 'other') elsewhere = true;
+      else managerSaid = serviceError !== null;
     }
   }
   const work = service?.work ?? units?.work ?? join(root, '..');
@@ -216,6 +230,7 @@ export async function doctor(
   const manager = units?.manager ?? managerFor(parts.platform);
   let managerUnread: string | null = null;
   let envFiles: string[] = [];
+  let refusedUnit: string | null = null;
   try {
     storedNames = new StoredSecrets(join(work, '.setup')).read();
     const named = secretNames(join(work, '.setup'), join(work, '.env'));
@@ -226,17 +241,23 @@ export async function doctor(
       ...readSecrets(named.names, join(work, '.env'), process.env, [])].flatMap(withSentForms);
     const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
     const names = [...named.names, 'MODEL', AGENT_OVERLAY_FILE_ENV, 'DISCORD_GUILD_ID', 'DISCORD_FILTERS_FILE', 'NODE_ENV',
-      ...dotenvReferences(work), ...(document === null ? [] : namesIn(document))];
+      'BUN_OPTIONS', ...dotenvReferences(work), ...(document === null ? [] : namesIn(document))];
+    const managedRead: Record<string, string> = {};
     let managed: Record<string, string> = {};
+    let unread: unknown = null;
     try {
-      managed = managerEnv(manager, names, parts, typed);
-      secrets = [...secrets,
-        ...named.names.flatMap((name) => managed[name] ? withSentForms({ name, value: managed[name] }) : [])];
+      managed = managerEnv(manager, names, parts, typed, managedRead);
     } catch (error) {
-      if (service !== null || (serviceError !== null && !elsewhere)) throw error;
-      managerUnread = error instanceof ManagerUnread ? error.step : errorText(error);
+      unread = error;
     }
-    const read = units === null || elsewhere || (service === null && serviceError === null) ? null : unitEnv(units, parts);
+    secrets = [...secrets,
+      ...named.names.flatMap((name) => managedRead[name] ? withSentForms({ name, value: managedRead[name] }) : [])];
+    if (unread !== null) {
+      if (service !== null || (serviceError !== null && !elsewhere)) throw unread;
+      managerUnread = unread instanceof ManagerUnread ? unread.step : errorText(unread);
+    }
+    const read = units === null || elsewhere || managerSaid || (service === null && serviceError === null) ? null
+      : unitEnv(units, parts);
     const set = read?.env;
     if (set !== undefined) {
       secrets = [...secrets, ...named.names.flatMap((name) => set[name] ? withSentForms({ name, value: set[name] }) : [])];
@@ -254,6 +275,7 @@ export async function doctor(
     }
     const unit = service === null ? null : read;
     envFiles = read === null ? [] : read.files;
+    refusedUnit = service === null && read !== null ? units!.host.file : null;
     const given = { ...(manager === 'launchd' ? parts.launchdGives() : {}), ...managed };
     const built = serviceEnv(work, root, given, unit === null ? null : unit.env, parts.envLimitMs,
       service?.bun ?? process.execPath, typed, unit === null ? [] : unit.unset);
@@ -323,6 +345,7 @@ export async function doctor(
   let unanswered = false;
   let closedTabs = false;
   let shellUnchecked = false;
+  let shellBarred = false;
   let uncounted: string | null = null;
   const commands = serviceCommands(root, sys);
   const startCommand = commands?.start ?? `${typed} service install <recipe>`;
@@ -333,7 +356,7 @@ export async function doctor(
   try {
     report.section('Service');
     if (serviceError !== null) {
-      report.problem(elsewhere ? serviceError
+      report.problem(elsewhere || managerSaid ? serviceError
         : `${serviceError} \`${typed} service install <recipe>\` writes it anew, or says why it can't.`);
     } else if (service === null) {
       report.problem(units === null
@@ -357,7 +380,6 @@ export async function doctor(
           report.line('It\'s stopped.');
         }
       });
-      // A running process keeps the environment it started with, whatever its unit or plist says since.
       report.line(installed.units.manager === 'launchd'
         ? `Doctor reads the environment ${installed.units.host.file} gives as the plist is on disk, which launchd takes up ` +
           'only at the agent\'s next load, so a value changed there since then isn\'t what a running host has.'
@@ -433,11 +455,11 @@ export async function doctor(
               `${own.pid === '0' ? `${service!.units.host.name} has no main process` : `${service!.units.host.name}'s main process is ${own.pid}`}, ` +
               'so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of ' +
               'it. Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
-              `service's own host can't be reached while it does: \`kill ${answering.ready.pid}\` stops it.` +
+              'service\'s own host can\'t be reached while it does' +
               (service!.units.manager === 'systemd-user'
-                ? ` If something starts it again, \`systemctl --user status ${answering.ready.pid}\` names the unit it ` +
-                  'runs in, which is what to stop.'
-                : ''));
+                ? `. \`systemctl --user status ${answering.ready.pid}\` names the unit it runs in, so run it first. ` +
+                  `Then \`kill ${answering.ready.pid}\` stops it. If something starts it again, that unit is what to stop.`
+                : `: \`kill ${answering.ready.pid}\` stops it.`));
           }
         } else if (own !== null && 'why' in own) {
           untold(own.why);
@@ -550,7 +572,6 @@ export async function doctor(
     else {
       await checked(report, 'The counts of its model calls', async () => {
         const answer = await read<unknown>('health', calls);
-        // The service's log holds only the service's own host's stderr.
         const logged = service === null || commands === null || notTheService || pidUntold ? null : units;
         if (answer !== null) uncounted = callLines(report, agentCalls(answer.data), recipe?.agent.name, logged);
       });
@@ -565,6 +586,7 @@ export async function doctor(
           shellLines(report, answer.data, commands);
           closedTabs = answer.data.closedTabs.length > 0;
           shellUnchecked = (answer.data.unchecked ?? []).length > 0;
+          shellBarred = (answer.data.notAllowed ?? []).length > 0;
         }
       });
     }
@@ -577,7 +599,7 @@ export async function doctor(
       unknown = 'the recipe\'s server list doesn\'t resolve';
     }
     await checked(report, 'The stored secrets\' check', () => {
-      filesUnread = storedSecretLines(report, work, env, servers, uses, unknown, storedNames, envFiles);
+      filesUnread = storedSecretLines(report, work, env, servers, uses, unknown, storedNames, envFiles, refusedUnit);
     });
 
     report.section('Discord');
@@ -715,6 +737,7 @@ export async function doctor(
     ...(closedTabs ? ['a closed tab\'s connection wasn\'t checked'] : []),
     ...(pidUntold ? ['whether the host that answers is the service\'s couldn\'t be told'] : []),
     ...(shellUnchecked ? ['a shell server the host\'s session switch left unchecked'] : []),
+    ...(shellBarred ? ['a shell server whose listSessions the recipe\'s agent may not call wasn\'t checked'] : []),
   ];
   ctx.out('');
   ctx.out(report.redact(report.problems > 0
@@ -856,6 +879,7 @@ interface CountCheck {
 interface ShellCheck {
   shells: Array<{ server: string; answered: true; sessions: number | null } | { server: string; answered: false; error: string }>;
   unchecked?: string[];
+  notAllowed?: string[];
   notConnected: Array<{ id: string; retrying: boolean; refused: string | null }>;
   closedTabs: string[];
 }
@@ -919,7 +943,6 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
   }
 }
 
-/** A count that timed out, or that count_tokens answered with 429 or a 5xx, can pass by itself. */
 function passes(source: string): boolean {
   const status = Number(/^count_tokens_failed_(\d+)$/.exec(source)?.[1]);
   return source === 'count_tokens_timeout' || status === 429 || (status >= 500 && status < 600);
@@ -930,9 +953,8 @@ function shellLines(report: Report, shell: ShellCheck, commands: ServiceCommands
   for (const server of shell.notConnected) {
     report.problem(`The server ${server.id} isn't connected` + (server.refused !== null
       ? `: the host refuses its configuration: ${server.refused}.`
-      : server.retrying
-        ? '; the host is still retrying it.'
-        : `, and the host isn't retrying it. Its stderr is in the data directory, in sessions/<session>/mcpl-stderr/${server.id}.log.`));
+      : `${server.retrying ? '; the host is still retrying it.' : ', and the host isn\'t retrying it.'} Its stderr is in the data ` +
+        `directory, in sessions/<session>/mcpl-stderr/${server.id}.log.`));
   }
   for (const id of shell.closedTabs) {
     report.line(`The server ${id} is a closed tab: the host connects it when an agent opens it, so its connection isn't checked.`);
@@ -940,7 +962,11 @@ function shellLines(report: Report, shell: ShellCheck, commands: ServiceCommands
   for (const id of shell.unchecked ?? []) {
     report.line(`The server ${id} wasn't checked: the host switched sessions during the check.`);
   }
-  if (shell.shells.length === 0 && (shell.unchecked ?? []).length === 0) {
+  for (const id of shell.notAllowed ?? []) {
+    report.line(`The server ${id} offers listSessions, but the recipe's agent may not call it, since its allowedTools ` +
+      'leave it out, so its daemon wasn\'t checked.');
+  }
+  if (shell.shells.length === 0 && (shell.unchecked ?? []).length === 0 && (shell.notAllowed ?? []).length === 0) {
     const unchecked = [
       ...(shell.notConnected.length > 0 ? ['a server that isn\'t connected'] : []),
       ...(shell.closedTabs.length > 0 ? ['a closed tab'] : []),
@@ -974,6 +1000,7 @@ function storedSecretLines(
   unknown: string,
   names: string[] | null,
   envFiles: string[],
+  refusedUnit: string | null,
 ): boolean {
   if (names === null) {
     const { guessed } = secretNames(join(work, '.setup'), join(work, '.env'));
@@ -990,7 +1017,8 @@ function storedSecretLines(
   let filesUnread = false;
   if (envFiles.length > 0) {
     report.line(`The service's unit also reads ${envFiles.join(' and ')}, whose values doctor can't see. Where one sets a ` +
-      'stored secret, the service gets that value, not the unit\'s own or .env\'s, so doctor neither checks nor hides it.');
+      'stored secret that the unit\'s `UnsetEnvironment=` doesn\'t name, the service gets that value, not the unit\'s own ' +
+      'or .env\'s, so doctor neither checks nor hides it.');
     filesUnread = true;
   }
   for (const name of names ?? []) {
@@ -999,6 +1027,9 @@ function storedSecretLines(
         `environment, but its unit also reads ${envFiles.join(' and ')}, whose values doctor can't see, so whether the ` +
         'service has one isn\'t known.');
       filesUnread = true;
+    } else if (!env[name] && refusedUnit !== null) {
+      report.line(`${name} is in setup's list of stored secrets and has no value in what doctor reads of the service's ` +
+        `environment, but ${refusedUnit}, which doctor can't use, may set it, so whether the service has one isn't known.`);
     } else if (!env[name] && !inDotenv.has(name)) {
       report.problem(`${name} is in setup's list of stored secrets (${join(work, '.setup', 'stored-secrets.json')}), and ` +
         `no file Bun reads for the service gives it a value, ${join(work, '.env')} included: put it in ` +
@@ -1107,8 +1138,8 @@ class ManagerUnread extends Error {
   }
 }
 
-function managerEnv(manager: Manager | null, names: string[], parts: DoctorParts, typed: string): Record<string, string> {
-  const out: Record<string, string> = {};
+function managerEnv(manager: Manager | null, names: string[], parts: DoctorParts, typed: string,
+  out: Record<string, string> = {}): Record<string, string> {
   if (manager === 'systemd-user') {
     const ran = spawnSync(parts.systemctl, ['--user', 'show-environment'], {
       encoding: 'utf-8',
@@ -1262,9 +1293,10 @@ function launchdGives(): Record<string, string> {
   return gives;
 }
 
-const RELAUNCHED_ENV = 'const ran = Bun.spawnSync([process.execPath, "-e", "process.stdout.write(JSON.stringify(process.env))"], ' +
-  '{ env: process.env, stdout: "pipe", stderr: "inherit" }); require("node:fs").writeSync(1, ran.stdout); ' +
-  'process.exit(ran.exitCode ?? 1);';
+const relaunchedEnv = (root: string): string =>
+  'const ran = Bun.spawnSync([process.execPath, "-e", "process.stdout.write(JSON.stringify(process.env))"], ' +
+  `{ env: { ...process.env, ${JSON.stringify(INSTALL_ROOT_ENV)}: ${JSON.stringify(root)} }, stdout: "pipe", ` +
+  'stderr: "inherit" }); require("node:fs").writeSync(1, ran.stdout); process.exit(ran.exitCode ?? 1);';
 
 /** Bun loads .env, .env.local and the like in the working directory itself, filling only what the process doesn't
  *  have (Bun 1.4.4), so the host's environment is asked of Bun. */
@@ -1284,7 +1316,7 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
     if (eq < 0) delete base[entry];
     else if (base[entry.slice(0, eq)] === entry.slice(eq + 1)) delete base[entry.slice(0, eq)];
   }
-  const ran = spawnSync(bun, ['-e', RELAUNCHED_ENV], {
+  const ran = spawnSync(bun, ['-e', relaunchedEnv(root)], {
     cwd: work,
     env: base,
     encoding: 'utf-8',

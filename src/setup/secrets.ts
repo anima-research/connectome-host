@@ -3,6 +3,7 @@ import { lstatSync, mkdirSync, readlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseEnv } from 'node:util';
 import { readWithoutWaiting, writeJsonAtomic, writeTextAtomic } from '../update/contract.js';
+import { shellWord } from '../update/launcher.js';
 
 export const PROVIDER_SECRETS = [
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'OPENAI_API_KEY',
@@ -150,6 +151,14 @@ const READ_LIMIT_MS = 10_000;
 
 export class DotenvTimeoutError extends Error {}
 
+export class DotenvReadError extends Error {
+  constructor(readonly reason: string, readonly command: string) {
+    super(`${reason}, and its error isn't shown, since it can hold their values. \`${command}\`, run in that directory, ` +
+      'runs that Bun in that mode without BUN_OPTIONS and shows it, though the shell\'s other variables may differ from ' +
+      'the ones that read had');
+  }
+}
+
 export function dotenvValues(dir: string, env: Record<string, string | undefined>): Map<string, Set<string>> {
   const values = new Map<string, Set<string>>();
   const names = dotenvNames(dir).filter((name) => !Object.hasOwn(env, name) || env[name] === undefined);
@@ -183,8 +192,10 @@ export function dotenvValues(dir: string, env: Record<string, string | undefined
     }
     if (ran.error || ran.status !== 0) {
       const how = ran.error ? ran.error.message : ran.status === null ? `killed by ${ran.signal}` : `exit ${ran.status}`;
-      throw new Error(`Bun couldn't read the dotenv files in ${dir} (${how}), and its error isn't shown, since it can hold ` +
-        'their values: run `bun --config=/dev/null -e 0` there to see it');
+      const nodeEnv = mode === 'development' ? development.NODE_ENV : mode;
+      throw new DotenvReadError(`Bun couldn't read the dotenv files in ${dir} in its ${mode} mode (${how})`,
+        `env -u BUN_OPTIONS ${nodeEnv === undefined ? '-u NODE_ENV' : `NODE_ENV=${shellWord(nodeEnv)}`} ` +
+        `${shellWord(process.execPath)} --config=/dev/null -e 0`);
     }
     let read: Record<string, unknown> | null = null;
     try {

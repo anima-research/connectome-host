@@ -29,11 +29,15 @@ if (hold === 'count-check') {
   process.env.COUNT_TOKENS_MODEL = 'claude-fixture-count';
   process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:9';
 }
+const holdEntered = (): void => {
+  if (!existsSync(join(dataDir, 'hold-entered'))) writeFileSync(join(dataDir, 'hold-entered'), String(Date.now()));
+};
 const operatorWorkSettles = async (): Promise<void> => {
   if (!untilReleased) {
     await Bun.sleep(Math.max(0, heldUntil - Date.now()));
     return;
   }
+  holdEntered();
   while (!existsSync(join(dataDir, 'release-hold'))) await Bun.sleep(10);
   quietAt(Date.now());
 };
@@ -82,7 +86,10 @@ const holding = (kind: string): boolean => {
   if (hold === 'script-until-released') return kind === 'script' && heldFrom > 0 && !existsSync(join(dataDir, 'release-script'));
   if (untilReleased) {
     if (hold !== kind || heldFrom === 0) return false;
-    if (!existsSync(join(dataDir, 'release-hold'))) return true;
+    if (!existsSync(join(dataDir, 'release-hold'))) {
+      holdEntered();
+      return true;
+    }
     // The host's first look after the release, so quiet-from is never later than the host's own reading.
     if (quietFrom === Infinity) {
       quietAt(Date.now());

@@ -811,7 +811,7 @@ export function runsFrom(shown: string, home: string): string | null {
   return realOrResolved(set === '~' ? home : set);
 }
 
-export type Owner = { kind: 'ok' } | { kind: 'other'; runsIn: string | null; from: string; loadedOnly?: boolean } | { kind: 'untold' }
+export type Owner = { kind: 'ok'; held?: true } | { kind: 'other'; runsIn: string | null; from: string; loadedOnly?: boolean } | { kind: 'untold' }
   | { kind: 'unshown'; shown: string };
 
 function ownerOf(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
@@ -821,15 +821,20 @@ function ownerOf(unit: ServiceUnit, manager: Manager, work: string, sys: Service
     const runsIn = fileDirectory(sys, env, manager, unit, text);
     if (!runsHere(runsIn, work)) return { kind: 'other', runsIn, from: unit.file };
   }
+  return managerOwner(unit, manager, work, sys, env, text !== null);
+}
+
+export function managerOwner(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
+  env: Record<string, string>, fileThere: boolean): Owner {
   if (manager !== 'systemd-user') {
-    if (text !== null) return { kind: 'ok' };
+    if (fileThere) return { kind: 'ok' };
     const state = agentState(sys, env, unit);
     if (state.kind === 'unknown') return { kind: 'unshown', shown: `launchctl list ${unit.name} failed: ${state.why}` };
     return state.kind === 'unloaded' ? { kind: 'ok' } : { kind: 'untold' };
   }
   const shown = showUnit(sys, env, unit.name, OWNER_PROPERTIES);
   if (typeof shown === 'string') return { kind: 'unshown', shown };
-  return loadedOwner(unit, work, sys, shown, text !== null);
+  return loadedOwner(unit, work, sys, shown, fileThere);
 }
 
 export const OWNER_PROPERTIES = ['LoadState', 'ActiveState', 'WorkingDirectory', 'FragmentPath'];
@@ -840,7 +845,7 @@ export function loadedOwner(unit: ServiceUnit, work: string, sys: Pick<ServiceSy
     return STOPPING.has(shown.get('ActiveState') ?? '') ? { kind: 'untold' } : { kind: 'ok' };
   }
   const runsIn = runsFrom(shown.get('WorkingDirectory') ?? '', sys.home);
-  return runsHere(runsIn, work) ? { kind: 'ok' }
+  return runsHere(runsIn, work) ? (fileThere ? { kind: 'ok' } : { kind: 'ok', held: true })
     : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file, loadedOnly: fileThere };
 }
 
@@ -874,12 +879,12 @@ function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: Ser
   }
 }
 
-function untold(sys: ServiceSystem, manager: Manager, unit: ServiceUnit): string {
+export function untold(sys: ServiceSystem, manager: Manager, unit: ServiceUnit): string {
   return `${unit.name} is still ${manager === 'systemd-user' ? 'running' : 'loaded'}, but its file, ${unit.file}, is ` +
     'gone, so which install it runs can\'t be told';
 }
 
-function stopLine(sys: ServiceSystem, manager: Manager, name: string): string {
+export function stopLine(sys: Pick<ServiceSystem, 'env' | 'uid'>, manager: Manager, name: string): string {
   return manager === 'systemd-user' ? systemctlLine(sys, `stop ${name}`) : `launchctl bootout gui/${sys.uid}/${name}`;
 }
 
@@ -1025,7 +1030,7 @@ function stderrOf(ran: Ran): string {
   return (ran.stderr.trim() || `exit ${ran.status}`).replace(/\.$/, '');
 }
 
-function systemctlLine(sys: Pick<ServiceSystem, 'env' | 'uid'>, args: string): string {
+export function systemctlLine(sys: Pick<ServiceSystem, 'env' | 'uid'>, args: string): string {
   return `${sys.env.XDG_RUNTIME_DIR ? '' : `XDG_RUNTIME_DIR=/run/user/${sys.uid} `}systemctl --user ${args}`;
 }
 

@@ -15,7 +15,7 @@ import type {
 import {
   DISCORD_TOKEN, SHORT_CHARACTERS, SHORT_HIDES, StoredSecrets, addSecret, commandEnvOf, isSecretName, isShort,
   readEnvFile, readSecrets, redactWindow, secretNames, secretValues, shortLength, unwritableValue, writeEnvValue,
-  DotenvTimeoutError, EnvFormError, EnvLinkError, envForm, envLink, type Secret,
+  DotenvReadError, DotenvTimeoutError, EnvFormError, EnvLinkError, envForm, envLink, type Secret,
 } from '../setup/secrets.js';
 import { checkDiscordToken, hidden, sentToken, withSentForms, type TokenCheck } from '../setup/discord-token.js';
 import {
@@ -49,9 +49,6 @@ export const MAX_TIMEOUT_MS = 30 * 60_000;
 // with it: two streams' 4 KiB heads and tails come to 16,384 bytes, so at most 16,384 characters, which leaves 7,616
 // for each window's widening to take in a secret its cut runs through, for what the answer adds, and for the escapes
 // of ordinary output. Output dense in what JSON escapes, or in short secrets under long names, can still pass it.
-// setup--run's windows hold to this fixed figure. setup--discord measures its answer's JSON, which is that inline
-// text, against the cap the framework gives its call (ToolCall.resultMaxChars), and against this one where a call
-// carries none.
 const INLINE_MAX_CHARS = 24_000;
 const KEPT_BYTES = 4 * 1024;
 export const WHOLE_OUTPUT_BYTES = 2 * KEPT_BYTES;
@@ -313,7 +310,7 @@ function tokenFailure(check: Exclude<TokenCheck, { kind: 'accepted' } | { kind: 
     case 'unanswered': return { kind: 'unanswered', path, timedOut: false, why: check.why };
     case 'redirected': return { kind: 'redirected', path, status: check.status };
     case 'unrecognized': return { kind: 'unrecognized', path, status: check.status, ok: check.status >= 200 && check.status < 300, ...(check.retryAfter === undefined ? {} : { retryAfter: check.retryAfter }) };
-    case 'answered': return { kind: 'answered', path, status: check.status, said: check.said, ...(check.retryAfter === undefined ? {} : { retryAfter: check.retryAfter }) };
+    case 'answered': return { kind: 'answered', path, status: check.status, said: check.said, ...(check.code === undefined ? {} : { code: check.code }), ...(check.retryAfter === undefined ? {} : { retryAfter: check.retryAfter }) };
   }
 }
 
@@ -596,6 +593,12 @@ export class SetupModule implements Module {
     if (error instanceof DotenvTimeoutError) {
       return failed(`${what}: ${error.message}. A slow disk can pass, so call again once; if it runs out of time again, ` +
         'ask the person to look at the dotenv files there.');
+    }
+    if (error instanceof DotenvReadError) {
+      return failed(`${what}: ${error.reason}, and its error isn't passed on, since it can hold the files' values. Ask the ` +
+        `person to run \`${error.command}\` in that directory, in their terminal, to see it and put it right, though ` +
+        'their shell\'s other variables may differ from the ones that read had; you can\'t, since setup--run runs nothing ' +
+        'meanwhile.');
     }
     if (error instanceof EnvFormError) {
       return failed(`${what}: ${error.message}. While .env holds such a line, what Bun reads from it, and so what a ` +
@@ -1139,7 +1142,7 @@ export class SetupModule implements Module {
     const token = await checkDiscordToken(sentToken(value), {
       fetch: this.config.fetch, asking: () => this.config.show('Checking it with Discord.'),
     });
-    this.config.show(redacted(tokenLine(token), known));
+    this.config.show(shown(redacted(tokenLine(token), known)));
     return token;
   }
 }
@@ -1147,7 +1150,7 @@ export class SetupModule implements Module {
 
 function tokenLine(token: TokenCheck): string {
   switch (token.kind) {
-    case 'accepted': return `Discord accepted it: the bot is ${shown(token.name)}.`;
+    case 'accepted': return `Discord accepted it: the bot is ${token.name}.`;
     case 'refused': return 'Discord refused it (401): nothing was stored.';
     case 'unsendable': return 'It holds a character a request header can\'t carry, so it can\'t be a token: nothing was stored.';
     case 'answered':
@@ -1156,11 +1159,12 @@ function tokenLine(token: TokenCheck): string {
           'between this machine and Discord may be answering in its place.';
       }
       return `Discord didn't say whether it works: it answered ${token.status}` +
-        `${token.said === null ? '' : ` (${shown(token.said)})`}.` + (busy(token.status) ? ` ${BUSY_LINE}` : '');
-    case 'redirected': return `It isn't known to work: ${shown(redirect('Discord', token))}.`;
+        `${token.said === null ? '' : ` (${token.said})`}.` + (busy(token.status) ? ` ${BUSY_LINE}`
+          : answeredInPlace(token.status) ? ' Something between this machine and Discord may be answering in its place.' : '');
+    case 'redirected': return `It isn't known to work: ${redirect('Discord', token)}.`;
     case 'unrecognized':
       return `It couldn't be checked: ${unrecognized('Discord', token.status)}.` + (busy(token.status) ? ` ${BUSY_LINE}` : '');
-    case 'unanswered': return `Discord couldn't be asked whether it works (${shown(token.why)}).`;
+    case 'unanswered': return `Discord couldn't be asked whether it works (${token.why}).`;
   }
 }
 
@@ -1228,7 +1232,9 @@ function tokenNote(token: TokenCheck): string {
           `Tell the person: something between this machine and Discord may be answering in its place. ${ASK_TOKEN_AGAIN}`;
       }
       return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}. ` +
-        (busy(token.status) ? readAgain(token.retryAfter) : ASK_TOKEN_AGAIN);
+        (busy(token.status) ? readAgain(token.retryAfter) : answeredInPlace(token.status)
+          ? `Tell the person: something between this machine and Discord may be answering in its place. ${ASK_TOKEN_AGAIN}`
+          : ASK_TOKEN_AGAIN);
     case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}). ${ASK_TOKEN_AGAIN}`;
     case 'redirected':
       return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}. ${ASK_TOKEN_AGAIN}`;
@@ -1252,6 +1258,10 @@ function readAgain(wait: number | undefined): string {
 
 function busy(status: number): boolean {
   return status === 429 || status >= 500;
+}
+
+function answeredInPlace(status: number): boolean {
+  return status === 403 || status === 404;
 }
 
 function redirect(service: string, answer: { status: number; to: string | null }): string {
