@@ -999,7 +999,8 @@ function storedSecretLines(
   let filesUnread = false;
   if (envFiles.length > 0) {
     report.line(`The service's unit also reads ${envFiles.join(' and ')}, whose values doctor can't see. Where one sets a ` +
-      'stored secret, the service gets that value, not the unit\'s own or .env\'s, so doctor neither checks nor hides it.');
+      'stored secret that the unit\'s `UnsetEnvironment=` doesn\'t name, the service gets that value, not the unit\'s own ' +
+      'or .env\'s, so doctor neither checks nor hides it.');
     filesUnread = true;
   }
   for (const name of names ?? []) {

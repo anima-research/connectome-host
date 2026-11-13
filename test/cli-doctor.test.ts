@@ -2631,7 +2631,8 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     writeFileSync(join(manager.path, '..', 'environment-files'), `${listed} (ignore_errors=no)\n`);
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
     expect(r.out).toContain(`The service's unit also reads ${listed}, whose values doctor can't see. Where one sets a stored ` +
-      'secret, the service gets that value, not the unit\'s own or .env\'s, so doctor neither checks nor hides it.');
+      'secret that the unit\'s `UnsetEnvironment=` doesn\'t name, the service gets that value, not the unit\'s own or .env\'s, ' +
+      'so doctor neither checks nor hides it.');
     expect(r.out).not.toContain('LONELY_SECRET is in setup\'s list of stored secrets and has no value');
     expect(r.out).toContain('LONELY_SECRET is in setup\'s list of stored secrets, and doctor finds no server given it');
     expect(r.out).toMatch(/Doctor found no problem, though .*the files its unit reads its environment from weren't read/);
