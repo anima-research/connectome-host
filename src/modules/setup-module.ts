@@ -49,9 +49,6 @@ export const MAX_TIMEOUT_MS = 30 * 60_000;
 // with it: two streams' 4 KiB heads and tails come to 16,384 bytes, so at most 16,384 characters, which leaves 7,616
 // for each window's widening to take in a secret its cut runs through, for what the answer adds, and for the escapes
 // of ordinary output. Output dense in what JSON escapes, or in short secrets under long names, can still pass it.
-// setup--run's windows hold to this fixed figure. setup--discord measures its answer's JSON, which is that inline
-// text, against the cap the framework gives its call (ToolCall.resultMaxChars), and against this one where a call
-// carries none.
 const INLINE_MAX_CHARS = 24_000;
 const KEPT_BYTES = 4 * 1024;
 export const WHOLE_OUTPUT_BYTES = 2 * KEPT_BYTES;
