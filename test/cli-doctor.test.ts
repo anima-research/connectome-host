@@ -2849,6 +2849,18 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     expect(r.out).not.toContain(literal);
   });
 
+  test('a data directory whose path runs through a regular file is said as one that can\'t be looked at, with its error, not as gone', async () => {
+    const at = install();
+    const blocker = join(at.work, 'not-a-directory');
+    writeFileSync(blocker, '');
+    writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(blocker, 'data'), extraState: [] }));
+    const r = await run(at);
+    expect(r.out).toContain(`✗ The install record names ${join(blocker, 'data')} as the resident's data directory, and it ` +
+      'can\'t be looked at (');
+    expect(r.out).toContain('), so whether it\'s there can\'t be told. Repair what that path runs through, and run this again.');
+    expect(r.out).not.toContain('and it isn\'t there');
+  });
+
   test.skipIf(process.getuid?.() === 0)('a data directory under a directory this user can\'t search is said as one that can\'t be looked at, not as gone', async () => {
     const at = install();
     const locked = join(at.work, 'locked');
