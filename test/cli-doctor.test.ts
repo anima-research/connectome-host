@@ -366,6 +366,16 @@ describe('connectome doctor', () => {
     expect(r.status).toBe(0);
   });
 
+  test('a server not connected whose id holds a slash names the stderr log the host writes, under its id\'s last part', async () => {
+    const at = install();
+    const r = await withHost(at, {
+      ...HEALTHY_HOST,
+      'shell-check': { ...HEALTHY_HOST['shell-check'], notConnected: [{ id: 'team/shell2', retrying: true, refused: null }] },
+    }, () => run(at));
+    expect(r.out).toContain('✗ The server team/shell2 isn\'t connected; the host is still retrying it. Its stderr is in the data ' +
+      'directory, in sessions/<session>/mcpl-stderr/shell2.log.');
+  });
+
   test('a shell server the host\'s session switch left unchecked is said in a plain line and named in the closing line, not as a problem', async () => {
     const at = install();
     const r = await withHost(at, {

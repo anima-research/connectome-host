@@ -2,7 +2,7 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
@@ -956,7 +956,7 @@ function shellLines(report: Report, shell: ShellCheck, commands: ServiceCommands
     report.problem(`The server ${server.id} isn't connected` + (server.refused !== null
       ? `: the host refuses its configuration: ${server.refused}.`
       : `${server.retrying ? '; the host is still retrying it.' : ', and the host isn\'t retrying it.'} Its stderr is in the data ` +
-        `directory, in sessions/<session>/mcpl-stderr/${server.id}.log.`));
+        `directory, in sessions/<session>/mcpl-stderr/${basename(server.id)}.log.`));
   }
   for (const id of shell.closedTabs) {
     report.line(`The server ${id} is a closed tab: the host connects it when an agent opens it, so its connection isn't checked.`);
