@@ -464,7 +464,8 @@ describe('connectome doctor', () => {
       expect([source, r.out]).toEqual([source, expect.stringContaining('\n  count_tokens couldn\'t count with claude-small-window: ')]);
       expect([source, r.out.includes('✗ count_tokens'), r.status]).toEqual([source, false, 0]);
       const passes = ['count_tokens_failed_500', 'count_tokens_timeout', 'count_tokens_failed_429'].includes(source);
-      expect([source, r.out.includes('That can pass by itself: run doctor again later.')]).toEqual([source, passes]);
+      expect([source, r.out.includes(`That can pass by itself: run ${join(at.root, 'connectome')} doctor again later.`)])
+        .toEqual([source, passes]);
     }
   });
 

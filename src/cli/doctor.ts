@@ -576,7 +576,7 @@ export async function doctor(
           const refused = refusedCredential(credentialOf(await calls?.catch(() => null) ?? null),
             ['1', 'true'].includes((env.ANTHROPIC_OAUTH_AUTO_REFRESH ?? '').trim().toLowerCase()));
           countLines(report, answer.data, work, emptyCompressionSaid, recipe !== null && resolveProvider(recipe) === 'anthropic',
-            refused);
+            refused, typed);
           const sources = [answer.data.agent.source, answer.data.compression?.source];
           uncredentialed = sources.includes('count_tokens_no_credential');
           unanswered = sources.some((source) => source === 'count_tokens_timeout' || source === 'count_tokens_error');
@@ -955,7 +955,8 @@ function countFailure(source: string): string {
 }
 
 function countLines(report: Report, check: CountCheck, work: string, emptyCompressionSaid: boolean,
-  onAnthropic: boolean, refused: { words: string; problem: boolean }): void {
+  onAnthropic: boolean, refused: { words: string; problem: boolean }, typed: string): void {
+  const passes = (source: string) => (passesBy(source) ? ` That can pass by itself: run ${typed} doctor again later.` : '');
   const { agent, compression } = check;
   if (agent.source === 'count_tokens') report.ok(`count_tokens counts with ${agent.countModel}.`);
   else if (agent.source === 'count_tokens_no_credential') report.line(`${NO_CREDENTIAL} So the context's makeup shows no exact total.`);
@@ -969,7 +970,7 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
       'model answers 404, and the endpoint count_tokens asks (Anthropic\'s API, or the one ANTHROPIC_BASE_URL names) ' +
       'may answer it for a model it doesn\'t serve: set COUNT_TOKENS_MODEL in ' +
       `${join(work, '.env')} to a current Claude model, and restart the service, since the host reads it when it starts. ` +
-      `${BEFORE_ENV}: where one sets it, set it there instead.`) + (passes(agent.source) ? PASSES : '');
+      `${BEFORE_ENV}: where one sets it, set it there instead.`) + passes(agent.source);
     if (onAnthropic && agent.source === 'count_tokens_failed_401' && refused.problem) report.problem(said);
     else report.line(said);
   }
@@ -991,15 +992,14 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
         : ', or leave it out to compress with the agent\'s model,') +
       ' and restart the service. The endpoint count_tokens asks (Anthropic\'s API, or the one ANTHROPIC_BASE_URL names) ' +
       'may answer 404 for a model it doesn\'t serve too, and then the 404 doesn\'t mean it\'s retired.') +
-      (passes(compression.source) ? PASSES : ''));
+      passes(compression.source));
   }
 }
 
-function passes(source: string): boolean {
+function passesBy(source: string): boolean {
   const status = Number(/^count_tokens_failed_(\d+)$/.exec(source)?.[1]);
   return source === 'count_tokens_timeout' || status === 429 || (status >= 500 && status < 600);
 }
-const PASSES = ' That can pass by itself: run doctor again later.';
 
 function shellLines(report: Report, shell: ShellCheck, commands: ServiceCommands | null): void {
   for (const server of shell.notConnected) {
