@@ -1863,6 +1863,24 @@ describe('connectome doctor: the environment the service gets from its manager',
     expect(r.status).toBe(1);
   });
 
+  test('a stored secret launchd gave before a later getenv failed is hidden in what doctor prints as it stops', async () => {
+    const at = install({ manager: 'launchd', prefix: 'chost-pathpart-', stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'PATH_SECRET'] });
+    const partial = join(at.work, 'launchctl-partial');
+    writeFileSync(partial, [
+      '#!/bin/sh',
+      'if [ "$1" = getenv ] && [ "$2" = PATH_SECRET ]; then echo chost-pathpart; exit 0; fi',
+      'if [ "$1" = getenv ] && [ "$2" = MODEL ]; then echo "launchctl: failed" >&2; exit 1; fi',
+      'exit 0',
+      '',
+    ].join('\n'));
+    chmodSync(partial, 0o755);
+    const r = await run(at, { launchctl: partial });
+    expect(r.out).toContain('Doctor stops here');
+    expect(r.out).toContain('launchctl getenv MODEL');
+    expect(r.out).toContain('<PATH_SECRET>');
+    expect(r.out).not.toContain('chost-pathpart');
+  });
+
   test('the manager a service here runs under is asked, and no other, with its unit or without one', async () => {
     const none = install();
     rmSync(none.unit);

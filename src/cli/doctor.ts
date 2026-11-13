@@ -227,14 +227,19 @@ export async function doctor(
     const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
     const names = [...named.names, 'MODEL', AGENT_OVERLAY_FILE_ENV, 'DISCORD_GUILD_ID', 'DISCORD_FILTERS_FILE', 'NODE_ENV',
       ...dotenvReferences(work), ...(document === null ? [] : namesIn(document))];
+    const managedRead: Record<string, string> = {};
     let managed: Record<string, string> = {};
+    let unread: unknown = null;
     try {
-      managed = managerEnv(manager, names, parts, typed);
-      secrets = [...secrets,
-        ...named.names.flatMap((name) => managed[name] ? withSentForms({ name, value: managed[name] }) : [])];
+      managed = managerEnv(manager, names, parts, typed, managedRead);
     } catch (error) {
-      if (service !== null || (serviceError !== null && !elsewhere)) throw error;
-      managerUnread = error instanceof ManagerUnread ? error.step : errorText(error);
+      unread = error;
+    }
+    secrets = [...secrets,
+      ...named.names.flatMap((name) => managedRead[name] ? withSentForms({ name, value: managedRead[name] }) : [])];
+    if (unread !== null) {
+      if (service !== null || (serviceError !== null && !elsewhere)) throw unread;
+      managerUnread = unread instanceof ManagerUnread ? unread.step : errorText(unread);
     }
     const read = units === null || elsewhere || (service === null && serviceError === null) ? null : unitEnv(units, parts);
     const set = read?.env;
@@ -1105,8 +1110,8 @@ class ManagerUnread extends Error {
   }
 }
 
-function managerEnv(manager: Manager | null, names: string[], parts: DoctorParts, typed: string): Record<string, string> {
-  const out: Record<string, string> = {};
+function managerEnv(manager: Manager | null, names: string[], parts: DoctorParts, typed: string,
+  out: Record<string, string> = {}): Record<string, string> {
   if (manager === 'systemd-user') {
     const ran = spawnSync(parts.systemctl, ['--user', 'show-environment'], {
       encoding: 'utf-8',
