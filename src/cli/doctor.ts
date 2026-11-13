@@ -270,7 +270,7 @@ export async function doctor(
       const anew = `${typed} service install ${recipePath === null ? '<recipe>' : shellWord(recipePath)}`;
       throw new Error(units!.manager === 'launchd'
         ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). Fix it ` +
-          `(\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run \`${anew}\`, which writes it ` +
+          `(\`plutil -lint ${shellWord(file)}\` says whether it parses), or move it aside and run \`${anew}\`, which writes it ` +
           'anew or says why it can\'t.'
         : `systemd didn't say the environment ${name} sets the service (${why}). Run ${typed} doctor again, or \`${anew}\` writes ` +
           'the unit anew or says why it can\'t.');

@@ -2648,7 +2648,7 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
     chmodSync(plutil, 0o755);
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { plutil }));
     expect(r.out).toContain(`${at.unit}, com.animalabs.connectome.test's plist, couldn't be read for the environment it sets the ` +
-      `service (plutil's answer wasn't JSON). Fix it (\`plutil -lint ${at.unit}\` names what's wrong), or move it aside and run ` +
+      `service (plutil's answer wasn't JSON). Fix it (\`plutil -lint ${at.unit}\` says whether it parses), or move it aside and run ` +
       `\`${join(at.root, 'connectome')} service install ${join(at.work, 'recipe.json')}\`, which writes it anew or says why it can't.`);
     expect(r.out).toContain('Doctor stops here');
   });
