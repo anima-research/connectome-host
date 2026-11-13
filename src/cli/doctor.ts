@@ -235,6 +235,8 @@ export async function doctor(
     storedNames = new StoredSecrets(join(work, '.setup')).read();
     const named = secretNames(join(work, '.setup'), join(work, '.env'));
     guessed = named.guessed;
+    secrets = [...secrets,
+      ...named.names.flatMap((name) => process.env[name] ? withSentForms({ name, value: process.env[name]! }) : [])];
     const known = (from: Record<string, string | undefined>, probes: Record<string, string | undefined>): Secret[] =>
       storedSecrets(work, from, probes);
     secrets = [...secrets, ...envAssignments(join(work, '.env'))

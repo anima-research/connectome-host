@@ -655,6 +655,24 @@ describe('connectome doctor', () => {
     }
   });
 
+  test.skipIf(process.getuid?.() === 0)('a stored value doctor\'s own environment holds is hidden when a dotenv file it can\'t read stops doctor', async () => {
+    const at = install({ prefix: 'chost-custom-secret-value-', stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'CUSTOM_SECRET'] });
+    writeFileSync(join(at.work, '.env.local'), 'UNREAD=1\n');
+    chmodSync(join(at.work, '.env.local'), 0o000);
+    const saved = process.env.CUSTOM_SECRET;
+    process.env.CUSTOM_SECRET = 'custom-secret-value';
+    try {
+      const r = await withHost(at, HEALTHY_HOST, () => run(at));
+      expect(r.out).toContain('Doctor stops here');
+      expect(r.out).toMatch(/^connectome doctor: the install at .*chost-<CUSTOM_SECRET>-/);
+      expect(r.out).not.toContain('custom-secret-value');
+    } finally {
+      chmodSync(join(at.work, '.env.local'), 0o644);
+      if (saved === undefined) delete process.env.CUSTOM_SECRET;
+      else process.env.CUSTOM_SECRET = saved;
+    }
+  });
+
   test('a stored secret\'s value as a command run in doctor\'s own environment reads it is withheld too', async () => {
     const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'MY_TOKEN'] });
     writeFileSync(join(at.work, '.env.local'), 'MY_TOKEN=${DOCTOR_ONLY_PREFIX}z9suffix\n');
