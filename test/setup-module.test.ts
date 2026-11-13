@@ -28,7 +28,7 @@ function scratch(): string {
   return dir;
 }
 
-const discordAccepts = (async () => Response.json({ id: '1000', username: 'test-bot' })) as unknown as typeof fetch;
+const discordAccepts = (async () => Response.json({ id: '1000', username: 'test-bot', bot: true })) as unknown as typeof fetch;
 
 function install(opts: { asker?: SecretAsker | null; env?: Record<string, string>; envFile?: string; dir?: string; fetch?: typeof fetch } = {}) {
   const dir = opts.dir ?? scratch();
@@ -1476,7 +1476,7 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
       asker: typed('the-bot-token'),
       fetch: (async (url: string, init: RequestInit) => {
         requests.push({ url: String(url), method: init.method ?? 'GET', headers: new Headers(init.headers) });
-        return Response.json({ id: '123', username: 'wren-bot' });
+        return Response.json({ id: '123', username: 'wren-bot', bot: true });
       }) as unknown as typeof fetch,
     });
     const result = await askSecret(made.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
@@ -1538,7 +1538,7 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
     const made = install({
       envFile: 'DISCORD_TOKEN="the-old-token"\n',
       asker: typed('a-token\u2028broken'),
-      fetch: (async () => { called += 1; return Response.json({ id: '1', username: 'x' }); }) as unknown as typeof fetch,
+      fetch: (async () => { called += 1; return Response.json({ id: '1', username: 'x', bot: true }); }) as unknown as typeof fetch,
     });
     const result = await askSecret(made.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
     expect(result.success).toBe(false);
@@ -1574,7 +1574,7 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
       asker: typed('  token-four  '),
       fetch: (async (_url: string, init: RequestInit) => {
         sent = new Headers(init.headers).get('authorization');
-        return Response.json({ id: '7', username: 'four-bot' });
+        return Response.json({ id: '7', username: 'four-bot', bot: true });
       }) as unknown as typeof fetch,
     });
     expect((await askSecret(made.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' })).success).toBe(true);
@@ -1588,7 +1588,7 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
       asker: typed('Bot token-six'),
       fetch: (async (_url: string, init: RequestInit) => {
         sent = new Headers(init.headers).get('authorization');
-        return Response.json({ id: '6', username: 'six-bot' });
+        return Response.json({ id: '6', username: 'six-bot', bot: true });
       }) as unknown as typeof fetch,
     });
     expect((await askSecret(made.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' })).success).toBe(true);
@@ -1761,7 +1761,7 @@ describe('checkDiscordToken', () => {
       fetch: (async () => Response.json({ message: 'bad token a-token' }, { status: 403 })) as unknown as typeof fetch,
     })).toEqual({ kind: 'answered', status: 403, said: 'bad token <DISCORD_TOKEN>' });
     expect(await checkDiscordToken('a-token', {
-      fetch: (async () => Response.json({ id: 'a-token', username: 'bot a-token' })) as unknown as typeof fetch,
+      fetch: (async () => Response.json({ id: 'a-token', username: 'bot a-token', bot: true })) as unknown as typeof fetch,
     })).toEqual({ kind: 'accepted', name: 'bot <DISCORD_TOKEN>', id: '<DISCORD_TOKEN>' });
   });
 });
@@ -2219,7 +2219,7 @@ describe('setup--ask_secret', () => {
     test('is asked for again under a checked name too, before anything is sent', async () => {
       const events: string[] = [];
       const asker = { ask: async () => { events.push('ask'); return 'abc'; } };
-      const fetch = (async () => { events.push('fetch'); return Response.json({ id: '1000', username: 'test-bot' }); }) as unknown as typeof globalThis.fetch;
+      const fetch = (async () => { events.push('fetch'); return Response.json({ id: '1000', username: 'test-bot', bot: true }); }) as unknown as typeof globalThis.fetch;
       const { module } = install({ asker, fetch });
       const result = await askSecret(module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
       expect(result.success, result.error).toBe(true);
@@ -3217,7 +3217,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
 
   test('a token check shows and tells another stored secret that Discord\'s answer holds by its name, and the new token by its own', async () => {
     const OTHER = 'sk-stored-583-other';
-    const named = (async () => Response.json({ id: '1000', username: `bot-${OTHER}-a-checked-token` })) as unknown as typeof fetch;
+    const named = (async () => Response.json({ id: '1000', username: `bot-${OTHER}-a-checked-token`, bot: true })) as unknown as typeof fetch;
     const down = (async () => Response.json({ message: `down for ${OTHER} and a-checked-token` }, { status: 503 })) as unknown as typeof fetch;
     for (const answer of [named, down]) {
       const token = install({ asker: typed('a-checked-token'), fetch: answer, envFile: `OPENAI_API_KEY="${OTHER}"\n` });
@@ -3234,7 +3234,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
 
   test('a token check shows another stored secret holding a character drawn as nothing by its name, hiding it before that character is shown as a code', async () => {
     const OTHER = 'sk-583\u200bzero-width-other';
-    const named = (async () => Response.json({ id: '1000', username: `bot-${OTHER}` })) as unknown as typeof fetch;
+    const named = (async () => Response.json({ id: '1000', username: `bot-${OTHER}`, bot: true })) as unknown as typeof fetch;
     const down = (async () => Response.json({ message: `down for ${OTHER}` }, { status: 503 })) as unknown as typeof fetch;
     for (const answer of [named, down]) {
       const token = install({ asker: typed('a-checked-token'), fetch: answer, envFile: `OPENAI_API_KEY="${OTHER}"\n` });
@@ -3290,11 +3290,13 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
   });
 
   test('a token Discord answered 200 with something other than a bot\'s user is said so, to the agent and the person, with what may be answering in its place', async () => {
-    const odd = (async () => Response.json({})) as unknown as typeof fetch;
-    const token = install({ asker: typed('a-strange-token'), fetch: odd });
-    const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(told.data)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it isn't known to work: Discord answered GET /users/@me with something other than the bot's user. Tell the person: something between this machine and Discord may be answering in its place. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
-    expect(token.shown).toContain('It isn\'t known to work: Discord answered with something other than the bot\'s user, so something between this machine and Discord may be answering in its place.');
+    for (const answer of [{}, { id: '123', username: 'alice', bot: false }, { id: '123', username: 'alice' }]) {
+      const odd = (async () => Response.json(answer)) as unknown as typeof fetch;
+      const token = install({ asker: typed('a-strange-token'), fetch: odd });
+      const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+      expect(String(told.data)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it isn't known to work: Discord answered GET /users/@me with something other than the bot's user. Tell the person: something between this machine and Discord may be answering in its place. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
+      expect(token.shown).toContain('It isn\'t known to work: Discord answered with something other than the bot\'s user, so something between this machine and Discord may be answering in its place.');
+    }
   });
 
   test('a redirect is named, with the server it leads to, and what to set where a base URL can be set, for a key, a token and a model', async () => {

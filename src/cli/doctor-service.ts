@@ -33,6 +33,7 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
     lines.push(`Whether the recipe names a shell can't be told, since it didn't load, so ${units.shell.name} is checked ` +
       'only where it\'s installed.');
   }
+  const env = childEnv(sys);
   let unseen = 0;
   for (const unit of expected) {
     const state = pathState(unit.file);
@@ -40,10 +41,16 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
     unseen += 1;
     const lead = unit === units.shell && shell === true ? 'The recipe names a shell, and ' : '';
     const named = `${unit.file}, ${unit.name}'s ${units.manager === 'systemd-user' ? 'unit file' : 'plist'}`;
-    fail(state === 'gone' ? `${lead}${named}, is gone. ${install} writes it, or names what it needs first.`
-      : `${lead}${named}, can't be looked at, so whether it's there can't be told: ${state.why}. ${state.repair}`);
+    if (state !== 'gone') {
+      fail(`${lead}${named}, can't be looked at, so whether it's there can't be told: ${state.why}. ${state.repair}`);
+      continue;
+    }
+    const owner = managerOwner(unit, units.manager, work, sys, env, false);
+    fail(owner.kind === 'ok' ? `${lead}${named}, is gone. ${install} writes it, or names what it needs first.`
+      : owner.kind === 'untold' && units.manager !== 'systemd-user'
+        ? `${lead}${ownerProblem(owner, unit, units.manager, work, sys, install)}`
+        : `${lead}${named}, is gone.`);
   }
-  const env = childEnv(sys);
   const runsElsewhere = (unit: ServiceUnit, shown: Map<string, string>): string | null => {
     const owner = loadedOwner(unit, work, sys, shown, pathState(unit.file) === 'there');
     return owner.kind === 'other' ? ownerProblem(owner, unit, units.manager, work, sys, install) : null;
@@ -96,7 +103,7 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
       } else {
         if (skipped(shown)) {
           fail(`${unit.name} is ${state}: systemd skipped its last start, since a condition its unit or a drop-in sets ` +
-            `wasn't met: \`systemctl --user status ${unit.name}\` names it.`);
+            `wasn't met: \`${systemctlLine(sys, `status ${unit.name}`)}\` names it.`);
         } else if (stopped) {
           lines.push(`${unit.name} is stopped: systemd shows it ${state}.`);
         } else {

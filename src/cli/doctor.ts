@@ -2,7 +2,7 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens } from '../recipe-fit.js';
@@ -12,8 +12,8 @@ import {
   runningFit, unknownRecipeKeys, type Recipe, type RecipeDocument,
 } from '../recipe.js';
 import {
-  PROVIDER_SECRETS, StoredSecrets, dotenvNames, dotenvReferences, linesKeepingSecrets, readSecrets, redactWindow,
-  secretNames, storedSecrets,
+  PROVIDER_SECRETS, StoredSecrets, dotenvNames, dotenvReferences, envAssignments, linesKeepingSecrets, readSecrets,
+  redactWindow, secretNames, storedSecrets,
   type Secret,
 } from '../setup/secrets.js';
 import { withSentForms } from '../setup/discord-token.js';
@@ -161,7 +161,7 @@ export async function doctor(
       text = readFileSync(units.host.file, 'utf-8');
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      if (code !== 'ENOENT') {
         serviceError = `${units.host.file}, ${units.host.name}'s ${fileWord(units.manager)}, can't be read: ` +
           `${errorText(error).replace(/\.$/, '')}.`;
       }
@@ -237,6 +237,8 @@ export async function doctor(
     guessed = named.guessed;
     const known = (from: Record<string, string | undefined>, probes: Record<string, string | undefined>): Secret[] =>
       storedSecrets(work, from, probes);
+    secrets = [...secrets, ...envAssignments(join(work, '.env'))
+      .flatMap(({ name, value }) => value && named.names.includes(name) ? withSentForms({ name, value }) : [])];
     secrets = [...secrets, ...known(process.env, systemVariables()),
       ...readSecrets(named.names, join(work, '.env'), process.env, [])].flatMap(withSentForms);
     const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
@@ -246,7 +248,7 @@ export async function doctor(
     let managed: Record<string, string> = {};
     let unread: unknown = null;
     try {
-      managed = managerEnv(manager, names, parts, typed, managedRead);
+      managed = managerEnv(manager, names, parts, typed, sys, managedRead);
     } catch (error) {
       unread = error;
     }
@@ -268,7 +270,7 @@ export async function doctor(
       const anew = `${typed} service install ${recipePath === null ? '<recipe>' : shellWord(recipePath)}`;
       throw new Error(units!.manager === 'launchd'
         ? `${file}, ${name}'s plist, couldn't be read for the environment it sets the service (${why}). Fix it ` +
-          `(\`plutil -lint ${shellWord(file)}\` names what's wrong), or move it aside and run \`${anew}\`, which writes it ` +
+          `(\`plutil -lint ${shellWord(file)}\` says whether it parses), or move it aside and run \`${anew}\`, which writes it ` +
           'anew or says why it can\'t.'
         : `systemd didn't say the environment ${name} sets the service (${why}). Run ${typed} doctor again, or \`${anew}\` writes ` +
           'the unit anew or says why it can\'t.');
@@ -428,6 +430,10 @@ export async function doctor(
           `changed during the check, so whether it's the service's can't be told: run ${typed} doctor again.`);
         pidUntold = true;
       };
+      const findThenKill = (pid: number): string | null => service!.units.manager === 'systemd-user'
+        ? `Run \`${systemctlLine(sys, `status ${pid}`)}\` first: where the host runs in a unit of this user's systemd, it ` +
+          `names that unit. Then \`kill ${pid}\` stops it. If a host answers again, doctor's next run names its pid.`
+        : null;
       const untold = (why: string) => {
         report.line(`The host answers: pid ${answering.ready.pid}, recipe ${answering.ready.recipe}. Whether it's the ` +
           `service's host can't be told: ${why.replace(/\.$/, '')}.`);
@@ -442,7 +448,7 @@ export async function doctor(
           report.problem(`A host answers, pid ${answering.ready.pid}, recipe ${answering.ready.recipe}, though the service ` +
             'is stopped, so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below ' +
             `are of it. Stop it before \`${startCommand}\`, since a host the service starts takes this install's socket ` +
-            'from one that holds it.');
+            `from one that holds it. ${findThenKill(answering.ready.pid) ?? `\`kill ${answering.ready.pid}\` stops it.`}`);
         }
       } else {
         const own = await ownPid();
@@ -456,10 +462,8 @@ export async function doctor(
               'so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of ' +
               'it. Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
               'service\'s own host can\'t be reached while it does' +
-              (service!.units.manager === 'systemd-user'
-                ? `. \`systemctl --user status ${answering.ready.pid}\` names the unit it runs in, so run it first. ` +
-                  `Then \`kill ${answering.ready.pid}\` stops it. If something starts it again, that unit is what to stop.`
-                : `: \`kill ${answering.ready.pid}\` stops it.`));
+              (findThenKill(answering.ready.pid) === null ? `: \`kill ${answering.ready.pid}\` stops it.`
+                : `. ${findThenKill(answering.ready.pid)}`));
           }
         } else if (own !== null && 'why' in own) {
           untold(own.why);
@@ -559,7 +563,10 @@ export async function doctor(
       await checked(report, 'The token counts', async () => {
         const answer = await read<CountCheck>('count-check', counting);
         if (answer !== null) {
-          countLines(report, answer.data, work, emptyCompressionSaid, recipe !== null && resolveProvider(recipe) === 'anthropic');
+          const refused = refusedCredential(credentialOf(await calls?.catch(() => null) ?? null),
+            ['1', 'true'].includes((env.ANTHROPIC_OAUTH_AUTO_REFRESH ?? '').trim().toLowerCase()));
+          countLines(report, answer.data, work, emptyCompressionSaid, recipe !== null && resolveProvider(recipe) === 'anthropic',
+            refused);
           const sources = [answer.data.agent.source, answer.data.compression?.source];
           uncredentialed = sources.includes('count_tokens_no_credential');
           unanswered = sources.some((source) => source === 'count_tokens_timeout' || source === 'count_tokens_error');
@@ -832,7 +839,7 @@ function agentCalls(data: unknown): AgentCalls[] {
 }
 
 function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | undefined, logged: ServiceUnits | null): string | null {
-  const named = recipeAgent ?? agents[0]?.name;
+  const named = recipeAgent || agents[0]?.name;
   const unlisted = named !== undefined && !agents.some((agent) => agent.name === named) ? named : null;
   if (unlisted !== null) report.line(`The host's counts list no agent named ${unlisted}.`);
   for (const agent of agents) {
@@ -885,6 +892,34 @@ interface ShellCheck {
 }
 
 const REPLACE_CREDENTIAL = ' Replace that credential where the service gets it, and restart the service.';
+
+function credentialOf(answer: HostEvent | null): { rotatable: boolean; expiresAt?: number } | null {
+  if (answer?.ok !== true) return null;
+  const credential = (answer.data as { credential?: { rotatable?: unknown; expiresAt?: unknown } } | null)?.credential;
+  if (typeof credential?.rotatable !== 'boolean') return null;
+  const { rotatable, expiresAt } = credential;
+  return typeof expiresAt === 'number' && Number.isFinite(expiresAt) ? { rotatable, expiresAt } : { rotatable };
+}
+
+function refusedCredential(credential: { rotatable: boolean; expiresAt?: number } | null, autoRefresh: boolean):
+  { words: string; problem: boolean } {
+  if (credential === null || !credential.rotatable) return { words: REPLACE_CREDENTIAL, problem: true };
+  const expiry = credential.expiresAt === undefined ? ''
+    : ` The host has its access token ${credential.expiresAt < Date.now() ? 'expired' : 'expiring'} at ` +
+      `${new Date(credential.expiresAt).toISOString()}.`;
+  return autoRefresh
+    ? {
+      words: ' The host\'s credential has a refresh token and ANTHROPIC_OAUTH_AUTO_REFRESH is on, so its next model call, ' +
+        `refused the same way, tries to refresh it.${expiry} Where that refresh fails, the host's log says why, in a line ` +
+        'that starts "[anthropic-credentials] automatic refresh failed:".',
+      problem: false,
+    }
+    : {
+      words: ' The host\'s credential has a refresh token, but ANTHROPIC_OAUTH_AUTO_REFRESH isn\'t on, so its next model call ' +
+        `is refused too: refresh it with the host's \`/auth refresh\`, in its terminal or the Web UI's command box.${expiry}`,
+      problem: true,
+    };
+}
 const NO_CREDENTIAL = 'count_tokens had no Anthropic credential to send: the host looks for its subscription login, ' +
   'then ANTHROPIC_AUTH_TOKEN, then ANTHROPIC_API_KEY, and has none.';
 
@@ -903,7 +938,7 @@ function countFailure(source: string): string {
 }
 
 function countLines(report: Report, check: CountCheck, work: string, emptyCompressionSaid: boolean,
-  onAnthropic: boolean): void {
+  onAnthropic: boolean, refused: { words: string; problem: boolean }): void {
   const { agent, compression } = check;
   if (agent.source === 'count_tokens') report.ok(`count_tokens counts with ${agent.countModel}.`);
   else if (agent.source === 'count_tokens_no_credential') report.line(`${NO_CREDENTIAL} So the context's makeup shows no exact total.`);
@@ -912,13 +947,13 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
       : `${agent.model} isn't a Claude model it counts`}.`);
   } else {
     const said = `count_tokens couldn't count with ${agent.countModel}: ${countFailure(agent.source)}. So the ` +
-      'context\'s makeup shows no exact total.' + (agent.source === 'count_tokens_failed_401' ? REPLACE_CREDENTIAL : '') +
+      'context\'s makeup shows no exact total.' + (agent.source === 'count_tokens_failed_401' ? refused.words : '') +
       (agent.source !== 'count_tokens_failed_404' ? '' : ' A retired ' +
       'model answers 404, and the endpoint count_tokens asks (Anthropic\'s API, or the one ANTHROPIC_BASE_URL names) ' +
       'may answer it for a model it doesn\'t serve: set COUNT_TOKENS_MODEL in ' +
       `${join(work, '.env')} to a current Claude model, and restart the service, since the host reads it when it starts. ` +
       `${BEFORE_ENV}: where one sets it, set it there instead.`) + (passes(agent.source) ? PASSES : '');
-    if (onAnthropic && agent.source === 'count_tokens_failed_401') report.problem(said);
+    if (onAnthropic && agent.source === 'count_tokens_failed_401' && refused.problem) report.problem(said);
     else report.line(said);
   }
   if (compression === null) {
@@ -931,7 +966,7 @@ function countLines(report: Report, check: CountCheck, work: string, emptyCompre
     report.line(`The compression model, ${compression.model}, isn't a Claude model count_tokens counts, so it isn't checked.`);
   } else {
     report.line(`count_tokens couldn't count with the compression model, ${compression.model}: ` +
-      `${countFailure(compression.source)}.` + (compression.source === 'count_tokens_failed_401' ? REPLACE_CREDENTIAL : '') +
+      `${countFailure(compression.source)}.` + (compression.source === 'count_tokens_failed_401' ? refused.words : '') +
       (compression.source !== 'count_tokens_failed_404' ? '' : ' A retired ' +
       'model answers 404, and with a retired compression model folding stalls and the context can\'t compress under ' +
       'the window: change the recipe\'s agent.strategy.compressionModel to a current model' +
@@ -954,7 +989,7 @@ function shellLines(report: Report, shell: ShellCheck, commands: ServiceCommands
     report.problem(`The server ${server.id} isn't connected` + (server.refused !== null
       ? `: the host refuses its configuration: ${server.refused}.`
       : `${server.retrying ? '; the host is still retrying it.' : ', and the host isn\'t retrying it.'} Its stderr is in the data ` +
-        `directory, in sessions/<session>/mcpl-stderr/${server.id}.log.`));
+        `directory, in sessions/<session>/mcpl-stderr/${basename(server.id)}.log.`));
   }
   for (const id of shell.closedTabs) {
     report.line(`The server ${id} is a closed tab: the host connects it when an agent opens it, so its connection isn't checked.`);
@@ -1139,7 +1174,7 @@ class ManagerUnread extends Error {
 }
 
 function managerEnv(manager: Manager | null, names: string[], parts: DoctorParts, typed: string,
-  out: Record<string, string> = {}): Record<string, string> {
+  sys: Pick<ServiceSystem, 'env' | 'uid'>, out: Record<string, string> = {}): Record<string, string> {
   if (manager === 'systemd-user') {
     const ran = spawnSync(parts.systemctl, ['--user', 'show-environment'], {
       encoding: 'utf-8',
@@ -1149,7 +1184,7 @@ function managerEnv(manager: Manager | null, names: string[], parts: DoctorParts
     const failed = failure(ran, parts.envLimitMs);
     if (failed !== null) {
       throw new ManagerUnread('systemctl --user show-environment failed, so what the user manager gives the service ' +
-        `can't be read: ${failed}. Run \`systemctl --user show-environment\` as this user to see why: it needs the user's ` +
+        `can't be read: ${failed}. Run \`${systemctlLine(sys, 'show-environment')}\` as this user to see why: it needs the user's ` +
         `manager running and XDG_RUNTIME_DIR naming its directory, as a login session sets it. Then run ${typed} doctor again.`,
         `\`systemctl --user show-environment\` failed: ${failed}`);
     }
@@ -1324,7 +1359,7 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
   });
   if ((ran.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
     throw new Error(`Bun didn't finish reading the service's environment in ${work} within ${limitMs / 1000} s: something ` +
-      'it runs as it starts, such as a bunfig.toml preload, didn\'t end. `bun -e 0`, run there, shows whether it ends, ' +
+      `it runs as it starts, such as a bunfig.toml preload, didn't end. \`${shellWord(bun)} -e 0\`, run there, shows whether it ends, ` +
       'though with your shell\'s environment, not the service\'s.');
   }
   if (ran.error !== undefined) {
@@ -1333,7 +1368,7 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
   }
   if (ran.status !== 0) {
     throw new Error(`Bun ${ran.status === null ? `was ended by ${ran.signal}` : `exited ${ran.status}`} in ${work} as it read ` +
-      'the service\'s environment, and its error isn\'t shown, since it can hold .env\'s values: run `bun -e 0` there to ' +
+      `the service's environment, and its error isn't shown, since it can hold .env's values: run \`${shellWord(bun)} -e 0\` there to ` +
       'see it, though it runs with your shell\'s environment, not the service\'s.');
   }
   let env: Record<string, string>;
@@ -1341,7 +1376,7 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
     env = JSON.parse(ran.stdout) as Record<string, string>;
   } catch {
     throw new Error(`Bun's answer in ${work} wasn't an environment doctor could read: something else wrote to its ` +
-      'output, as a bunfig.toml preload can. `bun -e 0`, run there, shows what writes, though with your shell\'s ' +
+      `output, as a bunfig.toml preload can. \`${shellWord(bun)} -e 0\`, run there, shows what writes, though with your shell's ` +
       `environment, not the service's; once nothing does, run ${typed} doctor again.`);
   }
   env[INSTALL_ROOT_ENV] = root;

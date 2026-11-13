@@ -61,13 +61,13 @@ export async function checkDiscordToken(
   } catch (error) {
     return unanswered(error);
   }
-  let body: { id?: unknown; username?: unknown; message?: unknown; code?: unknown; retry_after?: unknown } | undefined;
+  let body: { id?: unknown; username?: unknown; bot?: unknown; message?: unknown; code?: unknown; retry_after?: unknown } | undefined;
   try {
     body = JSON.parse(text) as typeof body;
   } catch {
     body = undefined;
   }
-  if (response.ok && typeof body?.id === 'string' && typeof body.username === 'string') {
+  if (response.ok && typeof body?.id === 'string' && typeof body.username === 'string' && body.bot === true) {
     return { kind: 'accepted', name: hidden(body.username, token), id: hidden(body.id, token) };
   }
   const wait = retryWait(response, body);

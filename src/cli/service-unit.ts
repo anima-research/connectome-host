@@ -159,6 +159,9 @@ function readSystemdUnit(text: string): UnitRead | { why: string } {
   if (CONTROL.test(workingDirectory)) {
     return { why: 'its WorkingDirectory line holds a control character, which service install doesn\'t write' };
   }
+  if (workingDirectory.endsWith(' ')) {
+    return { why: 'its WorkingDirectory line ends in a space, which systemd drops and service install doesn\'t write' };
+  }
   return { argv, workingDirectory };
 }
 
