@@ -2861,6 +2861,23 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     expect(r.out).not.toContain('and it isn\'t there');
   });
 
+  test('a data directory the install record names that is a regular file, or a link to one, is a problem said as not a directory', async () => {
+    for (const kind of ['file', 'link']) {
+      const at = install();
+      rmSync(at.data, { recursive: true, force: true });
+      if (kind === 'file') writeFileSync(at.data, '');
+      else {
+        writeFileSync(join(at.work, 'a-file'), '');
+        symlinkSync(join(at.work, 'a-file'), at.data);
+      }
+      const r = await run(at);
+      expect([kind, r.out]).toEqual([kind, expect.stringContaining(`✗ The install record names ${at.data} as the resident's data ` +
+        'directory, and it isn\'t a directory, so the host can\'t keep the resident\'s history and memory there. Put the data ' +
+        'directory back there if you have it, or ask for help, before starting the service.')]);
+      expect([kind, r.status]).toEqual([kind, 1]);
+    }
+  });
+
   test.skipIf(process.getuid?.() === 0)('a data directory under a directory this user can\'t search is said as one that can\'t be looked at, not as gone', async () => {
     const at = install();
     const locked = join(at.work, 'locked');

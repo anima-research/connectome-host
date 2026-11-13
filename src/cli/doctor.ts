@@ -480,6 +480,10 @@ export async function doctor(
       report.problem(`The install record names ${dataDir} as the resident's data directory, and it isn't there. It holds ` +
         'the resident\'s history and memory, and a host started now would begin on an empty one, so put it back if you ' +
         'have it, or ask for help, before starting the service.');
+    } else if (dataDir !== null && dataState === 'there' && statSync(dataDir, { throwIfNoEntry: false })?.isDirectory() === false) {
+      report.problem(`The install record names ${dataDir} as the resident's data directory, and it isn't a directory, so the ` +
+        'host can\'t keep the resident\'s history and memory there. Put the data directory back there if you have it, or ask ' +
+        'for help, before starting the service.');
     } else if (dataState !== null && dataState !== 'there') {
       report.problem(`The install record names ${dataDir} as the resident's data directory, and it can't be looked at ` +
         `(${dataState.why}), so whether it's there can't be told. ${dataState.repair}`);
