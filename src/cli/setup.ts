@@ -11,8 +11,8 @@ import { bunBelowFloor } from '../bun-floor.js';
 import { priceAnthropicCall } from '../call-pricing.js';
 import { ANTHROPIC_API, checkKey, originOf, withSecretsHidden, type KeyCheck, type KeyCheckOptions } from '../setup/key-check.js';
 import {
-  EnvFormError, dotenvNames, dotenvValues, envForm, readEnvFile, storedSecretsIn, unwritableValue, writeEnvValue,
-  type Secret,
+  EnvFormError, SHORT_CHARACTERS, SHORT_HIDES, dotenvNames, dotenvValues, envForm, isShort, readEnvFile, shortLength,
+  storedSecretsIn, unwritableValue, writeEnvValue, type Secret,
 } from '../setup/secrets.js';
 import { lingerOf } from '../setup/linger.js';
 import { readSetupState, type KeptState, type SetupState } from '../setup/state.js';
@@ -691,12 +691,17 @@ async function installAndStart(
   const storedKey = stored.get('ANTHROPIC_API_KEY') || undefined;
   let key: string | null = storedKey ?? null;
   let fromDotEnv = key !== null;
-  if (key === null && shell.ANTHROPIC_API_KEY) {
-    const use = await yesNo(world, `An ANTHROPIC_API_KEY is exported in this shell. Use it for setup's agent? Setup ` +
-      `writes it to ${envFile}, readable by you alone. The resident uses it too, unless you change it. (yes/no) [yes] `,
-    true);
+  let typed = false;
+  let kept: string | null = null;
+  const shellKey = shell.ANTHROPIC_API_KEY;
+  if (key === null && shellKey?.trim()) {
+    const short = baseUrl !== undefined && isShort(shellKey)
+      ? `It is ${shortLength(shellKey)}. ${SHORT_HIDES} Answer no to type another. ` : '';
+    const use = await yesNo(world, `An ANTHROPIC_API_KEY is exported in this shell. ${short}Use it for setup's agent? ` +
+      `Setup writes it to ${envFile}, readable by you alone. The resident uses it too, unless you change it. ` +
+      '(yes/no) [yes] ', true);
     if (use === null) return stopped();
-    if (use) key = shell.ANTHROPIC_API_KEY;
+    if (use) key = shellKey;
   }
   for (;;) {
     if (key === null) {
@@ -705,7 +710,13 @@ async function installAndStart(
       key = await world.askHidden(`${baseUrl === undefined ? 'An Anthropic API key, from console.anthropic.com\'s API keys'
         : `An API key that ${shownOrigin(baseUrl, '', hidden)} accepts`}, typed hidden (Enter alone stops setup)`);
       fromDotEnv = false;
+      typed = true;
       if (!key) return stopped();
+    }
+    if (typed && !key.trim()) {
+      err('That was only whitespace, which isn\'t a key, so it wasn\'t checked or stored.');
+      key = null;
+      continue;
     }
     const unwritable = unwritableValue(key);
     if (unwritable !== null) {
@@ -714,6 +725,21 @@ async function installAndStart(
       key = null;
       fromDotEnv = false;
       continue;
+    }
+    if (baseUrl !== undefined && typed && key !== kept && isShort(key)) {
+      const hidden = hide('');
+      if (hidden === null) return 1;
+      out(`That key is ${shortLength(key)}. ${SHORT_HIDES} If it was cut short, type the whole key. If ` +
+        `${shownOrigin(baseUrl, '', hidden)} takes any key, type a longer made-up one: ${SHORT_CHARACTERS} or more ` +
+        'random letters and digits, not a word. To keep this one, type it again.');
+      const again = await world.askHidden('The same key again to keep it, or another, typed hidden (Enter alone stops ' +
+        'setup)');
+      if (!again) return stopped();
+      if (again !== key) {
+        key = again;
+        continue;
+      }
+      kept = key;
     }
     const fate = fromDotEnv ? ` The ANTHROPIC_API_KEY in ${envFile} wasn't checked.`
       : ' The key wasn\'t checked or stored.';
