@@ -834,7 +834,7 @@ function agentCalls(data: unknown): AgentCalls[] {
 }
 
 function callLines(report: Report, agents: AgentCalls[], recipeAgent: string | undefined, logged: ServiceUnits | null): string | null {
-  const named = recipeAgent ?? agents[0]?.name;
+  const named = recipeAgent || agents[0]?.name;
   const unlisted = named !== undefined && !agents.some((agent) => agent.name === named) ? named : null;
   if (unlisted !== null) report.line(`The host's counts list no agent named ${unlisted}.`);
   for (const agent of agents) {

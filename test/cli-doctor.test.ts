@@ -1504,6 +1504,15 @@ describe('connectome doctor', () => {
     expect(elsewhere.out).toMatch(/\nDoctor found no problem, though .*ember's model calls weren't checked.*, as said above\.$/);
   });
 
+  test('a recipe whose agent.name is empty names no agent, as the host reads it, so the host\'s agent gets the recipe agent\'s lines', async () => {
+    const at = install({ recipe: { ...RECIPE(''), agent: { ...RECIPE('').agent, name: '' } } });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    const lines = r.out.split('\n');
+    expect(lines[lines.indexOf('Model calls') + 1]).toBe('  ✓ ember: no failed turns in a row, by the host\'s counts.');
+    expect(r.out).not.toContain('The host\'s counts list no agent named');
+    expect(r.out).not.toContain('model calls weren\'t checked');
+  });
+
   test('with no host the counts aren\'t asked, and an answer doctor can\'t read is a problem', async () => {
     const at = install();
     const none = await run(at);
