@@ -182,6 +182,7 @@ function world(dir: string, script: Script = {}, over: Partial<SetupWorld> = {})
       bun: { path: process.execPath, version: '1.4.4' },
       hasSudo: true,
       lingerOf: () => true,
+      macSession: () => true,
       userExists: () => false,
       ask: async (question) => {
         seen.asked.push(question);
@@ -912,11 +913,19 @@ test('setup writes Bun\'s own list and term-sessions-mcp as trustedDependencies 
   expect(text(made.seen.out)).not.toContain('Blocked');
 });
 
-test('on macOS, setup says the service stops when the user logs out of the Mac\'s graphical session, not when an ssh session ends, and starts only while they\'re logged in there', async () => {
-  const dir = directory();
-  const made = world(dir, { answers: [], secrets: [KEY] }, { platform: 'darwin' });
-  expect(await runSetup(dir, ['discord'], made)).toBe(0);
-  expect(made.seen.out).toContain('On macOS, a service of alice\'s stops when alice logs out of the Mac\'s graphical session, not when an ssh session ends, and launchd starts it only while alice is logged in there, so over ssh with no one logged in to the Mac, it can\'t start until they are. `who` lists alice on console while alice is logged in there.');
+test('on macOS, setup says the service stops when the user logs out of the Mac\'s graphical session, not when an ssh session ends, and starts when they log in there, and whether they\'re logged in there now', async () => {
+  const common = 'On macOS, a service of alice\'s stops when alice logs out of the Mac\'s graphical session, not when an ssh ' +
+    'session ends, and launchd starts it when alice logs in there.';
+  for (const [session, now] of [
+    [true, ' alice is logged in there now.'],
+    [false, ' alice isn\'t logged in there now, so the service\'s install refuses until alice is, and setup goes on meanwhile.'],
+  ] as const) {
+    const dir = directory();
+    const made = world(dir, { answers: [], secrets: [KEY] }, { platform: 'darwin', macSession: () => session });
+    expect(await runSetup(dir, ['discord'], made)).toBe(0);
+    expect(made.seen.out, String(session)).toContain(common + now);
+    expect(text(made.seen.out), String(session)).not.toContain('`who`');
+  }
 });
 
 test('setup installs the host and discord-mcpl alone: it adds no shell, checks no node-pty, and a Node above 24 doesn\'t stop it, whose words name that ceiling as the shell\'s', async () => {
