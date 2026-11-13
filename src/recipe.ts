@@ -458,8 +458,8 @@ export interface RecipeAgent {
   /** OpenAI Responses settings. Reasoning applies to both OpenAI providers;
    * the host sends compaction and serviceTier on `openai-responses` only: a
    * Codex recipe that sets them is warned at start-up
-   * (responsesTransportSettingsWarning), as an `openai-responses` recipe that
-   * sets `agent.codex` is. */
+   * (responsesTransportSettingsWarning), as a recipe on any other provider
+   * that sets `agent.codex.fastMode` is. */
   responses?: {
     reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     reasoningContext?: 'current_turn' | 'all_turns';

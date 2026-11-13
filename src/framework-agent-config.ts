@@ -27,8 +27,8 @@ export function autoContinueSupportWarning(recipe: Recipe, agent: object | undef
  * only, and reads `agent.codex` on `openai-codex` only. A recipe that moves
  * between the two keeps the keys and loses their effect with no other sign,
  * so the start names them, and, for a `priority` tier or `fastMode`, the
- * other provider's way of asking for the same thing (R1-2, R1-3 of #645).
- * Pure: `warnTransportSettings` emits it.
+ * other provider's way of asking for the same thing (#644). Pure:
+ * `warnTransportSettings` emits it.
  */
 export function responsesTransportSettingsWarning(recipe: Recipe): string | undefined {
   const provider = resolveProvider(recipe);
@@ -38,15 +38,18 @@ export function responsesTransportSettingsWarning(recipe: Recipe): string | unde
       ...(recipe.agent.responses?.compactThreshold !== undefined ? ['agent.responses.compactThreshold'] : []),
     ];
     if (set.length === 0) return undefined;
-    const fast = recipe.agent.responses?.serviceTier === 'priority'
+    // The pointer only where fast mode isn't already asked for.
+    const fast = recipe.agent.responses?.serviceTier === 'priority' && recipe.agent.codex?.fastMode !== true
       ? ' (priority processing on Codex is agent.codex.fastMode, or /fast on at runtime)' : '';
     return `[agent-settings] ${set.join(' and ')} ${set.length === 1 ? 'is' : 'are'} sent on provider "openai-responses" only: ` +
       `provider "openai-codex" doesn't send ${set.length === 1 ? 'it' : 'them'}${fast}.`;
   }
-  if (recipe.agent.codex !== undefined) {
-    const priority = recipe.agent.codex.fastMode === true && provider === 'openai-responses'
+  // Keyed on the one setting the host reads, not on the block: `codex: {}`
+  // left from a template, or a block of keys no provider reads, drops nothing.
+  if (recipe.agent.codex?.fastMode !== undefined) {
+    const priority = recipe.agent.codex.fastMode === true && provider === 'openai-responses' && recipe.agent.responses?.serviceTier !== 'priority'
       ? ' (priority processing on openai-responses is agent.responses.serviceTier: "priority")' : '';
-    return `[agent-settings] agent.codex is read on provider "openai-codex" only: provider "${provider}" doesn't read it${priority}.`;
+    return `[agent-settings] agent.codex.fastMode is read on provider "openai-codex" only: provider "${provider}" doesn't read it${priority}.`;
   }
   return undefined;
 }
