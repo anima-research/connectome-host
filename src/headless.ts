@@ -28,6 +28,7 @@ import { createServer, type Socket, type Server } from 'node:net';
 import { createWriteStream, mkdirSync, existsSync, unlinkSync, writeFileSync, type WriteStream } from 'node:fs';
 import { sessionMarker } from './session-marker.js';
 import { join, resolve } from 'node:path';
+import { format } from 'node:util';
 import type { AppContext } from './index.js';
 import type { TraceEvent } from '@animalabs/agent-framework';
 import { type IncomingCommand, matchesSubscription } from './modules/fleet-types.js';
@@ -129,6 +130,20 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   } as StdWrite;
   process.stdout.write = makeRedirect();
   process.stderr.write = makeRedirect();
+  // Bun's console writes to the descriptors itself (above), so what the host
+  // and agent-framework say through console.error and console.warn never
+  // reached this log, and /bug, which reads this log in headless mode for
+  // its host-error tags and shapes, saw none of it. Each line is written
+  // here too, and still printed where it went: the supervisor's stderr, or a
+  // fleet child's startup.log, which its parent quotes on a failed launch.
+  // Once the log has ended, the print alone: writeLog would print it again.
+  for (const level of ['error', 'warn'] as const) {
+    const print = console[level];
+    console[level] = (...args: unknown[]) => {
+      if (!logStream.writableEnded) writeLog(`${format(...args)}\n`);
+      print(...args);
+    };
+  }
 
   const log = (msg: string): void => {
     writeLog(`[${new Date().toISOString()}] ${msg}\n`);
