@@ -1953,7 +1953,7 @@ describe('setup--ask_secret', () => {
     expect(statSync(holding).mode & 0o777).toBe(0o644);
   });
 
-  test('before it knows which values are secret, each tool refuses a .env that is a link without its target, naming what the person runs in a terminal of their own to see where it leads', async () => {
+  test('before it knows which values are secret, setup--discord, setup--check_model and setup--ask_secret each refuse a .env that is a link without its target, naming what the person runs in a terminal of their own to see where it leads', async () => {
     const SECRET = 'sk-linked-583-secret';
     const call = (module: SetupModule, name: string, input: Record<string, unknown>) =>
       module.handleToolCall({ id: 'c12', name, input } as ToolCall);
