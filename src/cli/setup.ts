@@ -148,6 +148,7 @@ export interface SetupWorld {
   bun: { path: string; version: string };
   hasSudo: boolean;
   lingerOf(user: string): boolean | null;
+  macSession(): boolean;
   userExists(user: string): boolean | null;
   ask(question: string): Promise<string | null>;
   askHidden(label: string): Promise<string | null>;
@@ -451,9 +452,10 @@ async function installAndStart(
     out(`  ${lingerLine(world)}`);
   } else if (world.platform === 'darwin') {
     out(`On macOS, a service of ${world.user}'s stops when ${world.user} logs out of the Mac's graphical session, not ` +
-      `when an ssh session ends, and launchd starts it only while ${world.user} is logged in there, so over ssh with no ` +
-      `one logged in to the Mac, it can't start until they are. \`who\` lists ${world.user} on console while ` +
-      `${world.user} is logged in there.`);
+      `when an ssh session ends, and launchd starts it when ${world.user} logs in there. ${world.macSession()
+        ? `${world.user} is logged in there now.`
+        : `${world.user} isn't logged in there now, so the service's install refuses until ${world.user} is, and setup ` +
+          'goes on meanwhile.'}`);
   }
 
   if (bunBelowFloor(pkg.engines.bun, world.bun.version) === true) {
@@ -1222,6 +1224,7 @@ export function realWorld(): SetupWorld {
     bun: { path: process.execPath, version: Bun.version },
     hasSudo: Bun.which('sudo') !== null,
     lingerOf: (user) => lingerOf(user),
+    macSession: () => spawnSync('launchctl', ['print', `gui/${process.getuid!()}`], { stdio: 'ignore' }).status === 0,
     userExists: (user) => {
       const found = spawnSync('getent', ['passwd', user], { stdio: 'ignore', env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
       return found.status === 0 ? true : found.status === 2 ? false : null;
