@@ -92,7 +92,7 @@ import { HOST_PACKAGE_JSON } from './bun-floor-check.js';
 import { switchLeftForStop, switchSessionSteps } from './session-switch.js';
 import { resolveAgentName } from './agent-name.js';
 import { generateSessionName, namingSummary } from './synesthete.js';
-import { auxiliaryModelOverride } from './auxiliary-model.js';
+import { auxiliarySteering } from './auxiliary-model.js';
 import {
   type Recipe,
   DEFAULT_RECIPE,
@@ -341,7 +341,7 @@ async function createFramework(
 
   // Gate config — core AF EventGate feature, with the reply judge
   // (gate-options.ts). Path is per-session: {storePath}/config/gate.json
-  const gateOptions = gateOptionsFor(modules.wake, storePath, process.env, auxiliaryModelOverride(recipe));
+  const gateOptions = gateOptionsFor(modules.wake, storePath, process.env, auxiliarySteering(recipe));
 
   let workspaceModule: WorkspaceModule | null = null;
   const workspaceMounts = buildWorkspaceMounts(modules.workspace, storePath);

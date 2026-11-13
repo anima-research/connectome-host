@@ -47,6 +47,25 @@ export function auxiliaryModel(recipe: Recipe): string {
 }
 
 /**
+ * What the gate's reply judge and suppression review are steered with: the
+ * override, where there is one, and whether the route takes Anthropic's
+ * `output_config` (gateOptionsFor sends `effort: 'none'` elsewhere).
+ */
+export function auxiliarySteering(recipe: Recipe): { model: string; anthropicEffort: boolean } | undefined {
+  const model = auxiliaryModelOverride(recipe);
+  return model === undefined ? undefined : { model, anthropicEffort: servesAnthropicIds(recipe) };
+}
+
+/** Whether the host chose the model itself (the resident's), as against the recipe naming one. */
+function hostChoseModel(recipe: Recipe): boolean {
+  return !recipe.auxiliaryModel && !servesAnthropicIds(recipe);
+}
+
+/** Claude Fable and Mythos think on every call, asked or not (membrane's
+ *  `isAlwaysThinkingModel`), so a 30-token cap is spent before the answer. */
+const alwaysThinking = (model: string): boolean => /fable|mythos/i.test(model);
+
+/**
  * The request fields of one of the host's own short calls (a session name,
  * a status phrase), as the recipe's provider takes them:
  * - the model, from `auxiliaryModel`;
@@ -57,8 +76,11 @@ export function auxiliaryModel(recipe: Recipe): string {
  *   at least AUXILIARY_REASONING_ROOM, so a model that reasons before it
  *   answers has an answer left;
  * - on the Responses-family routes (`openai-responses`, `openai-codex`), a
- *   low reasoning effort, as the retrieval module's own small calls set,
- *   where the resident's turns run at `high`.
+ *   low reasoning effort, where the model is the one the host chose, the
+ *   resident's, which takes it (the resident's turns run at `high`); a model
+ *   the recipe named is sent as it is, since a non-reasoning model refuses a
+ *   `reasoning` object (#650 R2-5). On Codex in subscription mode membrane
+ *   sends no cap at all, so the room is a bound elsewhere only.
  */
 export function auxiliaryRequest(recipe: Recipe, maxTokens: number): {
   config: { model: string; maxTokens: number };
@@ -66,12 +88,16 @@ export function auxiliaryRequest(recipe: Recipe, maxTokens: number): {
 } {
   const provider = resolveProvider(recipe);
   const responsesFamily = provider === 'openai-responses' || provider === 'openai-codex';
+  const model = auxiliaryModel(recipe);
+  // Anthropic's models think only when asked to, and these requests don't
+  // ask, except the always-thinking ids, which get the room a reasoning
+  // model gets.
+  const roomNeeded = !servesAnthropicIds(recipe) || alwaysThinking(model);
   return {
     config: {
-      model: auxiliaryModel(recipe),
-      // Anthropic's models reason only when asked to (thinking), and these requests don't ask.
-      maxTokens: servesAnthropicIds(recipe) ? maxTokens : Math.max(maxTokens, AUXILIARY_REASONING_ROOM),
+      model,
+      maxTokens: roomNeeded ? Math.max(maxTokens, AUXILIARY_REASONING_ROOM) : maxTokens,
     },
-    ...(responsesFamily ? { providerParams: { reasoning: { effort: 'low' } } } : {}),
+    ...(responsesFamily && hostChoseModel(recipe) ? { providerParams: { reasoning: { effort: 'low' } } } : {}),
   };
 }

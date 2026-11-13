@@ -89,18 +89,20 @@ A recipe is a JSON file that configures everything specific to one agent:
   },
   "sessionNaming": {
     "examples": ["Thread Archaeology", "Pipeline Debug"]
-  },
-  "auxiliaryModel": "gpt-5.6-sol"
+  }
 }
 ```
 
-`auxiliaryModel` is the model the host's own small calls go to, as the
-provider names it: the session name, the TUI fleet view's activity summaries,
-and, where the recipe names none of its own, lesson retrieval
-(`modules.retrieval.model`), the reply judge (`modules.wake.judge.model`) and
-the gate's suppression review. Left out, each keeps its Claude Haiku default
-on the `anthropic` and `bedrock` routes, which serve it, and goes to the
-resident's own model on every other provider.
+An optional top-level `auxiliaryModel` names the model the host's own small
+calls go to, as the provider names it: the session name, the TUI fleet view's
+activity summaries, and, where the recipe names none of its own, lesson
+retrieval (`modules.retrieval.model`), the reply judge
+(`modules.wake.judge.model`) and the gate's suppression review. Left out, each
+keeps its Claude Haiku default on the `anthropic` and `bedrock` routes, which
+serve it, and goes to the resident's own model on every other provider, at
+that model's price; a recipe that wants them cheaper names a smaller model its
+provider serves (`"auxiliaryModel": "anthropic/claude-haiku-4-5"` on
+OpenRouter, say). On the `anthropic` route the key is for a Claude id only.
 
 Every string value may reference the environment as `${VAR}` or
 `${VAR:-default}`; a missing required variable fails the load, naming it.

@@ -44,8 +44,9 @@ export function namingSummary(
  * A name for the session from the host's auxiliary model (auxiliaryRequest:
  * the model, cap and reasoning effort the recipe's provider takes), or null
  * when the model's answer isn't one or the call fails. Either is said once
- * per process, on stderr (the journal headless; tui-error.log in the TUI,
- * where /bug reads it), so a host whose naming calls are refused, or whose
+ * per process, on stderr, which each runtime routes to its log (headless.log,
+ * tui-error.log, readline-error.log: the files /bug reads), so a host whose
+ * naming calls are refused, or whose
  * model spends its cap before the name, says so instead of leaving sessions
  * unnamed in silence.
  */

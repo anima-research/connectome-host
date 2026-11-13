@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
 import {
-  ANTHROPIC_AUXILIARY_MODEL, AUXILIARY_REASONING_ROOM, auxiliaryModel, auxiliaryModelOverride, auxiliaryRequest,
+  ANTHROPIC_AUXILIARY_MODEL, AUXILIARY_REASONING_ROOM, auxiliaryModel, auxiliaryModelOverride, auxiliaryRequest, auxiliarySteering,
 } from '../src/auxiliary-model.js';
 import { generateSessionName, resetSessionNamingWarning } from '../src/synesthete.js';
 import { activitySummaryRequest } from '../src/activity-summary.js';
 import { retrievalModuleConfig } from '../src/retrieval-config.js';
+import { retrievalRequestFields } from '../src/modules/retrieval-module.js';
 import { gateOptionsFor } from '../src/gate-options.js';
 import { validateRecipe } from '../src/recipe.js';
 
@@ -91,6 +92,15 @@ describe('auxiliaryRequest: what the request carries per route (R1-2)', () => {
     expect(auxiliaryRequest(recipe({ provider: 'openai-responses', model: 'gpt-5.6' }), 40).providerParams).toEqual({ reasoning: { effort: 'low' } });
   });
 
+  test('a model the recipe names is sent as it is: no reasoning object for it, and an always-thinking Claude id gets the room (R2-5)', () => {
+    const named = auxiliaryRequest(recipe({ provider: 'openai-responses', model: 'gpt-5.6' }, { auxiliaryModel: 'gpt-4.1-mini' }), 30);
+    expect(named).toEqual({ config: { model: 'gpt-4.1-mini', maxTokens: AUXILIARY_REASONING_ROOM } });
+    expect(auxiliaryRequest(recipe({ provider: 'anthropic' }, { auxiliaryModel: 'claude-fable-5-1' }), 30))
+      .toEqual({ config: { model: 'claude-fable-5-1', maxTokens: AUXILIARY_REASONING_ROOM } });
+    expect(auxiliaryRequest(recipe({ provider: 'anthropic' }, { auxiliaryModel: 'claude-haiku-5-5' }), 30))
+      .toEqual({ config: { model: 'claude-haiku-5-5', maxTokens: 30 } });
+  });
+
   test('OpenRouter and openai-compatible: the resident\'s model and room to reason, nothing the adapter would not forward', () => {
     expect(auxiliaryRequest(recipe({ provider: 'openrouter', model: 'openai/gpt-5.6-sol' }), 40))
       .toEqual({ config: { model: 'openai/gpt-5.6-sol', maxTokens: AUXILIARY_REASONING_ROOM } });
@@ -167,27 +177,57 @@ describe('the fleet view\'s summaries, retrieval, the judge and the suppression 
     expect(activitySummaryRequest(recipe({ provider: 'openrouter', model: 'x/y' }, { auxiliaryModel: 'x/small' }), 'w').config.model).toBe('x/small');
   });
 
-  test('retrieval defaults its model from the helper where the recipe names none', () => {
+  test('retrieval defaults its model from the helper where the recipe names none, and its request takes what the route accepts (R2-2)', () => {
     const membrane = {} as Membrane;
-    expect(retrievalModuleConfig(membrane, recipe({ provider: 'openai-codex', model: 'gpt-6.1-sol' }, { modules: { retrieval: true } })).retrievalModel).toBe('gpt-6.1-sol');
-    expect(retrievalModuleConfig(membrane, recipe({ provider: 'anthropic' }, { modules: { retrieval: true } })).retrievalModel).toBeUndefined();
-    expect(retrievalModuleConfig(membrane, recipe({ provider: 'openai-codex', model: 'gpt-6.1-sol' }, { modules: { retrieval: { model: 'gpt-5.6-sol' } } })).retrievalModel).toBe('gpt-5.6-sol');
+    const onCodex = retrievalModuleConfig(membrane, recipe({ provider: 'openai-codex', model: 'gpt-6.1-sol' }, { modules: { retrieval: true } }));
+    expect(retrievalRequestFields(onCodex)).toEqual({
+      config: { model: 'gpt-6.1-sol', maxTokens: 500 },
+      providerParams: { reasoning: { effort: 'low' } },
+    });
+    const onResponses = retrievalModuleConfig(membrane, recipe({ provider: 'openai-responses', model: 'gpt-5.6' }, { modules: { retrieval: true } }));
+    expect(retrievalRequestFields(onResponses)).toEqual({
+      config: { model: 'gpt-5.6', maxTokens: 500 },
+      providerParams: { reasoning: { effort: 'low' } },
+    });
+    const onOpenRouter = retrievalModuleConfig(membrane, recipe({ provider: 'openrouter', model: 'openai/gpt-5.6-sol' }, { modules: { retrieval: true } }));
+    expect(retrievalRequestFields(onOpenRouter)).toEqual({ config: { model: 'openai/gpt-5.6-sol', maxTokens: 500 } });
+    // The anthropic route keeps the module's own Haiku default, deterministic, as it always was.
+    const onAnthropic = retrievalModuleConfig(membrane, recipe({ provider: 'anthropic' }, { modules: { retrieval: true } }));
+    expect(onAnthropic.retrievalModel).toBeUndefined();
+    expect(retrievalRequestFields(onAnthropic)).toEqual({ config: { model: 'claude-haiku-4-5-20251001', maxTokens: 500, temperature: 0 } });
+    // A model the recipe names is kept, with the effort the recipe set and none otherwise.
+    const named = retrievalModuleConfig(membrane, recipe({ provider: 'openai-codex', model: 'gpt-6.1-sol' }, { modules: { retrieval: { model: 'gpt-5.6-sol', reasoningEffort: 'medium' } } }));
+    expect(retrievalRequestFields(named)).toEqual({ config: { model: 'gpt-5.6-sol', maxTokens: 500 }, providerParams: { reasoning: { effort: 'medium' } } });
+    const namedPlain = retrievalModuleConfig(membrane, recipe({ provider: 'openai-codex', model: 'gpt-6.1-sol' }, { modules: { retrieval: { model: 'gpt-5.6-sol' } } }));
+    expect(retrievalRequestFields(namedPlain)).toEqual({ config: { model: 'gpt-5.6-sol', maxTokens: 500 } });
   });
 
-  test('gateOptionsFor gives the judge and the suppression review the model where one is needed, and leaves a named or disabled judge alone', () => {
-    const plain = gateOptionsFor(true, '/store', {}, 'gpt-6.1-sol')!;
-    expect(plain.judge).toEqual({ model: 'gpt-6.1-sol' });
-    expect(plain.suppressionReview).toEqual({ model: 'gpt-6.1-sol' });
+  test('gateOptionsFor steers the judge and the suppression review: the model where one is needed, effort none off the routes that take output_config, and a named or disabled judge left alone (R2-1)', () => {
+    const offRoute = { model: 'gpt-6.1-sol', anthropicEffort: false };
+    const plain = gateOptionsFor(true, '/store', {}, offRoute)!;
+    expect(plain.judge).toEqual({ model: 'gpt-6.1-sol', effort: 'none' });
+    expect(plain.suppressionReview).toEqual({ model: 'gpt-6.1-sol', effort: 'none' });
 
-    const named = gateOptionsFor({ judge: { model: 'gpt-5.6-sol', timeoutMs: 5000 } }, '/store', {}, 'gpt-6.1-sol')!;
-    expect(named.judge).toEqual({ model: 'gpt-5.6-sol', timeoutMs: 5000 });
+    const named = gateOptionsFor({ judge: { model: 'gpt-5.6-sol', timeoutMs: 5000, effort: 'low' } }, '/store', {}, offRoute)!;
+    expect(named.judge).toEqual({ model: 'gpt-5.6-sol', timeoutMs: 5000, effort: 'low' });
+    const namedNoEffort = gateOptionsFor({ judge: { model: 'gpt-5.6-sol' } }, '/store', {}, offRoute)!;
+    expect(namedNoEffort.judge).toEqual({ model: 'gpt-5.6-sol', effort: 'none' });
 
-    const off = gateOptionsFor({ judge: { enabled: false } }, '/store', {}, 'gpt-6.1-sol')!;
+    const off = gateOptionsFor({ judge: { enabled: false } }, '/store', {}, offRoute)!;
     expect(off.judge).toEqual({ enabled: false });
-    expect(off.suppressionReview).toEqual({ model: 'gpt-6.1-sol' });
+    expect(off.suppressionReview).toEqual({ model: 'gpt-6.1-sol', effort: 'none' });
+
+    // A Claude id named on the anthropic route keeps the framework's effort.
+    const onRoute = gateOptionsFor(true, '/store', {}, { model: 'claude-haiku-5-5', anthropicEffort: true })!;
+    expect(onRoute.judge).toEqual({ model: 'claude-haiku-5-5' });
+    expect(onRoute.suppressionReview).toEqual({ model: 'claude-haiku-5-5' });
 
     const anthropicRoute = gateOptionsFor(true, '/store', {})!;
     expect(anthropicRoute.judge).toBeUndefined();
     expect(anthropicRoute.suppressionReview).toBeUndefined();
+
+    expect(auxiliarySteering(codex())).toEqual(offRoute);
+    expect(auxiliarySteering(anthropic())).toBeUndefined();
+    expect(auxiliarySteering(recipe({ provider: 'anthropic' }, { auxiliaryModel: 'claude-haiku-5-5' }))).toEqual({ model: 'claude-haiku-5-5', anthropicEffort: true });
   });
 });
