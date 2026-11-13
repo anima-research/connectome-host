@@ -126,6 +126,11 @@ function dotenvFiles(mode: (typeof DOTENV_MODES)[number]): string[] {
   return [`.env.${mode}.local`, ...(mode === 'test' ? [] : ['.env.local']), `.env.${mode}`, '.env'];
 }
 
+export function dotenvFileBefore(dir: string, nodeEnv: string | undefined, name: string): string | null {
+  const mode = nodeEnv === 'production' || nodeEnv === 'test' ? nodeEnv : 'development';
+  return dotenvFiles(mode).slice(0, -1).find((file) => Object.hasOwn(parseEnv(envText(join(dir, file))), name)) ?? null;
+}
+
 export function dotenvNames(dir: string): string[] {
   const names = new Set<string>();
   for (const file of new Set(DOTENV_MODES.flatMap(dotenvFiles))) {

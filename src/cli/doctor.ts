@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens, startingTailTokens } from '../recipe-fit.js';
 import { withoutHeartbeatMcpl } from '../heartbeat-options.js';
-import { composeMcplChildEnv, openedBy, serversForRecipe } from '../mcpl-config.js';
+import { composeMcplChildEnv, loadMcplServers, openedBy, readAgentOverlay, serversForRecipe } from '../mcpl-config.js';
 import {
   ENV_REFERENCE, loadRecipeDocument, readRecipeDocument, recipeDigest, recipeModel, resolveProvider,
   runningFit, unknownRecipeKeys, type Recipe, type RecipeDocument,
@@ -22,7 +22,7 @@ import { AGENT_OVERLAY_FILE_ENV, agentOverlayPath } from '../update/agent-overla
 import { INSTALL_ROOT_ENV, SUPERVISED_ENV, realOrResolved } from '../update/contract.js';
 import { shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
-import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy } from './discord-check.js';
+import { BEFORE_ENV_FILE, checkDiscord, secretStep, tokenRoute } from './discord-check.js';
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
 import { checkUnits, heldWithoutFile, ownerProblem, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
@@ -155,7 +155,7 @@ export async function doctor(
     pidUntold: false, notTheService: false, uncredentialed: false, unanswered: false, closedTabs: false,
     shellUnchecked: false, shellBarred: false, uncounted: null, commands: null, startCommand: '', recordData: null,
     dataDir: null, dataNamer: '', counting: null, calls: null, recipe: null, uses: null, emptyCompressionSaid: false,
-    unknown: '', closed: { closes: [], undecoded: 0 }, ladderRan: false,
+    unknown: '', closed: { closes: [], undecoded: 0 }, ladderRan: false, serviceNodeEnv: undefined,
   };
   if (!readEnvironment(r)) return 1;
   await loadRecipe(r);
@@ -202,6 +202,7 @@ interface Run {
   envFiles: string[];
   refusedUnit: string | null;
   passedOver: string[];
+  serviceNodeEnv: string | undefined;
   recipeWarnings: string[];
   recipeLoad: { recipe: Recipe; persistable: Record<string, unknown> } | { error: unknown } | null;
   servers: Server[] | null;
@@ -409,6 +410,7 @@ function readEnvironment(r: Run): boolean {
     const built = serviceEnv(work, root, given, unit === null ? null : unit.env, parts.envLimitMs,
       service?.bun ?? process.execPath, typed, unit === null ? [] : unit.unset);
     r.env = built.env;
+    r.serviceNodeEnv = built.base.NODE_ENV;
     r.passedOver = passedOverLines(work, root, given, unit === null ? null : unit.env, unit === null ? [] : unit.unset,
       built, manager, parts.envLimitMs, service?.bun ?? process.execPath, typed);
     const refusedHere = service === null && read !== null
@@ -790,7 +792,7 @@ async function serversSection(r: Run): Promise<void> {
 }
 
 async function discordSection(r: Run): Promise<void> {
-  const { report, parts, servers, unknown, env, work, typed } = r;
+  const { report, parts, servers, unknown, env, work, typed, recipeRead, recipePath, serviceNodeEnv } = r;
   report.section('Discord');
   if (servers === null) report.line(`Discord isn't checked: ${unknown}.`);
   else {
@@ -804,10 +806,25 @@ async function discordSection(r: Run): Promise<void> {
       } else if (opened === null) report.line(`${server.id} isn't checked here, since the host refuses its entry.`);
     }
     if (named.length === 0) report.line('No server the recipe runs is Discord\'s.');
+    const raw = recipeRead !== null && 'document' in recipeRead ? recipeRead.document.raw : null;
+    const recipeServers = raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as { mcpServers?: unknown }).mcpServers : undefined;
+    const files = { recipe: recipePath!, servers: join(work, 'mcpl-servers.json'), overlay: agentOverlayPath(work, env) };
     for (const server of discord) {
       if (discord.length > 1) report.line(`The entry ${server.id}:`);
       try {
-        const checked = await checkDiscord(childEnv(server, env), { fetch: parts.fetch, workingDir: work, command: typed });
+        const route = tokenRoute(server.id, {
+          ...files,
+          recipeServers: recipeServers !== null && typeof recipeServers === 'object' && !Array.isArray(recipeServers)
+            ? recipeServers as Record<string, unknown> : {},
+          fileServers: loadMcplServers(files.servers) as unknown as Array<{ id: string } & Record<string, unknown>>,
+          overlayServers: readAgentOverlay(files.overlay),
+          inheritEnv: server.inheritEnv === true,
+        });
+        const checked = await checkDiscord(childEnv(server, env), {
+          fetch: parts.fetch, workingDir: work, command: typed, route, service: env,
+          ...(serviceNodeEnv !== undefined ? { nodeEnv: serviceNodeEnv } : {}),
+        });
         for (const line of checked.lines) report.line(line);
         report.problems += checked.problems.length;
       } catch (error) {
@@ -1298,7 +1315,7 @@ function storedSecretLines(
     } else if (at.length === 0) {
       report.line(`${name} is in setup's list of stored secrets, and doctor finds no server given it: no server the host ` +
         `starts is given it in its env or args, no server it dials names it in its token or url, and the recipe names it ` +
-        `nowhere outside its servers. ` + mappingRemedy(name, name === 'DISCORD_TOKEN'));
+        `nowhere outside its servers. ` + secretStep(name, name === 'DISCORD_TOKEN'));
     }
   }
   if (unchecked.length > 0) report.line(`Which servers see ${unchecked.join(', ')} isn't checked: ${unknown}.`);

@@ -1797,6 +1797,28 @@ describe('connectome doctor', () => {
       'Bot page, then restart the service.');
   });
 
+  test('a 401 for a recipe entry that gives DISCORD_TOKEN a value of its own says to make it "${DISCORD_TOKEN}" and store the token with setup discord', async () => {
+    const at = install({ recipe: { ...RECIPE(''), mcpServers: { ...RECIPE('').mcpServers,
+      discord: { command: '/x/node_modules/.bin/discord-mcpl', env: { DISCORD_TOKEN: 'x${DISCORD_TOKEN}', DISCORD_GUILD_ID: '100' } } } } });
+    const refusing = (async () => Response.json({ message: '401: Unauthorized', code: 0 }, { status: 401 })) as unknown as typeof fetch;
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { fetch: refusing }));
+    const typed = join(at.root, 'connectome');
+    expect(r.out).toContain('The token is the value written at mcpServers.discord.env.DISCORD_TOKEN in ' +
+      `${join(at.work, 'recipe.json')}: make it exactly "\${DISCORD_TOKEN}", so the server gets the service's DISCORD_TOKEN. ` +
+      `Store the bot token from the Developer Portal's Bot page with \`${typed} setup discord\`, which stores it in ` +
+      `${join(at.work, '.env')}, then restart the service and run \`${typed} doctor\` again.`);
+  });
+
+  test('a refused token whose service runs in production, by its manager\'s NODE_ENV, is put right in .env.production, which that mode reads', async () => {
+    const at = install();
+    writeFileSync(join(at.work, '.env.production'), 'DISCORD_TOKEN=tok-production-value\n');
+    const production = fakeManager(at.work, { env: ['NODE_ENV=production'] });
+    const refusing = (async () => Response.json({ message: '401: Unauthorized', code: 0 }, { status: 401 })) as unknown as typeof fetch;
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { fetch: refusing, systemctl: production.path }));
+    expect(r.out).toContain(`DISCORD_TOKEN is set in ${join(at.work, '.env.production')}, which Bun reads before .env: put the ` +
+      'bot token from the Developer Portal\'s Bot page there');
+  });
+
   test('a discord-mcpl entry the host dials at its url isn\'t checked as one it starts, and is said as dialed', async () => {
     const at = install({ recipe: { ...RECIPE(''), mcpServers: { discord: { url: 'ws://127.0.0.1:9/mcpl', transport: 'websocket' }, shell: RECIPE('').mcpServers.shell } } });
     writeFileSync(join(at.work, 'mcpl-servers.json'), JSON.stringify({ mcplServers: { discord: {
