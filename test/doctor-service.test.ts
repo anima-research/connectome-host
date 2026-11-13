@@ -38,8 +38,11 @@ function system(home: string, answers: Record<string, string | { status: number;
       const key = `${command} ${args[args.length - 1]}`;
       const answer = answers[key];
       if (answer === undefined) return { status: 1, stdout: '', stderr: `no stand-in for ${key}` };
-      return typeof answer === 'string' ? { status: 0, stdout: answer, stderr: '' }
-        : { status: answer.status, stdout: answer.stdout ?? '', stderr: answer.stderr ?? '' };
+      if (typeof answer !== 'string') return { status: answer.status, stdout: answer.stdout ?? '', stderr: answer.stderr ?? '' };
+      const asks = command === 'systemctl' ? args.find((arg) => arg.startsWith('--property='))?.slice('--property='.length) : undefined;
+      if (asks === undefined) return { status: 0, stdout: answer, stderr: '' };
+      const wanted = new Set(asks.split(','));
+      return { status: 0, stdout: answer.split('\n').filter((line) => wanted.has(line.slice(0, line.indexOf('=')))).join('\n') + '\n', stderr: '' };
     },
   } as unknown as ServiceSystem;
   return { sys, asked };
