@@ -2285,7 +2285,9 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
         'FragmentPath=/etc/systemd/user/connectome-test.service\n' },
     });
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path }));
-    expect(r.out).toContain('✗ systemd runs connectome-test.service in /srv/elsewhere, not ' + at.work + '.');
+    expect(r.out).toContain(`✗ systemd runs connectome-test.service in /srv/elsewhere, not ${at.work}, and its file, ${at.unit}, ` +
+      'is gone: `');
+    expect(r.out).toMatch(/`(XDG_RUNTIME_DIR=\/run\/user\/\d+ )?systemctl --user status connectome-test\.service` shows what it runs\. If nothing uses it, `(XDG_RUNTIME_DIR=\/run\/user\/\d+ )?systemctl --user stop connectome-test\.service` and then `(XDG_RUNTIME_DIR=\/run\/user\/\d+ )?systemctl --user daemon-reload` free its name\. Otherwise set this install up again in a directory of another name, since the unit's name comes from this directory's name\./);
     expect(r.out).not.toContain('No service is installed');
     expect(manager.calls()).not.toContain('--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service');
     expect(r.status).toBe(1);

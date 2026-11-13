@@ -168,8 +168,13 @@ export function ownerProblem(owner: Owner, unit: ServiceUnit, manager: Manager, 
       `\`${stopLine(sys, manager, unit.name)}\`.`;
   }
   return systemd
-    ? `systemd runs ${unit.name} in ${owner.runsIn ?? 'no set directory'}, not ${work}.` +
-      (owner.loadedOnly ? ` ${reloadLine(sys, unit, work, `run ${install}`)}` : '')
+    ? `systemd runs ${unit.name} in ${owner.runsIn ?? 'no set directory'}, not ${work}` + (owner.loadedOnly
+      ? `. ${reloadLine(sys, unit, work, `run ${install}`)}`
+      : pathState(unit.file) !== 'gone' ? '.'
+      : `, and its file, ${unit.file}, is gone: \`${systemctlLine(sys, `status ${unit.name}`)}\` shows what it runs. If ` +
+        `nothing uses it, \`${stopLine(sys, manager, unit.name)}\` and then \`${systemctlLine(sys, 'daemon-reload')}\` free its ` +
+        'name. Otherwise set this install up again in a directory of another name, since the unit\'s name comes from this ' +
+        'directory\'s name.')
     : `${owner.from} names ${owner.runsIn ?? 'no directory'} as the directory it runs in, not ${work}.`;
 }
 
