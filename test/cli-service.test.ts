@@ -11,6 +11,7 @@ import {
 } from '../src/cli/service.js';
 import { serviceUnits, slugOf } from '../src/cli/service-unit.js';
 import { SHOWN_FILE } from '../src/cli/shown.js';
+import { DEFAULT_TIMEOUT_MS } from '../src/modules/setup-module.js';
 import { readRecipeDocument } from '../src/recipe-document.js';
 import { StoredSecrets, readEnvFile, writeEnvValue } from '../src/setup/secrets.js';
 
@@ -1162,24 +1163,43 @@ test('the wait goes on while the host isn\'t ready yet, and ends once it answers
   expect(f.out.join('\n')).toContain('Its host answers: pid 4242');
 });
 
-test('a host that never answers while its unit stays active, on a recipe that names no server, is waited for 61.756 s: its start and its model check', async () => {
+test('a host that never answers while its unit stays active is waited for 60 s, which ends inside setup--run\'s default limit', async () => {
   const at = install();
   const f = fake(at, { ready: false });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.slept()).toBeGreaterThanOrEqual(61_756);
-  expect(f.slept()).toBeLessThan(63_756);
-  expect(f.err.join('\n')).toContain('no host said it was ready within 61 s');
+  expect(f.slept()).toBeGreaterThanOrEqual(60_000);
+  expect(f.slept()).toBeLessThan(62_000);
+  expect(f.slept()).toBeLessThan(DEFAULT_TIMEOUT_MS);
+  expect(f.err.join('\n')).toContain('no host said it was ready within 60 s');
 });
 
-test('each server the recipe or the agent overlay names adds 90 s to the wait for a host that never answers', async () => {
+test('the servers the recipe and the agent overlay name don\'t lengthen the wait for a host that never answers', async () => {
   const at = install();
-  writeFileSync(at.recipe, JSON.stringify({ mcpServers: { a: { command: 'a' } } }));
-  writeFileSync(join(at.work, 'mcpl-servers.agent.json'), JSON.stringify({ mcplServers: { b: { command: 'b' } } }));
+  writeFileSync(at.recipe, JSON.stringify({ mcpServers: { a: { command: 'a' }, b: { command: 'b' } } }));
+  writeFileSync(join(at.work, 'mcpl-servers.agent.json'), JSON.stringify({ mcplServers: { c: { command: 'c' } } }));
   const f = fake(at, { ready: false });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.slept()).toBeGreaterThanOrEqual(241_756);
-  expect(f.slept()).toBeLessThan(243_756);
-  expect(f.err.join('\n')).toContain('no host said it was ready within 241 s');
+  expect(f.slept()).toBeLessThan(62_000);
+  expect(f.err.join('\n')).toContain('no host said it was ready within 60 s');
+});
+
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' install says how long it waits for its host before the wait', async () => {
+  const at = install();
+  const f = fake(at, { platform, linger: platform === 'darwin' ? null : true, answersAfter: 2 });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const waiting = f.out.indexOf('Waiting up to 60 s for its host to answer.');
+  expect(waiting).toBeGreaterThan(-1);
+  expect(waiting).toBeLessThan(f.out.findIndex((line) => line.startsWith('Its host answers: pid')));
+});
+
+test('a host whose unit stops before it answers fails the install, which says to put right what its log shows', async () => {
+  const at = install();
+  const f = fake(at, { ready: false });
+  f.systemd.exiting.add(HOST);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.out).toContain(`Its log shows what happened: journalctl --user -u ${HOST} -f. Put that right, then run ` +
+    `connectome service install '${at.recipe}' again. Until then systemd restarts the host each time it fails, while ` +
+    'it has its unit loaded and its start limit allows; the run clears that limit.');
 });
 
 test('an install whose data directory\'s socket answers with a host its unit doesn\'t run, as a copy\'s original would, is refused, naming that pid, before anything is written', async () => {
@@ -2402,18 +2422,15 @@ test('serviceCommands is null until the host\'s unit file is there, and names th
   expect(serviceCommands(at.root, f.system)!.start).toBe(`systemctl --user start ${HOST}`);
 });
 
-for (const platform of ['linux', 'darwin'] as const) test(platform + ' a host that doesn\'t answer fails the install, which gives the line that shows its log and the command to run again', async () => {
+for (const platform of ['linux', 'darwin'] as const) test(platform + ' a host that doesn\'t answer by the wait\'s end fails the install, which says it may still be starting, gives the line that shows its log, and asks nothing put right', async () => {
   const at = install();
   const f = fake(at, { platform, ready: false });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.err.join('\n')).toContain('no host said it was ready within 61 s');
+  expect(f.err.join('\n')).toContain('no host said it was ready within 60 s');
   expect(f.err.join('\n')).toContain('It may still be starting: connectome alone says whether its host answers.');
   const log = platform === 'darwin' ? `tail -f '${join(at.work, 'logs', 'agent.log')}'` : `journalctl --user -u ${HOST} -f`;
-  expect(f.out).toContain(`Its log shows what happened: ${log}. Put that right, then run connectome service install ` +
-    `'${at.recipe}' again. Until then ${platform === 'darwin'
-      ? 'launchd starts the host again each time it exits other than with 0, while it has its agent loaded'
-      : 'systemd restarts the host each time it fails, while it has its unit loaded and its start limit allows; the run ' +
-        'clears that limit'}.`);
+  expect(f.out).toContain(`Its log shows how its start is going: ${log}.`);
+  expect([...f.out, ...f.err].join('\n')).not.toContain('Put that right');
 });
 
 test('a unit of this install\'s name written through a link to this directory is taken as this install\'s', async () => {
@@ -2596,28 +2613,4 @@ test('the shell daemon\'s state that systemd can\'t give before anything has sta
   expect(said).toContain('The units\' files are written and enabled. The host\'s unit isn\'t started or restarted by ' +
     'this run.');
   expect(f.systemd.starts).toEqual([]);
-});
-
-test('the wait counts the servers of the overlay that .env names in MCPL_AGENT_OVERLAY_FILE, not the default file\'s', async () => {
-  const at = install();
-  writeFileSync(join(at.work, '.env'), 'MCPL_AGENT_OVERLAY_FILE=elsewhere.json\n', { mode: 0o600 });
-  writeFileSync(join(at.work, 'elsewhere.json'), JSON.stringify({ mcplServers: { a: { command: 'a' }, b: { command: 'b' } } }));
-  writeFileSync(join(at.work, 'mcpl-servers.agent.json'), JSON.stringify({ mcplServers: { c: { command: 'c' } } }));
-  const f = fake(at, { ready: false });
-  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.slept()).toBeGreaterThanOrEqual(241_756);
-  expect(f.slept()).toBeLessThan(243_756);
-  expect(f.err.join('\n')).toContain('no host said it was ready within 241 s');
-});
-
-test('a .env that setup\'s reader can\'t read leaves the wait counting the default overlay\'s servers', async () => {
-  const at = install();
-  writeFileSync(join(at.work, '.env'), 'MCPL_AGENT_OVERLAY_FILE=elsewhere.json\nnot a setting\n', { mode: 0o600 });
-  writeFileSync(join(at.work, 'elsewhere.json'), JSON.stringify({ mcplServers: { a: { command: 'a' }, b: { command: 'b' } } }));
-  writeFileSync(join(at.work, 'mcpl-servers.agent.json'), JSON.stringify({ mcplServers: { c: { command: 'c' } } }));
-  const f = fake(at, { ready: false });
-  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.slept()).toBeGreaterThanOrEqual(151_756);
-  expect(f.slept()).toBeLessThan(153_756);
-  expect(f.err.join('\n')).toContain('no host said it was ready within 151 s');
 });

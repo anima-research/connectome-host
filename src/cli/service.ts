@@ -11,9 +11,6 @@ import { shellWord } from '../update/launcher.js';
 import { lingerOf } from '../setup/linger.js';
 import { StoredSecrets, envForm, readEnvFile, writeEnvValue } from '../setup/secrets.js';
 import { readRecipeDocument } from '../recipe-document.js';
-import { parseHandWrittenJson } from '../hand-written-json.js';
-import { agentOverlayPath } from '../update/agent-overlay-path.js';
-import { THINKING_BINDING_PROBE_MS } from '../thinking-binding-bound.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
@@ -28,12 +25,8 @@ const SHELL_BIN = 'session-server';
 const SHELL_PORTS = { first: 3100, last: 32767 };
 const SHELL_CLIENT = /(?:^|[/\\\s])(?:terminal-sessions-mcp|term-sessions-mcp)(?:$|[@/\\\s])/;
 const SHELL_SETTINGS = ['SESSION_SERVER_TOKEN', 'SESSION_SERVER_PORT'];
-const HOST_START_MS = 1_756;
-// agent-framework 0.33.0 connects each server in turn before the host's socket answers (src/framework.ts), and none of
-// these bounds is exported. A legacy WebSocket server can take the longest: its open, 15 s (src/mcpl/transport.ts),
-// initialize, 30 s (src/mcpl/server-connection.ts), the initial policy request, 15 s (server-connection.ts), and, when
-// a refusal of that policy closes it, the close, which waits for ws's closeTimeout, 30 s (ws 8.21.3, lib/constants.js).
-const SERVER_START_MS = 90_000;
+// Keep this how long install holds a person before saying its host hasn't answered, not how long a start can take.
+const READY_WAIT_MS = 60_000;
 // launchctl print shows `exit timeout = 5` for an agent plist() writes, on macOS 26.
 const EXIT_TIMEOUT_S = 5;
 const UNLOAD_POLL_MS = 100;
@@ -366,20 +359,25 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       `${units.length === 1 ? 'it' : 'them'}, each time ${sys.user} logs in to the Mac's graphical session.`);
   }
 
-  const ready = await awaitReady(root, manager, names.host, sys, env,
-    HOST_START_MS + THINKING_BINDING_PROBE_MS + SERVER_START_MS * serversIn(raw, work));
+  ctx.out(`Waiting up to ${READY_WAIT_MS / 1000} s for its host to answer.`);
+  const ready = await awaitReady(root, manager, names.host, sys, env);
   const commands = serviceCommands(root, sys);
+  const log = commands === null ? '' : `: ${commands.log}`;
   if (typeof ready === 'string') {
     ctx.err(`connectome: ${ready}`);
-    ctx.out(`Its log shows what happened${commands === null ? '' : `: ${commands.log}`}. Put that right, then run ${cmd} service ` +
+    ctx.out(`Its log shows what happened${log}. Put that right, then run ${cmd} service ` +
       `install ${shellWord(recipe)} again. Until then ${manager === 'systemd-user'
       ? 'systemd restarts the host each time it fails, while it has its unit loaded and its start limit allows; the ' +
         'run clears that limit'
       : 'launchd starts the host again each time it exits other than with 0, while it has its agent loaded'}.`);
+  } else if ('late' in ready) {
+    ctx.err(`connectome: ${ready.late}`);
+    ctx.out(`Its log shows how its start is going${log}.`);
   }
+  const answered = typeof ready === 'string' || 'late' in ready ? null : ready;
   let lost: string | null = null;
-  if (typeof ready !== 'string') {
-    ctx.out(`Its host answers: pid ${ready.pid}, recipe ${ready.recipe}.`);
+  if (answered !== null) {
+    ctx.out(`Its host answers: pid ${answered.pid}, recipe ${answered.recipe}.`);
     if (shellBin === null) await removeShell(ctx, sys, env, manager, names.shell, work);
     else lost = shellLost(sys, env, manager, names.shell, shellStart);
   }
@@ -389,7 +387,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       `Put that right, then run ${cmd} service install ${shellWord(recipe)} again.`);
   }
   for (const line of serviceLines(root, sys) ?? []) ctx.out(line);
-  return typeof ready === 'string' || lost !== null ? 1 : 0;
+  return answered === null || lost !== null ? 1 : 0;
 }
 
 function shellLost(sys: ServiceSystem, env: Record<string, string>, manager: Manager, unit: ServiceUnit,
@@ -508,30 +506,9 @@ export function serviceLines(root: string, sys: ServiceSystem = machine()): stri
   ];
 }
 
-function serversIn(raw: unknown, work: string): number {
-  const named = (raw as { mcpServers?: unknown } | null)?.mcpServers;
-  let added: unknown;
-  try {
-    added = (parseHandWrittenJson(readFileSync(agentOverlayPath(work, settingsOf(work)), 'utf-8')) as
-      { mcplServers?: unknown } | null)?.mcplServers;
-  } catch {
-    added = undefined;
-  }
-  return [named, added].reduce<number>((count, servers) =>
-    count + (servers !== null && typeof servers === 'object' ? Object.keys(servers).length : 0), 0);
-}
-
-function settingsOf(work: string): Record<string, string> {
-  try {
-    return Object.fromEntries(readEnvFile(join(work, '.env')));
-  } catch {
-    return {};
-  }
-}
-
 async function awaitReady(root: string, manager: Manager, unit: ServiceUnit, sys: ServiceSystem,
-  env: Record<string, string>, waitMs: number): Promise<HostReady | string> {
-  const until = sys.now() + waitMs;
+  env: Record<string, string>): Promise<HostReady | { late: string } | string> {
+  const until = sys.now() + READY_WAIT_MS;
   const name = unit.name;
   let first: string | undefined;
   let last = 'nothing answered';
@@ -573,8 +550,8 @@ async function awaitReady(root: string, manager: Manager, unit: ServiceUnit, sys
       if (invocation !== first) return `systemd restarted ${name} before its host answered: ${last}.`;
     }
     if (sys.now() >= until) {
-      return `no host said it was ready within ${Math.floor(waitMs / 1000)} s: ${last}. It may still be starting: ` +
-        `${typedCommand(root, sys.env.PATH)} alone says whether its host answers.`;
+      return { late: `no host said it was ready within ${READY_WAIT_MS / 1000} s: ${last}. It may still be starting: ` +
+        `${typedCommand(root, sys.env.PATH)} alone says whether its host answers.` };
     }
     await sys.sleep(1_000);
   }
