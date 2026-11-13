@@ -3232,6 +3232,20 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     }
   });
 
+  test('a token check shows another stored secret holding a character drawn as nothing by its name, hiding it before that character is shown as a code', async () => {
+    const OTHER = 'sk-583\u200bzero-width-other';
+    const named = (async () => Response.json({ id: '1000', username: `bot-${OTHER}` })) as unknown as typeof fetch;
+    const down = (async () => Response.json({ message: `down for ${OTHER}` }, { status: 503 })) as unknown as typeof fetch;
+    for (const answer of [named, down]) {
+      const token = install({ asker: typed('a-checked-token'), fetch: answer, envFile: `OPENAI_API_KEY="${OTHER}"\n` });
+      const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+      expect(told.success, told.error).toBe(true);
+      const line = token.shown.find((each) => each.startsWith('Discord'));
+      expect(line).toContain('<OPENAI_API_KEY>');
+      expect(line).not.toContain('zero-width-other');
+    }
+  });
+
   test('a token answered 429 with a Retry-After of seconds and no retry_after in its body tells the agent that wait, whether or not the body is JSON', async () => {
     const WAIT = ' It asks for 300 s: call setup--discord once that has passed, which checks the stored token first.';
     const bodies = [new Response('<html>slow down</html>', { status: 429, headers: { 'content-type': 'text/html', 'retry-after': '300' } }),

@@ -1136,7 +1136,7 @@ export class SetupModule implements Module {
     const token = await checkDiscordToken(sentToken(value), {
       fetch: this.config.fetch, asking: () => this.config.show('Checking it with Discord.'),
     });
-    this.config.show(redacted(tokenLine(token), known));
+    this.config.show(shown(redacted(tokenLine(token), known)));
     return token;
   }
 }
@@ -1144,7 +1144,7 @@ export class SetupModule implements Module {
 
 function tokenLine(token: TokenCheck): string {
   switch (token.kind) {
-    case 'accepted': return `Discord accepted it: the bot is ${shown(token.name)}.`;
+    case 'accepted': return `Discord accepted it: the bot is ${token.name}.`;
     case 'refused': return 'Discord refused it (401): nothing was stored.';
     case 'unsendable': return 'It holds a character a request header can\'t carry, so it can\'t be a token: nothing was stored.';
     case 'answered':
@@ -1153,11 +1153,11 @@ function tokenLine(token: TokenCheck): string {
           'between this machine and Discord may be answering in its place.';
       }
       return `Discord didn't say whether it works: it answered ${token.status}` +
-        `${token.said === null ? '' : ` (${shown(token.said)})`}.` + (busy(token.status) ? ` ${BUSY_LINE}` : '');
-    case 'redirected': return `It isn't known to work: ${shown(redirect('Discord', token))}.`;
+        `${token.said === null ? '' : ` (${token.said})`}.` + (busy(token.status) ? ` ${BUSY_LINE}` : '');
+    case 'redirected': return `It isn't known to work: ${redirect('Discord', token)}.`;
     case 'unrecognized':
       return `It couldn't be checked: ${unrecognized('Discord', token.status)}.` + (busy(token.status) ? ` ${BUSY_LINE}` : '');
-    case 'unanswered': return `Discord couldn't be asked whether it works (${shown(token.why)}).`;
+    case 'unanswered': return `Discord couldn't be asked whether it works (${token.why}).`;
   }
 }
 
