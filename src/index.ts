@@ -59,7 +59,7 @@ import { historyModuleOptions, assertSemanticSearchRegistered } from './history-
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
 import { retrievalModuleConfig } from './retrieval-config.js';
-import { TuiModule, onHostLineTakenIn } from './modules/tui-module.js';
+import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { waitToBeListed } from './fleet-begin.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
@@ -257,6 +257,7 @@ let noticesRef: NoticesModule | null = null;
 let instructionsRef: InstructionsModule | null = null;
 let installHere: ReleaseHere | null = null;
 let terminalAsker: SecretAsker | null = null;
+let hostLineTakenIn: (() => void) | null = null;
 
 async function createFramework(
   membrane: Membrane,
@@ -276,7 +277,9 @@ async function createFramework(
 
   const extensionRegistry = extensions ?? await loadExtensions(recipe);
 
-  const moduleInstances: Module[] = [new TuiModule(), new TimeModule(timeZone), settingsModule];
+  const moduleInstances: Module[] = [
+    new TuiModule({ onHostLineTakenIn: () => hostLineTakenIn?.() }), new TimeModule(timeZone), settingsModule,
+  ];
 
   let subagentModule: SubagentModule | null = null;
   if (modules.subagents) {
@@ -739,7 +742,7 @@ async function runPiped(app: AppContext) {
     error: (line) => { say(line); },
   }, failureHint(app.recipe, process.env, app.credentials), app.recipe.modules?.setup === true ? showsItself : undefined,
   () => { answeredUnwaited(); });
-  onHostLineTakenIn(() => turns.takenIn());
+  hostLineTakenIn = () => turns.takenIn();
   const onEvent = (event: unknown): void => {
     const e = event as { type: string; [key: string]: unknown };
     turns.onTrace(e);

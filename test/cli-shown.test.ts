@@ -2,7 +2,8 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SHOWN_FILE, shownToPerson } from '../src/cli/shown.js';
+import { SHOWN_FILE } from '../src/setup/commands-shown.js';
+import { shownToPerson } from '../src/cli/shown.js';
 
 const made: string[] = [];
 afterEach(() => {

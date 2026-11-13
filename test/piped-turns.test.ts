@@ -1,7 +1,7 @@
 import { describe, expect, jest, test } from 'bun:test';
 import { PIPED_TURN_CAP_MS, createPipedTurns, switchFollowing, traceFollower, type TraceSource } from '../src/piped-turns.js';
 import { STREAM_END_TRACES, TURN_SETTLED_TRACES } from '../src/state/turn-trace.js';
-import { TuiModule, onHostLineTakenIn } from '../src/modules/tui-module.js';
+import { TuiModule } from '../src/modules/tui-module.js';
 
 function setUp(showsItself?: (tool: string) => boolean) {
   const out: string[] = [];
@@ -173,22 +173,18 @@ describe('the wait for a line\'s turn', () => {
 
   test('a turn that starts before the host\'s module takes the line in, such as a wake\'s, doesn\'t end its wait, and the next turn\'s end does', async () => {
     const { turns, emit } = setUp();
-    const takeIn = (source: string) => new TuiModule().onProcess(
+    const tui = new TuiModule({ onHostLineTakenIn: () => turns.takenIn() });
+    const takeIn = (source: string) => tui.onProcess(
       { type: 'external-message', source, content: `from ${source}`, metadata: {}, triggerInference: true } as never, {} as never);
     const settledTrace = [...TURN_SETTLED_TRACES][0]!;
-    onHostLineTakenIn(() => turns.takenIn());
-    try {
-      const wait = turns.waitForTurn(60_000);
-      emit('inference:started');
-      await takeIn('cli');
-      emit(settledTrace);
-      expect(await settled(wait)).toBe(false);
-      emit('inference:started');
-      emit(settledTrace);
-      expect(await settled(wait)).toBe(true);
-    } finally {
-      onHostLineTakenIn(null);
-    }
+    const wait = turns.waitForTurn(60_000);
+    emit('inference:started');
+    await takeIn('cli');
+    emit(settledTrace);
+    expect(await settled(wait)).toBe(false);
+    emit('inference:started');
+    emit(settledTrace);
+    expect(await settled(wait)).toBe(true);
   });
 
   test('a failure keeps it waiting, and the retry\'s end ends it', async () => {
