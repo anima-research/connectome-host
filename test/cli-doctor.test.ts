@@ -597,6 +597,25 @@ describe('connectome doctor', () => {
     }
   });
 
+  test('every value .env assigns a stored name is hidden when a later dotenv read stops doctor, as in its install\'s path', async () => {
+    const at = install({ prefix: `chost-${SECRETS.LONELY_SECRET}-`, stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'LONELY_SECRET'] });
+    writeFileSync(join(at.work, '.env'), `${readFileSync(join(at.work, '.env'), 'utf-8')}LONELY_SECRET=later-lonely-value\n`);
+    writeFileSync(join(at.work, '.env.local'), 'OPTIONS_SEEN=${BUN_OPTIONS}\n');
+    const saved = process.env.BUN_OPTIONS;
+    process.env.BUN_OPTIONS = '--smol';
+    try {
+      const r = await withHost(at, HEALTHY_HOST, () => run(at));
+      expect(r.out).toContain('expands BUN_OPTIONS, which the environment sets');
+      expect(r.out).toContain('Doctor stops here');
+      expect(r.out).toMatch(/^connectome doctor: the install at .*<LONELY_SECRET>/);
+      expect(r.out).not.toContain(SECRETS.LONELY_SECRET);
+      expect(r.out).not.toContain('later-lonely-value');
+    } finally {
+      if (saved === undefined) delete process.env.BUN_OPTIONS;
+      else process.env.BUN_OPTIONS = saved;
+    }
+  });
+
   test('a stored secret\'s value as a command run in doctor\'s own environment reads it is withheld too', async () => {
     const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'MY_TOKEN'] });
     writeFileSync(join(at.work, '.env.local'), 'MY_TOKEN=${DOCTOR_ONLY_PREFIX}z9suffix\n');

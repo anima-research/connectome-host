@@ -110,7 +110,7 @@ function envText(path: string): string {
   }
 }
 
-function envAssignments(path: string): Assignment[] {
+export function envAssignments(path: string): Assignment[] {
   const { assignments, outside } = envLines(envText(path));
   if (outside.length > 0) throw new EnvFormError(path, outside);
   return assignments;

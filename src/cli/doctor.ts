@@ -12,8 +12,8 @@ import {
   runningFit, unknownRecipeKeys, type Recipe, type RecipeDocument,
 } from '../recipe.js';
 import {
-  PROVIDER_SECRETS, StoredSecrets, dotenvNames, dotenvReferences, linesKeepingSecrets, readSecrets, redactWindow,
-  secretNames, storedSecrets,
+  PROVIDER_SECRETS, StoredSecrets, dotenvNames, dotenvReferences, envAssignments, linesKeepingSecrets, readSecrets,
+  redactWindow, secretNames, storedSecrets,
   type Secret,
 } from '../setup/secrets.js';
 import { withSentForms } from '../setup/discord-token.js';
@@ -237,6 +237,8 @@ export async function doctor(
     guessed = named.guessed;
     const known = (from: Record<string, string | undefined>, probes: Record<string, string | undefined>): Secret[] =>
       storedSecrets(work, from, probes);
+    secrets = [...secrets, ...envAssignments(join(work, '.env'))
+      .flatMap(({ name, value }) => value && named.names.includes(name) ? withSentForms({ name, value }) : [])];
     secrets = [...secrets, ...known(process.env, systemVariables()),
       ...readSecrets(named.names, join(work, '.env'), process.env, [])].flatMap(withSentForms);
     const document = recipeRead !== null && 'document' in recipeRead ? recipeRead.document : null;
