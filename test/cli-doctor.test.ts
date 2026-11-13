@@ -13,6 +13,25 @@ const SECRETS = {
   LONELY_SECRET: 'lonely-secret-value',
 };
 const dirs: string[] = [];
+
+const HOLD = (pids: string): string[] => [`echo $$ >> '${pids}'`, 'exec tail -f /dev/null'];
+const heldPids = (pids: string): number[] =>
+  existsSync(pids) ? readFileSync(pids, 'utf-8').split('\n').filter(Boolean).map(Number) : [];
+const running = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+function endHeld(pids: string): number[] {
+  const left = heldPids(pids).filter(running);
+  for (const pid of left) {
+    try { process.kill(pid, 'SIGKILL'); } catch {}
+  }
+  return left;
+}
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
 
 interface Install { work: string; root: string; data: string; platform: NodeJS.Platform; home: string; unit: string }
@@ -149,9 +168,9 @@ const discordFetch = (async (input: string | URL | Request, init?: RequestInit):
 // Keep this written out, not imported from doctor: a change to doctor's probe must fail the version tests.
 const VERSION_PROBE = 'import sys; print("%d.%d" % sys.version_info[:2])';
 
-function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lines' | 'traceback' | 'clean' | 'signal' | 'garbled' | 'silent' | 'misshapen'; version?: string } = {}): string {
+function fakePython(dir: string, opts: { holds?: true; end?: 'findings' | 'lines' | 'traceback' | 'clean' | 'signal' | 'garbled' | 'silent' | 'misshapen'; version?: string } = {}): string {
   const end = opts.end ?? 'lines';
-  const path = join(dir, opts.sleep ? 'python3-slow' : end !== 'lines' ? `python3-${end}` : opts.version !== undefined ? `python3-${opts.version}` : 'python3');
+  const path = join(dir, opts.holds ? 'python3-held' : end !== 'lines' ? `python3-${end}` : opts.version !== undefined ? `python3-${opts.version}` : 'python3');
   const LINE = '{"text":"a line the ladder only says","counts":false}';
   const COUNTED = '{"text":"a finding the ladder counts","counts":true}';
   const written = (json: string): string[] => [`printf '%s\\n' 'connectome-doctor findings: ${json}'`, 'exit 0'];
@@ -164,7 +183,7 @@ function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lin
     `printf '%s' "$CONNECTOME_DOCTOR_WITHHOLD" > '${join(dir, 'withheld.json')}'`,
     'echo "ladder XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"',
     `echo "recent failure: Error token=${SECRETS.DISCORD_TOKEN}"`,
-    ...(opts.sleep ? [`sleep ${opts.sleep}`] : []),
+    ...(opts.holds ? HOLD(join(dir, 'held.pids')) : []),
     ...(end === 'traceback'
       ? ['printf "partial line"', 'echo "Traceback (most recent call last):" >&2', 'exit 1']
       : end === 'signal'
@@ -210,7 +229,7 @@ function fakeManager(dir: string, opts: {
   writeFileSync(path, [
     '#!/bin/sh',
     `printf '%s\\n' "$*" >> ${join(at, 'calls')}`,
-    ...(opts.hangs ? ['exec sleep 30'] : []),
+    ...(opts.hangs ? HOLD(join(dir, 'held.pids')) : []),
     ...(opts.fails === undefined ? [] : [`echo '${opts.fails}' >&2`, 'exit 1']),
     ...(opts.envFails === undefined ? [] : [`if [ "$*" = "--user show-environment" ] || [ "$1" = getenv ]; then echo '${opts.envFails}' >&2; exit 1; fi`]),
     ...(opts.ownersFail === undefined ? [] : [`if [ "$1 $2 $3" = "--user show --property=LoadState,ActiveState,WorkingDirectory,FragmentPath" ] || [ "$1" = list ]; then echo '${opts.ownersFail}' >&2; exit 1; fi`]),
@@ -1573,11 +1592,16 @@ describe('connectome doctor', () => {
     expect(r.status).toBe(0);
   });
 
-  test('a ladder that doesn\'t finish within its limit is a problem, and doctor finishes', async () => {
+  test('a ladder that doesn\'t finish within its limit is a problem, and doctor finishes, ending it', async () => {
     const at = install();
-    const r = await withHost(at, HEALTHY_HOST, () => run(at, { python: fakePython(at.work, { sleep: 5 }), ladderLimitMs: 300 }));
-    expect(r.out).toMatch(/✗ The ladder didn't finish within 0\.3 s, so what it would have shown after the lines above isn't known\./);
-    expect(r.status).toBe(1);
+    try {
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { python: fakePython(at.work, { holds: true }), ladderLimitMs: 300 }));
+      expect(r.out).toMatch(/✗ The ladder didn't finish within 0\.3 s, so what it would have shown after the lines above isn't known\./);
+      expect(r.status).toBe(1);
+      expect(heldPids(join(at.work, 'held.pids')).filter(running)).toEqual([]);
+    } finally {
+      endHeld(join(at.work, 'held.pids'));
+    }
   });
 
   const withKey = async <T>(value: string, body: () => Promise<T>): Promise<T> => {
@@ -1910,14 +1934,19 @@ describe('connectome doctor: the environment the service gets from its manager',
     }
   });
 
-  test('a manager that doesn\'t answer within the limit stops doctor, saying so', async () => {
+  test('a manager that doesn\'t answer within the limit stops doctor, saying so, and doctor ends it', async () => {
     const at = install();
-    const slow = fakeManager(at.work, { hangs: true });
-    const r = await run(at, { systemctl: slow.path, envLimitMs: 300 });
-    expect(r.out).toContain('systemctl --user show-environment failed, so what the user manager gives the service can\'t be ' +
-      'read: it didn\'t answer within 0.3 s');
-    expect(r.out).toContain('Doctor stops here');
-    expect(r.status).toBe(1);
+    try {
+      const slow = fakeManager(at.work, { hangs: true });
+      const r = await run(at, { systemctl: slow.path, envLimitMs: 300 });
+      expect(r.out).toContain('systemctl --user show-environment failed, so what the user manager gives the service can\'t be ' +
+        'read: it didn\'t answer within 0.3 s');
+      expect(r.out).toContain('Doctor stops here');
+      expect(r.status).toBe(1);
+      expect(heldPids(join(at.work, 'held.pids')).filter(running)).toEqual([]);
+    } finally {
+      endHeld(join(at.work, 'held.pids'));
+    }
   });
 
   test('a stored secret launchd gave before a later getenv failed is hidden in what doctor prints as it stops', async () => {
@@ -1965,14 +1994,21 @@ describe('connectome doctor: the environment the service gets from its manager',
 });
 
 describe('connectome doctor: its waits, its remedies and its last line', () => {
-  test('a Bun that doesn\'t finish reading the service\'s environment within its limit stops doctor, which says so', async () => {
+  test('a Bun that doesn\'t finish reading the service\'s environment within its limit stops doctor, which says so, and doctor ends it', async () => {
     const at = install();
-    writeFileSync(join(at.work, 'hang.ts'), 'Bun.sleepSync(10_000);\n');
-    writeFileSync(join(at.work, 'bunfig.toml'), 'preload = ["./hang.ts"]\n');
-    const r = await run(at, { envLimitMs: 500 });
-    expect(r.out).toContain(`Bun didn't finish reading the service's environment in ${at.work} within 0.5 s`);
-    expect(r.out).toContain('Doctor stops here');
-    expect(r.status).toBe(1);
+    const pids = join(at.work, 'held.pids');
+    try {
+      writeFileSync(join(at.work, 'hang.ts'),
+        `require('node:fs').appendFileSync(${JSON.stringify(pids)}, process.pid + '\\n');\nfor (;;) Bun.sleepSync(60_000);\n`);
+      writeFileSync(join(at.work, 'bunfig.toml'), 'preload = ["./hang.ts"]\n');
+      const r = await run(at, { envLimitMs: 500 });
+      expect(r.out).toContain(`Bun didn't finish reading the service's environment in ${at.work} within 0.5 s`);
+      expect(r.out).toContain('Doctor stops here');
+      expect(r.status).toBe(1);
+      expect(heldPids(pids).filter(running)).toEqual([]);
+    } finally {
+      endHeld(pids);
+    }
   }, 30_000);
 
   test('a recipe, or its system prompt, fetched from a URL that doesn\'t answer within the limit is a problem, and doctor goes on', async () => {
