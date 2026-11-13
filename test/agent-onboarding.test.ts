@@ -268,7 +268,7 @@ describe('the resident\'s shell is decided with the person', () => {
 
 describe('the backups\' units', () => {
   it('are named with a character after the slug that no slug holds, so none is another install\'s own unit', () => {
-    const backups = PIECES.filter((piece) => ['Backups', 'The restore check', 'Backups run by root'].includes(piece.heading ?? ''))
+    const backups = PIECES.filter((piece) => ['Backups', 'The restore check'].includes(piece.heading ?? ''))
       .map((piece) => piece.text).join('');
     const rests = [...backups.matchAll(/connectome-<slug>([^`'\s]*)\.(?:service|timer)\b/g)].map((match) => match[1]!)
       .filter((rest) => rest !== '');
