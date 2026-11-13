@@ -3266,8 +3266,11 @@ describe('connectome doctor, where whose unit it is is read as install reads it,
     const manager = fakeManager(at.work, {
       unit: [...Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`), 'UNIT_SECRET=unit-secret-value'].join(' '),
     });
-    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    const host = { ...HEALTHY_HOST, 'shell-check': { shells: [{ server: 'shell', answered: false, error: 'echoed unit-secret-value' }],
+      notConnected: [], closedTabs: [] } };
+    const r = await withHost(at, host, () => run(at, { systemctl: manager.path }));
     expect(r.out).toContain('isn\'t the unit file service install writes');
+    expect(r.out).toContain('shell\'s listSessions call failed: echoed <UNIT_SECRET>.');
     expect(r.out).toContain(`UNIT_SECRET is in setup's list of stored secrets and has no value in what doctor reads of the ` +
       `service's environment, but ${at.unit}, which doctor can't use, may set it, so whether the service has one isn't known.`);
     expect(r.out).not.toContain('UNIT_SECRET is in setup\'s list of stored secrets (');
