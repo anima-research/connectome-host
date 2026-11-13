@@ -567,6 +567,69 @@ describe('count-check, with a stand-in for the framework', () => {
   });
 });
 
+describe('shell-check, for an agent whose allowedTools leave a shell\'s listSessions out', () => {
+  let dir: string;
+  let child: ChildProcess;
+  let sock: Socket;
+  let events: Array<Record<string, unknown>>;
+  let api: ReturnType<typeof Bun.serve>;
+
+  beforeAll(async () => {
+    api = Bun.serve({ port: 0, fetch: () => Response.json({ type: 'error', error: { type: 'not_found_error', message: 'model' } }, { status: 404 }) });
+    dir = mkdtempSync(join(tmpdir(), 'chost-doctor-fenced-'));
+    const serverPath = join(dir, 'fake-shell.mjs');
+    writeFileSync(serverPath, FAKE_SHELL);
+    writeFileSync(join(dir, 'recipe.json'), JSON.stringify({
+      name: 'Fenced Shell',
+      agent: { name: 'resident', model: 'claude-live-test', systemPrompt: 'never asked to infer in this test', allowedTools: ['time--now'] },
+      modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+      mcpServers: { fenced: { command: process.execPath, args: [serverPath, 'ok', join(dir, 'calls.jsonl')] } },
+    }));
+    const env: Record<string, string | undefined> = {
+      ...process.env, ANTHROPIC_API_KEY: 'sk-test-doctor', ANTHROPIC_BASE_URL: `http://127.0.0.1:${api.port}`, DATA_DIR: dir,
+    };
+    delete env.MODEL;
+    child = spawn(process.execPath, [INDEX_PATH, join(dir, 'recipe.json'), '--headless'], { cwd: dir, env, stdio: 'ignore' });
+    const socketPath = join(dir, 'ipc.sock');
+    await waitFor(() => existsSync(socketPath), 20_000, 'socket file appears');
+    sock = await connectWhenAccepting(socketPath);
+    events = lineReader(sock);
+    await waitFor(() => events.some((e) => e.type === 'lifecycle' && e.phase === 'ready'), 5_000, 'lifecycle ready');
+  }, 30_000);
+
+  afterAll(async () => {
+    const exited = child.exitCode !== null || child.signalCode !== null ? Promise.resolve()
+      : new Promise<void>((done) => child.once('exit', () => done()));
+    try { sock.write(JSON.stringify({ type: 'shutdown' }) + '\n'); } catch {}
+    const killer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+    await exited;
+    clearTimeout(killer);
+    try { sock.destroy(); } catch {}
+    api.stop(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('it calls nothing on that server and names it apart, neither as a shell that answered or failed nor as one not connected', async () => {
+    let seq = 0;
+    const panel = async (op: string): Promise<Record<string, unknown>> => {
+      const corrId = `fenced-${++seq}`;
+      sock.write(JSON.stringify({ type: 'panel-request', op, params: {}, corrId }) + '\n');
+      await waitFor(() => events.some((e) => e.type === 'panel-response' && e.corrId === corrId), 20_000, `panel-response ${op}`);
+      return events.find((e) => e.type === 'panel-response' && e.corrId === corrId)!;
+    };
+    const connected = async () => ((await panel('mcpl')).data as { live: Array<{ id: string; connected: boolean }> }).live
+      .find((s) => s.id === 'fenced')?.connected === true;
+    for (let i = 0; i < 100 && !(await connected()); i++) await new Promise((r) => setTimeout(r, 100));
+    expect(await connected()).toBe(true);
+    const res = await panel('shell-check');
+    expect(res.ok).toBe(true);
+    const data = res.data as { shells: unknown[]; notAllowed?: string[]; notConnected: unknown[]; unchecked: unknown[] };
+    expect({ shells: data.shells, notAllowed: data.notAllowed, notConnected: data.notConnected, unchecked: data.unchecked })
+      .toEqual({ shells: [], notAllowed: ['fenced'], notConnected: [], unchecked: [] });
+    expect(existsSync(join(dir, 'calls.jsonl'))).toBe(false);
+  }, 30_000);
+});
+
 describe('shell-check, with a stand-in for the framework', () => {
   test('a server not connected is named with whether the host still retries it and why it refuses one', async () => {
     const app = {

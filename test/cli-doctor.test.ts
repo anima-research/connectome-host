@@ -345,6 +345,19 @@ describe('connectome doctor', () => {
     expect(r.status).toBe(0);
   });
 
+  test('a shell server whose listSessions the recipe\'s agent may not call is said in a plain line and named in the closing line, not as a problem', async () => {
+    const at = install();
+    const r = await withHost(at, {
+      ...HEALTHY_HOST,
+      'shell-check': { ...HEALTHY_HOST['shell-check'], shells: [], notAllowed: ['shell'] },
+    }, () => run(at));
+    expect(r.out).toContain('The server shell offers listSessions, but the recipe\'s agent may not call it, since its allowedTools leave it out, so its daemon wasn\'t checked.');
+    expect(r.out).not.toMatch(/✗.*shell/);
+    expect(r.out).not.toContain('No server offers listSessions');
+    expect(r.out).toMatch(/Doctor found no problem, though .*a shell server whose listSessions the recipe's agent may not call wasn't checked, as said above\.$/);
+    expect(r.status).toBe(0);
+  });
+
   test('with every shell server unchecked for a session switch, doctor doesn\'t say no server offers listSessions', async () => {
     const at = install();
     const r = await withHost(at, {

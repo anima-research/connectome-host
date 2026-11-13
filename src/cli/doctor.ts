@@ -328,6 +328,7 @@ export async function doctor(
   let unanswered = false;
   let closedTabs = false;
   let shellUnchecked = false;
+  let shellBarred = false;
   let uncounted: string | null = null;
   const commands = serviceCommands(root, sys);
   const startCommand = commands?.start ?? `${typed} service install <recipe>`;
@@ -570,6 +571,7 @@ export async function doctor(
           shellLines(report, answer.data, commands);
           closedTabs = answer.data.closedTabs.length > 0;
           shellUnchecked = (answer.data.unchecked ?? []).length > 0;
+          shellBarred = (answer.data.notAllowed ?? []).length > 0;
         }
       });
     }
@@ -720,6 +722,7 @@ export async function doctor(
     ...(closedTabs ? ['a closed tab\'s connection wasn\'t checked'] : []),
     ...(pidUntold ? ['whether the host that answers is the service\'s couldn\'t be told'] : []),
     ...(shellUnchecked ? ['a shell server the host\'s session switch left unchecked'] : []),
+    ...(shellBarred ? ['a shell server whose listSessions the recipe\'s agent may not call wasn\'t checked'] : []),
   ];
   ctx.out('');
   ctx.out(report.redact(report.problems > 0
@@ -861,6 +864,7 @@ interface CountCheck {
 interface ShellCheck {
   shells: Array<{ server: string; answered: true; sessions: number | null } | { server: string; answered: false; error: string }>;
   unchecked?: string[];
+  notAllowed?: string[];
   notConnected: Array<{ id: string; retrying: boolean; refused: string | null }>;
   closedTabs: string[];
 }
@@ -943,7 +947,11 @@ function shellLines(report: Report, shell: ShellCheck, commands: ServiceCommands
   for (const id of shell.unchecked ?? []) {
     report.line(`The server ${id} wasn't checked: the host switched sessions during the check.`);
   }
-  if (shell.shells.length === 0 && (shell.unchecked ?? []).length === 0) {
+  for (const id of shell.notAllowed ?? []) {
+    report.line(`The server ${id} offers listSessions, but the recipe's agent may not call it, since its allowedTools ` +
+      'leave it out, so its daemon wasn\'t checked.');
+  }
+  if (shell.shells.length === 0 && (shell.unchecked ?? []).length === 0 && (shell.notAllowed ?? []).length === 0) {
     const unchecked = [
       ...(shell.notConnected.length > 0 ? ['a server that isn\'t connected'] : []),
       ...(shell.closedTabs.length > 0 ? ['a closed tab'] : []),
