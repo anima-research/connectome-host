@@ -633,19 +633,47 @@ describe('panel ops', () => {
     expect((health as { data: { credential?: { kind: string; agent: string } } }).data.credential).toMatchObject({ kind: 'ok', agent: 'commander' });
   });
 
-  test('health says whether the host refreshes its credential by itself when a call is refused, where its source says', async () => {
-    for (const autoRefresh of [true, false]) {
-      const file = join(mkdtempSync(join(tmpdir(), 'cred-')), 'creds.json');
-      writeFileSync(file, JSON.stringify({ accessToken: 'an-access', refreshToken: 'a-refresh' }));
-      const creds = new AnthropicOAuthCredentials({ credentialsFile: file, autoRefresh });
-      const monitor = new CredentialMonitor({ source: creds, alert: () => {} });
-      const health = await runPanelOp(panelApp(monitor), 'health');
-      expect([autoRefresh, (health as { data: { credential?: { autoRefresh?: unknown } } }).data.credential?.autoRefresh])
-        .toEqual([autoRefresh, autoRefresh]);
-    }
+  test('health says what a model call refused with the credential means, in the host\'s words, where its source says, and whether the host mends it by itself', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cred-'));
+    const health = async (stored: Record<string, unknown>, autoRefresh: boolean) => {
+      const file = join(dir, `creds-${Object.keys(stored).length}-${autoRefresh}.json`);
+      writeFileSync(file, JSON.stringify(stored));
+      const monitor = new CredentialMonitor({ source: new AnthropicOAuthCredentials({ credentialsFile: file, autoRefresh }), alert: () => {} });
+      const answer = await runPanelOp(panelApp(monitor), 'health');
+      return (answer as { data: { credential: Record<string, unknown> } }).data.credential;
+    };
+    const expiresAt = Date.parse('2026-11-12T05:00:00.000Z');
+    const on = await health({ accessToken: 'an-access', refreshToken: 'a-refresh', expiresAt }, true);
+    expect(on.refused).toEqual({
+      line: 'The host\'s credential has a refresh token, and the host runs with ANTHROPIC_OAUTH_AUTO_REFRESH on, so its next ' +
+        'model call, refused the same way, tries to refresh it. Its access token expired at 2026-11-12T05:00:00.000Z. Where ' +
+        'that refresh fails, the host\'s log says why, in a line that starts "[anthropic-credentials] automatic refresh failed:".',
+      mends: true,
+    });
+    expect('autoRefresh' in on).toBe(false);
+    const off = await health({ accessToken: 'an-access', refreshToken: 'a-refresh' }, false);
+    expect(off.refused).toEqual({
+      line: 'The host\'s credential has a refresh token, but the host runs with ANTHROPIC_OAUTH_AUTO_REFRESH off, so its next ' +
+        'model call is refused too: refresh it with the host\'s `/auth refresh`, in its terminal or the Web UI\'s command box.',
+      mends: false,
+    });
+    const fixed = await health({ accessToken: 'an-access' }, true);
+    expect(fixed.refused).toEqual({
+      line: 'The host\'s credential has no refresh token, so it needs replacing: the host\'s `/auth token <token>`, in its ' +
+        `terminal or the Web UI's command box, replaces it, and writes it to ${join(dir, 'creds-1-true.json')}, with no restart.`,
+      mends: false,
+    });
+    expect(new AnthropicOAuthCredentials({ token: 'a-given-token' }).refused()).toEqual({
+      line: 'The host\'s credential has no refresh token, so it needs replacing: the host\'s `/auth token <token>`, in its ' +
+        'terminal or the Web UI\'s command box, replaces it until the host restarts: to keep it past a restart, replace it ' +
+        'where the host gets it too.',
+      mends: false,
+    });
+
     const { monitor } = harness({ source: { canRefresh: () => true } });
-    const health = await runPanelOp(panelApp(monitor), 'health');
-    expect('autoRefresh' in (health as { data: { credential: object } }).data.credential).toBe(false);
+    expect('refused' in monitor.snapshot()).toBe(false);
+    const saying = harness({ source: { canRefresh: () => true, refused: () => ({ line: 'the source\'s own line', mends: true }) } });
+    expect(saying.monitor.snapshot().refused).toEqual({ line: 'the source\'s own line', mends: true });
   });
 
   test('health says the credential couldn\'t be read where reading it threw, in place of leaving it out', async () => {

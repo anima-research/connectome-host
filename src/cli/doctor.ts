@@ -1081,7 +1081,8 @@ interface ShellCheck {
 const REPLACE_CREDENTIAL = ' Replace that credential where the service gets it, and restart the service.';
 
 type HostCredential =
-  | { rotatable: boolean; expiresAt?: number; autoRefresh?: boolean }
+  | { refused: { line: string; mends: boolean } }
+  | { rotatable: boolean; expiresAt?: number }
   | { unread: string }
   | null;
 
@@ -1092,19 +1093,20 @@ function credentialOf(answer: HostEvent | null): HostCredential {
   if (typeof data?.credentialFailure === 'string') return { unread: `reading it on the host failed: ${data.credentialFailure}` };
   const credential = data?.credential;
   if (credential === undefined) return null;
+  const refused = credential?.refused as { line?: unknown; mends?: unknown } | undefined;
+  if (typeof refused?.line === 'string' && typeof refused.mends === 'boolean') {
+    return { refused: { line: refused.line, mends: refused.mends } };
+  }
   if (typeof credential?.rotatable !== 'boolean') return { unread: 'the host\'s answer doesn\'t say' };
-  const { rotatable, expiresAt, autoRefresh } = credential;
-  return {
-    rotatable,
-    ...(typeof expiresAt === 'number' && Number.isFinite(expiresAt) ? { expiresAt } : {}),
-    ...(typeof autoRefresh === 'boolean' ? { autoRefresh } : {}),
-  };
+  const { rotatable, expiresAt } = credential;
+  return { rotatable, ...(typeof expiresAt === 'number' && Number.isFinite(expiresAt) ? { expiresAt } : {}) };
 }
 
 const AUTH_REFRESH = 'the host\'s `/auth refresh`, in its terminal or the Web UI\'s command box';
 
 function refusedCredential(credential: HostCredential): { words: string; problem: boolean } {
   if (credential === null) return { words: REPLACE_CREDENTIAL, problem: true };
+  if ('refused' in credential) return { words: ` ${credential.refused.line}`, problem: !credential.refused.mends };
   if ('unread' in credential) {
     return {
       words: ` Whether the host's credential can be refreshed can't be told, since ${credential.unread}. A credential with no ` +
@@ -1116,21 +1118,6 @@ function refusedCredential(credential: HostCredential): { words: string; problem
   const expiry = credential.expiresAt === undefined ? ''
     : ` The host has its access token ${credential.expiresAt < Date.now() ? 'expired' : 'expiring'} at ` +
       `${new Date(credential.expiresAt).toISOString()}.`;
-  if (credential.autoRefresh === true) {
-    return {
-      words: ' The host\'s credential has a refresh token, and the host runs with ANTHROPIC_OAUTH_AUTO_REFRESH on, so its next ' +
-        `model call, refused the same way, tries to refresh it.${expiry} Where that refresh fails, the host's log says why, in ` +
-        'a line that starts "[anthropic-credentials] automatic refresh failed:".',
-      problem: false,
-    };
-  }
-  if (credential.autoRefresh === false) {
-    return {
-      words: ' The host\'s credential has a refresh token, but the host runs with ANTHROPIC_OAUTH_AUTO_REFRESH off, so its next ' +
-        `model call is refused too: refresh it with ${AUTH_REFRESH}.${expiry}`,
-      problem: true,
-    };
-  }
   return {
     words: ' The host\'s credential has a refresh token, but the host\'s answer doesn\'t say whether it refreshes it by itself, ' +
       `so whether its next model call is refused too can't be told. ${AUTH_REFRESH[0].toUpperCase()}${AUTH_REFRESH.slice(1)}, ` +
