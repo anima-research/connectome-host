@@ -146,6 +146,7 @@ class FakeSystemd {
   startLimited = new Set<string>();
   exitStatus = new Map<string, string>();
   launchctlFailsOnce = new Map<string, string>();
+  graphicalSession = true;
   envs: Array<Record<string, string>> = [];
   otherUnits: Array<{ id: string; workingDirectory: string; scope?: 'system'; fragment?: string }> = [];
   systemAnswers = true;
@@ -326,6 +327,10 @@ class FakeSystemd {
 
   private launchctl(args: string[]): Ran {
     const [verb, target, file] = args;
+    if (verb === 'print' && /^gui\/\d+$/.test(target!)) {
+      return this.graphicalSession ? ok('gui/1001 = {\n\ttype = User\n}\n')
+        : { status: 112, stdout: '', stderr: 'Could not find domain for user gui\n' };
+    }
     const failing = this.launchctlFailsOnce.get(verb!);
     if (failing !== undefined) {
       this.launchctlFailsOnce.delete(verb!);
@@ -1305,6 +1310,21 @@ test('on macOS install leaves an earlier log as it is when it loads the agent', 
   expect(existsSync(`${log}.previous`)).toBe(false);
 });
 
+test('on macOS install refuses before it writes where launchd shows no graphical session for its user, with launchctl\'s own words', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at, { platform: 'darwin', linger: null });
+  f.systemd.graphicalSession = false;
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('launchctl print gui/1001 failed: Could not find domain for user gui. launchd ' +
+    'starts a user\'s agents only in that user\'s graphical session, so while resident isn\'t logged in to the Mac\'s ' +
+    'graphical session there\'s none to start them in. Repeat this command once resident is logged in to it. Nothing ' +
+    'was written.');
+  expect(f.systemd.calls).toEqual(['launchctl print gui/1001']);
+  expect(existsSync(agentPlist(at))).toBe(false);
+  expect(existsSync(join(at.work, '.env'))).toBe(false);
+  expect(existsSync(join(at.work, '.setup', 'stored-secrets.json'))).toBe(false);
+});
+
 test('on macOS a launch agent launchctl won\'t load reports its failure and how to retry', async () => {
   const at = install();
   const f = fake(at, { platform: 'darwin', linger: null });
@@ -1431,7 +1451,7 @@ test('on macOS a failed teardown query explains the failure without launchctl ro
   const f = fake(at, { platform: 'darwin', linger: null });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   const run = f.system.run;
-  f.system.run = (command, args, env) => command === 'launchctl' && args[0] === 'print'
+  f.system.run = (command, args, env) => command === 'launchctl' && args[0] === 'print' && args[1] !== 'gui/1001'
     ? { status: 1, stdout: '', stderr: 'Print failed: permission denied\nTry re-running the command as root for richer errors.\n' }
     : run(command, args, env);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
@@ -1701,8 +1721,9 @@ test('with a shell, a .env that is a link is refused, naming where it leads, wri
     }
     expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
     const said = f.err.join('\n');
-    expect(said).toContain(`${join(at.work, '.env')} is a link to ${target}.`);
-    expect(said).toContain('Replace the link with the file it leads to, if that\'s there, or take it away, then repeat this service install command with the same recipe. Nothing was written.');
+    expect(said).toContain(`${join(at.work, '.env')} is a link to ${target}, and it's written only as a file of its own, ` +
+      'not through a link or over one. Replace the link with the file it leads to, if that\'s there, or take it away, ' +
+      'then repeat this service install command with the same recipe. Nothing was written.');
     if (held !== null) {
       expect(readFileSync(target, 'utf-8')).toBe(held);
       expect(statSync(target).mode & 0o777).toBe(mode);
