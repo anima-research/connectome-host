@@ -48,7 +48,7 @@ async function standInHost(dir: string, listens: boolean, dumpsTo?: string, dump
   const writesDump = dumpsTo ? `cat ${dump} >> ${dumpsTo}; `
     : `printf "%s.000000 host bun[1]: %s\\n" "$(date +%s)" "$(cat ${dump})" >> ${join(dir, 'journal.txt')}; `;
   const waits = dumpAfterRead
-    ? `n=0; while [ ! -s ${join(dir, 'dump-reads')} ] && [ $n -lt 80 ]; do sleep 0.05; n=$((n + 1)); done; ` : '';
+    ? `while [ ! -s ${join(dir, 'dump-reads')} ]; do sleep 0.05; done; ` : '';
   const trap = listens ? `trap '${waits}${writesDump}echo usr2 >> ${signals}' USR2; ` : '';
   const process = spawn('sh', ['-c', `${trap}while :; do echo t >> ${ticks}; sleep 0.05; done`], { stdio: 'ignore' });
   children.push(process);
