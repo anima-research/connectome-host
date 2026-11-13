@@ -6,7 +6,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { SETUP_BUN_FLOOR, SETUP_SUMMARY, costLine, firstLine, realWorld, setup, setupDirectory, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/cli/setup.js';
+import { SETUP_SUMMARY, costLine, firstLine, setup, setupDirectory } from '../src/cli/setup.js';
+import { SETUP_BUN_FLOOR } from '../src/setup/packages.js';
+import { realWorld, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/setup/world.js';
 import { bunBelowFloor } from '../src/bun-floor.js';
 import { ANTHROPIC_PRICING_VERSION } from '../src/call-pricing.js';
 import { defaultTrusted } from '../src/setup/default-trusted.js';
@@ -1349,7 +1351,7 @@ test('kept answers setup can\'t read are moved aside as they were, before setup 
 });
 
 async function script(body: string): Promise<{ status: number | null; out: string; err: string }> {
-  const load = `const { realWorld } = await import(${JSON.stringify(join(REPO, 'src', 'cli', 'setup.ts'))});`;
+  const load = `const { realWorld } = await import(${JSON.stringify(join(REPO, 'src', 'setup', 'world.ts'))});`;
   const child = spawn(process.execPath, ['-e', `${load}\n${body}`], { cwd: directory(), stdio: ['pipe', 'pipe', 'pipe'] });
   let out = '';
   let err = '';
