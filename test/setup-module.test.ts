@@ -2188,7 +2188,7 @@ describe('setup--ask_secret', () => {
         { purpose: 'a key the local endpoint takes', turned: false },
         { purpose: 'the same value again to keep it, or another one', turned: false },
       ]);
-      expect(shown.filter((line) => line.startsWith(WARNING))).toEqual([`What you typed for ${NAME} is 1 character long. Setup hides a stored secret wherever its text appears in what its agent sees, so one this short also hides parts of ids and of command output. If it was cut short, type the whole value. If the endpoint takes any key, type a longer made-up one: 8 or more random letters and digits, not a word. To keep this one, type it again.`]);
+      expect(shown.filter((line) => line.startsWith(WARNING))).toEqual([`What you typed for ${NAME} is 1 character long. Setup hides a stored secret in the output of the commands its agent runs and in the answers it reads from Discord and from model providers, so one this short also hides parts of ids and of command output. If it was cut short, type the whole value. If the endpoint takes any key, type a longer made-up one: 8 or more random letters and digits, not a word. To keep this one, type it again.`]);
       expect(readEnvFile(join(dir, '.env')).get(NAME)).toBe('0');
       expect(String(result.data)).toEndWith(`The value stored as ${NAME} is shorter than 8 characters, and the person typed it twice to keep it. So <${NAME}> can appear in place of parts of other text, such as ids and command output, and setup--run leaves an environment variable with the same value out of its commands' environment.`);
     });
