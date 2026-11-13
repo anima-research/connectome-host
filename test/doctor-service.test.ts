@@ -36,8 +36,13 @@ function system(home: string, answers: Record<string, string | { status: number;
         return { status: 1, stdout: '', stderr: `the stand-in answers only systemctl --user show and launchctl list, not ${command} ${args.join(' ')}` };
       }
       const key = `${command} ${args[args.length - 1]}`;
-      const answer = answers[key];
-      if (answer === undefined) return { status: 1, stdout: '', stderr: `no stand-in for ${key}` };
+      const answer = answers[key]
+        ?? (command === 'systemctl' ? 'LoadState=not-found\nActiveState=inactive\nSubState=dead\nWorkingDirectory=\nFragmentPath=\n' : undefined);
+      if (answer === undefined) {
+        return command === 'launchctl'
+          ? { status: 113, stdout: '', stderr: `Could not find service "${args[args.length - 1]}" in domain for port` }
+          : { status: 1, stdout: '', stderr: `no stand-in for ${key}` };
+      }
       if (typeof answer !== 'string') return { status: answer.status, stdout: answer.stdout ?? '', stderr: answer.stderr ?? '' };
       const asks = command === 'systemctl' ? args.find((arg) => arg.startsWith('--property='))?.slice('--property='.length) : undefined;
       if (asks === undefined) return { status: 0, stdout: answer, stderr: '' };
@@ -381,4 +386,45 @@ test('a shell daemon\'s unit that is another install\'s isn\'t checked, nor said
   expect(result.passed).toBe(true);
   expect(result.lines.join('\n')).not.toContain(at.units.shell.name);
   expect(asked.filter((call) => call.join(' ').includes(at.units.shell.name))).toEqual([]);
+});
+
+test('with a recipe that names no shell, a shell unit of this name that systemd holds in another directory with its file gone fails the check', () => {
+  const at = place('linux', ['host']);
+  const { sys, asked } = system(at.home, {
+    [`systemctl ${at.units.host.name}`]: activeHost(at.work),
+    [`systemctl ${at.units.shell.name}`]: activeHost('/another-install'),
+  });
+  const result = checkUnits(at.units, at.work, false, 'connectome', sys);
+  expect(result.passed).toBe(false);
+  expect(result.lines).toContain(`systemd runs ${at.units.shell.name} in /another-install, not ${at.work}.`);
+  expect(asked.some(([, ...args]) => args.includes(at.units.shell.name))).toBe(true);
+});
+
+test('with a recipe that names no shell, a shell agent launchd still holds with its plist gone fails the check, with a stop and an inspect line', () => {
+  const at = place('darwin', ['host']);
+  const { sys } = system(at.home, {
+    [`launchctl ${at.units.host.name}`]: '{\n\t"PID" = 501;\n};\n',
+    [`launchctl ${at.units.shell.name}`]: '{\n\t"PID" = 502;\n};\n',
+  });
+  const result = checkUnits(at.units, at.work, false, 'connectome', sys);
+  expect(result.passed).toBe(false);
+  expect(result.lines).toContain(`${at.units.shell.name} is still loaded, but its file, ${at.units.shell.file}, is gone, so which ` +
+    `install it runs can't be told: \`launchctl print gui/1000/${at.units.shell.name}\` shows what it runs. If it's this ` +
+    `install's, stop it with \`launchctl bootout gui/1000/${at.units.shell.name}\`.`);
+});
+
+test('with a recipe that names no shell, a shell unit systemd still holds as last loaded here with its file gone fails the check, running or not', () => {
+  for (const active of ['active', 'inactive']) {
+    const at = place('linux', ['host']);
+    const { sys } = system(at.home, {
+      [`systemctl ${at.units.host.name}`]: activeHost(at.work),
+      [`systemctl ${at.units.shell.name}`]: `LoadState=loaded\nActiveState=${active}\nWorkingDirectory=${at.work}\n` +
+        `FragmentPath=${at.units.shell.file}\nNeedDaemonReload=yes\n`,
+    });
+    const result = checkUnits(at.units, at.work, false, 'connectome', sys);
+    expect([active, result.passed]).toEqual([active, false]);
+    expect([active, result.lines]).toEqual([active, expect.arrayContaining([`systemd still holds ${at.units.shell.name} as it last ` +
+      `loaded it, though its file, ${at.units.shell.file}, is gone, and the recipe names no shell. \`connectome service install ` +
+      `<recipe>\` doesn't stop it: if it runs, \`XDG_RUNTIME_DIR=/run/user/1000 systemctl --user stop ${at.units.shell.name}\` stops it.`])]);
+  }
 });

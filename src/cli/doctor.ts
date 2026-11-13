@@ -24,8 +24,11 @@ import type { CliContext } from './connectome.js';
 import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy } from './discord-check.js';
 import { dataDirOf, openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { typedCommand } from './install-command.js';
-import { checkUnits, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
-import { machine, namedElsewhere, recipeHasShell, serviceCommands, serviceLines, type ServiceCommands, type ServiceSystem } from './service.js';
+import { checkUnits, heldWithoutFile, ownerProblem, pathState, servicePid, type ServiceCheck } from './doctor-service.js';
+import {
+  childEnv as serviceChildEnv, machine, managerOwner, namedElsewhere, recipeHasShell, serviceCommands, serviceLines, stopLine,
+  systemctlLine, type ServiceCommands, type ServiceSystem,
+} from './service.js';
 import {
   managerFor, readUnit, serviceUnits, systemdWorkingDirectory, type Manager, type ServiceUnits,
 } from './service-unit.js';
@@ -129,7 +132,8 @@ export async function doctor(
   const base = machine();
   const sys: ServiceSystem = {
     ...base, platform: parts.platform, home: parts.home,
-    run: (command, args, env) => base.run(command === 'plutil' ? parts.plutil : command, args, env),
+    run: (command, args, env) => base.run(command === 'plutil' ? parts.plutil : command === 'systemctl' ? parts.systemctl
+      : command === 'launchctl' ? parts.launchctl : command, args, env),
   };
   if (parts.uid === 0) {
     const dir = dirname(root);
@@ -148,6 +152,7 @@ export async function doctor(
   let service: { units: ServiceUnits; recipe: string; work: string; bun: string } | null = null;
   let serviceError: string | null = null;
   let elsewhere = false;
+  let managerSaid = false;
   let shellElsewhere: string | null = null;
   if (units !== null) {
     shellElsewhere = shellOfAnother(units, sys);
@@ -182,6 +187,15 @@ export async function doctor(
           service = { units, recipe: read.argv[2]!, work: runsIn, bun: read.argv[0]! };
         }
       }
+    } else if (serviceError === null) {
+      const owner = managerOwner(units.host, units.manager, units.work, sys, serviceChildEnv(sys), false);
+      const install = `\`${typed} service install <recipe>\``;
+      serviceError = owner.kind === 'ok' && owner.held
+        ? `${heldWithoutFile(units.host)}: ${install} writes the file again. \`${systemctlLine(sys, `status ${units.host.name}`)}\` ` +
+          `shows it, and \`${stopLine(sys, units.manager, units.host.name)}\` stops it if it runs.`
+        : ownerProblem(owner, units.host, units.manager, units.work, sys, install);
+      if (owner.kind === 'other') elsewhere = true;
+      else managerSaid = serviceError !== null;
     }
   }
   const work = service?.work ?? units?.work ?? join(root, '..');
@@ -242,7 +256,8 @@ export async function doctor(
       if (service !== null || (serviceError !== null && !elsewhere)) throw unread;
       managerUnread = unread instanceof ManagerUnread ? unread.step : errorText(unread);
     }
-    const read = units === null || elsewhere || (service === null && serviceError === null) ? null : unitEnv(units, parts);
+    const read = units === null || elsewhere || managerSaid || (service === null && serviceError === null) ? null
+      : unitEnv(units, parts);
     const set = read?.env;
     if (set !== undefined) {
       secrets = [...secrets, ...named.names.flatMap((name) => set[name] ? withSentForms({ name, value: set[name] }) : [])];
@@ -341,7 +356,7 @@ export async function doctor(
   try {
     report.section('Service');
     if (serviceError !== null) {
-      report.problem(elsewhere ? serviceError
+      report.problem(elsewhere || managerSaid ? serviceError
         : `${serviceError} \`${typed} service install <recipe>\` writes it anew, or says why it can't.`);
     } else if (service === null) {
       report.problem(units === null

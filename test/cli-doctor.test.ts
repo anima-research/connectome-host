@@ -187,14 +187,21 @@ function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lin
 
 let managers = 0;
 
+const OWNER_QUERY = 'LoadState,ActiveState,WorkingDirectory,FragmentPath';
+
 const unitWords = (data: string): string => `PATH=${process.env.PATH ?? '/usr/bin:/bin'} DATA_DIR=${data} CONNECTOME_SUPERVISED=1`;
 
 function fakeManager(dir: string, opts: {
   env?: string[]; launchd?: Record<string, string>; fails?: string; hangs?: true; unit?: string | null; unitFails?: string;
-  filesFail?: string; unset?: string;
+  filesFail?: string; unset?: string; owners?: Record<string, string>; ownersFail?: string; listed?: Record<string, string>;
+  envFails?: string;
 } = {}) {
   const at = join(dir, `manager-${++managers}`);
   mkdirSync(join(at, 'values'), { recursive: true });
+  mkdirSync(join(at, 'owners'), { recursive: true });
+  mkdirSync(join(at, 'listed'), { recursive: true });
+  for (const [name, shown] of Object.entries(opts.owners ?? {})) writeFileSync(join(at, 'owners', name), shown);
+  for (const [name, listed] of Object.entries(opts.listed ?? {})) writeFileSync(join(at, 'listed', name), listed);
   writeFileSync(join(at, 'environment'), (opts.env ?? []).map((line) => `${line}\n`).join(''));
   const unit = opts.unit === undefined ? unitWords(join(dir, 'data')) : opts.unit ?? '';
   writeFileSync(join(at, 'unit-environment'), `${unit}\n`);
@@ -205,6 +212,10 @@ function fakeManager(dir: string, opts: {
     `printf '%s\\n' "$*" >> ${join(at, 'calls')}`,
     ...(opts.hangs ? ['exec sleep 30'] : []),
     ...(opts.fails === undefined ? [] : [`echo '${opts.fails}' >&2`, 'exit 1']),
+    ...(opts.envFails === undefined ? [] : [`if [ "$*" = "--user show-environment" ] || [ "$1" = getenv ]; then echo '${opts.envFails}' >&2; exit 1; fi`]),
+    ...(opts.ownersFail === undefined ? [] : [`if [ "$1 $2 $3" = "--user show --property=LoadState,ActiveState,WorkingDirectory,FragmentPath" ] || [ "$1" = list ]; then echo '${opts.ownersFail}' >&2; exit 1; fi`]),
+    `if [ "$1 $2 $3 $4" = "--user show --property=LoadState,ActiveState,WorkingDirectory,FragmentPath --" ] && [ $# -eq 5 ]; then if [ -f "${join(at, 'owners')}/$5" ]; then cat "${join(at, 'owners')}/$5"; else printf 'LoadState=not-found\nActiveState=inactive\nWorkingDirectory=\nFragmentPath=\n'; fi; exit 0; fi`,
+    `if [ "$1" = list ] && [ $# -eq 2 ]; then if [ -f "${join(at, 'listed')}/$2" ]; then cat "${join(at, 'listed')}/$2"; exit 0; fi; echo "Could not find service \"$2\" in domain for port" >&2; exit 113; fi`,
     `if [ "$*" = "--user show-environment" ]; then cat ${join(at, 'environment')}; exit 0; fi`,
     ...(opts.unitFails === undefined ? [] : [`if [ "$*" = "--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service" ]; then echo '${opts.unitFails}' >&2; exit 1; fi`]),
     `if [ "$*" = "--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service" ]; then printf 'Environment=%s\\nUnsetEnvironment=%s\\n' "$(cat ${join(at, 'unit-environment')})" '${opts.unset ?? ''}'; exit 0; fi`,
@@ -1904,13 +1915,14 @@ describe('connectome doctor: the environment the service gets from its manager',
     rmSync(none.unit);
     const platform = fakeManager(none.work);
     await run(none, { systemctl: platform.path, launchctl: platform.path });
-    expect(platform.calls()).toEqual(['--user show-environment']);
+    expect(platform.calls()).toEqual([`--user show --property=${OWNER_QUERY} -- connectome-test.service`, '--user show-environment']);
     const noPlist = install({ manager: 'launchd' });
     rmSync(noPlist.unit);
     const mac = fakeManager(noPlist.work);
     await run(noPlist, { systemctl: mac.path, launchctl: mac.path });
-    expect(mac.calls().length).toBeGreaterThan(0);
-    expect(mac.calls().every((call) => call.startsWith('getenv '))).toBe(true);
+    expect(mac.calls()[0]).toBe('list com.animalabs.connectome.test');
+    expect(mac.calls().length).toBeGreaterThan(1);
+    expect(mac.calls().slice(1).every((call) => call.startsWith('getenv '))).toBe(true);
     const launchd = install({ manager: 'launchd' });
     const asked = fakeManager(launchd.work);
     await run(launchd, { systemctl: asked.path, launchctl: asked.path });
@@ -2038,19 +2050,19 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     });
     const r = await withHost(at, refusing('the token managed-secret-value was refused'),
       () => run(at, { systemctl: manager.path, launchctl: manager.path }));
-    expect(manager.calls()).toEqual(['--user show-environment']);
+    expect(manager.calls()).toEqual([`--user show --property=${OWNER_QUERY} -- connectome-test.service`, '--user show-environment']);
     expect(r.out).toContain('the token <MANAGED_SECRET> was refused');
     expect(r.out).not.toContain('managed-secret-value');
   });
 
-  test('with no service installed and a manager that can\'t be read, doctor goes on, naming the step that failed', async () => {
+  test('with no host unit file, a manager that says it holds none but whose environment can\'t be read: doctor goes on, naming the step that failed', async () => {
     for (const [manager, asked, step] of [
       ['systemd-user', 'systemd\'s user manager', '`systemctl --user show-environment`'],
       ['launchd', 'launchd', '`launchctl getenv \\w+`'],
     ] as const) {
       const at = install({ manager });
       rmSync(at.unit);
-      const failing = fakeManager(at.work, { fails: 'Failed to connect to bus: No medium found' });
+      const failing = fakeManager(at.work, { envFails: 'Failed to connect to bus: No medium found' });
       const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: failing.path, launchctl: failing.path }));
       expect([manager, r.out]).toEqual([manager, expect.stringMatching(new RegExp(`With no service installed, doctor asked ${asked}, ` +
         `which a service installed here would run under, and couldn't read it \\(${step} failed: Failed to connect to bus: No ` +
@@ -2059,6 +2071,95 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
       expect(r.out).not.toContain('Doctor stops here');
       expect(r.out).toContain('pid 4242');
     }
+  });
+
+  test('with no host unit file and a manager that can\'t be asked whether it holds the unit, doctor doesn\'t say no service is installed', async () => {
+    for (const manager of ['systemd-user', 'launchd'] as const) {
+      const at = install({ manager });
+      rmSync(at.unit);
+      const failing = fakeManager(at.work, { fails: 'Failed to connect to bus: No medium found' });
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: failing.path, launchctl: failing.path }));
+      expect([manager, r.out]).toEqual([manager, expect.not.stringContaining('No service is installed')]);
+      expect([manager, r.out]).toEqual([manager, expect.not.stringContaining('With no service installed')]);
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining('Failed to connect to bus: No medium found')]);
+      expect([manager, r.status]).toEqual([manager, 1]);
+    }
+  });
+
+  test('with no host unit file and a manager that can\'t be asked about the unit but gives its environment, doctor says it can\'t tell, not that no service is installed', async () => {
+    for (const manager of ['systemd-user', 'launchd'] as const) {
+      const at = install({ manager });
+      rmSync(at.unit);
+      const failing = fakeManager(at.work, { ownersFail: 'Failed to connect to bus: No medium found' });
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: failing.path, launchctl: failing.path }));
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining('Failed to connect to bus: No medium found')]);
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining('so whether it runs another install can\'t be told.')]);
+      expect([manager, r.out]).toEqual([manager, expect.not.stringContaining('No service is installed')]);
+      expect([manager, r.status]).toEqual([manager, 1]);
+    }
+  });
+
+  test('a host unit whose file is gone while the manager still holds it running is a problem with a stop and an inspect line, not no service', async () => {
+    const at = install();
+    rmSync(at.unit);
+    const manager = fakeManager(at.work, {
+      unit: Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`).join(' '),
+      owners: { 'connectome-test.service': 'LoadState=not-found\nActiveState=active\nWorkingDirectory=\nFragmentPath=\n' },
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path }));
+    expect(r.out).toContain(`✗ connectome-test.service is still running, but its file, ${at.unit}, is gone, so which install ` +
+      'it runs can\'t be told: `');
+    expect(r.out).toMatch(/`(XDG_RUNTIME_DIR=\/run\/user\/\d+ )?systemctl --user status connectome-test\.service` shows what it runs\. If it's this install's, stop it with `(XDG_RUNTIME_DIR=\/run\/user\/\d+ )?systemctl --user stop connectome-test\.service`\./);
+    expect(r.out).not.toContain('No service is installed');
+    expect(r.out).not.toContain('service install <recipe>` writes');
+    expect(manager.calls()).not.toContain('--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service');
+    expect(r.status).toBe(1);
+  });
+
+  test('a launch agent whose plist is gone while launchd still holds it loaded is a problem with a stop and an inspect line, not no service', async () => {
+    const at = install({ manager: 'launchd' });
+    rmSync(at.unit);
+    const manager = fakeManager(at.work, { listed: { 'com.animalabs.connectome.test': '{\n\t"PID" = 501;\n};\n' } });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path }));
+    expect(r.out).toContain(`✗ com.animalabs.connectome.test is still loaded, but its file, ${at.unit}, is gone, so which ` +
+      `install it runs can't be told: \`launchctl print gui/${process.getuid!()}/com.animalabs.connectome.test\` shows what it ` +
+      `runs. If it's this install's, stop it with \`launchctl bootout gui/${process.getuid!()}/com.animalabs.connectome.test\`.`);
+    expect(r.out).not.toContain('No service is installed');
+    expect(manager.calls()).toContain('list com.animalabs.connectome.test');
+    expect(r.status).toBe(1);
+  });
+
+  test('a host unit whose file is gone while systemd still holds it as last loaded, running here or not, is a problem with install, status and stop lines, not no service', async () => {
+    for (const active of ['active', 'inactive']) {
+      const at = install();
+      rmSync(at.unit);
+      const manager = fakeManager(at.work, {
+        owners: { 'connectome-test.service': `LoadState=loaded\nActiveState=${active}\nWorkingDirectory=${at.work}\n` +
+          `FragmentPath=${at.unit}\nNeedDaemonReload=yes\n` },
+      });
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path }));
+      expect([active, r.out]).toEqual([active, expect.stringContaining(`✗ systemd still holds connectome-test.service as it last ` +
+        `loaded it, though its file, ${at.unit}, is gone: \``)]);
+      expect([active, r.out]).toEqual([active, expect.stringMatching(/service install <recipe>` writes the file again\. `(XDG_RUNTIME_DIR=\/run\/user\/\d+ )?systemctl --user status connectome-test\.service` shows it, and `(XDG_RUNTIME_DIR=\/run\/user\/\d+ )?systemctl --user stop connectome-test\.service` stops it if it runs\./)]);
+      expect([active, r.out]).toEqual([active, expect.not.stringContaining('No service is installed')]);
+      expect([active, manager.calls()]).toEqual([active,
+        expect.not.arrayContaining(['--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service'])]);
+      expect([active, r.status]).toEqual([active, 1]);
+    }
+  });
+
+  test('a host unit whose file is gone while systemd holds one of its name in another directory is another install\'s, and doctor reads nothing from it', async () => {
+    const at = install();
+    rmSync(at.unit);
+    const manager = fakeManager(at.work, {
+      owners: { 'connectome-test.service': 'LoadState=loaded\nActiveState=active\nWorkingDirectory=/srv/elsewhere\n' +
+        'FragmentPath=/etc/systemd/user/connectome-test.service\n' },
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path }));
+    expect(r.out).toContain('✗ systemd runs connectome-test.service in /srv/elsewhere, not ' + at.work + '.');
+    expect(r.out).not.toContain('No service is installed');
+    expect(manager.calls()).not.toContain('--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service');
+    expect(r.status).toBe(1);
   });
 
   test('a host that answers while its service is stopped is a problem naming it, with no advice to start the service until it\'s stopped', async () => {
