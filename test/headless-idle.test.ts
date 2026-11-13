@@ -468,7 +468,10 @@ async function turnWorkAndIdle(hold: string): Promise<{ done: number; idle: numb
       writeFileSync(join(dir, 'scout-go'), '');
       while (!existsSync(join(dir, 'scout-polled'))) await Bun.sleep(10);
     }
-    if (released) writeFileSync(join(dir, 'release-hold'), '');
+    if (released) {
+      while (!existsSync(join(dir, 'hold-entered'))) await Bun.sleep(10);
+      writeFileSync(join(dir, 'release-hold'), '');
+    }
     const idle = Number((await watching.next('idle')).ts);
     const dones = watching.count('turn-work-done');
     const scoutStarts = watching.starts('spawn-scout');
