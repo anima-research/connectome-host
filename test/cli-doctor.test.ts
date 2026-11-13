@@ -2331,6 +2331,19 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     expect(r.status).toBe(0);
   });
 
+  test('the user manager\'s line doctor gives when it can\'t read it names its directory, where doctor\'s shell has no XDG_RUNTIME_DIR', async () => {
+    const at = install();
+    const failing = fakeManager(at.work, { fails: 'Failed to connect to bus: No medium found' });
+    const saved = process.env.XDG_RUNTIME_DIR;
+    delete process.env.XDG_RUNTIME_DIR;
+    try {
+      const r = await run(at, { systemctl: failing.path });
+      expect(r.out).toContain(`Run \`XDG_RUNTIME_DIR=/run/user/${process.getuid!()} systemctl --user show-environment\` as this user to see why`);
+    } finally {
+      if (saved !== undefined) process.env.XDG_RUNTIME_DIR = saved;
+    }
+  });
+
   test('a ladder that can\'t be started is a problem, and doctor still ends with its closing line', async () => {
     const at = install();
     writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: `${at.data}\u0000`, extraState: [] }));
@@ -2343,8 +2356,9 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     const systemd = install();
     const failing = fakeManager(systemd.work, { fails: 'Failed to connect to bus: No medium found' });
     const bus = await run(systemd, { systemctl: failing.path });
-    expect(bus.out).toContain('Run `systemctl --user show-environment` as this user to see why: it needs the user\'s manager running and ' +
-      `XDG_RUNTIME_DIR naming its directory, as a login session sets it. Then run ${join(systemd.root, 'connectome')} doctor again.`);
+    expect(bus.out).toMatch(/Run `(XDG_RUNTIME_DIR=\S+ )?systemctl --user show-environment` as this user to see why: it needs the user's manager running and /);
+    expect(bus.out).toContain('XDG_RUNTIME_DIR naming its directory, as a login session sets it. Then run ' +
+      `${join(systemd.root, 'connectome')} doctor again.`);
     const launchd = install({ manager: 'launchd' });
     const failingLaunchd = fakeManager(launchd.work, { fails: 'launchctl: no such domain' });
     const domain = await run(launchd, { launchctl: failingLaunchd.path });
@@ -2466,8 +2480,7 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
     expect(r.out).toContain('✗ A host answers, pid 4242, recipe Ember, but connectome-test.service\'s main process is 5151, so ' +
       'it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of it.');
     expect(r.out).toContain('Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
-      'service\'s own host can\'t be reached while it does. `systemctl --user status 4242` names the unit it runs in, so run ' +
-      'it first.');
+      'service\'s own host can\'t be reached while it does. Run `');
     expect(r.out).not.toContain('✓ The host answers');
     expect(r.status).toBe(1);
   });
@@ -2881,11 +2894,23 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     expect(r.out).not.toContain('claude-root-unset');
   });
 
-  test('a host that isn\'t the service\'s is said with how to find what starts it again, where systemd runs the service', async () => {
+  test('a host that isn\'t the service\'s is said with the line that names the unit it runs in, before its kill, where systemd runs the service', async () => {
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { servicePid: async () => ({ pid: '5151' }) }));
-    expect(r.out).toContain('`systemctl --user status 4242` names the unit it runs in, so run it first. Then `kill 4242` stops ' +
-      'it. If something starts it again, that unit is what to stop.');
+    expect(r.out).toMatch(/Run `(XDG_RUNTIME_DIR=\S+ )?systemctl --user status 4242` first: where the host runs in a unit of this user's systemd, it names that unit\. Then `kill 4242` stops it\. If a host answers again, doctor's next run names its pid\./);
+    expect(r.out).not.toContain('that unit is what to stop');
+  });
+
+  test('the line that names a foreign host\'s unit names the user manager\'s directory, where doctor\'s shell has no XDG_RUNTIME_DIR', async () => {
+    const at = install();
+    const saved = process.env.XDG_RUNTIME_DIR;
+    delete process.env.XDG_RUNTIME_DIR;
+    try {
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { servicePid: async () => ({ pid: '5151' }) }));
+      expect(r.out).toContain(`Run \`XDG_RUNTIME_DIR=/run/user/${process.getuid!()} systemctl --user status 4242\` first`);
+    } finally {
+      if (saved !== undefined) process.env.XDG_RUNTIME_DIR = saved;
+    }
   });
 
   test('a host the service\'s pid matches only once, or found while a service read as stopped starts, is said as changed, with no kill', async () => {

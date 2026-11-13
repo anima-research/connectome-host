@@ -248,7 +248,7 @@ export async function doctor(
     let managed: Record<string, string> = {};
     let unread: unknown = null;
     try {
-      managed = managerEnv(manager, names, parts, typed, managedRead);
+      managed = managerEnv(manager, names, parts, typed, sys, managedRead);
     } catch (error) {
       unread = error;
     }
@@ -430,6 +430,10 @@ export async function doctor(
           `changed during the check, so whether it's the service's can't be told: run ${typed} doctor again.`);
         pidUntold = true;
       };
+      const findThenKill = (pid: number): string | null => service!.units.manager === 'systemd-user'
+        ? `Run \`${systemctlLine(sys, `status ${pid}`)}\` first: where the host runs in a unit of this user's systemd, it ` +
+          `names that unit. Then \`kill ${pid}\` stops it. If a host answers again, doctor's next run names its pid.`
+        : null;
       const untold = (why: string) => {
         report.line(`The host answers: pid ${answering.ready.pid}, recipe ${answering.ready.recipe}. Whether it's the ` +
           `service's host can't be told: ${why.replace(/\.$/, '')}.`);
@@ -458,10 +462,8 @@ export async function doctor(
               'so it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of ' +
               'it. Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
               'service\'s own host can\'t be reached while it does' +
-              (service!.units.manager === 'systemd-user'
-                ? `. \`systemctl --user status ${answering.ready.pid}\` names the unit it runs in, so run it first. ` +
-                  `Then \`kill ${answering.ready.pid}\` stops it. If something starts it again, that unit is what to stop.`
-                : `: \`kill ${answering.ready.pid}\` stops it.`));
+              (findThenKill(answering.ready.pid) === null ? `: \`kill ${answering.ready.pid}\` stops it.`
+                : `. ${findThenKill(answering.ready.pid)}`));
           }
         } else if (own !== null && 'why' in own) {
           untold(own.why);
@@ -1172,7 +1174,7 @@ class ManagerUnread extends Error {
 }
 
 function managerEnv(manager: Manager | null, names: string[], parts: DoctorParts, typed: string,
-  out: Record<string, string> = {}): Record<string, string> {
+  sys: Pick<ServiceSystem, 'env' | 'uid'>, out: Record<string, string> = {}): Record<string, string> {
   if (manager === 'systemd-user') {
     const ran = spawnSync(parts.systemctl, ['--user', 'show-environment'], {
       encoding: 'utf-8',
@@ -1182,7 +1184,7 @@ function managerEnv(manager: Manager | null, names: string[], parts: DoctorParts
     const failed = failure(ran, parts.envLimitMs);
     if (failed !== null) {
       throw new ManagerUnread('systemctl --user show-environment failed, so what the user manager gives the service ' +
-        `can't be read: ${failed}. Run \`systemctl --user show-environment\` as this user to see why: it needs the user's ` +
+        `can't be read: ${failed}. Run \`${systemctlLine(sys, 'show-environment')}\` as this user to see why: it needs the user's ` +
         `manager running and XDG_RUNTIME_DIR naming its directory, as a login session sets it. Then run ${typed} doctor again.`,
         `\`systemctl --user show-environment\` failed: ${failed}`);
     }

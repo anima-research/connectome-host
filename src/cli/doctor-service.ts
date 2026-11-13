@@ -96,7 +96,7 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
       } else {
         if (skipped(shown)) {
           fail(`${unit.name} is ${state}: systemd skipped its last start, since a condition its unit or a drop-in sets ` +
-            `wasn't met: \`systemctl --user status ${unit.name}\` names it.`);
+            `wasn't met: \`${systemctlLine(sys, `status ${unit.name}`)}\` names it.`);
         } else if (stopped) {
           lines.push(`${unit.name} is stopped: systemd shows it ${state}.`);
         } else {

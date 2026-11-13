@@ -317,7 +317,7 @@ test('a unit systemd skipped for an unmet condition fails, naming how to see whi
   const fine = checkUnits(at.units, at.work, false, 'connectome', skipped.sys, true);
   expect([fine.passed, fine.stopped]).toEqual([false, undefined]);
   expect(fine.lines).toContain(`${at.units.host.name} is inactive (dead): systemd skipped its last start, since a condition ` +
-    `its unit or a drop-in sets wasn't met: \`systemctl --user status ${at.units.host.name}\` names it.`);
+    `its unit or a drop-in sets wasn't met: \`XDG_RUNTIME_DIR=/run/user/1000 systemctl --user status ${at.units.host.name}\` names it.`);
   const never = system(at.home, {
     [`systemctl ${at.units.host.name}`]: stoppedHost(at.work).replace('ConditionResult=yes', 'ConditionResult=no')
       .replace(/ConditionTimestamp=.*/, 'ConditionTimestamp='),
