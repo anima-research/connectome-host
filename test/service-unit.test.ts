@@ -31,6 +31,8 @@ test('a systemd unit whose start or working directory line install could not hav
     [text.replace(/^WorkingDirectory=.*$/m, 'WorkingDirectory=/srv/w\\'), /backslash/],
     [text.replace(/^ExecStart=.*$/m, 'ExecStart="/bin/bun" "/srv/start.js" "r\t.json"'), /ExecStart/],
     [text.replace(/^ExecStart=.*$/m, 'ExecStart="/bin/bun" "/srv/start.js" "r\u0001.json"'), /ExecStart/],
+    [text.replace(/^WorkingDirectory=.*$/m, 'WorkingDirectory=/srv/a\u0001b'), /WorkingDirectory/],
+    [text.replace(/^WorkingDirectory=.*$/m, 'WorkingDirectory=/srv/a\tb'), /WorkingDirectory/],
   ];
   for (const [edited, said] of cases) {
     const read = readUnit('systemd-user', edited);

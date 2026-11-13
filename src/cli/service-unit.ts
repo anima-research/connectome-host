@@ -158,6 +158,9 @@ function readSystemdUnit(text: string): UnitRead | { why: string } {
   if (typeof work !== 'string') return work;
   const workingDirectory = unpercent(work);
   if (workingDirectory === null) return { why: 'its WorkingDirectory line has a % that service install doesn\'t write' };
+  if (CONTROL.test(workingDirectory)) {
+    return { why: 'its WorkingDirectory line holds a control character, which service install doesn\'t write' };
+  }
   return { argv, workingDirectory };
 }
 
