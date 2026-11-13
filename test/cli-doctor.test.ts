@@ -221,7 +221,7 @@ const unitWords = (data: string): string => `PATH=${process.env.PATH ?? '/usr/bi
 function fakeManager(dir: string, opts: {
   env?: string[]; launchd?: Record<string, string>; fails?: string; hangs?: true; unit?: string | null; unitFails?: string;
   filesFail?: string; unset?: string; owners?: Record<string, string>; ownersFail?: string; listed?: Record<string, string>;
-  envFails?: string;
+  envFails?: string; ownersHang?: true;
 } = {}) {
   const at = join(dir, `manager-${++managers}`);
   mkdirSync(join(at, 'values'), { recursive: true });
@@ -240,6 +240,8 @@ function fakeManager(dir: string, opts: {
     ...(opts.hangs ? HOLD(join(dir, 'held.pids')) : []),
     ...(opts.fails === undefined ? [] : [`echo '${opts.fails}' >&2`, 'exit 1']),
     ...(opts.envFails === undefined ? [] : [`if [ "$*" = "--user show-environment" ] || [ "$1" = getenv ]; then echo '${opts.envFails}' >&2; exit 1; fi`]),
+    ...(opts.ownersHang ? ['if [ "$1 $2 $3" = "--user show --property=LoadState,ActiveState,WorkingDirectory,FragmentPath" ]; then',
+      ...HOLD(join(dir, 'held.pids')), 'fi'] : []),
     ...(opts.ownersFail === undefined ? [] : [`if [ "$1 $2 $3" = "--user show --property=LoadState,ActiveState,WorkingDirectory,FragmentPath" ] || [ "$1" = list ]; then echo '${opts.ownersFail}' >&2; exit 1; fi`]),
     `if [ "$1 $2 $3 $4" = "--user show --property=LoadState,ActiveState,WorkingDirectory,FragmentPath --" ] && [ $# -eq 5 ]; then if [ -f "${join(at, 'owners')}/$5" ]; then grep -E '^(LoadState|ActiveState|WorkingDirectory|FragmentPath)=' "${join(at, 'owners')}/$5"; else printf 'LoadState=not-found\nActiveState=inactive\nWorkingDirectory=\nFragmentPath=\n'; fi; exit 0; fi`,
     `if [ "$1" = list ] && [ $# -eq 2 ]; then if [ -f "${join(at, 'listed')}/$2" ]; then cat "${join(at, 'listed')}/$2"; exit 0; fi; echo "Could not find service \"$2\" in domain for port" >&2; exit 113; fi`,
@@ -2158,6 +2160,21 @@ describe('connectome doctor: the environment the service gets from its manager',
       endHeld(join(at.work, 'held.pids'));
     }
   });
+
+  test('a manager that doesn\'t answer doctor\'s ask about a unit within the limit is said with the limit, and doctor goes on to its closing line', async () => {
+    const at = install();
+    rmSync(at.unit);
+    try {
+      const slow = fakeManager(at.work, { ownersHang: true });
+      const r = await run(at, { systemctl: slow.path, launchctl: slow.path, envLimitMs: 1500 });
+      expect(r.out).toContain('✗ systemd couldn\'t be asked about connectome-test.service: it didn\'t answer within 1.5 s');
+      expect(r.out).toMatch(/Doctor found \d+ problems?, marked ✗\.$/);
+      expect(r.status).toBe(1);
+      expect(heldPids(join(at.work, 'held.pids')).filter(running)).toEqual([]);
+    } finally {
+      endHeld(join(at.work, 'held.pids'));
+    }
+  }, 20_000);
 
   test('a stored secret launchd gave before a later getenv failed is hidden in what doctor prints as it stops', async () => {
     const at = install({ manager: 'launchd', prefix: 'chost-pathpart-', stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'PATH_SECRET'] });

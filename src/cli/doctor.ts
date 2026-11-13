@@ -105,7 +105,8 @@ export async function doctor(
   ctx: CliContext,
   parts: DoctorParts = {
     fetch,
-    checkService: (units, work, shell, cmd, stoppedIsFine) => checkUnits(units, work, shell, cmd, machine(), stoppedIsFine),
+    checkService: (units, work, shell, cmd, stoppedIsFine) =>
+      checkUnits(units, work, shell, cmd, { ...machine(), run: limitedRun(ENV_LIMIT_MS) }, stoppedIsFine),
     python: Bun.which('python3'),
     hostLimitMs: HOST_ANSWER_LIMIT_MS,
     ladderLimitMs: LADDER_LIMIT_MS,
@@ -115,7 +116,7 @@ export async function doctor(
     recipeLimitMs: RECIPE_LIMIT_MS,
     plutil: 'plutil',
     launchdGives,
-    servicePid: (units) => servicePid(units, machine()),
+    servicePid: (units) => servicePid(units, { ...machine(), run: limitedRun(ENV_LIMIT_MS) }),
     platform: process.platform,
     home: homedir(),
     uid: process.getuid?.() ?? -1,
@@ -133,8 +134,8 @@ export async function doctor(
   const base = machine();
   const sys: ServiceSystem = {
     ...base, platform: parts.platform, home: parts.home,
-    run: (command, args, env) => base.run(command === 'plutil' ? parts.plutil : command === 'systemctl' ? parts.systemctl
-      : command === 'launchctl' ? parts.launchctl : command, args, env),
+    run: limitedRun(parts.envLimitMs, (command) => command === 'plutil' ? parts.plutil : command === 'systemctl' ? parts.systemctl
+      : command === 'launchctl' ? parts.launchctl : command),
   };
   if (parts.uid === 0) {
     const dir = dirname(root);
@@ -1223,6 +1224,14 @@ function failure(ran: SpawnSyncReturns<string>, limitMs: number): string | null 
   }
   if (ran.status === 0) return null;
   return (ran.stderr ?? '').trim() || (ran.status === null ? `it was ended by ${ran.signal}` : `exit ${ran.status}`);
+}
+
+function limitedRun(limitMs: number, route: (command: string) => string = (command) => command): ServiceSystem['run'] {
+  return (command, args, env) => {
+    const ran = spawnSync(route(command), args, { encoding: 'utf-8', env, timeout: limitMs });
+    return ran.error === undefined ? { status: ran.status, stdout: ran.stdout, stderr: ran.stderr }
+      : { status: null, stdout: '', stderr: failure(ran, limitMs)! };
+  };
 }
 
 class ManagerUnread extends Error {
