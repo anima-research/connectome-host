@@ -1044,7 +1044,7 @@ describe('connectome doctor', () => {
     expect(through.status).toBe(1);
   });
 
-  test('a unit that runs in another directory than this install\'s, as another install\'s of the same directory name does, is a problem, and doctor reads nothing there', async () => {
+  test('a unit that runs in another directory than this install\'s, as another install\'s of the same directory name does, is a problem, and no read of that directory\'s recipe or .env shows in the report', async () => {
     const at = install();
     const other = install();
     writeUnit(at, join(other.work, 'recipe.json'), other.work);
