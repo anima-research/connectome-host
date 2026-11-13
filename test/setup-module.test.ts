@@ -1512,8 +1512,8 @@ describe('setup--ask_secret with a DISCORD_TOKEN', () => {
       fetch: (async () => Response.json({ message: 'Missing Access' }, { status: 403 })) as unknown as typeof fetch,
     });
     const first = await askSecret(answered.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
-    expect(String(first.data)).toBe(`stored as DISCORD_TOKEN in ${join(answered.dir, '.env')}, but it isn't known to work: Discord answered 403: Missing Access. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
-    expect(answered.shown).toEqual(['Checking it with Discord.', 'Discord didn\'t say whether it works: it answered 403 (Missing Access).', 'It\'s stored as DISCORD_TOKEN, though whether it works isn\'t known.']);
+    expect(String(first.data)).toBe(`stored as DISCORD_TOKEN in ${join(answered.dir, '.env')}, but it isn't known to work: Discord answered 403: Missing Access. Tell the person: something between this machine and Discord may be answering in its place. Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.`);
+    expect(answered.shown).toEqual(['Checking it with Discord.', 'Discord didn\'t say whether it works: it answered 403 (Missing Access). Something between this machine and Discord may be answering in its place.', 'It\'s stored as DISCORD_TOKEN, though whether it works isn\'t known.']);
     expect(readEnvFile(join(answered.dir, '.env')).get('DISCORD_TOKEN')).toBe('token-one');
     const unasked = install({
       asker: typed('token-two'),
@@ -3259,7 +3259,8 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
 
   test('a token Discord answered 429 or 5xx in JSON is said with its status and Discord\'s words, then, in place of asking for it again, that setup--discord checks it again after any wait Discord asks, to the agent, and that setup\'s agent can check it with setup--discord, to the person', async () => {
     const BUSY = ' It may be busy: setup\'s agent can check it again with setup--discord, which checks the stored token first.';
-    const AGAIN = ' Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.';
+    const AGAIN = ' Tell the person: something between this machine and Discord may be answering in its place. Ask for it ' +
+      'again with setup--ask_secret to check it again, or go on with it unchecked.';
     const AGENT_BUSY = ' It may be busy: call setup--discord in a minute, which checks the stored token first.';
     const WAIT = ' It asks for 3 s: call setup--discord once that has passed, which checks the stored token first.';
     for (const [status, words, after] of [[503, 'Service Unavailable', AGENT_BUSY], [429, 'You are being rate limited', WAIT], [403, 'Missing Access', AGAIN]] as const) {
@@ -3269,7 +3270,22 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
       expect(String(told.data), String(status)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it isn't known to ` +
         `work: Discord answered ${status}: ${words}.${after}`);
       expect(token.shown, String(status)).toContain(`Discord didn't say whether it works: it answered ${status} (${words}).` +
-        (after === AGAIN ? '' : BUSY));
+        (after === AGAIN ? ' Something between this machine and Discord may be answering in its place.' : BUSY));
+    }
+  });
+
+  test('a token Discord answered 403 or 404 in JSON is said with what may be answering in its place, to the agent and the person, as doctor says it; any other status isn\'t', async () => {
+    const BETWEEN = 'something between this machine and Discord may be answering in its place.';
+    const AGAIN = 'Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.';
+    for (const [status, words, between] of [[404, 'Unknown User', true], [403, 'Missing Access', true], [400, 'Bad Request', false]] as const) {
+      const answering = (async () => Response.json({ message: words }, { status })) as unknown as typeof fetch;
+      const token = install({ asker: typed('an-odd-token'), fetch: answering });
+      const told = await askSecret(token.module, { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+      expect(String(told.data), String(status)).toBe(`stored as DISCORD_TOKEN in ${join(token.dir, '.env')}, but it isn't known to ` +
+        `work: Discord answered ${status}: ${words}. ${between ? `Tell the person: ${BETWEEN} ` : ''}${AGAIN}`);
+      expect(token.shown, String(status)).toContain(`Discord didn't say whether it works: it answered ${status} (${words}).` +
+        (between ? ` S${BETWEEN.slice(1)}` : ''));
+      expect(token.shown.join('\n'), String(status)).not.toContain('an-odd-token');
     }
   });
 

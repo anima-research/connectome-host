@@ -1153,7 +1153,8 @@ function tokenLine(token: TokenCheck): string {
           'between this machine and Discord may be answering in its place.';
       }
       return `Discord didn't say whether it works: it answered ${token.status}` +
-        `${token.said === null ? '' : ` (${token.said})`}.` + (busy(token.status) ? ` ${BUSY_LINE}` : '');
+        `${token.said === null ? '' : ` (${token.said})`}.` + (busy(token.status) ? ` ${BUSY_LINE}`
+          : answeredInPlace(token.status) ? ' Something between this machine and Discord may be answering in its place.' : '');
     case 'redirected': return `It isn't known to work: ${redirect('Discord', token)}.`;
     case 'unrecognized':
       return `It couldn't be checked: ${unrecognized('Discord', token.status)}.` + (busy(token.status) ? ` ${BUSY_LINE}` : '');
@@ -1225,7 +1226,9 @@ function tokenNote(token: TokenCheck): string {
           `Tell the person: something between this machine and Discord may be answering in its place. ${ASK_TOKEN_AGAIN}`;
       }
       return `, but it isn't known to work: Discord answered ${token.status}${token.said === null ? '' : `: ${token.said}`}. ` +
-        (busy(token.status) ? readAgain(token.retryAfter) : ASK_TOKEN_AGAIN);
+        (busy(token.status) ? readAgain(token.retryAfter) : answeredInPlace(token.status)
+          ? `Tell the person: something between this machine and Discord may be answering in its place. ${ASK_TOKEN_AGAIN}`
+          : ASK_TOKEN_AGAIN);
     case 'unanswered': return `, but it isn't known to work: Discord couldn't be asked (${token.why}). ${ASK_TOKEN_AGAIN}`;
     case 'redirected':
       return `, but it isn't known to work: ${redirect('Discord', token)}${redirectRemedy('Discord')}. ${ASK_TOKEN_AGAIN}`;
@@ -1249,6 +1252,10 @@ function readAgain(wait: number | undefined): string {
 
 function busy(status: number): boolean {
   return status === 429 || status >= 500;
+}
+
+function answeredInPlace(status: number): boolean {
+  return status === 403 || status === 404;
 }
 
 function redirect(service: string, answer: { status: number; to: string | null }): string {
