@@ -194,7 +194,11 @@ export async function doctor(
       const env = serviceChildEnv(sys);
       const owner = managerOwner(units.host, units.manager, units.work, sys, env, false);
       const install = `\`${typed} service install <recipe>\``;
-      if (owner.kind === 'ok' && shellElsewhere === null && pathState(units.shell.file) === 'gone') {
+      const shellFile = pathState(units.shell.file);
+      if (owner.kind === 'ok' && shellElsewhere === null && shellFile !== 'there' && shellFile !== 'gone') {
+        shellElsewhere = `${units.shell.file}, ${units.shell.name}'s ${fileWord(units.manager)}, can't be looked at, and ` +
+          `install reads it whatever the recipe: ${shellFile.why}. ${shellFile.repair}`;
+      } else if (owner.kind === 'ok' && shellElsewhere === null && shellFile === 'gone') {
         shellElsewhere = ownerProblem(managerOwner(units.shell, units.manager, units.work, sys, env, false), units.shell,
           units.manager, units.work, sys, install);
       }

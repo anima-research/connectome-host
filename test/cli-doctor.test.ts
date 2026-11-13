@@ -2445,6 +2445,26 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     expect(r.out).not.toContain('writes the file again');
   });
 
+  test('with the host\'s unit file gone, a shell unit file doctor can\'t look at is said with its error, and install isn\'t offered', async () => {
+    for (const manager of ['systemd-user', 'launchd'] as const) {
+      const at = install({ manager });
+      rmSync(at.unit);
+      const shellFile = manager === 'systemd-user' ? join(dirname(at.unit), 'connectome-test.shell.service')
+        : join(dirname(at.unit), 'com.animalabs.connectome.test.shell.plist');
+      writeFileSync(join(at.work, 'not-a-directory'), '');
+      symlinkSync(join(at.work, 'not-a-directory', 'unit'), shellFile);
+      const fake = fakeManager(at.work);
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: fake.path, launchctl: fake.path }));
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining(`✗ No service is installed for this install: ${at.unit} ` +
+        'isn\'t there.')]);
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining(`✗ ${shellFile}, ` +
+        `${manager === 'systemd-user' ? 'connectome-test.shell.service\'s unit file' : 'com.animalabs.connectome.test.shell\'s plist'}, ` +
+        'can\'t be looked at, and install reads it whatever the recipe: ')]);
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining('Repair what that path runs through, and run this again.')]);
+      expect([manager, r.out]).toEqual([manager, expect.not.stringContaining('service install <recipe>` writes')]);
+    }
+  });
+
   test('a launch agent whose plist is gone while launchd still holds it loaded is a problem with a stop and an inspect line, not no service', async () => {
     const at = install({ manager: 'launchd' });
     rmSync(at.unit);
