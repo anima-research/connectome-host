@@ -28,7 +28,10 @@ Headless mode and the fleet protocol are specified in
 - **local (macOS)** — supervised with launchd (`gui/$(id -u)/…`). Dev checkouts
   live under `~/connectome-local/*` and are symlinked into the host (see
   DEV-ENVIRONMENT).
-- **VPS (Linux)** — systemd **user** services (lingering enabled). If `sudo` is
+- **VPS (Linux)** — systemd **user** services (lingering enabled), with
+  `KillMode=mixed` in the unit, so a stop's SIGTERM reaches the host alone and
+  the host stops its MCP servers itself (the default, `control-group`, signals
+  the servers at the same time, before the host's stop begins). If `sudo` is
   unavailable on the box, run everything as user services. A box reached only
   via a login user that differs from the agent user can be driven over SSH (or
   the terminal-sessions MCP).

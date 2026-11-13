@@ -211,6 +211,8 @@ EnvironmentFile=/etc/connectome-host/env
 ExecStart=/home/connectome/.bun/bin/bun src/index.ts recipes/admin.json --headless
 Restart=on-failure
 RestartSec=5
+KillMode=mixed
+TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
 
@@ -221,6 +223,14 @@ WantedBy=multi-user.target
 `--headless` keeps the daemon alive without a TTY. The webui module
 serves the admin UI; the headless IPC socket is a separate channel
 (intended for parent-process supervision; not used by the WebUI).
+
+`KillMode=mixed` sends the stop's SIGTERM to the host alone, so the host
+stops its MCP servers itself, in its order (SIGTERM, 2 s, SIGKILL), and
+agent-framework's stop stays quiet about them. systemd's default,
+`control-group`, signals every process in the cgroup at once: a server that
+closes on SIGTERM is gone before the host's stop begins, and the host logs
+an outage and a reconnect at its own shutdown. `TimeoutStopSec` is how long
+systemd waits for the host before it SIGKILLs what is left.
 
 ## Tailscale-style hostnames
 
