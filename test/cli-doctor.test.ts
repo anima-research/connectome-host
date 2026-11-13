@@ -2035,6 +2035,82 @@ describe('connectome doctor: the environment the service gets from its manager',
     }
   });
 
+  test('a name the manager or the unit gives over a different value the dotenv files give is said in a line, naming which gives it and showing neither value', async () => {
+    const passedOver = (work: string, by: string) => `MODEL is set by ${by}, so the service gets that value, not the one the ` +
+      `dotenv files in ${work} give it.`;
+    const managed = install({ env: { MODEL: 'claude-dotenv-model' } });
+    const fromManager = fakeManager(managed.work, { env: ['MODEL=claude-manager-model'] });
+    const r1 = await withHost(managed, HEALTHY_HOST, () => run(managed, { systemctl: fromManager.path }));
+    expect(r1.out).toContain(`\n  ${passedOver(managed.work, 'the user manager\'s environment')}\n`);
+    expect(r1.out).not.toMatch(/MODEL is set by .*claude-/);
+    const united = install({ env: { MODEL: 'claude-dotenv-model' } });
+    const fromUnit = fakeManager(united.work, { unit: `${unitWords(join(united.work, 'data'))} MODEL=claude-unit-model` });
+    const r2 = await withHost(united, HEALTHY_HOST, () => run(united, { systemctl: fromUnit.path }));
+    expect(r2.out).toContain(`\n  ${passedOver(united.work, 'the service\'s unit')}\n`);
+    const launchd = install({ manager: 'launchd', env: { MODEL: 'claude-dotenv-model' } });
+    const fromLaunchd = fakeManager(launchd.work, { launchd: { MODEL: 'claude-setenv-model' } });
+    const r3 = await withHost(launchd, HEALTHY_HOST, () => run(launchd, { launchctl: fromLaunchd.path }));
+    expect(r3.out).toContain(`\n  ${passedOver(launchd.work, 'launchd\'s environment for this user')}\n`);
+  });
+
+  test('where the manager\'s value is the one the dotenv files give, as Bun reads them, mode files first, no line is said', async () => {
+    const same = install({ env: { MODEL: 'claude-same-model' } });
+    const sameManager = fakeManager(same.work, { env: ['MODEL=claude-same-model'] });
+    const r1 = await withHost(same, HEALTHY_HOST, () => run(same, { systemctl: sameManager.path }));
+    expect(r1.out).not.toContain('MODEL is set by');
+    const local = install({ env: { MODEL: 'claude-dotenv-model' } });
+    writeFileSync(join(local.work, '.env.local'), 'MODEL=claude-local-model\n');
+    const localManager = fakeManager(local.work, { env: ['MODEL=claude-local-model'] });
+    const r2 = await withHost(local, HEALTHY_HOST, () => run(local, { systemctl: localManager.path }));
+    expect(r2.out).not.toContain('MODEL is set by');
+    expect(r2.out).toContain('fit claude-local-model\'s window');
+  });
+
+  test('each name is compared in the service\'s own run, with the other names as the service has them: its mode, and the values its references expand to', async () => {
+    const moded = install({ env: { NODE_ENV: 'development', MODEL: 'claude-dev-model' } });
+    writeFileSync(join(moded.work, '.env.production'), 'MODEL=claude-prod-model\n');
+    const production = fakeManager(moded.work, { env: ['NODE_ENV=production', 'MODEL=claude-prod-model'] });
+    const r1 = await withHost(moded, HEALTHY_HOST, () => run(moded, { systemctl: production.path }));
+    expect(r1.out).toContain('NODE_ENV is set by the user manager\'s environment, so the service gets that value');
+    expect(r1.out).not.toContain('MODEL is set by');
+    const referred = install({ env: { MODEL_BASE: 'claude-d' } });
+    writeFileSync(join(referred.work, '.env.local'), 'MODEL=${MODEL_BASE}-model\n');
+    const based = fakeManager(referred.work, { env: ['MODEL_BASE=claude-m', 'MODEL=claude-m-model'] });
+    const r2 = await withHost(referred, HEALTHY_HOST, () => run(referred, { systemctl: based.path }));
+    expect(r2.out).toContain('MODEL_BASE is set by the user manager\'s environment, so the service gets that value');
+    expect(r2.out).not.toContain('MODEL is set by');
+  });
+
+  test('a name the manager and the unit both give is said as the unit\'s, which the service gets', async () => {
+    const at = install({ env: { MODEL: 'claude-dotenv-model' } });
+    const both = fakeManager(at.work, {
+      env: ['MODEL=claude-manager-model'], unit: `${unitWords(join(at.work, 'data'))} MODEL=claude-unit-model`,
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: both.path }));
+    expect(r.out).toContain('MODEL is set by the service\'s unit, so the service gets that value');
+    expect(r.out).not.toContain('MODEL is set by the user manager');
+  });
+
+  test('with no unit, a DATA_DIR the manager gives gets no line, since doctor sets DATA_DIR itself, from the install\'s record', async () => {
+    const at = install({ env: { DATA_DIR: './dotenv-data' } });
+    rmSync(at.unit);
+    const manager = fakeManager(at.work, { env: ['DATA_DIR=/srv/manager-data'] });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).toContain('No service is installed for this install');
+    expect(r.out).not.toContain('DATA_DIR is set by');
+  });
+
+  test('where the dotenv files\' value of a name the manager gives can\'t be read, the line says the two weren\'t compared, showing neither', async () => {
+    const at = install({ env: { MODEL: 'claude-dotenv-model' } });
+    writeFileSync(join(at.work, 'bunfig.toml'), 'preload = ["./only-manager.ts"]\n');
+    writeFileSync(join(at.work, 'only-manager.ts'), 'if (process.env.MODEL !== "claude-manager-model") process.exit(3);\n');
+    const manager = fakeManager(at.work, { env: ['MODEL=claude-manager-model'] });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).toContain(`\n  MODEL is set by the user manager's environment and by the dotenv files in ${at.work}, and ` +
+      'whether the two values differ can\'t be told: doctor\'s read of those files without it failed.\n');
+    expect(r.out).toContain('fit claude-manager-model\'s window');
+  });
+
   test('on systemd, a value the manager prints quoted, with escapes, is read as the manager holds it', async () => {
     const quoted = 'it\'s a "quoted" \\ value\twith\na\u0001control and café';
     const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'QUOTED_SECRET', 'PLAIN_SECRET'] });

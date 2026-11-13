@@ -244,6 +244,7 @@ export async function doctor(
   let managerUnread: string | null = null;
   let envFiles: string[] = [];
   let refusedUnit: string | null = null;
+  let passedOver: string[] = [];
   try {
     storedNames = new StoredSecrets(join(work, '.setup')).read();
     const named = secretNames(join(work, '.setup'), join(work, '.env'));
@@ -297,6 +298,8 @@ export async function doctor(
     const built = serviceEnv(work, root, given, unit === null ? null : unit.env, parts.envLimitMs,
       service?.bun ?? process.execPath, typed, unit === null ? [] : unit.unset);
     env = built.env;
+    passedOver = passedOverLines(work, root, given, unit === null ? null : unit.env, unit === null ? [] : unit.unset,
+      built, manager, parts.envLimitMs, service?.bun ?? process.execPath, typed);
     const refusedHere = service === null && read !== null
       ? serviceEnv(work, root, given, read.env, parts.envLimitMs, process.execPath, typed, read.unset) : null;
     secrets = [...secrets, ...known(env, built.base), ...(refusedHere === null ? [] : known(refusedHere.env, refusedHere.base))]
@@ -409,6 +412,7 @@ export async function doctor(
         : 'Doctor reads the environment the unit gives as systemd last loaded it, so a value a daemon-reload took up ' +
           'after the host started isn\'t what a running host has.');
     }
+    for (const line of passedOver) report.line(line);
     if (shellElsewhere !== null) report.problem(shellElsewhere);
 
     report.section('Host');
@@ -1452,6 +1456,30 @@ function serviceEnv(work: string, root: string, manager: Record<string, string>,
   env[INSTALL_ROOT_ENV] = root;
   base[INSTALL_ROOT_ENV] = root;
   return { env, base };
+}
+
+function passedOverLines(work: string, root: string, given: Record<string, string>, unit: Record<string, string> | null,
+  unset: string[], built: { env: Record<string, string | undefined>; base: Record<string, string> }, manager: Manager | null,
+  limitMs: number, bun: string, typed: string): string[] {
+  const launchd = manager === 'launchd';
+  const by = (name: string): string | null => !(name in built.base) ? null
+    : unit !== null && name in unit ? (launchd ? 'the service\'s plist' : 'the service\'s unit')
+    : name in given ? (launchd ? 'launchd\'s environment for this user' : 'the user manager\'s environment')
+    : null;
+  const without = (map: Record<string, string>, name: string) =>
+    Object.fromEntries(Object.entries(map).filter(([each]) => each !== name));
+  return dotenvNames(work).filter((name) => by(name) !== null).flatMap((name) => {
+    let dotenv: Record<string, string | undefined>;
+    try {
+      dotenv = serviceEnv(work, root, without(given, name), unit === null ? null : without(unit, name), limitMs, bun, typed,
+        unset).env;
+    } catch {
+      return [`${name} is set by ${by(name)} and by the dotenv files in ${work}, and whether the two values differ can't ` +
+        'be told: doctor\'s read of those files without it failed.'];
+    }
+    return dotenv[name] === undefined || dotenv[name] === built.env[name] ? []
+      : [`${name} is set by ${by(name)}, so the service gets that value, not the one the dotenv files in ${work} give it.`];
+  });
 }
 
 function stringValues(value: unknown): Record<string, string> {
