@@ -1171,6 +1171,52 @@ describe('connectome doctor', () => {
     expect(throwing.status).toBe(1);
   });
 
+  test('the ladder and the data directory check read the DATA_DIR the service\'s environment gives, read in its working directory, as the host does', async () => {
+    const at = install();
+    mkdirSync(join(at.work, 'data-moved'));
+    const unit = (data: string) => fakeManager(at.work, {
+      unit: Object.entries({ ...unitEnvironment(at), DATA_DIR: data }).map(([name, value]) => `${name}=${value}`).join(' '),
+    }).path;
+    const moved = unit('data-moved');
+    const r = await run(at, { systemctl: moved, launchctl: moved });
+    expect(r.out).toContain(`ladder args: --findings-json --data-dir ${join(at.work, 'data-moved')} ${at.work} connectome-test.service`);
+    const gone = unit('/nonexistent-data-dir-583');
+    const missing = await run(at, { systemctl: gone, launchctl: gone });
+    expect(missing.out).toContain('✗ The service\'s DATA_DIR names /nonexistent-data-dir-583 as the resident\'s data directory, and ' +
+      'it isn\'t there.');
+  });
+
+  test('a service whose host keeps its data in another directory than the install record\'s is a problem, since this install\'s commands look for its socket in the record\'s', async () => {
+    const at = install();
+    mkdirSync(join(at.work, 'data-moved'));
+    const moved = fakeManager(at.work, {
+      unit: Object.entries({ ...unitEnvironment(at), DATA_DIR: join(at.work, 'data-moved') }).map(([name, value]) => `${name}=${value}`).join(' '),
+    }).path;
+    const r = await run(at, { systemctl: moved, launchctl: moved });
+    expect(r.out).toContain(`✗ The service's host keeps its data in ${join(at.work, 'data-moved')}, not the install record's ` +
+      `${at.data}. The host makes its socket there, and this install's commands, doctor's host checks among them, look for it in ` +
+      `the record's directory, so they can't reach it. Set the service's DATA_DIR to ${at.data}, or ask for help.`);
+    const same = await run(at);
+    expect(same.out).not.toContain('keeps its data in');
+    symlinkSync(at.data, join(at.work, 'data-link'));
+    writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(at.work, 'data-link'), extraState: [] }));
+    const linked = await run(at);
+    expect(linked.out).not.toContain('keeps its data in');
+  });
+
+  test('with no DATA_DIR in the service\'s environment, the ladder and the data directory check read ./data in its working directory, as the host does, not the record\'s', async () => {
+    const at = install();
+    mkdirSync(join(at.work, 'record-data'));
+    writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(at.work, 'record-data'), extraState: [] }));
+    const noDataDir = fakeManager(at.work, { unit: `PATH=${process.env.PATH ?? '/usr/bin:/bin'} CONNECTOME_SUPERVISED=1` }).path;
+    const r = await run(at, { systemctl: noDataDir, launchctl: noDataDir });
+    expect(r.out).toContain(`ladder args: --findings-json --data-dir ${at.data} ${at.work} connectome-test.service`);
+    rmSync(at.data, { recursive: true, force: true });
+    const gone = await run(at, { systemctl: noDataDir, launchctl: noDataDir });
+    expect(gone.out).toContain(`✗ With no DATA_DIR in the service's environment, the host takes ${at.data} as the resident's data ` +
+      'directory, and it isn\'t there.');
+  });
+
   test('with no host answering it says why and how to start it, says what needs the host, still checks the rest, and lets the ladder judge the signal', async () => {
     const at = install();
     const r = await run(at);
@@ -1840,7 +1886,7 @@ describe('connectome doctor', () => {
       const before = await run(at, parts);
       rmSync(at.data, { recursive: true, force: true });
       const r = await run(at, parts);
-      expect(r.out).toContain(`✗ The install record names ${at.data} as the resident's data directory, and it isn't there. It ` +
+      expect(r.out).toContain(`✗ The service's DATA_DIR names ${at.data} as the resident's data directory, and it isn't there. It ` +
         'holds the resident\'s history and memory, and a host started now would begin on an empty one, so put it back if you ' +
         'have it, or ask for help, before starting the service.');
       expect(count(r.out)).toBe(count(before.out) + 1);
@@ -1887,14 +1933,11 @@ describe('connectome doctor', () => {
     }
   });
 
-  test('a data directory the install record doesn\'t name whole leaves the ladder unrun, saying why, and says the record\'s fault once', async () => {
+  test('a data directory the install record doesn\'t name whole is said once, as the host\'s socket can\'t be found, while the ladder reads the service\'s', async () => {
     const at = install();
     writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: 'data', extraState: [] }));
     const r = await run(at);
-    expect(r.out).toContain('The ladder reads the host\'s data directory, and where that is can\'t be told (said above), so it doesn\'t run.');
-    expect(r.out).not.toContain('ladder args');
-    expect(existsSync(join(at.work, 'withheld.json'))).toBe(false);
-    expect(r.out).not.toMatch(/✗ The ladder reads/);
+    expect(r.out).toContain(`ladder args: --findings-json --data-dir ${at.data} ${at.work} connectome-test.service`);
     expect(r.out.split('names its data directory as "data", not an absolute path').length - 1).toBe(1);
     expect(r.out).toMatch(/✗ No host answers: The install record at \S+ names its data directory as "data"/);
   });
@@ -2520,14 +2563,6 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     }
   });
 
-  test('a ladder that can\'t be started is a problem, and doctor still ends with its closing line', async () => {
-    const at = install();
-    writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: `${at.data}\u0000`, extraState: [] }));
-    const r = await run(at);
-    expect(r.out).toMatch(/✗ The ladder couldn't be started: /);
-    expect(r.out).toMatch(/Doctor found \d+ problems?, marked ✗\.$/);
-  });
-
   test('a manager or Bun answer doctor can\'t read stops it with what to do next', async () => {
     const systemd = install();
     const failing = fakeManager(systemd.work, { fails: 'Failed to connect to bus: No medium found' });
@@ -2994,8 +3029,11 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     const blocker = join(at.work, 'not-a-directory');
     writeFileSync(blocker, '');
     writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(blocker, 'data'), extraState: [] }));
-    const r = await run(at);
-    expect(r.out).toContain(`✗ The install record names ${join(blocker, 'data')} as the resident's data directory, and it ` +
+    const both = fakeManager(at.work, {
+      unit: Object.entries({ ...unitEnvironment(at), DATA_DIR: join(blocker, 'data') }).map(([name, value]) => `${name}=${value}`).join(' '),
+    }).path;
+    const r = await run(at, { systemctl: both, launchctl: both });
+    expect(r.out).toContain(`✗ The service's DATA_DIR names ${join(blocker, 'data')} as the resident's data directory, and it ` +
       'can\'t be looked at (');
     expect(r.out).toContain('), so whether it\'s there can\'t be told. Repair what that path runs through, and run this again.');
     expect(r.out).not.toContain('and it isn\'t there');
@@ -3011,7 +3049,7 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
         symlinkSync(join(at.work, 'a-file'), at.data);
       }
       const r = await run(at);
-      expect([kind, r.out]).toEqual([kind, expect.stringContaining(`✗ The install record names ${at.data} as the resident's data ` +
+      expect([kind, r.out]).toEqual([kind, expect.stringContaining(`✗ The service's DATA_DIR names ${at.data} as the resident's data ` +
         'directory, and it isn\'t a directory, so the host can\'t keep the resident\'s history and memory there. Put the data ' +
         'directory back there if you have it, or ask for help, before starting the service.')]);
       expect([kind, r.status]).toEqual([kind, 1]);
@@ -3023,14 +3061,18 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     const locked = join(at.work, 'locked');
     mkdirSync(join(locked, 'data'), { recursive: true });
     writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(locked, 'data'), extraState: [] }));
+    const both = fakeManager(at.work, {
+      unit: Object.entries({ ...unitEnvironment(at), DATA_DIR: join(locked, 'data') }).map(([name, value]) => `${name}=${value}`).join(' '),
+    }).path;
     chmodSync(locked, 0o000);
     try {
-      const r = await run(at);
-      expect(r.out).toContain(`✗ The install record names ${join(locked, 'data')} as the resident's data directory, and it ` +
+      const r = await run(at, { systemctl: both, launchctl: both });
+      expect(r.out).toContain(`✗ The service's DATA_DIR names ${join(locked, 'data')} as the resident's data directory, and it ` +
         'can\'t be looked at (');
       expect(r.out).toContain('), so whether it\'s there can\'t be told. Give this user search on each directory on the way to ' +
         'it, and run this again.');
       expect(r.out).not.toContain('and it isn\'t there');
+      expect(r.out).not.toContain('keeps its data in');
     } finally {
       chmodSync(locked, 0o755);
     }

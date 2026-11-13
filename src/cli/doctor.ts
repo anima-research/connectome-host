@@ -19,7 +19,7 @@ import {
 } from '../setup/secrets.js';
 import { withSentForms } from '../setup/discord-token.js';
 import { AGENT_OVERLAY_FILE_ENV, agentOverlayPath } from '../update/agent-overlay-path.js';
-import { INSTALL_ROOT_ENV, SUPERVISED_ENV } from '../update/contract.js';
+import { INSTALL_ROOT_ENV, SUPERVISED_ENV, realOrResolved } from '../update/contract.js';
 import { shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
 import { BEFORE_ENV_FILE, checkDiscord, mappingRemedy } from './discord-check.js';
@@ -364,10 +364,13 @@ export async function doctor(
   let uncounted: string | null = null;
   const commands = serviceCommands(root, sys);
   const startCommand = commands?.start ?? `${typed} service install <recipe>`;
-  let dataDir: string | null = null;
+  let recordData: string | null = null;
   try {
-    dataDir = dataDirOf(root);
+    recordData = dataDirOf(root);
   } catch {}
+  const dataDir = service === null ? recordData : resolve(service.work, env.DATA_DIR || './data');
+  const dataNamer = service === null ? 'The install record names' : env.DATA_DIR ? 'The service\'s DATA_DIR names'
+    : 'With no DATA_DIR in the service\'s environment, the host takes';
   try {
     report.section('Service');
     if (serviceError !== null) {
@@ -404,6 +407,11 @@ export async function doctor(
     if (shellElsewhere !== null) report.problem(shellElsewhere);
 
     report.section('Host');
+    if (service !== null && recordData !== null && !sameDirectory(dataDir!, recordData)) {
+      report.problem(`The service's host keeps its data in ${dataDir}, not the install record's ${recordData}. The host makes ` +
+        'its socket there, and this install\'s commands, doctor\'s host checks among them, look for it in the record\'s ' +
+        `directory, so they can't reach it. Set the service's DATA_DIR to ${recordData}, or ask for help.`);
+    }
     try {
       host = await openHost(root);
     } catch (error) {
@@ -491,15 +499,15 @@ export async function doctor(
     }
     const dataState = dataDir === null ? null : pathState(dataDir);
     if (dataState === 'gone') {
-      report.problem(`The install record names ${dataDir} as the resident's data directory, and it isn't there. It holds ` +
+      report.problem(`${dataNamer} ${dataDir} as the resident's data directory, and it isn't there. It holds ` +
         'the resident\'s history and memory, and a host started now would begin on an empty one, so put it back if you ' +
         'have it, or ask for help, before starting the service.');
     } else if (dataDir !== null && dataState === 'there' && statSync(dataDir, { throwIfNoEntry: false })?.isDirectory() === false) {
-      report.problem(`The install record names ${dataDir} as the resident's data directory, and it isn't a directory, so the ` +
+      report.problem(`${dataNamer} ${dataDir} as the resident's data directory, and it isn't a directory, so the ` +
         'host can\'t keep the resident\'s history and memory there. Put the data directory back there if you have it, or ask ' +
         'for help, before starting the service.');
     } else if (dataState !== null && dataState !== 'there') {
-      report.problem(`The install record names ${dataDir} as the resident's data directory, and it can't be looked at ` +
+      report.problem(`${dataNamer} ${dataDir} as the resident's data directory, and it can't be looked at ` +
         `(${dataState.why}), so whether it's there can't be told. ${dataState.repair}`);
     }
     const running = host;
@@ -696,62 +704,52 @@ export async function doctor(
     report.section('The pipeline ladder needs python3, which isn\'t on PATH. The checks above don\'t.');
   } else if ((tooOld = pythonOlderThan37(parts.python, parts.ladderLimitMs)) !== null) {
     report.section(`The pipeline ladder needs Python 3.7 or later, and python3 on PATH is ${tooOld}. The checks above don't.`);
-  } else if (dataDir === null) {
-    report.section('The ladder reads the host\'s data directory, and where that is can\'t be told (said above), so it ' +
-      'doesn\'t run.');
   } else {
     report.section('Where an incoming message got to (scripts/connectome-doctor):');
-    let ran: SpawnSyncReturns<string> | undefined;
-    try {
-      ran = spawnSync(parts.python, [LADDER, '--findings-json', '--data-dir', dataDir, work, service.units.host.name], {
-        encoding: 'utf-8',
-        timeout: parts.ladderLimitMs,
-        env: {
-          ...process.env,
-          XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}`,
-          CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify(secrets.flatMap((s) => s.value.trim() === s.value
-            ? [[s.name, s.value]] : [[s.name, s.value], [s.name, s.value.trim()]])),
-        },
-      });
-    } catch (error) {
-      report.problem(`The ladder couldn't be started: ${errorText(error)}.`);
+    const ran = spawnSync(parts.python, [LADDER, '--findings-json', '--data-dir', dataDir!, work, service.units.host.name], {
+      encoding: 'utf-8',
+      timeout: parts.ladderLimitMs,
+      env: {
+        ...process.env,
+        XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}`,
+        CONNECTOME_DOCTOR_WITHHOLD: JSON.stringify(secrets.flatMap((s) => s.value.trim() === s.value
+          ? [[s.name, s.value]] : [[s.name, s.value], [s.name, s.value.trim()]])),
+      },
+    });
+    ladderRan = true;
+    const cut = ran.error !== undefined || ran.signal !== null;
+    const breaks = Math.max(0, ...secrets.map(({ value }) => value.split('\n').length - 1));
+    let dropped = 0;
+    const linesOf = (text: string): string[] => {
+      const lines = linesKeepingSecrets(text, secrets);
+      if (cut) dropped += lines.splice(-(breaks + 1)).filter((line) => line !== '').length;
+      return lines;
+    };
+    const said = linesOf(ran.stdout ?? '');
+    const at = said.map((line) => line.startsWith(FINDINGS)).lastIndexOf(true);
+    const findings = at < 0 ? null : said.splice(at, 1)[0].slice(FINDINGS.length);
+    for (const line of [...said, ...linesOf(ran.stderr ?? '')]) if (line !== '') report.line(line);
+    if (dropped > 0) {
+      report.line(`The ladder was ended, and doctor doesn't show ${dropped === 1 ? 'the line' : `the ${dropped} lines`} it ` +
+        'printed last: a secret cut short there couldn\'t be hidden.');
     }
-    if (ran !== undefined) {
-      ladderRan = true;
-      const cut = ran.error !== undefined || ran.signal !== null;
-      const breaks = Math.max(0, ...secrets.map(({ value }) => value.split('\n').length - 1));
-      let dropped = 0;
-      const linesOf = (text: string): string[] => {
-        const lines = linesKeepingSecrets(text, secrets);
-        if (cut) dropped += lines.splice(-(breaks + 1)).filter((line) => line !== '').length;
-        return lines;
-      };
-      const said = linesOf(ran.stdout ?? '');
-      const at = said.map((line) => line.startsWith(FINDINGS)).lastIndexOf(true);
-      const findings = at < 0 ? null : said.splice(at, 1)[0].slice(FINDINGS.length);
-      for (const line of [...said, ...linesOf(ran.stderr ?? '')]) if (line !== '') report.line(line);
-      if (dropped > 0) {
-        report.line(`The ladder was ended, and doctor doesn't show ${dropped === 1 ? 'the line' : `the ${dropped} lines`} it ` +
-          'printed last: a secret cut short there couldn\'t be hidden.');
-      }
-      if (ran.error !== undefined) {
-        const timedOut = (ran.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
-        report.problem(`The ladder didn't finish${timedOut ? ` within ${parts.ladderLimitMs / 1000} s` : `: ${ran.error.message}`}, ` +
-          'so what it would have shown after the lines above isn\'t known.');
-      } else if (ran.signal !== null) {
-        report.problem(`The ladder was ended by ${ran.signal}, so what it would have shown after the lines above isn't known.`);
-      } else if (ran.status !== 0) {
-        report.problem(`The ladder stopped (exit ${ran.status}) before it finished, so what it would have shown after ` +
-          'the lines above isn\'t known.');
-      } else {
-        try {
-          for (const { text, counts } of ladderFindings(findings)) {
-            if (counts) report.problem(text);
-            else report.line(text);
-          }
-        } catch (error) {
-          report.problem(`The ladder finished, but its findings can't be read: ${errorText(error)}.`);
+    if (ran.error !== undefined) {
+      const timedOut = (ran.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
+      report.problem(`The ladder didn't finish${timedOut ? ` within ${parts.ladderLimitMs / 1000} s` : `: ${ran.error.message}`}, ` +
+        'so what it would have shown after the lines above isn\'t known.');
+    } else if (ran.signal !== null) {
+      report.problem(`The ladder was ended by ${ran.signal}, so what it would have shown after the lines above isn't known.`);
+    } else if (ran.status !== 0) {
+      report.problem(`The ladder stopped (exit ${ran.status}) before it finished, so what it would have shown after ` +
+        'the lines above isn\'t known.');
+    } else {
+      try {
+        for (const { text, counts } of ladderFindings(findings)) {
+          if (counts) report.problem(text);
+          else report.line(text);
         }
+      } catch (error) {
+        report.problem(`The ladder finished, but its findings can't be read: ${errorText(error)}.`);
       }
     }
   }
@@ -1508,6 +1506,14 @@ async function besideOf(
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function sameDirectory(a: string, b: string): boolean {
+  try {
+    return realOrResolved(a) === realOrResolved(b);
+  } catch {
+    return resolve(a) === resolve(b);
+  }
 }
 
 function namesElsewhere(file: string, directory: string | null, work: string): string {
