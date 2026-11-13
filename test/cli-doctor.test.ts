@@ -146,6 +146,9 @@ const discordFetch = (async (input: string | URL | Request, init?: RequestInit):
   return new Response('not found', { status: 404 });
 }) as typeof fetch;
 
+// Keep this written out, not imported from doctor: a change to doctor's probe must fail the version tests.
+const VERSION_PROBE = 'import sys; print("%d.%d" % sys.version_info[:2])';
+
 function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lines' | 'traceback' | 'clean' | 'signal' | 'garbled' | 'silent' | 'misshapen'; version?: string } = {}): string {
   const end = opts.end ?? 'lines';
   const path = join(dir, opts.sleep ? 'python3-slow' : end !== 'lines' ? `python3-${end}` : opts.version !== undefined ? `python3-${opts.version}` : 'python3');
@@ -154,7 +157,8 @@ function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lin
   const written = (json: string): string[] => [`printf '%s\\n' 'connectome-doctor findings: ${json}'`, 'exit 0'];
   writeFileSync(path, [
     '#!/bin/sh',
-    `if [ "$1" = -c ]; then echo '${opts.version ?? '3.12'}'; exit 0; fi`,
+    `if [ "$1" = -c ] && [ "$2" = '${VERSION_PROBE}' ]; then echo '${opts.version ?? '3.12'}'; exit 0; fi`,
+    'if [ "$1" = -c ]; then echo "the stand-in answers only doctor\'s version probe" >&2; exit 1; fi',
     'shift',
     'echo "ladder args: $*"',
     `printf '%s' "$CONNECTOME_DOCTOR_WITHHOLD" > '${join(dir, 'withheld.json')}'`,
@@ -183,14 +187,21 @@ function fakePython(dir: string, opts: { sleep?: number; end?: 'findings' | 'lin
 
 let managers = 0;
 
+const OWNER_QUERY = 'LoadState,ActiveState,WorkingDirectory,FragmentPath';
+
 const unitWords = (data: string): string => `PATH=${process.env.PATH ?? '/usr/bin:/bin'} DATA_DIR=${data} CONNECTOME_SUPERVISED=1`;
 
 function fakeManager(dir: string, opts: {
   env?: string[]; launchd?: Record<string, string>; fails?: string; hangs?: true; unit?: string | null; unitFails?: string;
-  filesFail?: string; unset?: string;
+  filesFail?: string; unset?: string; owners?: Record<string, string>; ownersFail?: string; listed?: Record<string, string>;
+  envFails?: string;
 } = {}) {
   const at = join(dir, `manager-${++managers}`);
   mkdirSync(join(at, 'values'), { recursive: true });
+  mkdirSync(join(at, 'owners'), { recursive: true });
+  mkdirSync(join(at, 'listed'), { recursive: true });
+  for (const [name, shown] of Object.entries(opts.owners ?? {})) writeFileSync(join(at, 'owners', name), shown);
+  for (const [name, listed] of Object.entries(opts.listed ?? {})) writeFileSync(join(at, 'listed', name), listed);
   writeFileSync(join(at, 'environment'), (opts.env ?? []).map((line) => `${line}\n`).join(''));
   const unit = opts.unit === undefined ? unitWords(join(dir, 'data')) : opts.unit ?? '';
   writeFileSync(join(at, 'unit-environment'), `${unit}\n`);
@@ -201,6 +212,10 @@ function fakeManager(dir: string, opts: {
     `printf '%s\\n' "$*" >> ${join(at, 'calls')}`,
     ...(opts.hangs ? ['exec sleep 30'] : []),
     ...(opts.fails === undefined ? [] : [`echo '${opts.fails}' >&2`, 'exit 1']),
+    ...(opts.envFails === undefined ? [] : [`if [ "$*" = "--user show-environment" ] || [ "$1" = getenv ]; then echo '${opts.envFails}' >&2; exit 1; fi`]),
+    ...(opts.ownersFail === undefined ? [] : [`if [ "$1 $2 $3" = "--user show --property=LoadState,ActiveState,WorkingDirectory,FragmentPath" ] || [ "$1" = list ]; then echo '${opts.ownersFail}' >&2; exit 1; fi`]),
+    `if [ "$1 $2 $3 $4" = "--user show --property=LoadState,ActiveState,WorkingDirectory,FragmentPath --" ] && [ $# -eq 5 ]; then if [ -f "${join(at, 'owners')}/$5" ]; then cat "${join(at, 'owners')}/$5"; else printf 'LoadState=not-found\nActiveState=inactive\nWorkingDirectory=\nFragmentPath=\n'; fi; exit 0; fi`,
+    `if [ "$1" = list ] && [ $# -eq 2 ]; then if [ -f "${join(at, 'listed')}/$2" ]; then cat "${join(at, 'listed')}/$2"; exit 0; fi; echo "Could not find service \"$2\" in domain for port" >&2; exit 113; fi`,
     `if [ "$*" = "--user show-environment" ]; then cat ${join(at, 'environment')}; exit 0; fi`,
     ...(opts.unitFails === undefined ? [] : [`if [ "$*" = "--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service" ]; then echo '${opts.unitFails}' >&2; exit 1; fi`]),
     `if [ "$*" = "--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service" ]; then printf 'Environment=%s\\nUnsetEnvironment=%s\\n' "$(cat ${join(at, 'unit-environment')})" '${opts.unset ?? ''}'; exit 0; fi`,
@@ -222,7 +237,6 @@ const unitEnvironment = (at: Install): Record<string, string> => ({
 
 let plists = 0;
 
-/** plutil as install reads a plist's WorkingDirectory with it: `-type`, `-lint` and `-extract … raw`. */
 const PLUTIL_WORKING_DIRECTORY = [
   'if [ "$1" = -type ] && [ "$2" = WorkingDirectory ]; then',
   '  if grep -q "<key>WorkingDirectory</key>" "$3"; then echo string; exit 0; fi',
@@ -342,6 +356,19 @@ describe('connectome doctor', () => {
     expect(r.out).toContain('The server other wasn\'t checked: the host switched sessions during the check.');
     expect(r.out).not.toMatch(/✗.*other/);
     expect(r.out).toMatch(/Doctor found no problem, though .*a shell server the host's session switch left unchecked, as said above\.$/);
+    expect(r.status).toBe(0);
+  });
+
+  test('a shell server whose listSessions the recipe\'s agent may not call is said in a plain line and named in the closing line, not as a problem', async () => {
+    const at = install();
+    const r = await withHost(at, {
+      ...HEALTHY_HOST,
+      'shell-check': { ...HEALTHY_HOST['shell-check'], shells: [], notAllowed: ['shell'] },
+    }, () => run(at));
+    expect(r.out).toContain('The server shell offers listSessions, but the recipe\'s agent may not call it, since its allowedTools leave it out, so its daemon wasn\'t checked.');
+    expect(r.out).not.toMatch(/✗.*shell/);
+    expect(r.out).not.toContain('No server offers listSessions');
+    expect(r.out).toMatch(/Doctor found no problem, though .*a shell server whose listSessions the recipe's agent may not call wasn't checked, as said above\.$/);
     expect(r.status).toBe(0);
   });
 
@@ -1083,7 +1110,7 @@ describe('connectome doctor', () => {
     expect(r.out).not.toMatch(/shell3 [^\n]*starts the shell daemon/);
     expect(r.out).toMatch(/✗.*shell2.*Tool call denied by the allowlist\.$/m);
     expect(r.out).toMatch(/✗ shell3 didn't reach its daemon: Connection timeout\..*"Connection timeout" a daemon that isn't running/);
-    expect(r.out).toMatch(/✗.*discord isn't connected.*still retrying/);
+    expect(r.out).toMatch(/✗ The server discord isn't connected; the host is still retrying it\. Its stderr is in the data directory, in sessions\/<session>\/mcpl-stderr\/discord\.log\.$/m);
     expect(r.out).toMatch(/✗.*old isn't connected.*its command is empty/);
     expect(r.out).toMatch(/✗ The server dying isn't connected, and the host isn't retrying it\. Its stderr is in the data directory/);
     expect(r.out).toMatch(/\n {2}count_tokens couldn't count with claude-small-window: .*\. So the context's makeup shows no exact total\. A retired model answers 404, and the endpoint count_tokens asks \(Anthropic's API, or the one ANTHROPIC_BASE_URL names\) may answer it for a model it doesn't serve: set COUNT_TOKENS_MODEL in .*\.env to a current Claude model, and restart the service, since the host reads it when it starts\./);
@@ -1554,21 +1581,23 @@ describe('connectome doctor', () => {
   test('a ladder ended partway through a line doesn\'t have that line shown, so a secret cut short there isn\'t either', async () => {
     const at = install({ drop: ['ANTHROPIC_API_KEY'] });
     const r = await withKey('sk-secret-key', () => withHost(at, HEALTHY_HOST, () =>
-      run(at, { python: ladderSaying(at, 'echo "a whole line"\nprintf "sk-secret-k"\nsleep 5'), ladderLimitMs: 1000 })));
+      run(at, { python: ladderSaying(at, 'echo "a whole line"\nprintf "sk-secret-k"\nkill -TERM $$') })));
     expect(r.out).toContain('a whole line');
     expect(r.out).not.toContain('sk-secret-k');
     expect(r.out).toContain('The ladder was ended, and doctor doesn\'t show the line it printed last: a secret cut short ' +
       'there couldn\'t be hidden.');
+    expect(r.out).toContain('The ladder was ended by SIGTERM');
   }, 20_000);
 
   test('a ladder ended just after the line break of a secret that holds one doesn\'t have that secret\'s first line shown', async () => {
     const at = install({ drop: ['ANTHROPIC_API_KEY'] });
     const r = await withKey('sk-part-one\nsk-part-two', () => withHost(at, HEALTHY_HOST, () =>
-      run(at, { python: ladderSaying(at, 'echo "a whole line"\nprintf "sk-part-one\\n"\nsleep 5'), ladderLimitMs: 1000 })));
+      run(at, { python: ladderSaying(at, 'echo "a whole line"\nprintf "sk-part-one\\n"\nkill -TERM $$') })));
     expect(r.out).toContain('a whole line');
     expect(r.out).not.toContain('sk-part-one');
     expect(r.out).toContain('The ladder was ended, and doctor doesn\'t show the line it printed last: a secret cut short ' +
       'there couldn\'t be hidden.');
+    expect(r.out).toContain('The ladder was ended by SIGTERM');
   }, 20_000);
 
   test('the ladder runs with XDG_RUNTIME_DIR, the user manager\'s default when doctor\'s shell has none', async () => {
@@ -1733,6 +1762,15 @@ describe('connectome doctor: the environment the service gets from its manager',
     }
   });
 
+  test('on systemd, UnsetEnvironment takes out what the unit\'s own Environment sets too, a name or an assignment whose value it is', async () => {
+    for (const [unset, model] of [['MODEL', 'claude-dotenv-model'], ['MODEL=claude-unit-model', 'claude-dotenv-model'], ['MODEL=claude-other-model', 'claude-unit-model']]) {
+      const at = install({ env: { MODEL: 'claude-dotenv-model' } });
+      const manager = fakeManager(at.work, { unit: `${unitWords(join(at.work, 'data'))} MODEL=claude-unit-model`, unset });
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+      expect([unset, r.out]).toEqual([unset, expect.stringContaining(`fit ${model}'s window`)]);
+    }
+  });
+
   test('on systemd, a value the manager prints quoted, with escapes, is read as the manager holds it', async () => {
     const quoted = 'it\'s a "quoted" \\ value\twith\na\u0001control and café';
     const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'QUOTED_SECRET', 'PLAIN_SECRET'] });
@@ -1854,18 +1892,37 @@ describe('connectome doctor: the environment the service gets from its manager',
     expect(r.status).toBe(1);
   });
 
+  test('a stored secret launchd gave before a later getenv failed is hidden in what doctor prints as it stops', async () => {
+    const at = install({ manager: 'launchd', prefix: 'chost-pathpart-', stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'PATH_SECRET'] });
+    const partial = join(at.work, 'launchctl-partial');
+    writeFileSync(partial, [
+      '#!/bin/sh',
+      'if [ "$1" = getenv ] && [ "$2" = PATH_SECRET ]; then echo chost-pathpart; exit 0; fi',
+      'if [ "$1" = getenv ] && [ "$2" = MODEL ]; then echo "launchctl: failed" >&2; exit 1; fi',
+      'exit 0',
+      '',
+    ].join('\n'));
+    chmodSync(partial, 0o755);
+    const r = await run(at, { launchctl: partial });
+    expect(r.out).toContain('Doctor stops here');
+    expect(r.out).toContain('launchctl getenv MODEL');
+    expect(r.out).toContain('<PATH_SECRET>');
+    expect(r.out).not.toContain('chost-pathpart');
+  });
+
   test('the manager a service here runs under is asked, and no other, with its unit or without one', async () => {
     const none = install();
     rmSync(none.unit);
     const platform = fakeManager(none.work);
     await run(none, { systemctl: platform.path, launchctl: platform.path });
-    expect(platform.calls()).toEqual(['--user show-environment']);
+    expect(platform.calls()).toEqual([`--user show --property=${OWNER_QUERY} -- connectome-test.service`, '--user show-environment']);
     const noPlist = install({ manager: 'launchd' });
     rmSync(noPlist.unit);
     const mac = fakeManager(noPlist.work);
     await run(noPlist, { systemctl: mac.path, launchctl: mac.path });
-    expect(mac.calls().length).toBeGreaterThan(0);
-    expect(mac.calls().every((call) => call.startsWith('getenv '))).toBe(true);
+    expect(mac.calls()[0]).toBe('list com.animalabs.connectome.test');
+    expect(mac.calls().length).toBeGreaterThan(1);
+    expect(mac.calls().slice(1).every((call) => call.startsWith('getenv '))).toBe(true);
     const launchd = install({ manager: 'launchd' });
     const asked = fakeManager(launchd.work);
     await run(launchd, { systemctl: asked.path, launchctl: asked.path });
@@ -1993,19 +2050,19 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
     });
     const r = await withHost(at, refusing('the token managed-secret-value was refused'),
       () => run(at, { systemctl: manager.path, launchctl: manager.path }));
-    expect(manager.calls()).toEqual(['--user show-environment']);
+    expect(manager.calls()).toEqual([`--user show --property=${OWNER_QUERY} -- connectome-test.service`, '--user show-environment']);
     expect(r.out).toContain('the token <MANAGED_SECRET> was refused');
     expect(r.out).not.toContain('managed-secret-value');
   });
 
-  test('with no service installed and a manager that can\'t be read, doctor goes on, naming the step that failed', async () => {
+  test('with no host unit file, a manager that says it holds none but whose environment can\'t be read: doctor goes on, naming the step that failed', async () => {
     for (const [manager, asked, step] of [
       ['systemd-user', 'systemd\'s user manager', '`systemctl --user show-environment`'],
       ['launchd', 'launchd', '`launchctl getenv \\w+`'],
     ] as const) {
       const at = install({ manager });
       rmSync(at.unit);
-      const failing = fakeManager(at.work, { fails: 'Failed to connect to bus: No medium found' });
+      const failing = fakeManager(at.work, { envFails: 'Failed to connect to bus: No medium found' });
       const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: failing.path, launchctl: failing.path }));
       expect([manager, r.out]).toEqual([manager, expect.stringMatching(new RegExp(`With no service installed, doctor asked ${asked}, ` +
         `which a service installed here would run under, and couldn't read it \\(${step} failed: Failed to connect to bus: No ` +
@@ -2014,6 +2071,95 @@ describe('connectome doctor, where what it found can mislead or it can\'t look',
       expect(r.out).not.toContain('Doctor stops here');
       expect(r.out).toContain('pid 4242');
     }
+  });
+
+  test('with no host unit file and a manager that can\'t be asked whether it holds the unit, doctor doesn\'t say no service is installed', async () => {
+    for (const manager of ['systemd-user', 'launchd'] as const) {
+      const at = install({ manager });
+      rmSync(at.unit);
+      const failing = fakeManager(at.work, { fails: 'Failed to connect to bus: No medium found' });
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: failing.path, launchctl: failing.path }));
+      expect([manager, r.out]).toEqual([manager, expect.not.stringContaining('No service is installed')]);
+      expect([manager, r.out]).toEqual([manager, expect.not.stringContaining('With no service installed')]);
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining('Failed to connect to bus: No medium found')]);
+      expect([manager, r.status]).toEqual([manager, 1]);
+    }
+  });
+
+  test('with no host unit file and a manager that can\'t be asked about the unit but gives its environment, doctor says it can\'t tell, not that no service is installed', async () => {
+    for (const manager of ['systemd-user', 'launchd'] as const) {
+      const at = install({ manager });
+      rmSync(at.unit);
+      const failing = fakeManager(at.work, { ownersFail: 'Failed to connect to bus: No medium found' });
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: failing.path, launchctl: failing.path }));
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining('Failed to connect to bus: No medium found')]);
+      expect([manager, r.out]).toEqual([manager, expect.stringContaining('so whether it runs another install can\'t be told.')]);
+      expect([manager, r.out]).toEqual([manager, expect.not.stringContaining('No service is installed')]);
+      expect([manager, r.status]).toEqual([manager, 1]);
+    }
+  });
+
+  test('a host unit whose file is gone while the manager still holds it running is a problem with a stop and an inspect line, not no service', async () => {
+    const at = install();
+    rmSync(at.unit);
+    const manager = fakeManager(at.work, {
+      unit: Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`).join(' '),
+      owners: { 'connectome-test.service': 'LoadState=not-found\nActiveState=active\nWorkingDirectory=\nFragmentPath=\n' },
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path }));
+    expect(r.out).toContain(`✗ connectome-test.service is still running, but its file, ${at.unit}, is gone, so which install ` +
+      'it runs can\'t be told: `');
+    expect(r.out).toMatch(/`(XDG_RUNTIME_DIR=\/run\/user\/\d+ )?systemctl --user status connectome-test\.service` shows what it runs\. If it's this install's, stop it with `(XDG_RUNTIME_DIR=\/run\/user\/\d+ )?systemctl --user stop connectome-test\.service`\./);
+    expect(r.out).not.toContain('No service is installed');
+    expect(r.out).not.toContain('service install <recipe>` writes');
+    expect(manager.calls()).not.toContain('--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service');
+    expect(r.status).toBe(1);
+  });
+
+  test('a launch agent whose plist is gone while launchd still holds it loaded is a problem with a stop and an inspect line, not no service', async () => {
+    const at = install({ manager: 'launchd' });
+    rmSync(at.unit);
+    const manager = fakeManager(at.work, { listed: { 'com.animalabs.connectome.test': '{\n\t"PID" = 501;\n};\n' } });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path }));
+    expect(r.out).toContain(`✗ com.animalabs.connectome.test is still loaded, but its file, ${at.unit}, is gone, so which ` +
+      `install it runs can't be told: \`launchctl print gui/${process.getuid!()}/com.animalabs.connectome.test\` shows what it ` +
+      `runs. If it's this install's, stop it with \`launchctl bootout gui/${process.getuid!()}/com.animalabs.connectome.test\`.`);
+    expect(r.out).not.toContain('No service is installed');
+    expect(manager.calls()).toContain('list com.animalabs.connectome.test');
+    expect(r.status).toBe(1);
+  });
+
+  test('a host unit whose file is gone while systemd still holds it as last loaded, running here or not, is a problem with install, status and stop lines, not no service', async () => {
+    for (const active of ['active', 'inactive']) {
+      const at = install();
+      rmSync(at.unit);
+      const manager = fakeManager(at.work, {
+        owners: { 'connectome-test.service': `LoadState=loaded\nActiveState=${active}\nWorkingDirectory=${at.work}\n` +
+          `FragmentPath=${at.unit}\nNeedDaemonReload=yes\n` },
+      });
+      const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path }));
+      expect([active, r.out]).toEqual([active, expect.stringContaining(`✗ systemd still holds connectome-test.service as it last ` +
+        `loaded it, though its file, ${at.unit}, is gone: \``)]);
+      expect([active, r.out]).toEqual([active, expect.stringMatching(/service install <recipe>` writes the file again\. `(XDG_RUNTIME_DIR=\/run\/user\/\d+ )?systemctl --user status connectome-test\.service` shows it, and `(XDG_RUNTIME_DIR=\/run\/user\/\d+ )?systemctl --user stop connectome-test\.service` stops it if it runs\./)]);
+      expect([active, r.out]).toEqual([active, expect.not.stringContaining('No service is installed')]);
+      expect([active, manager.calls()]).toEqual([active,
+        expect.not.arrayContaining(['--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service'])]);
+      expect([active, r.status]).toEqual([active, 1]);
+    }
+  });
+
+  test('a host unit whose file is gone while systemd holds one of its name in another directory is another install\'s, and doctor reads nothing from it', async () => {
+    const at = install();
+    rmSync(at.unit);
+    const manager = fakeManager(at.work, {
+      owners: { 'connectome-test.service': 'LoadState=loaded\nActiveState=active\nWorkingDirectory=/srv/elsewhere\n' +
+        'FragmentPath=/etc/systemd/user/connectome-test.service\n' },
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path, launchctl: manager.path }));
+    expect(r.out).toContain('✗ systemd runs connectome-test.service in /srv/elsewhere, not ' + at.work + '.');
+    expect(r.out).not.toContain('No service is installed');
+    expect(manager.calls()).not.toContain('--user show --property=Environment --property=UnsetEnvironment -- connectome-test.service');
+    expect(r.status).toBe(1);
   });
 
   test('a host that answers while its service is stopped is a problem naming it, with no advice to start the service until it\'s stopped', async () => {
@@ -2211,7 +2357,8 @@ describe('connectome doctor, its round on the review of 4a79597ff', () => {
     expect(r.out).toContain('✗ A host answers, pid 4242, recipe Ember, but connectome-test.service\'s main process is 5151, so ' +
       'it isn\'t the service\'s: it was started some other way, such as by hand, and the checks below are of it.');
     expect(r.out).toContain('Stop it, since a host the service starts takes this install\'s socket from one that holds it, and the ' +
-      'service\'s own host can\'t be reached while it does: `kill 4242` stops it.');
+      'service\'s own host can\'t be reached while it does. `systemctl --user status 4242` names the unit it runs in, so run ' +
+      'it first.');
     expect(r.out).not.toContain('✓ The host answers');
     expect(r.status).toBe(1);
   });
@@ -2589,7 +2736,8 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     writeFileSync(join(manager.path, '..', 'environment-files'), `${listed} (ignore_errors=no)\n`);
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
     expect(r.out).toContain(`The service's unit also reads ${listed}, whose values doctor can't see. Where one sets a stored ` +
-      'secret, the service gets that value, not the unit\'s own or .env\'s, so doctor neither checks nor hides it.');
+      'secret that the unit\'s `UnsetEnvironment=` doesn\'t name, the service gets that value, not the unit\'s own or .env\'s, ' +
+      'so doctor neither checks nor hides it.');
     expect(r.out).not.toContain('LONELY_SECRET is in setup\'s list of stored secrets and has no value');
     expect(r.out).toContain('LONELY_SECRET is in setup\'s list of stored secrets, and doctor finds no server given it');
     expect(r.out).toMatch(/Doctor found no problem, though .*the files its unit reads its environment from weren't read/);
@@ -2616,11 +2764,19 @@ describe('connectome doctor, its round on the review of aa87d916b', () => {
     expect(r.out).not.toContain(`claude-${at.root}`);
   });
 
+  test('a mode file the first Bun\'s read selects is read by the second with the install root, as the launcher starts the host\'s Bun', async () => {
+    const at = install({ env: { NODE_ENV: 'production' } });
+    writeFileSync(join(at.work, '.env.production'), 'MODEL=claude-${CONNECTOME_INSTALL_ROOT:-root-unset}\n');
+    const r = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(r.out).toContain(`claude-${at.root}`);
+    expect(r.out).not.toContain('claude-root-unset');
+  });
+
   test('a host that isn\'t the service\'s is said with how to find what starts it again, where systemd runs the service', async () => {
     const at = install();
     const r = await withHost(at, HEALTHY_HOST, () => run(at, { servicePid: async () => ({ pid: '5151' }) }));
-    expect(r.out).toContain('`kill 4242` stops it. If something starts it again, `systemctl --user status 4242` names the unit ' +
-      'it runs in, which is what to stop.');
+    expect(r.out).toContain('`systemctl --user status 4242` names the unit it runs in, so run it first. Then `kill 4242` stops ' +
+      'it. If something starts it again, that unit is what to stop.');
   });
 
   test('a host the service\'s pid matches only once, or found while a service read as stopped starts, is said as changed, with no kill', async () => {
@@ -3088,5 +3244,29 @@ describe('connectome doctor, where whose unit it is is read as install reads it,
     const failed = r.out.split('\n').find((line) => line.includes('last turn\'s model call failed'));
     expect(failed).toContain('starts `[inference-failed] agent=');
     expect(failed).not.toContain('journalctl');
+  });
+
+  test('BUN_OPTIONS that launchd gives is asked for, so a dotenv file it names is read for the stored secrets', async () => {
+    const at = install({ manager: 'launchd', stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'OTHER_SECRET'] });
+    writeFileSync(join(at.work, 'other.env'), 'OTHER_SECRET=other-secret-value\n');
+    const manager = fakeManager(at.work, { launchd: { BUN_OPTIONS: '--env-file=other.env' } });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { launchctl: manager.path }));
+    expect(manager.calls()).toContain('getenv BUN_OPTIONS');
+    expect(r.out).not.toContain('OTHER_SECRET is in setup\'s list of stored secrets');
+    expect(r.out).not.toContain('other-secret-value');
+  });
+
+  test('a stored secret with no value under a unit doctor refuses is said as not known, since that unit may set it', async () => {
+    const at = install({ stored: ['DISCORD_TOKEN', 'SESSION_SERVER_TOKEN', 'UNIT_SECRET'] });
+    writeFileSync(at.unit, `[Service]\nWorkingDirectory=${at.work}\nExecStart=bun start.js recipe.json\n`);
+    const manager = fakeManager(at.work, {
+      unit: [...Object.entries(unitEnvironment(at)).map(([name, value]) => `${name}=${value}`), 'UNIT_SECRET=unit-secret-value'].join(' '),
+    });
+    const r = await withHost(at, HEALTHY_HOST, () => run(at, { systemctl: manager.path }));
+    expect(r.out).toContain('isn\'t the unit file service install writes');
+    expect(r.out).toContain(`UNIT_SECRET is in setup's list of stored secrets and has no value in what doctor reads of the ` +
+      `service's environment, but ${at.unit}, which doctor can't use, may set it, so whether the service has one isn't known.`);
+    expect(r.out).not.toContain('UNIT_SECRET is in setup\'s list of stored secrets (');
+    expect(r.out).not.toContain('unit-secret-value');
   });
 });

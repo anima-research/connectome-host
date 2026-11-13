@@ -146,7 +146,7 @@ describe('doctor: Discord', () => {
   test('another refusal is a problem giving Discord\'s own message, or saying it gave none, and that the checks after it weren\'t made, and no raw body', async () => {
     const json = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: () => Response.json({ message: 'Missing Access', code: 50001 }, { status: 403 }) }));
     expect(json.problems.length).toBe(1);
-    expect(json.problems[0]).toStartWith('Discord answered 403 to GET /users/@me: Missing Access, so the Discord checks after it weren\'t made.');
+    expect(json.problems[0]).toStartWith('Discord answered 403 to GET /users/@me: Missing Access (code 50001), so the Discord checks after it weren\'t made.');
     const later = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/applications/@me': () => Response.json({ message: 'Missing Access', code: 50001 }, { status: 403 }) } }));
     expect(later.problems).toEqual([expect.stringContaining('Discord answered 403 to GET /applications/@me: Missing Access (code 50001)')]);
     expect(json.problems[0]).toMatch(/weren't made/);
@@ -193,7 +193,7 @@ describe('doctor: Discord', () => {
     const between = ' Something between this machine and Discord, such as a proxy, may be answering in its place.';
     for (const status of [403, 404]) {
       const own = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/users/@me': () => Response.json({ message: 'Missing Access', code: 50001 }, { status }) } }));
-      expect(own.problems).toEqual([`Discord answered ${status} to GET /users/@me: Missing Access, so the Discord checks after it weren't made.${between}`]);
+      expect(own.problems).toEqual([`Discord answered ${status} to GET /users/@me: Missing Access (code 50001), so the Discord checks after it weren't made.${between}`]);
       const app = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/applications/@me': () => Response.json({ message: 'Missing Access', code: 50001 }, { status }) } }));
       expect(app.problems).toEqual([`Discord answered ${status} to GET /applications/@me: Missing Access (code 50001), so the Discord checks after it weren't made.${between}`]);
     }

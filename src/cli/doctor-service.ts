@@ -3,9 +3,10 @@ import { join } from 'node:path';
 import { RESTART_EXIT_CODE, SUPERVISED_ENV } from '../update/contract.js';
 import { RESTART_PROPERTIES, restartPolicy } from '../update/setup.js';
 import {
-  OWNER_PROPERTIES, agentState, childEnv, dropInLine, loadedOwner, reloadLine, showUnit, type ServiceSystem,
+  agentState, childEnv, dropInLine, loadedOwner, managerOwner, reloadLine, showUnit, stopLine, systemctlLine, untold, type Owner,
+  type ServiceSystem,
 } from './service.js';
-import type { ServiceUnit, ServiceUnits } from './service-unit.js';
+import type { Manager, ServiceUnit, ServiceUnits } from './service-unit.js';
 
 export interface ServiceCheck {
   passed: boolean;
@@ -45,17 +46,19 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
   const env = childEnv(sys);
   const runsElsewhere = (unit: ServiceUnit, shown: Map<string, string>): string | null => {
     const owner = loadedOwner(unit, work, sys, shown, pathState(unit.file) === 'there');
-    if (owner.kind !== 'other') return null;
-    return `systemd runs ${unit.name} in ${owner.runsIn ?? 'no set directory'}, not ${work}.` +
-      (owner.loadedOnly ? ` ${reloadLine(sys, unit, work, `run ${install}`)}` : '');
+    return owner.kind === 'other' ? ownerProblem(owner, unit, units.manager, work, sys, install) : null;
   };
-  if (shell === false && pathState(units.shell.file) === 'there') {
-    const removes = `The recipe names no shell, and ${units.shell.name} is installed: ${install} stops and removes it.`;
-    const shown = units.manager === 'systemd-user' ? showUnit(sys, env, units.shell.name, OWNER_PROPERTIES) : null;
-    const other = shown === null || typeof shown === 'string' ? null : runsElsewhere(units.shell, shown);
-    if (typeof shown === 'string') fail(`${shown}.`);
-    else if (other !== null) fail(other);
-    else lines.push(removes);
+  const shellFile = pathState(units.shell.file);
+  if (shell === false && (shellFile === 'there' || shellFile === 'gone')) {
+    const owner = managerOwner(units.shell, units.manager, work, sys, env, shellFile === 'there');
+    const problem = owner.kind === 'ok' && owner.held
+      ? `${heldWithoutFile(units.shell)}, and the recipe names no shell. ${install} doesn't stop it: if it runs, ` +
+        `\`${stopLine(sys, units.manager, units.shell.name)}\` stops it.`
+      : ownerProblem(owner, units.shell, units.manager, work, sys, install);
+    if (problem !== null) fail(problem);
+    else if (shellFile === 'there') {
+      lines.push(`The recipe names no shell, and ${units.shell.name} is installed: ${install} stops and removes it.`);
+    }
   }
   if (units.manager === 'systemd-user') {
     let elsewhere = false;
@@ -141,6 +144,26 @@ export function checkUnits(units: ServiceUnits, work: string, shell: boolean | n
     }
   }
   return { passed, lines, ...(stopped && passed ? { stopped: true as const } : {}) };
+}
+
+export function heldWithoutFile(unit: ServiceUnit): string {
+  return `systemd still holds ${unit.name} as it last loaded it, though its file, ${unit.file}, is gone`;
+}
+
+export function ownerProblem(owner: Owner, unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
+  install: string): string | null {
+  if (owner.kind === 'ok') return null;
+  if (owner.kind === 'unshown') return `${owner.shown}, so whether it runs another install can't be told.`;
+  const systemd = manager === 'systemd-user';
+  if (owner.kind === 'untold') {
+    return `${untold(sys, manager, unit)}: \`${systemd ? systemctlLine(sys, `status ${unit.name}`)
+      : `launchctl print gui/${sys.uid}/${unit.name}`}\` shows what it runs. If it's this install's, stop it with ` +
+      `\`${stopLine(sys, manager, unit.name)}\`.`;
+  }
+  return systemd
+    ? `systemd runs ${unit.name} in ${owner.runsIn ?? 'no set directory'}, not ${work}.` +
+      (owner.loadedOnly ? ` ${reloadLine(sys, unit, work, `run ${install}`)}` : '')
+    : `${owner.from} names ${owner.runsIn ?? 'no directory'} as the directory it runs in, not ${work}.`;
 }
 
 export function servicePid(units: ServiceUnits, sys: ServiceSystem): { pid: string } | { why: string } {

@@ -10,7 +10,7 @@ export type TokenCheck =
   | { kind: 'accepted'; name: string; id: string }
   | { kind: 'refused' }
   | { kind: 'unsendable' }
-  | { kind: 'answered'; status: number; said: string | null; retryAfter?: number }
+  | { kind: 'answered'; status: number; said: string | null; code?: string; retryAfter?: number }
   | { kind: 'redirected'; status: number; to: string | null }
   | { kind: 'unrecognized'; status: number; retryAfter?: number }
   | { kind: 'unanswered'; why: string };
@@ -61,7 +61,7 @@ export async function checkDiscordToken(
   } catch (error) {
     return unanswered(error);
   }
-  let body: { id?: unknown; username?: unknown; message?: unknown; retry_after?: unknown } | undefined;
+  let body: { id?: unknown; username?: unknown; message?: unknown; code?: unknown; retry_after?: unknown } | undefined;
   try {
     body = JSON.parse(text) as typeof body;
   } catch {
@@ -74,7 +74,10 @@ export async function checkDiscordToken(
   const after = wait === undefined ? {} : { retryAfter: wait };
   if (body === undefined) return { kind: 'unrecognized', status: response.status, ...after };
   const said = typeof body?.message === 'string' ? hidden(body.message, token) : null;
-  return { kind: 'answered', status: response.status, said, ...after };
+  return {
+    kind: 'answered', status: response.status, said,
+    ...(body?.code !== undefined ? { code: hidden(String(body.code), token) } : {}), ...after,
+  };
 }
 
 export function refusedByType(response: Response): boolean {
