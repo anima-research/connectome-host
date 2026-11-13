@@ -1695,7 +1695,7 @@ describe('checkDiscordToken', () => {
     const result = await checkDiscordToken(' a-token  ', {
       fetch: (async () => { throw new Error('header Bot  a-token rejected; sent Bot  a-token  '); }) as unknown as typeof fetch,
     });
-    expect(result).toEqual({ kind: 'unanswered', why: 'header Bot  <DISCORD_TOKEN> rejected; sent Bot <DISCORD_TOKEN>' });
+    expect(result).toEqual({ kind: 'unanswered', timedOut: false, why: 'header Bot  <DISCORD_TOKEN> rejected; sent Bot <DISCORD_TOKEN>' });
   });
 
   test('a 401 is a refusal though its body never comes', async () => {
@@ -1749,7 +1749,7 @@ describe('checkDiscordToken', () => {
         init.signal!.addEventListener('abort', () => reject(init.signal!.reason));
       })) as unknown as typeof fetch,
     });
-    expect(result).toEqual({ kind: 'unanswered', why: 'no answer within 0.05 s' });
+    expect(result).toEqual({ kind: 'unanswered', timedOut: true, why: 'no answer within 0.05 s' });
   });
 
   test('a 200 that isn\'t JSON is read as unrecognized, one that isn\'t the bot user as Discord answering otherwise, and Discord\'s own words never show the token', async () => {

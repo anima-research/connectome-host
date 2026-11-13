@@ -323,7 +323,7 @@ describe('doctor: Discord', () => {
     expect(rejected.problems[0]).toContain('ENOTFOUND');
     expect(rejected.problems[0]).toMatch(/weren't made: check that this machine can resolve and reach discord\.com, then run connectome doctor again/);
     const notJson = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answer: () => new Response('<html>', { status: 200 }) }));
-    expect(notJson.problems).toEqual(['Discord answered GET /users/@me with something other than the bot\'s user, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
+    expect(notJson.problems).toEqual(['Discord answered GET /users/@me with something other than JSON, so the Discord checks after it weren\'t made. Something between this machine and Discord, such as a proxy, may be answering in its place.']);
     const laterNotJson = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ answers: { '/applications/@me': () => new Response('<html>', { status: 200 }) } }));
     expect(laterNotJson.problems).toEqual([expect.stringMatching(/GET \/applications\/@me with something other than JSON/)]);
   });
@@ -346,7 +346,7 @@ describe('doctor: Discord', () => {
   test('Discord that doesn\'t answer within the limit is a problem when the limit runs out', async () => {
     const r = await run({ DISCORD_TOKEN: TOKEN }, fakeDiscord({ fails: 'hang' }), workdir(), 200);
     expect(r.problems.length).toBe(1);
-    expect(r.problems[0]).toMatch(/^Discord couldn't be asked GET \/users\/@me: no answer within 0\.2 s, /);
+    expect(r.problems[0]).toMatch(/^Discord didn't answer GET \/users\/@me within 0\.2 s, /);
     expect(r.problems[0]).toMatch(/weren't made: check that this machine can resolve and reach discord\.com, then run connectome doctor again/);
   });
 
