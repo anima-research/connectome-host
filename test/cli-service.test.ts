@@ -10,9 +10,9 @@ import {
   installService, portFree, recipeHasShell, runService, serviceCommands, serviceLines, unitElsewhere, type ServiceSystem,
 } from '../src/cli/service.js';
 import { serviceUnits, slugOf } from '../src/cli/service-unit.js';
-import { SHOWN_FILE } from '../src/cli/shown.js';
 import { DEFAULT_TIMEOUT_MS } from '../src/modules/setup-module.js';
 import { readRecipeDocument } from '../src/recipe-document.js';
+import { SHOWN_FILE } from '../src/setup/commands-shown.js';
 import { StoredSecrets, readEnvFile } from '../src/setup/secrets.js';
 
 const made: string[] = [];
