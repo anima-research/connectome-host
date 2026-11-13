@@ -3274,7 +3274,7 @@ describe('setup--ask_secret with a provider key, and setup--check_model', () => 
     }
   });
 
-  test('a token Discord answered 403 or 404 in JSON is said with what may be answering in its place, to the agent and the person, as doctor says it; any other status isn\'t', async () => {
+  test('a token Discord answered 403 or 404 in JSON is said with what may be answering in its place, to the agent and the person, as doctor says it; a 400 isn\'t', async () => {
     const BETWEEN = 'something between this machine and Discord may be answering in its place.';
     const AGAIN = 'Ask for it again with setup--ask_secret to check it again, or go on with it unchecked.';
     for (const [status, words, between] of [[404, 'Unknown User', true], [403, 'Missing Access', true], [400, 'Bad Request', false]] as const) {
