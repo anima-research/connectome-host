@@ -110,44 +110,24 @@ function envText(path: string): string {
   }
 }
 
-export function envAssignments(path: string): Assignment[] {
+function envAssignments(path: string): Assignment[] {
   const { assignments, outside } = envLines(envText(path));
   if (outside.length > 0) throw new EnvFormError(path, outside);
   return assignments;
 }
 
 // Bun 1.4.4 reads, from the directory it starts in, .env.<mode>.local, .env.local (not under test), .env.<mode> and
-// .env, in that order, where mode is production or test as NODE_ENV says, and development otherwise. It puts in
-// $NAME, ${NAME} and ${NAME:-default}, quoted or not, the last giving the default, itself put in, where nothing sets
-// NAME. It reads \$ as $, and leaves ${NAME-…}, ${NAME:=…}, ${NAME:+…} and ${NAME:?…} as written (probed).
+// .env, in that order, where mode is production or test as NODE_ENV says, and development otherwise.
 const DOTENV_MODES = ['development', 'production', 'test'] as const;
 
 function dotenvFiles(mode: (typeof DOTENV_MODES)[number]): string[] {
   return [`.env.${mode}.local`, ...(mode === 'test' ? [] : ['.env.local']), `.env.${mode}`, '.env'];
 }
 
-export function dotenvFileBefore(dir: string, nodeEnv: string | undefined, name: string): string | null {
-  const mode = nodeEnv === 'production' || nodeEnv === 'test' ? nodeEnv : 'development';
-  return dotenvFiles(mode).slice(0, -1).find((file) => Object.hasOwn(parseEnv(envText(join(dir, file))), name)) ?? null;
-}
-
 export function dotenvNames(dir: string): string[] {
   const names = new Set<string>();
   for (const file of new Set(DOTENV_MODES.flatMap(dotenvFiles))) {
     for (const name of Object.keys(parseEnv(envText(join(dir, file))))) names.add(name);
-  }
-  return [...names];
-}
-
-export function dotenvReferences(dir: string): string[] {
-  const names = new Set<string>();
-  for (const file of new Set(DOTENV_MODES.flatMap(dotenvFiles))) {
-    for (const value of Object.values(parseEnv(envText(join(dir, file)))).map((value) => value ?? '')) {
-      const named = value.matchAll(/\\\$|\$\{([A-Za-z_][A-Za-z0-9_]*)(?:\}|:-)|\$([A-Za-z_][A-Za-z0-9_]*)/g);
-      for (const [, braced, bare] of named) {
-        if (braced ?? bare) names.add((braced ?? bare)!);
-      }
-    }
   }
   return [...names];
 }
@@ -433,22 +413,6 @@ export function shownByName(words: string, secrets: readonly Secret[]): string {
   return text + bytes.toString('utf-8', at);
 }
 
-export function linesKeepingSecrets(text: string, secrets: Secret[]): string[] {
-  const bytes = Buffer.from(text, 'utf-8');
-  const spans = spansOf(bytes, secrets);
-  const lines: string[] = [];
-  let from = 0;
-  let next = 0;
-  for (let at = bytes.indexOf(10); at >= 0; at = bytes.indexOf(10, at + 1)) {
-    while (next < spans.length && spans[next]!.end <= at) next += 1;
-    if (next < spans.length && spans[next]!.start <= at) continue;
-    lines.push(bytes.toString('utf-8', from, at));
-    from = at + 1;
-  }
-  lines.push(bytes.toString('utf-8', from));
-  return lines;
-}
-
 export function redactWindow(
   bytes: Buffer,
   from: number,
@@ -475,11 +439,9 @@ export function redactWindow(
   return { text, start, end: at };
 }
 
-export function storedSecrets(workingDir: string, env: Record<string, string | undefined>,
-  probes: Record<string, string | undefined> = env): Secret[] {
+export function storedSecrets(workingDir: string, env: Record<string, string | undefined>): Secret[] {
   const envFile = join(workingDir, '.env');
-  const names = secretNames(join(workingDir, '.setup'), envFile).names;
-  return secretValues(names, envFile, env, withoutSecrets(probes, names));
+  return secretValues(secretNames(join(workingDir, '.setup'), envFile).names, envFile, env);
 }
 
 export function storedSecretsIn(setupDir: string, envFile: string, env: Record<string, string | undefined>): Secret[] {

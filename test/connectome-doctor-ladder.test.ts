@@ -130,6 +130,12 @@ async function install(opts: {
   return at;
 }
 
+function foundIn(out: string): string[] {
+  const at = out.indexOf('=== findings ===\n');
+  if (at < 0) return [];
+  return out.slice(at).split('\n').slice(1).filter((line) => line.startsWith('  * ')).map((line) => line.slice(4));
+}
+
 function ladder(at: Install, extra: string[] = [], env: Record<string, string> = {}, unit = 'connectome-test.service'): { out: string; status: number | null } {
   const ran = spawnSync('python3', [LADDER, ...extra, at.work, unit], {
     encoding: 'utf-8',
@@ -374,23 +380,20 @@ describe.skipIf(ladderUnrunnable)('where the ladder reads a unit\'s output', () 
     expect(out).not.toContain('no [diagnostics] line was seen');
   });
 
-  test('a unit file that can\'t be read is said, as a line that doesn\'t count, and the rest of the ladder still runs', async () => {
+  test('a unit file that can\'t be read is said, as a finding, and the rest of the ladder still runs', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const unitFile = join(at.work, 'unit.txt');
     rmSync(unitFile);
     mkdirSync(unitFile);
-    const { out } = ladder(at, ['--findings-json']);
-    const line = out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
-    expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
-      text: `connectome-test.service's unit file, ${unitFile}, can't be read (Is a directory), so whether it sends the host's ` +
-        'output to a file isn\'t known', counts: false });
-    expect(out).toContain('recent failures in connectome-test.service\'s journal, their text left out, since it can quote a model provider or a person:\n' +
-      '  [inference-failed]: 1, the newest at ');
+    const { out } = ladder(at);
+    expect(foundIn(out)).toContainEqual(`connectome-test.service's unit file, ${unitFile}, can't be read (Is a directory), so whether it sends the host's ` +
+        'output to a file isn\'t known');
+    expect(out).toContain('400 prompt is too long');
   });
 });
 
 describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
-  test('an inference failure a later successful call followed is said with when it was, and that whose call isn\'t known, as a line that doesn\'t count', async () => {
+  test('an inference failure a later successful call followed is said with when it was, and that whose call isn\'t known, as a finding', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const call = (s: number, error?: string, kind = 'stream') => JSON.stringify({ timestamp: new Date(s * 1000).toISOString(),
       kind, rawResponse: { stop_reason: error ? null : 'end_turn', ...(error ? { error } : {}) } });
@@ -399,9 +402,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
     const fixed = ladder(at).out;
     expect(fixed).toMatch(new RegExp(`last inference failure \\S+ ago: a later call, at ${stamp(at.now - 5)}, succeeded; the call ` +
       'log doesn\'t say whose, so whether the agent that failed has recovered isn\'t known'));
-    const line = ladder(at, ['--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
-    expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
-      text: expect.stringMatching(/^last inference failure \S+ ago: a later call/), counts: false });
+    expect(foundIn(ladder(at).out)).toContainEqual(expect.stringMatching(/^last inference failure \S+ ago: a later call/));
     expect(fixed).not.toContain('hard-down');
     const finding = /\* inference failures, the last \S+ ago, with no successful turn found since — if the reason repeats/;
     writeFileSync(calls, `${call(at.now - 25)}\n`);
@@ -468,9 +469,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
       timestamp: new Date((at.now - 400) * 1000).toISOString(), kind: 'stream', rawResponse: { stop_reason: 'end_turn' } })}\n`);
     expect(ladder(at).out).toMatch(
       /\* inference failures, the last \d+m ago, with no successful turn found since — if the reason repeats/);
-    const line = ladder(at, ['--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
-    expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
-      text: expect.stringMatching(/^inference failures, the last \d+m ago, with no successful turn found since/), counts: true });
+    expect(foundIn(ladder(at).out)).toContainEqual(expect.stringMatching(/^inference failures, the last \d+m ago, with no successful turn found since/));
   });
 
   test('a failures.log record of another kind makes no inference summary', async () => {
@@ -493,32 +492,29 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
     const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
     const success = (s: number) => `${JSON.stringify({
       timestamp: new Date(s * 1000).toISOString(), kind: 'stream', rawResponse: { stop_reason: 'end_turn' } })}\n`;
-    const findings = () => JSON.parse(ladder(at, ['--findings-json']).out.split('\n')
-      .find((l) => l.startsWith('connectome-doctor findings: '))!.slice('connectome-doctor findings: '.length));
+    const findings = () => foundIn(ladder(at).out);
     writeFileSync(calls, success(at.now - 400));
-    expect(findings()).toContainEqual({ text: expect.stringMatching(
-      /^inference failures, the last whose time is known \d+m ago, with no successful turn found since/), counts: true });
+    expect(findings()).toContainEqual(expect.stringMatching(
+      /^inference failures, the last whose time is known \d+m ago, with no successful turn found since/));
     writeFileSync(calls, success(at.now - 5));
-    expect(findings()).toContainEqual({ text: expect.stringMatching(
-      new RegExp(`^last inference failure whose time is known \\d+m ago: a later call, at ${stamp(at.now - 5)}, succeeded`)), counts: false });
+    expect(findings()).toContainEqual(expect.stringMatching(
+      new RegExp(`^last inference failure whose time is known \\d+m ago: a later call, at ${stamp(at.now - 5)}, succeeded`)));
     writeFileSync(file, '');
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${JSON.stringify({ at: new Date((at.now - 300) * 1000).toISOString(),
       agent: 'resident', consecutive: 1, reason: '529 overloaded', kind: 'inference-exhausted' })}\n${JSON.stringify({
       agent: 'resident', consecutive: 2, reason: '529 overloaded', kind: 'inference-exhausted' })}\n`);
     writeFileSync(calls, success(at.now - 400));
-    expect(findings()).toContainEqual({ text: expect.stringMatching(
-      /^inference failures, the last whose time is known \d+m ago, with no successful turn found since/), counts: true });
+    expect(findings()).toContainEqual(expect.stringMatching(
+      /^inference failures, the last whose time is known \d+m ago, with no successful turn found since/));
   });
 
-  test('failures whose time the journal can\'t give are said, with that time not known, as a line that doesn\'t count', async () => {
+  test('failures whose time the journal can\'t give are said, with that time not known, as a finding', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const file = join(at.work, 'host.err');
     writeFileSync(file, '[inference-failed] the model call failed: 400 prompt is too long\n');
     systemctl(at, { text: `[Service]\nStandardError=append:${file}\n` });
-    const { out } = ladder(at, ['--findings-json']);
-    const line = out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
-    expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
-      text: expect.stringMatching(/^inference failures present, and when the last was isn't known here/), counts: false });
+    const { out } = ladder(at);
+    expect(foundIn(out)).toContainEqual(expect.stringMatching(/^inference failures present, and when the last was isn't known here/));
   });
 
 
@@ -539,25 +535,22 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
     expect(out).not.toContain('no readable model call');
   });
 
-  test('with a failure on record and a newest call log that can\'t be read, whether a turn has succeeded since is not known, and doesn\'t count', async () => {
+  test('with a failure on record and a newest call log that can\'t be read, whether a turn has succeeded since is not known', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     mkdirSync(join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl'));
-    const line = ladder(at, ['--findings-json']).out.split('\n')
-      .find((l) => l.startsWith('connectome-doctor findings: '))!;
-    const found = JSON.parse(line.slice('connectome-doctor findings: '.length)) as { text: string; counts: boolean }[];
-    expect(found).toContainEqual({ text: expect.stringMatching(/^inference failures, the last \S+ ago; whether a turn has succeeded since isn't known, since the call log can't be read here$/), counts: false });
-    expect(found.some((f) => f.text.includes('no successful turn found since'))).toBe(false);
+    const found = foundIn(ladder(at).out);
+    expect(found).toContainEqual(expect.stringMatching(/^inference failures, the last \S+ ago; whether a turn has succeeded since isn't known, since the call log can't be read here$/));
+    expect(found.some((f) => f.includes('no successful turn found since'))).toBe(false);
   });
 
-  test('with no call log, the inference stage says so, and with failures on record, whether a turn has succeeded since is not known, and doesn\'t count', async () => {
+  test('with no call log, the inference stage says so, and with failures on record, whether a turn has succeeded since is not known', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const data = join(at.work, 'data');
-    const found = (): { text: string; counts: boolean }[] => JSON.parse(ladder(at, ['--findings-json']).out.split('\n')
-      .find((l) => l.startsWith('connectome-doctor findings: '))!.slice('connectome-doctor findings: '.length));
+    const found = (): string[] => foundIn(ladder(at).out);
     expect(ladder(at).out).toContain(`· inference (llm call)       can't be seen here: no call log in ${data}\n`);
-    expect(found()).toContainEqual({ text: expect.stringMatching(new RegExp('^inference failures, the last \\S+ ago; whether a turn ' +
-      `has succeeded since isn't known, since there's no call log in ${data}$`)), counts: false });
-    expect(found().some((f) => f.text.includes('no successful turn found since'))).toBe(false);
+    expect(found()).toContainEqual(expect.stringMatching(new RegExp('^inference failures, the last \\S+ ago; whether a turn ' +
+      `has succeeded since isn't known, since there's no call log in ${data}$`)));
+    expect(found().some((f) => f.includes('no successful turn found since'))).toBe(false);
     writeFileSync(join(at.work, 'journal.txt'), '');
     expect(ladder(at).out).toMatch(new RegExp(`x inference \\(llm call\\) +--:--:-- +\\( +never\\) +no call log in ${data}$`, 'm'));
   });
@@ -611,7 +604,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
 });
 
 describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
-  test('a host that hasn\'t installed its SIGUSR2 listener yet isn\'t signalled, and says why and what to do, with a finding that doesn\'t count', async () => {
+  test('a host that hasn\'t installed its SIGUSR2 listener yet isn\'t signalled, and says why and what to do, with a finding', async () => {
     const at = await install({ listens: false });
     const { out } = ladder(at);
     await settled(at.host);
@@ -619,9 +612,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
     expect(out).not.toContain('live gate dump (SIGUSR2): {');
     expect(out).toMatch(/gate dump: not asked: .*has no SIGUSR2 listener.*run this check again in a minute; one whose agent-framework predates the dump never does/);
     expect(out).toMatch(new RegExp(`=== findings ===[\\s\\S]*the gate dump wasn't asked for, since the host \\(pid ${at.host.process.pid}\\) has no SIGUSR2 listener, so the gate dump isn't known`));
-    const line = ladder(at, ['--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
-    expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
-      text: expect.stringMatching(/^the gate dump wasn't asked for, since the host \(pid \d+\) has no SIGUSR2 listener/), counts: false });
+    expect(foundIn(ladder(at).out)).toContainEqual(expect.stringMatching(/^the gate dump wasn't asked for, since the host \(pid \d+\) has no SIGUSR2 listener/));
   });
 
   test('a host that listens, in a unit that isn\'t active, isn\'t signalled', async () => {
@@ -663,7 +654,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
     expect(signalled(at.host)).toBe(false);
   });
 
-  test('an active unit with no main process at its first read says the dump wasn\'t asked, with no finding; a main process id that can\'t be read, at either read, is also a finding that doesn\'t count', async () => {
+  test('an active unit with no main process at its first read says the dump wasn\'t asked, with no finding; a main process id that can\'t be read, at either read, is also a finding', async () => {
     const at = await install({ listens: true });
     const NONE = 'the unit has no main process now';
     const UNREAD = 'the unit\'s main process id can\'t be read';
@@ -673,24 +664,21 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
       systemctl(at, unit);
       const { out } = ladder(at);
       expect(out, label).toContain(`live gate dump: not asked: ${why}`);
-      const line = ladder(at, ['--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
-      const findings = JSON.parse(line.slice('connectome-doctor findings: '.length)) as Array<{ text: string; counts: boolean }>;
-      expect(findings.filter((f) => f.text.startsWith('the gate dump wasn\'t asked for')), label).toEqual(finding
-        ? [{ text: `the gate dump wasn't asked for, since ${why}, so the gate dump isn't known`, counts: false }] : []);
+      const findings = foundIn(ladder(at).out);
+      expect(findings.filter((f) => f.startsWith('the gate dump wasn\'t asked for')), label).toEqual(finding
+        ? [`the gate dump wasn't asked for, since ${why}, so the gate dump isn't known`] : []);
     }
     await settled(at.host);
     expect(signalled(at.host)).toBe(false);
   });
 
-  test('a unit whose state can\'t be read isn\'t signalled, and the dump not asked is said, with a finding that doesn\'t count', async () => {
+  test('a unit whose state can\'t be read isn\'t signalled, and the dump not asked is said, with a finding', async () => {
     const at = await install({ listens: true });
     systemctl(at, { showFails: true });
     const WHY = 'the unit\'s state can\'t be read';
     const { out } = ladder(at);
     expect(out).toContain(`live gate dump: not asked: ${WHY}`);
-    const line = ladder(at, ['--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!;
-    expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
-      text: `the gate dump wasn't asked for, since ${WHY}, so the gate dump isn't known`, counts: false });
+    expect(foundIn(ladder(at).out)).toContainEqual(`the gate dump wasn't asked for, since ${WHY}, so the gate dump isn't known`);
     await settled(at.host);
     expect(signalled(at.host)).toBe(false);
   });
@@ -876,9 +864,6 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s data directory', () => {
     expect(out).toContain(`· inference (llm call)       can't be seen here: there's no data directory at ${data}`);
     expect(out).not.toMatch(/(chronicle ingest|inference \(llm call\)) .*never/);
     expect(out).toContain('run this script with --data-dir DIR');
-    const json = ladder(at, ['--findings-json']).out;
-    expect(json).toContain(`there's no data directory at ${data}`);
-    expect(json).not.toContain('--data-dir');
   });
 
   test('a data directory that isn\'t there is a finding, not a crash', async () => {
@@ -1139,40 +1124,6 @@ describe.skipIf(ladderUnrunnable)('what the ladder cuts', () => {
     return at;
   };
 
-  const stamp = (seconds: number) => new Date(seconds * 1000).toISOString().replace(/^\d{4}-(\d\d-\d\d)T(\d\d:\d\d:\d\d).*$/, '$1 $2');
-
-  test('under --findings-json, it prints no provider or message text: the inference stage names the call log, each source of failures gives each kind\'s count, its newest time and the command that shows them, and the Discord stage names the channel', async () => {
-    const at = await longFields();
-    const { out } = ladder(at, ['--findings-json']);
-    for (const text of ['PREVIEW-TAIL-END', 'ERR-TAIL-END', 'FAIL-TAIL-END', 'pppp', 'zzzz', 'yyyy', '400 prompt is too long']) {
-      expect(out).not.toContain(text);
-    }
-    expect(out).toMatch(/discord event seen .*#general$/m);
-    expect(out).toContain('ended in an error. Its text can be a model provider\'s own words, so doctor leaves it out. It is in ' +
-      `${join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl')}\n`);
-    const why = ', their text left out, since it can quote a model provider or a person:';
-    expect(out).toContain(`recent failures in connectome-test.service's journal${why}\n  [inference-failed]: 1, the newest at ${stamp(at.now - 20)}\n` +
-      '  to see them: journalctl --user -u connectome-test.service --since @');
-    expect(out).toContain(` -g '\\[inference-(failed|hard-down|dropped)\\]|\\[push-event-rejected\\]|Error'\n`);
-    const failures = join(at.work, 'logs', 'failures.log');
-    expect(out).toContain(`recent failures in ${failures}${why}\n  Error: 1, the newest at a time not known\n` +
-      `  to see them: grep -v -F -- '"kind":"subscription-gc-close"' ${failures}\n`);
-  });
-
-  test('under --findings-json, each kind of failure is counted once, with its newest time from its record, the newest kind first', async () => {
-    const at = await install({ listens: true, mainPidNow: '0' });
-    const iso = (s: number) => new Date(s * 1000).toISOString();
-    writeFileSync(join(at.work, 'logs', 'failures.log'), [
-      { kind: 'push-event-rejected', at: iso(at.now - 300), reason: 'PERSON-TEXT-1' },
-      { kind: 'inference-exhausted', at: iso(at.now - 200), reason: 'PROVIDER-TEXT-1' },
-      { kind: 'inference-exhausted', at: iso(at.now - 100), reason: 'PROVIDER-TEXT-2' },
-    ].map((record) => JSON.stringify(record)).join('\n') + '\n');
-    const { out } = ladder(at, ['--findings-json']);
-    expect(out).toContain(`  inference-exhausted: 2, the newest at ${stamp(at.now - 100)}\n` +
-      `  push-event-rejected: 1, the newest at ${stamp(at.now - 300)}\n`);
-    for (const text of ['PERSON-TEXT', 'PROVIDER-TEXT']) expect(out).not.toContain(text);
-  });
-
   test('run alone, it cuts a message\'s preview at 40 characters with "…", a model call\'s error at 80 and a failure line at 150', async () => {
     const { out } = ladder(await longFields());
     expect(out).toMatch(/discord event seen .*#general: p{40}…/);
@@ -1193,67 +1144,14 @@ describe.skipIf(ladderUnrunnable)('what the ladder cuts', () => {
   });
 });
 
-describe.skipIf(ladderUnrunnable)('the ladder run by doctor, with --findings-json', () => {
-  const findings = (out: string): { text: string; counts: boolean }[] => {
-    const lines = out.split('\n').filter((line) => line.startsWith('connectome-doctor findings: '));
-    expect(lines).toHaveLength(1);
-    return JSON.parse(lines[0].slice('connectome-doctor findings: '.length));
-  };
-
-  test('its findings are its last line, each with whether it counts, with no block or closing line, and it exits 0', async () => {
-    const at = await install({ listens: true, mainPidNow: '0' });
-    writeFileSync(join(at.work, 'journal.txt'), [
-      `${at.now - 3}.000000 host bun[1]: [routeSpeech] discord:1/2: the channel refused it — speech NOT routed (12 chars stay in chronicle)`,
-      '',
-    ].join('\n'));
-    rmSync(join(at.work, 'data'), { recursive: true });
-    const { out, status } = ladder(at, ['--findings-json']);
-    expect(out.trimEnd().split('\n').at(-1)).toMatch(/^connectome-doctor findings: /);
-    expect(findings(out)).toEqual([
-      { text: expect.stringMatching(/^there's no data directory at /), counts: false },
-      { text: expect.stringMatching(/^the last reply wasn't delivered: discord:1\/2: the channel refused it/), counts: true },
-    ]);
-    expect(out).not.toContain('=== ');
-    expect(status).toBe(0);
-  });
-
-  test('nothing found is an empty list, and still no closing line', async () => {
-    const at = await install({ listens: true, mainPidNow: '0' });
-    writeFileSync(join(at.work, 'journal.txt'),
-      `${at.now - 10}.000000 host bun[1]: [routeSpeech] discord:1/2: routed 12 chars -> discord:1/2 (server=discord, delivered=true)\n`);
-    const { out, status } = ladder(at, ['--findings-json']);
-    expect(findings(out)).toEqual([]);
-    expect(out).not.toContain('=== ');
-    expect(status).toBe(0);
-  });
-
-  test('the service\'s state is left to doctor: one that isn\'t active, or started a minute ago, makes no finding and no row', async () => {
-    const at = await install({ listens: true, mainPidNow: '0' });
-    systemctl(at, { active: 'inactive' });
-    const { out } = ladder(at, ['--findings-json']);
-    expect(out).not.toMatch(/^service +:/m);
-    expect(findings(out).map((f) => f.text).join('\n')).not.toMatch(/service is inactive|service started only/);
-  });
-
-  test('what the ladder can\'t see is a line that doesn\'t count', async () => {
+describe.skipIf(ladderUnrunnable)('what the ladder can\'t see, and the resident\'s own sleep', () => {
+  test('what the ladder can\'t see is a finding', async () => {
     const at = await install({ listens: true, journalFails: 'Failed to open the journal: Permission denied', mainPidNow: '0' });
-    const { out } = ladder(at, ['--findings-json']);
-    expect(findings(out)).toContainEqual({ text: expect.stringMatching(/journal can't be read/), counts: false });
-    expect(findings(out).filter((f) => f.counts)).toEqual([]);
+    const { out } = ladder(at);
+    expect(foundIn(out)).toContainEqual(expect.stringMatching(/journal can't be read/));
   });
 
-  const findingsOf = (out: string): { text: string; counts: boolean }[] =>
-    JSON.parse(out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '))!.slice('connectome-doctor findings: '.length));
-
-  test('an unconfirmed delivery is a line that doesn\'t count', async () => {
-    const at = await install({ listens: true, mainPidNow: '0' });
-    writeFileSync(join(at.work, 'journal.txt'),
-      `${at.now - 3}.000000 host bun[1]: [routeSpeech] discord:1/2: the connector timed out — speech delivery NOT confirmed (12 chars stay in chronicle)\n`);
-    expect(findingsOf(ladder(at, ['--findings-json']).out)).toContainEqual(
-      { text: expect.stringMatching(/^the last reply's delivery wasn't confirmed/), counts: false });
-  });
-
-  test('the resident\'s own sleep is a line that doesn\'t count, and a turn in flight withdraws the no-turn finding', async () => {
+  test('the resident\'s own sleep is a finding, and a turn in flight withdraws the no-turn finding', async () => {
     const at = await install({ listens: true, dumpsTo: 'host.err' });
     const file = join(at.work, 'host.err');
     writeFileSync(file, '');
@@ -1264,17 +1162,17 @@ describe.skipIf(ladderUnrunnable)('the ladder run by doctor, with --findings-jso
     const payload = [...Buffer.from(JSON.stringify({ triggered: true, channelName: 'room', participant: 'ann' }))].join(',');
     writeFileSync(join(session, 'records.log'),
       `{"record_id":1,"global_sequence":1,"state_id":"messages","data":[${payload}],"timestamp":${(at.now - 600) * 1_000_000}}\n`);
-    const quiet = findingsOf(ladder(at, ['--findings-json']).out);
+    const quiet = foundIn(ladder(at).out);
     await settled(at.host);
-    expect(quiet).toContainEqual({ text: expect.stringMatching(/^a gate-TRIGGERED event was ingested but NO turn was recorded after it/), counts: true });
+    expect(quiet).toContainEqual(expect.stringMatching(/^a gate-TRIGGERED event was ingested but NO turn was recorded after it/));
     writeFileSync(join(at.work, 'dump-line'),
       `[diagnostics] {"activeStreams":["resident"],"gate":{"inferring":false,"sleepUntil":${(at.now + 3_600) * 1000}}}\n`);
-    const { out } = ladder(at, ['--findings-json']);
+    const { out } = ladder(at);
     await settled(at.host);
-    const found = findingsOf(out);
+    const found = foundIn(out);
     expect(out).toContain('turn in-flight for: resident');
-    expect(found.map((f) => f.text).join('\n')).not.toContain('NO turn was recorded after it');
-    expect(found).toContainEqual({ text: expect.stringMatching(/^agent is ASLEEP until /), counts: false });
+    expect(found.join('\n')).not.toContain('NO turn was recorded after it');
+    expect(found).toContainEqual(expect.stringMatching(/^agent is ASLEEP until /));
   });
 });
 
@@ -1283,14 +1181,10 @@ describe.skipIf(ladderUnrunnable)('the ladder, its round on the review of 3c6be0
     at: new Date(s * 1000).toISOString(), agent: 'resident', consecutive: 3, reason: '529 overloaded', kind: 'inference-exhausted' })}\n`);
   const row = (s: number, kind: string, rawResponse: unknown = { stop_reason: 'end_turn' }) =>
     JSON.stringify({ timestamp: new Date(s * 1000).toISOString(), kind, rawResponse });
-  const findings = (at: Install): Array<{ text: string; counts: boolean }> => {
-    const line = ladder(at, ['--findings-json']).out.split('\n').find((l) => l.startsWith('connectome-doctor findings: '));
-    if (line === undefined) throw new Error('the ladder gave no findings line');
-    return JSON.parse(line.slice('connectome-doctor findings: '.length));
-  };
-  const hardDown = { text: expect.stringMatching(/^inference failures, the last \d+m ago, with no successful turn found since/), counts: true };
-  const startsAfter = { text: expect.stringMatching(new RegExp('^inference failures, the last \\d+m ago; whether a turn has succeeded ' +
-    'since isn\'t known, since the call log read here starts at \\S+ \\S+, after it$')), counts: false };
+  const findings = (at: Install): string[] => foundIn(ladder(at).out);
+  const hardDown = expect.stringMatching(/^inference failures, the last \d+m ago, with no successful turn found since/);
+  const startsAfter = expect.stringMatching(new RegExp('^inference failures, the last \\d+m ago; whether a turn has succeeded ' +
+    'since isn\'t known, since the call log read here starts at \\S+ \\S+, after it$'));
 
   test('a failure from before the call log the ladder reads isn\'t called hard-down: whether a turn has succeeded since isn\'t known', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
@@ -1323,8 +1217,8 @@ describe.skipIf(ladderUnrunnable)('the ladder, its round on the review of 3c6be0
     writeFileSync(join(at.work, 'journal.txt'), '');
     exhausted(at, at.now - 300);
     const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
-    const unread = { text: expect.stringMatching(new RegExp('^inference failures, the last \\d+m ago; whether a turn has succeeded ' +
-      'since isn\'t known, since rows of the call log can\'t be read$')), counts: false };
+    const unread = expect.stringMatching(new RegExp('^inference failures, the last \\d+m ago; whether a turn has succeeded ' +
+      'since isn\'t known, since rows of the call log can\'t be read$'));
     writeFileSync(calls, `${row(at.now - 400, 'complete')}\n{"timestamp":"${new Date((at.now - 90) * 1000).toISOString()}","kind":"str`);
     expect(findings(at)).toContainEqual(unread);
     expect(findings(at)).not.toContainEqual(hardDown);
@@ -1338,9 +1232,8 @@ describe.skipIf(ladderUnrunnable)('the ladder, its round on the review of 3c6be0
     const calls = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
     for (const raw of ['bad', ['bad'], { response: 'bad' }]) {
       writeFileSync(calls, `${row(at.now - 5, 'stream', raw)}\n`);
-      const { out, status } = ladder(at, ['--findings-json']);
-      expect([raw, status, out]).toEqual([raw, 0, expect.stringMatching(/inference \(llm call\)\s+\S+ \S+\s+\(\s*\d+s ago\)\s+answered/)]);
-      expect(out).toContain('connectome-doctor findings: ');
+      const { out } = ladder(at);
+      expect([raw, out]).toEqual([raw, expect.stringMatching(/inference \(llm call\)\s+\S+ \S+\s+\(\s*\d+s ago\)\s+answered/)]);
     }
   });
 });

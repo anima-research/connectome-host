@@ -11,13 +11,6 @@ export type CredentialStateKind =
 
 export type CredentialActionId = 'refresh' | 'login' | 'set-token' | 'recheck';
 
-/** What a model call refused with this credential means: one line in the
- *  host's words, and whether the host mends it by itself. */
-export interface RefusedCall {
-  line: string;
-  mends: boolean;
-}
-
 export interface CredentialAction {
   id: CredentialActionId;
   /** Button / command label. */
@@ -45,9 +38,6 @@ export interface CredentialState {
   rotatable: boolean;
   /** Epoch ms of the credential's own expiry, when the source knows it. */
   expiresAt?: number;
-  /** What a model call refused with this credential means, where the source
-   *  says. */
-  refused?: RefusedCall;
   /** Actions the host can run for this state, in the order to offer them. */
   actions: CredentialAction[];
   /** Device-code login in progress (`auth-login-required`). */
@@ -62,7 +52,6 @@ export interface CredentialState {
 export interface CredentialSource {
   readonly provider: string;
   canRefresh(): boolean;
-  refused?(): RefusedCall;
   refresh?(): Promise<void>;
   login?(): Promise<void>;
   cancelLogin?(): Promise<boolean>;
@@ -163,7 +152,6 @@ export class CredentialMonitor {
       ...state,
       ...(state.kind === 'auth-login-required' ? {} : { rotatable: this.source.canRefresh() }),
       ...(expiresAt !== undefined ? { expiresAt } : {}),
-      ...(this.source.refused === undefined ? {} : { refused: this.source.refused() }),
     };
   }
 
