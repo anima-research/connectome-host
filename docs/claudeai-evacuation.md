@@ -142,8 +142,10 @@ The evacuator can chain straight into Stage 3: it asks "Start a warmup pass now?
 Bulk-imported sessions land in Chronicle with thousands of raw messages and no autobiographical summaries computed yet. At first compile, autobio's uncompressed-fallback would emit everything raw and blow the context window. The warmup script pre-computes the L1/L2/L3 summaries before the session is opened: all of them for history with no tool calls on a compression model outside the Fable and Mythos families, and what it can without the agent's tool definitions otherwise (below).
 
 ```
-bun scripts/warmup-session.ts "<conversation name or session id>"
+bun scripts/warmup-session.ts '<conversation name or session id>'
 ```
+
+The name or id goes between single quotes, so the shell passes it as it is, an apostrophe in it written `'\''`. A name that begins with `-` is taken for an option, and a name several sessions share, ignoring case, warms only one of them, so for either give its session id instead: the import prints each conversation's id beside its name, and once the host runs, `/session list` shows it in brackets.
 
 Compression should be driven by the same model used in the conversation. Autobio's prompts are explicitly first-person ("describe it as you would to yourself"), so the summarizer is writing the original Claude's own diary. Using Haiku here would be a different voice wearing the same name. When the evacuator chains into warmup it passes its model along with `--model`; run standalone, warmup defaults to Sonnet 4.5, so pass `--model` to match your recipe's model.
 
@@ -172,7 +174,7 @@ Order-of-magnitude estimates using Sonnet 4.5 pricing (input $3/Mtok, output $15
 | ~500 messages | $5–$20 | tens of minutes |
 | ~5000 messages | $50–$200 | hours |
 
-Use `--max-spend` if you want a hard ceiling — the script will halt cleanly and you can review what's been produced before deciding whether to continue. The `--model` flag also accepts cheaper models if you're willing to compromise on voice fidelity for cost.
+Use `--max-spend` for a soft cap: the script halts between ticks once its estimated spend reaches it, so the tick under way can take it past, and you can review what's been produced before deciding whether to continue. The `--model` flag also accepts cheaper models if you're willing to compromise on voice fidelity for cost.
 
 For short conversations (under ~50 messages) you can skip warmup entirely; autobio will compress lazily at first compile.
 
@@ -200,7 +202,7 @@ Once you're on the right session, type a turn. The agent should recognize the co
 If you just want to verify the pipeline works end-to-end before committing to a long warmup, pick a 2–4 message conversation:
 
 ```
-bun scripts/import-claudeai-export.ts ~/claude-export --filter "<unique substring of the smoke convo name>"
+bun scripts/import-claudeai-export.ts ~/claude-export --filter '<a regular expression matching only the name of the smoke conversation>'
 bun src/index.ts recipes/claude-export-revive.json
 # in TUI:
 /session list
@@ -226,7 +228,7 @@ No evacuator, no warmup. The canned `claude-export-revive.json` is sufficient fo
 |---|---|---|
 | `400 invalid_request_error … signature: Field required` | A native `thinking` block reached the API without a signature | Confirm the importer was run; check that historical assistant turns contain `<recovered_thinking>` wrapped text, not raw thinking blocks |
 | Assistant turns appear as user role (startup may warn `agent name disagreement`) | `--agent` mismatch between import and recipe — including a recipe from an earlier evacuator left at `agent.name: "agent"` | Set the recipe's `agent.name` to the import's `--agent` value (default `Claude`), or re-import with `--agent <name>` matching the recipe |
-| First compile blows the context window | Warmup wasn't run on a large conversation | Run `bun scripts/warmup-session.ts "<name>"`. Work it reports as waiting on tool definitions is the host's to compress once it declares them (Stage 3) |
+| First compile blows the context window | Warmup wasn't run on a large conversation | Stop the resident's host, then run `bun scripts/warmup-session.ts '<name>' --model '<model>'`, with the recipe's `agent.strategy.compressionModel` as `<model>`, or the model the resident runs on where it sets none, and the session's id in place of a name that begins with `-`, which warmup takes for an option, or that several sessions share, ignoring case, since that warms only one of them. Warmup reads no recipe, so give it the strategy's `l1BudgetTokens`, `l2BudgetTokens`, `l3BudgetTokens` and `mergeThreshold`, where the recipe sets them, as `--l1-budget`, `--l2-budget`, `--l3-budget` and `--merge-threshold`. It takes no other strategy setting: for the rest, such as the windows and the folding, it uses context-manager's defaults, where the host uses the recipe's or its own. Work it reports as waiting on tool definitions is the host's to compress once it declares them (Stage 3) |
 | Warmup hangs at near-100% CPU on subsequent prompts | Bun 1.3 readline-on-pipe bug | Already worked around in both scripts via a persistent line reader; if you hit it elsewhere, ensure stdin isn't being multiplexed |
 | Evacuator's adjustment step fails | No `ANTHROPIC_API_KEY` set, or model unreachable | Set the env var, or skip step 3 (the raw leaked prompt is also a fine starting point — step 4's editor pass lets you do the trimming by hand) |
 | Repeat run of the evacuator aborts with `Found existing checkpoint …` | A checkpoint exists and neither `--resume` nor `--reset` was passed | `bun scripts/evacuator.ts <export-dir> --resume` to continue (or `--reset` to start over) |

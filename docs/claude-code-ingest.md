@@ -9,8 +9,8 @@ becomes the chronicle.
 
 This complements [`claudeai-evacuation.md`](./claudeai-evacuation.md) (claude.ai web
 exports, where thinking signatures are *not* recoverable) and
-[`AGENT-ONBOARDING.md`](./AGENT-ONBOARDING.md) (the full deployment runbook — host,
-recipe, services, Discord). Read the onboarding runbook for everything that isn't
+[`AGENT-ONBOARDING.md`](./AGENT-ONBOARDING.md) (the setup guide — recipe, Discord,
+the service and its checks). Read the setup guide for everything that isn't
 specific to the Claude Code source; this document covers only what is.
 
 ## When this workflow is the right one
@@ -21,7 +21,6 @@ specific to the Claude Code source; this document covers only what is.
 | You will run the resident on the **same model** that produced the transcript | Yes — signed thinking replays verbatim, except on a model whose thinking binds (below) |
 | You want to change models | Possible, but thinking blocks must be dropped or wrapped as text (see §4.2); expect a different being |
 | You only want a static transcript | No — the `.jsonl` already is one |
-| The session is short (< ~50 messages) | Yes; skip the pre-compress step |
 
 ## What the transcript contains, and what round-trips
 
@@ -52,9 +51,9 @@ Three structural facts matter:
 | Block | Round-trips? | Notes |
 |---|---|---|
 | `text` | Yes | identity |
-| `thinking` (signed) | **Yes, same model only** | replays verbatim; API-verified on Opus 5.5 signatures minted by Claude Code and replayed through a gateway account. On Fable 5.1, Fable 5.2, Opus 5.5, Sonnet 5.5 and Haiku 5.5, whose thinking binds, a block is bound to the system text and tools it was minted under, so once the resident's differ from Claude Code's the provider sets it aside: the host sends the drop control on agent turns through the Anthropic API, and an account that enforces the binding refuses the request without it |
+| `thinking` (signed) | **Yes, same model only** | replays verbatim; API-verified on Opus 5.5 signatures minted by Claude Code and replayed through a gateway account. On Fable 5.1 and 5.2, Opus 5.5, Sonnet 5.5 and Haiku 5.5, and, by the host's table, the Mythos models, whose thinking binds, a block is bound to the system text and tools it was minted under. On the first five the host sends the drop control on agent turns through the Anthropic API, and the provider sets such a block aside once the resident's differ from Claude Code's; an account that enforces the binding refuses the request without the control. An account the host's start-up check finds still showing such a block gets no drop control, and its thinking, the transcript's included, is sent as stored (`DEPLOYMENTS.md`'s "Refusals and signed thinking"). Without the drop control, on the Mythos models or another provider, context-manager leaves the transcript's thinking out |
 | `tool_use` for `Bash`/`Read`/`Edit`/… | Yes structurally | inert at replay (the resident won't have these tools) — the API accepts historical calls to undeclared tools, with and without a `tools` param |
-| `tool_result` | **Yes, if stored in the context manager's live shape** — see §2.1, the one bug that will bite you | |
+| `tool_result` | **Yes, if stored in the context manager's live shape**, which stage 1's script converts it to. Stage 3 tells what the raw shape did: the one bug that will bite you | |
 | Images pasted into the CLI | Usually as `image` blocks inside `tool_result`/`user` content | keep; sniff `media_type` if the membrane complains |
 | `tool_reference` blocks (left by the CLI's deferred-tool loader inside a `tool_result`) | **No** | the API validates each reference against the request's `tools` and returns 400 `Tool reference '…' not found in available tools` for the **whole** request — every turn, not just the first. Replace them with a short `text` block at build time (step 2b below); they sit in `user` turns, so no signed block changes shape |
 
@@ -70,6 +69,25 @@ Three structural facts matter:
 ```
 
 ### Stage 1 — Build the seed
+
+Here `<agent>-cm` is the resident's directory, `<dir>` in the setup guide, and
+`<agent>-cm/data` is its data directory, unless the install's record,
+`<agent>-cm/connectome-host/install.json`, names another as `dataDir`: then use that
+wherever this document writes `<agent>-cm/data` or `data`. If you're the setup agent,
+following this from the guide's "Importing a history", setup has run there: you go live
+only after the import, and you skip stage 3, whose check is an operator's, and check
+after going live instead, as stage 3's last paragraph says. If you're an operator who came here on
+your own, run `bunx @animalabs/connectome-host setup discord` first, in a new, empty
+`<agent>-cm`: setup installs only into an empty directory or one it set up. Tell its
+agent, before its read-back, that you'll bring in a Claude Code history yourself: it
+then writes the recipe ("The recipe") and stops before its "Going live", which starts
+the resident, since the seed has to be in the data directory before any host starts there
+(stage 2), and stage 3's check copies the recipe. Leave it with `/quit` once the recipe
+is written. Running setup again once the seed is
+in picks up where it stopped. Then make a `scripts/` directory in `<agent>-cm` for this
+stage's and the next stage's scripts. In a shell command, put each path or value you fill
+in between single quotes, so that a space or a shell character in it stays part of it,
+and write each `'` inside one as `'\''`.
 
 Save as `<agent>-cm/scripts/build-seed.mjs`, edit the four constants, run with `node`.
 
@@ -176,16 +194,41 @@ session, rebuild before ingesting — the seed is a snapshot.
 
 ### Stage 2 — Ingest into the chronicle
 
-Save as `<agent>-cm/scripts/ingest-seed.mjs`. **Run it from the connectome-host
-directory** (so `@animalabs/context-manager` resolves to the exact version the host
-will run) and point `DATA_DIR` at the install's legacy store path; the host migrates
-`data/store` → `data/sessions/<id>/` on first launch.
+Save as `<agent>-cm/scripts/ingest-seed.mjs`, link the release's packages beside it
+with `ln -sfn ../connectome-host/current/node_modules '/home/<agent>/<agent>-cm/scripts/node_modules'`,
+and run it from `<agent>-cm`, where stage 1 wrote `seed.json`. Node resolves its
+`@animalabs/context-manager` from the script's own directory up, so the link gives it
+the release `current` names, the version the host runs, rather than the copy setup
+installed in `<agent>-cm/node_modules`, which an update leaves behind. Where `scripts/node_modules` is
+already there and isn't a link, move it aside first: `ln` would put the link inside it. Point `DATA_DIR` at the install's
+legacy store path, `store` in its data directory: the script takes it from
+`SEED_DATA_DIR` when that's set. The host migrates `data/store` →
+`data/sessions/<id>/` on first launch.
+
+The migration needs a data directory with no `sessions.json`. A host's first start
+writes one there, and so does a claude.ai import, and no later start migrates
+`data/store`. So a seed written after either sits in `data/store` with nothing opening
+it. The script below refuses when `sessions.json` is there, the dry run included. It
+refuses too when `store` or `sessions/` is: a store this script made in an earlier
+run is removed before the next run ("Re-runs"), while a store that was there before
+you seeded, or a `sessions/` without `sessions.json`, is the resident's own history. If
+it refuses, stop and decide with the person. Where an import wrote `sessions.json`,
+moving it aside moves the import too. Where a host's start wrote it and that start held nothing worth
+keeping, such as only a hello, stop the service with the stop line that the install's
+command, run alone by its full path, shows,
+`'/home/<agent>/<agent>-cm/connectome-host/connectome'`, move `sessions.json`
+and `sessions/` out of the data directory, seed it, and leave the service stopped: its
+next start, in stage 4, is the seed's first boot, after this stage's copy of the store
+and stage 3's check (it stays installed, so a restart of the machine, or on macOS a new
+login, before then starts it). The rest of the data directory stays as it is: discord-mcpl's state
+files, its filters among them, and the Web UI's `observers.json`. Otherwise don't seed:
+the resident already has a history of its own, and this method seeds only a first start.
 
 ```js
-// One-shot: seed.json → chronicle.  Wipe <agent>-cm/data before re-running.
-//   cd <runtime>/connectome-host && node /home/<agent>/<agent>-cm/scripts/ingest-seed.mjs seed.json [--dry-run]
+//   cd /home/<agent>/<agent>-cm && node scripts/ingest-seed.mjs seed.json [--dry-run]
 import { ContextManager, AutobiographicalStrategy } from '@animalabs/context-manager';
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 
 const DATA_DIR = process.env.SEED_DATA_DIR ?? '/home/<agent>/<agent>-cm/data/store';
 const AGENT = '<Agent>';
@@ -194,6 +237,17 @@ const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const src = args.find((a) => !a.startsWith('--'));
 if (!src) { console.error('usage: ingest-seed.mjs <seed.json> [--dry-run]'); process.exit(2); }
+const INDEX = join(dirname(resolve(DATA_DIR)), 'sessions.json');
+const SESSIONS = join(dirname(resolve(DATA_DIR)), 'sessions');
+const there = (path) => lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+if (there(INDEX)) {
+  console.error(`${INDEX} is there: a host's first start or an import writes it, and no start migrates a seed written now (stage 2).`);
+  process.exit(1);
+}
+if (there(resolve(DATA_DIR)) || there(SESSIONS)) {
+  console.error(`${there(resolve(DATA_DIR)) ? DATA_DIR : SESSIONS} is there: the seed needs a data directory with no store or sessions in it (stage 2).`);
+  process.exit(1);
+}
 const bundle = JSON.parse(readFileSync(src, 'utf8'));
 const messages = bundle.messages;
 
@@ -279,20 +333,15 @@ strategy config chunks its frontier under *that* config):
 3. Confirm the last message is the seam you intend and the first message is the
    human's.
 
-The host's `GET /debug/context` and `/debug/context/makeup` (basic-auth webui) give
+The host's `GET /debug/context` and `/debug/context/makeup` (the Web UI's, stage 4) give
 you 1–2 on a running instance. For a pre-boot check, run the host on copies that act on
 nothing outside themselves: they change none of the original's files, reach no one the
-resident speaks to, and get no answer from any service. A host started on a copy of the
-install dir as it is fails all three: from there it reads that directory's `.env`
-files and `mcpl-servers.json`, so its servers start with the resident's credentials,
-discord-mcpl among them signing in to Discord as the resident's bot, and the `.env`'s
-`DATA_DIR`, an absolute path as the onboarding runbook writes it, still names the
-original data directory. Instead:
-1. Copy the data directory the service gives the host (its `DATA_DIR`), wherever it is,
+resident speaks to, and get no answer from any service.
+1. Copy the data directory the install's record names (stage 1), wherever it is,
    following links (`cp -RL`), so a link in it doesn't lead the copy back to the
    original.
-2. Make stage 4's Claude-Code-specific choices in the recipe first, so the check
-   compiles what the resident will run. Then copy it, readable by you alone
+2. Make stage 4's Claude-Code-specific choices in the recipe first, all but its Web UI,
+   so the check compiles what the resident will run. Then copy it, readable by you alone
    (`chmod 600` on the copy before the password goes in), and in the copy leave out
    `mcpServers`, `modules.fleet.children`, `modules.heartbeat.statePath`,
    `modules.ttsRelay` and `extensions`: the servers' `env` names files in the original
@@ -318,16 +367,17 @@ original data directory. Instead:
    them. For `<port>`, take one nothing listens on, which
    `curl http://127.0.0.1:<port>/` failing to connect shows before the boot: otherwise
    a request meant for the copy could reach another host on the machine.
-3. From a new, empty directory, start the host's own `src/index.ts`, the one the service
-   runs, which where update setup has run is the release `current` names. Never start
-   the install's entry, `start.js`: it refuses a `DATA_DIR` other than the one the
-   install's record names, and a host it starts writes the install's own files. Start
-   it in an environment of its own:
-   `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock CONNECTOME_UPDATE_CHECK=0 OBSERVERS_FILE="$PWD/no-observers.json" DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`,
-   with the path the service runs in place of that one where it differs.
+3. From a new, empty directory, start the release `current` names, not the install's
+   entry: the entry refuses a `DATA_DIR` other than the one the install's record names,
+   and a host it starts writes the install's own files. Start it in an environment of
+   its own:
+   `env -i PATH="$PATH" HOME="$PWD" ANTHROPIC_API_KEY=mock CONNECTOME_UPDATE_CHECK=0 OBSERVERS_FILE="$PWD/no-observers.json" DATA_DIR='<the data copy>' bun '/home/<agent>/<agent>-cm/connectome-host/current/node_modules/@animalabs/connectome-host/src/index.ts' '<the recipe copy>' --headless`.
    The host gets only the variables the command names, and from that directory Bun loads
-   none of `<agent>-cm`'s env files, so no credential of the resident's reaches it: the
-   key is a mock, and with `HOME` the new directory, Codex has no login.
+   none of `<agent>-cm`'s env files, so no credential of the resident's reaches it from
+   the environment: the key is a mock, and with `HOME` the new directory, Codex has no
+   login. A token the recipe itself writes out comes with the copy, but step 2 leaves
+   out its entry or, for `modules.history.semantic`'s, points its address where nothing
+   answers.
    `CONNECTOME_UPDATE_CHECK=0` keeps it from asking npm's registry for a newer release,
    as the fleet does for each child it starts. Where the recipe's provider needs a key of
    its own to start, give its name a mock value the same way: `OPENROUTER_API_KEY`,
@@ -366,6 +416,8 @@ original data directory. Instead:
 The copy's request has none of the servers' tools, so its count is short by theirs,
 and a server's tool schema goes unchecked until the resident is live.
 
+That pre-boot check is an operator's: a setup agent never starts a host
+(`AGENT-ONBOARDING.md`'s "Going live"), so it checks after going live instead.
 `/debug/context/makeup` shows a count the API refused only by its status, such as
 `countSource: "count_tokens_failed_400"`, without the body. To read the body, send
 that request yourself: `buildContextMakeup` (`src/web/panel-data.ts`) builds it by
@@ -376,8 +428,11 @@ for the pre-boot check, a key of your own.
 
 ### Stage 4 — Recipe, first boot, seam
 
-Follow `AGENT-ONBOARDING.md` §5–§10 for the install dir, `.env`, recipe, service,
-and verification. Claude-Code-specific choices:
+Follow `AGENT-ONBOARDING.md`'s "Secrets", "The recipe", "The recipe's servers" and
+"Going live" for `.env`, the recipe, the service and its checks. Those sections
+assume setup has run in `<agent>-cm` (stage 1) and that the setup agent is the one
+reading them, with its `setup--ask_secret`. Claude-Code-specific choices (if you ran
+stage 3's pre-boot check, you made all but the Web UI already):
 
 - **`agent.model`**: the transcript's model, exactly. Signatures verify only there.
 - **`agent.thinking`**: `{ "enabled": true, "type": "adaptive", "display": "summarized" }`
@@ -393,23 +448,50 @@ and verification. Claude-Code-specific choices:
   message session with heavy tool I/O was ~730k real tokens; a 600k budget on a
   1M-window model folded the oldest third at first compile) or the fleet default
   (300k) and accept that the early conversation folds into first-person summaries
-  before the first wake. Both are fine; decide deliberately. See §11.1 of the
-  onboarding runbook for the window arithmetic.
-- **Strategy**: mirror what the ingest used (§2) for chunking. New residents fold with
-  kv-unified, the host default (onboarding §5b). Decide *before* first boot, since
-  switching later is a layout change.
+  before the first wake. Both are fine; decide deliberately. `DEPLOYMENTS.md`'s
+  "The context budget and the model's window" has the window arithmetic.
+- **Strategy**: mirror what the ingest used (stage 2) for chunking. The recipe's
+  `agent.strategy` takes `"type": "autobiographical"` and the script's values for
+  `adaptiveResolution`, `targetChunkTokens`, `compressionSlackRatio`, `mergeThreshold`,
+  `headWindowTokens`, `recentWindowTokens`, `maxMessageTokens`, `enforceBudget`,
+  `overBudgetGraceRatio`, `maxSpeculativeL1s`, `summaryParticipant` and
+  `compressionRecallBudgetTokens`. Set `foldingStrategy` to `"kv-stable"` too: the
+  script builds the store under it, and a resident whose store was built under kv-stable
+  pins it (the README's "Recipes"). Left out, it would be kv-unified, the host
+  default (`DEPLOYMENTS.md`'s "The folding solver"), and switching later is a layout
+  change. Leave out `autoTickOnNewMessage`, which is off only for the import.
+- **The Web UI** (`modules.webui`), for stage 3's checks and this stage's, which read
+  its `/debug/context`, `/debug/context/makeup` and `/healthz`. The host starts it only
+  when the recipe names it, so a resident that doesn't need those checks can leave it
+  out. For them, put it on loopback with basic auth under `modules`:
+  `"webui": { "port": 7343, "host": "127.0.0.1", "basicAuth": { "username": "${WEBUI_USER}", "password": "${WEBUI_PASS}" } }`,
+  with `WEBUI_USER` and `WEBUI_PASS` reaching `.env` by `setup--ask_secret`. The
+  README's "Web UI" has the rest. If you're the setup agent, the endpoints are the
+  person's to open, in their own browser with the password they typed, since you never
+  see it: walk them through what to look for. Your own check is `connectome doctor`.
 - **Tools the seed references** (`Bash`, `Read`, `Edit`, …) need not exist in the
   recipe. The resident will notice it no longer has them; that's part of the
   continuation, not an error.
 
-First boot migrates `data/store` into `data/sessions/<id>/` and, with
-`autoTickOnNewMessage` on, starts minting L1 summaries of the seed immediately.
-Watch `/healthz` for `compressionQuarantine` and the per-call log
-(`data/llm-calls.<iso>.jsonl`) for `stop_reason`. Then send the first message —
-over the IPC socket, the webui, or the Discord channel you scoped — and let the
-resident find the seam themselves.
+The first start on a data directory with no `sessions.json` migrates `data/store` into
+`data/sessions/<id>/` and, with `autoTickOnNewMessage` on, starts minting L1 summaries
+of the seed immediately. A claude.ai import into the same data directory comes after
+that start: the importer writes `sessions.json`, and a data directory that has one
+migrates nothing. Stop the service for the import, with the stop line that
+`'/home/<agent>/<agent>-cm/connectome-host/connectome'`, run alone, shows, and start it
+again after it with its start line: the
+importer writes the session index, which a running host reads as it goes. The seed's
+session is the one that opens afterwards, and `/session switch <id>`, with the id the
+import printed, bare, opens the import's,
+as `AGENT-ONBOARDING.md`'s "Importing a history" says.
+Watch `/healthz` (the person, if you're the setup agent) for `compressionQuarantine`,
+and the per-call log (`data/llm-calls.<iso>.jsonl`) for `stop_reason`. The first
+message comes from the person, not from you, as in
+`AGENT-ONBOARDING.md`'s "Going live"; they can send it over the Discord channel they
+scoped, the Web UI or the IPC socket. Let the resident find the seam themselves.
 
-**Re-runs.** Before first boot the ingest is one-shot: wipe `data/`, rebuild, re-ingest.
+**Re-runs.** Before first boot the ingest is one-shot: remove the `data/store` your
+earlier run made, rebuild, re-ingest.
 After first boot never re-ingest; if the Claude Code session was continued after the
 snapshot, build the delta (rows after your last seeded `uuid`) and append it with a
 small script, anchored on the last imported message.
@@ -430,7 +512,7 @@ blocks will be rejected. Options, in order of preference:
 
 Never modify a turn's *shape* around a retained signed block (split it, reorder it,
 insert before it): the API returns 400 "thinking blocks cannot be modified" — a
-transport error, not a refusal, and the membrane retries once text-only.
+transport error, not a refusal.
 
 ## 5. If you hit `reasoning_extraction` refusals
 
@@ -465,8 +547,12 @@ a typo fails at boot rather than silently disabling the rung.
 1. **Same model, signatures intact.** Replaying the transcript's own signed thinking
    is *protective*, not risky: encrypted carriers alongside model-voiced text are what
    the API expects from that model. Stripping them and leaving the text is worse. On a
-   model whose thinking binds, the provider sets those blocks aside once the resident's
-   system text or tools differ from Claude Code's, and their text stays.
+   model whose thinking binds, those blocks are left out and their text stays: by the
+   provider once the resident's system text or tools differ from Claude Code's, or by
+   context-manager where there's no drop control (the table above). The one exception is
+   where the host sends the drop control: an account its start-up check finds still
+   showing such a block gets no drop control, and the transcript's thinking is sent as
+   stored.
 
 2. **Declared tools on every request.** Compression requests with no `tools` param
    are a deterministic input-block on some model families regardless of content.

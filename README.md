@@ -20,7 +20,8 @@ Built on the Connectome stack: [@animalabs/agent-framework](https://github.com/a
 
 ## A resident, from one line
 
-On the machine the resident will live on:
+The machine the resident will live on needs [Bun](https://bun.sh/) 1.4.4 or
+later, setup's own floor, installed as its site says. Then, on that machine:
 
 ```bash
 bunx @animalabs/connectome-host setup discord
@@ -45,7 +46,7 @@ another package on npm.
 
 | Use | Start here |
 |---|---|
-| **A resident** — a persistent agent on Discord (or other surfaces), headless on a VPS, with autobiographical memory | [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md), [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md) |
+| **A resident** — a persistent agent on Discord (or other surfaces), headless on a VPS, with autobiographical memory | `bunx @animalabs/connectome-host setup discord` (above), which hands over to the setup agent's guide, [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md); [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md) for running one |
 | **A continued conversation** — bring a claude.ai conversation, a Claude Code session or a Codex rollout across and keep going | [`docs/claudeai-evacuation.md`](docs/claudeai-evacuation.md), [`docs/claude-code-ingest.md`](docs/claude-code-ingest.md), `scripts/import-codex-rollout.ts` |
 | **A fleet** — a conductor agent supervising headless child processes, one agent tree in the TUI and WebUI | [`docs/fleet-protocol.md`](docs/fleet-protocol.md), [`recipes/TRIUMVIRATE-SETUP.md`](recipes/TRIUMVIRATE-SETUP.md) |
 | **Knowledge mining** — miner / reviewer / clerk agents over Zulip and GitLab | [`recipes/SETUP.md`](recipes/SETUP.md), [`docs/LIBRARY-PIPELINE.md`](docs/LIBRARY-PIPELINE.md) |
@@ -56,7 +57,7 @@ the host is put together is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick start
 
-Install a release from npm, in a folder of its own. You need [Bun](https://bun.sh/) 1.4.3+ and credentials for one provider, or none for the offline run. The package carries the rest, the Web UI built.
+Install a release from npm, in a folder of its own. You need [Bun](https://bun.sh/) 1.4.3+, the host's own floor (setup's is 1.4.4), and credentials for one provider, or none for the offline run. The package carries the rest, the Web UI built.
 
 ```bash
 mkdir my-agent && cd my-agent
@@ -188,7 +189,8 @@ number to change. Set a `strategy` block only to tune windows/budgets, to pin
 `foldingStrategy: "kv-stable"` for a resident whose store was built under it,
 or to opt into a different strategy type (`frontdesk`
 for channel-staffing agents, `passthrough` for none) — see
-`docs/AGENT-ONBOARDING.md` for sizing guidance on long-lived agents and
+`docs/DEPLOYMENTS.md`'s "A resident's memory: sizing, folding and repair" for
+sizing guidance on long-lived agents and
 [`docs/AGENT-MEMORY-GUIDE.md`](docs/AGENT-MEMORY-GUIDE.md) for how it works.
 
 `maintenanceIntervalMs`, at the recipe's top level, is how often
@@ -511,6 +513,12 @@ Each MCPL server can also be presented as a tab. `presentation` on its entry set
 
 Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) with `mcpl-admin--mcpl_deploy`'s `presentation`. A value other than those three stops the load, or in the agent's own overlay is left out, named in a startup line.
 
+### Code execution (`codeExecution`)
+
+`"codeExecution": { "enabled": true }` (top-level, beside `modules`) gives the agent agent-framework's `code_execution` tool. The agent writes JavaScript that calls its own tools by name (`await tools["module--tool"]({...})`), and only what the script writes or returns comes back, with how each call ended: the calls and the results between them stay out of the context. Reading ten files, querying every channel or paging through a log then takes one tool round instead of ten, and the window keeps the answer, not the haystack. A script that runs long yields and keeps going; the agent can wait on it, stop it, or leave it running past its turn, and a script can wake the agent with `wake_agent(payload)` (it is also woken if the script fails or reaches its lifetime). Each script starts fresh and reaches nothing but the agent's tools — no network, files, timers or packages — so by design it adds no authority: anything a script does, the agent could already do one call at a time. That holds as far as the engine holds. The script runs in QuickJS's WebAssembly sandbox inside a child process of the host, as the host's user, with no operating-system sandbox around it: agent-framework claims no containment beyond its engine and its glue (the security note on `RecipeCodeExecution` in `src/recipe.ts`). A resident that already has a shell tool can already do far more than a script can; on one without, weigh that before turning it on.
+
+There is nothing to install: the engine (QuickJS, in a child process) ships with agent-framework 0.24 and later. Releases before that ran Python and took other keys (`pythonPath`, `idleReclaimMs`, `env`, `scriptTimeoutMs` …); in a block with `"enabled": true`, current hosts refuse them with a message saying what replaced each. Every limit has a default (`yieldMs`, `maxYieldMs`, `scriptLifetimeMs`, `maxRunningScripts`, `maxScriptChildren`, `toolCallTimeoutMs`, `wakeMinIntervalMs`, `maxWakesPerScript`, `memoryMaxBytes`), so `{ "enabled": true }` is the whole setting. It is off unless the recipe turns it on: the host's built-in default recipe leaves it off, so an agent started with no recipe has none. Turning it on for a running resident adds one tool, so its first turn after the restart is one full cache write.
+
 ### Included recipes
 
 | Recipe | What it is |
@@ -525,7 +533,8 @@ Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) wi
 | [`recipes/mcpl-editor-test.json`](recipes/mcpl-editor-test.json), [`webui-test.json`](recipes/webui-test.json), [`webui-fleet-test.json`](recipes/webui-fleet-test.json) | Development test recipes |
 
 The production residents' recipes live in their own install directories, not
-here; [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md) shows the shape.
+here; [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md)'s "The recipe" and
+"The recipe's servers" show the shape of a new one.
 
 ### Claude subscription provider
 
@@ -556,6 +565,21 @@ action is pasting a new token. A credentials file with a refresh token
 30 minutes before expiry. See the credential-alerts note under the ChatGPT
 provider and [docs/subscription-transport.md](docs/subscription-transport.md).
 
+### Anthropic effort
+
+For Anthropic streaming turns, `agent.thinking.effort` sets the recipe's
+baseline effort, whether or not `agent.thinking.enabled` is on. `enabled` is
+still required and can be `false`. An effort set
+explicitly with `agent_settings` (in the agent's built-in `settings` toolset,
+or its tool list if its `allowedTools` doesn't permit both `toolsets--open`
+and `toolsets--act`) overrides it until reset, from the point where it was
+set. A model that doesn't take the effort level gets none, the
+model's default applies, and stderr says so once for each model and level,
+in a line beginning `[reasoning-effort] <model> does not accept
+effort=<level> — not sent`. Compression calls are unaffected,
+and other providers ignore the field: OpenAI recipes use
+`agent.responses.reasoningEffort`, below.
+
 ### OpenAI reasoning
 
 For `openai-responses` and `openai-codex`, primary-agent reasoning is configured
@@ -579,7 +603,7 @@ The host accepts `none`, `low`, `medium`, `high`, `xhigh`, or `max` for
 selected model must support the requested effort. These settings apply to the
 primary agent; `modules.retrieval` has its own reasoning setting described below.
 Memory sizing and compression-model settings are covered in
-`docs/AGENT-ONBOARDING.md`.
+`docs/DEPLOYMENTS.md`'s "A resident's memory: sizing, folding and repair".
 
 ### ChatGPT subscription provider
 
@@ -758,7 +782,7 @@ unknown-key warning, like those at the other levels.
   `tune_out` channels; **code execution** (top-level `codeExecution`) —
   JavaScript scripts that call the agent's tools, in a QuickJS engine
   (agent-framework 0.24); recommended for every resident, and off unless a
-  recipe turns it on (see docs/AGENT-ONBOARDING.md)
+  recipe turns it on (see "Code execution" above)
 - **Activity** (`modules.activity`) typing indicators and a **TTS relay**
   (`modules.ttsRelay`) for voice clients
 - **Extensions** (top-level `extensions`) — local modules that register
@@ -894,7 +918,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `CONNECTOME_OPS_WEBHOOK` | — | Webhook for ops alerts |
 | `COUNT_TOKENS_MODEL` | the agent's model | Override the model used for exact token counts in the context-makeup panel |
 | `LLM_CALLS_FULL_PAYLOADS` | off | `1`/`true`: keep the full request on every llm-calls log entry (large; a line over 16 MiB drops it) |
-| `THINKING_BINDING_PROBE` | on | `off`: skip the start-up check of what the account does with a signed thinking block whose earlier conversation changed (see `docs/AGENT-ONBOARDING.md` §11.10); agents on a model whose thinking binds then leave such thinking out, as on an account that refuses it |
+| `THINKING_BINDING_PROBE` | on | `off`: skip the start-up check of what the account does with a signed thinking block whose earlier conversation changed (see `docs/DEPLOYMENTS.md`'s "Refusals and signed thinking"); agents on a model whose thinking binds then leave such thinking out, as on an account that refuses it |
 | `GATE_TELEMETRY` | off | `1`: send `x-gate-*` telemetry headers — only when `ANTHROPIC_BASE_URL` is also set |
 
 Recipes may reference any further variables they need as `${VAR}` (for
