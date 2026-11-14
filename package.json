@@ -34,7 +34,8 @@
     "@animalabs/chronicle": "^0.6.0",
     "@animalabs/context-manager": "^0.25.3",
     "@animalabs/membrane": "^0.8.1",
-    "@opentui/core": "^0.2.16"
+    "@opentui/core": "^0.2.16",
+    "turndown": "^7.2.5"
   },
   "engines": {
     "node": ">=22.12.0",
@@ -43,6 +44,7 @@
   "devDependencies": {
     "@types/bun": "^1.3.13",
     "@types/node": "^22.0.0",
+    "@types/turndown": "^5.0.6",
     "typescript": "^7.0.2"
   },
   "repository": {
