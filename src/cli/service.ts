@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, type Stats,
+  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, type Stats,
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
@@ -14,6 +14,7 @@ import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type No
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
 import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/systemd-units.js';
+import { lookup, serviceBun, type BunLookup } from '../update/service-bun.js';
 import {
   type ManagerSystem, agentState, childEnv, fileDirectory, launchctlFailure, ownerOf, readOr, runsFrom, runsHere, showUnit, stateOf, stderrOf, systemctlLine,
 } from './service-manager.js';
@@ -37,14 +38,12 @@ const serviceUsage = (cmd: string) => `${cmd} service install <recipe>`;
 // Keep this install's own: a unit in one of these states has its process up, or coming up.
 const RUNNING = new Set(['active', 'activating', 'reloading']);
 
-export interface ServiceSystem extends ManagerSystem {
+export interface ServiceSystem extends ManagerSystem, BunLookup {
   user: string;
   cwd: string;
   bun: string;
   owner(path: string): number;
   cgroup(): string | null;
-  which(name: string): string | null;
-  realpath(path: string): string | null;
   readRecipe(recipe: string): Promise<unknown>;
   linger(user: string): boolean | null;
   portFree(port: number): Promise<boolean>;
@@ -74,14 +73,8 @@ export function machine(): ServiceSystem {
         return null;
       }
     },
-    which: (name) => Bun.which(name),
-    realpath: (path) => {
-      try {
-        return realpathSync(path);
-      } catch {
-        return null;
-      }
-    },
+    which: lookup.which,
+    realpath: lookup.realpath,
     run: (command, args, env) => {
       try {
         const ran = Bun.spawnSync([command, ...args], { env, stdout: 'pipe', stderr: 'pipe' });
@@ -97,13 +90,6 @@ export function machine(): ServiceSystem {
     sleep: (ms) => Bun.sleep(ms),
     now: () => performance.now(),
   };
-}
-
-// Homebrew's execPath is its versioned Cellar file, which an upgrade removes, while its link on PATH stays.
-function unitBun(sys: ServiceSystem): string {
-  const onPath = sys.which('bun');
-  const runs = sys.realpath(sys.bun);
-  return onPath !== null && runs !== null && sys.realpath(onPath) === runs ? onPath : sys.bun;
 }
 
 export async function portFree(port: number): Promise<boolean> {
@@ -262,8 +248,8 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     ctx.out('This run sets up no shell daemon: the recipe names no shell client or shell setting.');
   }
 
-  const bun = unitBun(sys);
-  const node = sys.which('node');
+  const bun = serviceBun(sys.bun, sys.env.PATH ?? '', sys);
+  const node = sys.which('node', sys.env.PATH ?? '');
   const path = [...new Set([dirname(bun), ...(node ? [dirname(node)] : []),
     ...(sys.env.PATH ?? '').split(':').filter((entry) => isAbsolute(entry)),
     '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])].join(':');
@@ -807,7 +793,7 @@ function shellOf(work: string, sys: ServiceSystem): string | null {
     throw new Refusal(`${SHELL_PACKAGE} is installed in ${work}, for the resident's shell, but its package.json names no ` +
       `${SHELL_BIN} for its daemon. Nothing was written.`);
   }
-  if (sys.which('node') === null) {
+  if (sys.which('node', sys.env.PATH ?? '') === null) {
     throw new Refusal(`${SHELL_PACKAGE} is installed in ${work}, for the resident's shell, and its daemon runs on Node, ` +
       'but no node is on this PATH. Nothing was written.');
   }

@@ -151,6 +151,20 @@ describe('setup', () => {
     expect(said.some((l) => l.includes('connectome.service restarts the host when it exits with 75 or 1 (Restart=on-failure)'))).toBe(true);
   });
 
+  test('the line saying what the service starts the host with names the bun first on PATH where it resolves to the bun setup runs on, as the unit service install writes does', () => {
+    const links = join(dir, 'links');
+    mkdirSync(links);
+    symlinkSync(process.execPath, join(links, 'bun'));
+    const before = process.env.PATH;
+    process.env.PATH = `${links}:${before ?? ''}`;
+    try {
+      setup(options());
+    } finally {
+      process.env.PATH = before;
+    }
+    expect(said.some((line) => line.startsWith(`The service starts the host with \`${join(links, 'bun')} ${join(root, ENTRY_POINT)}\``))).toBe(true);
+  });
+
   test("writes the install's own command beside the entry point, running current's CLI, and says it with how to put it on PATH; a later run writes it again where it's gone", () => {
     const host = join(install, 'node_modules', '@animalabs', 'connectome-host');
     mkdirSync(join(host, 'src', 'cli'), { recursive: true });

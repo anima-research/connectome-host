@@ -52,6 +52,7 @@ import {
   sameDirectory, unfinishedWords, workingDirOf, type Moved, type Place,
 } from './rebind.js';
 import { INSTALL_COMMAND, typedCommand, writeInstallCommand } from '../cli/install-command.js';
+import { serviceBun } from './service-bun.js';
 import { type ServiceUnits, systemdUnits } from './systemd-units.js';
 
 export { ENTRY_POINT };
@@ -734,7 +735,8 @@ export function setup(options: SetupOptions): void {
     `\`${setupCommand(install, served, root)}${extraState.map((place) => ` --extra-state ${shellWord(place)}`).join('')} ` +
     '--extra-state <another place>`, one --extra-state for each. It can run while the service runs: it leaves the ' +
     'running host as it is, and the next update copies the places it records.');
-  say(`The service starts the host with \`${shellWord(process.execPath)} ${shellWord(entry)}\`, followed by the arguments ` +
+  const bun = serviceBun(process.execPath, process.env.PATH ?? '');
+  say(`The service starts the host with \`${shellWord(bun)} ${shellWord(entry)}\`, followed by the arguments ` +
     `it gives the host${settingUp ? ' now; set that, and restart it' : ''}.`);
   say(`This install's own command is ${command.path}.`);
   if (command.pathLine !== null) {
