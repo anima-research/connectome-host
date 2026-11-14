@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, type Stats,
+  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, type Stats,
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
@@ -44,6 +44,7 @@ export interface ServiceSystem extends ManagerSystem {
   owner(path: string): number;
   cgroup(): string | null;
   which(name: string): string | null;
+  realpath(path: string): string | null;
   readRecipe(recipe: string): Promise<unknown>;
   linger(user: string): boolean | null;
   portFree(port: number): Promise<boolean>;
@@ -74,6 +75,13 @@ export function machine(): ServiceSystem {
       }
     },
     which: (name) => Bun.which(name),
+    realpath: (path) => {
+      try {
+        return realpathSync(path);
+      } catch {
+        return null;
+      }
+    },
     run: (command, args, env) => {
       try {
         const ran = Bun.spawnSync([command, ...args], { env, stdout: 'pipe', stderr: 'pipe' });
@@ -89,6 +97,13 @@ export function machine(): ServiceSystem {
     sleep: (ms) => Bun.sleep(ms),
     now: () => performance.now(),
   };
+}
+
+// Homebrew's execPath is its versioned Cellar file, which an upgrade removes, while its link on PATH stays.
+function unitBun(sys: ServiceSystem): string {
+  const onPath = sys.which('bun');
+  const runs = sys.realpath(sys.bun);
+  return onPath !== null && runs !== null && sys.realpath(onPath) === runs ? onPath : sys.bun;
 }
 
 export async function portFree(port: number): Promise<boolean> {
@@ -247,13 +262,14 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     ctx.out('This run sets up no shell daemon: the recipe names no shell client or shell setting.');
   }
 
+  const bun = unitBun(sys);
   const node = sys.which('node');
-  const path = [...new Set([dirname(sys.bun), ...(node ? [dirname(node)] : []),
+  const path = [...new Set([dirname(bun), ...(node ? [dirname(node)] : []),
     ...(sys.env.PATH ?? '').split(':').filter((entry) => isAbsolute(entry)),
     '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])].join(':');
   const logPath = join(work, 'logs', 'agent.log');
   const hostVars: Array<[string, string]> = [['PATH', path], ['DATA_DIR', dataDir]];
-  const hostArgv = [sys.bun, join(root, 'start.js'), recipe, '--headless'];
+  const hostArgv = [bun, join(root, 'start.js'), recipe, '--headless'];
   const shellArgv = shell === null ? [] : [node!, shell.bin, '--host', 'localhost', '--headless'];
   const shellVars: Array<[string, string]> = shell === null ? []
     : [['PATH', path], ['SESSION_SERVER_PORT', shell.port], ['SESSION_SERVER_TOKEN', shell.token]];
