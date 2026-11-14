@@ -2308,26 +2308,40 @@ export function unknownRecipeKeys(raw: unknown): string[] {
  * a wrong one would otherwise surface only on the agent's first call. Its
  * `local` reads through the workspace, so it can't stand with the workspace off.
  */
-function validateRecipeFetch(fetch: unknown, workspace: unknown): void {
-  if (fetch === undefined || typeof fetch === 'boolean') return;
-  if (fetch === null || typeof fetch !== 'object' || Array.isArray(fetch)) {
-    throw new Error('Recipe modules.fetch must be a boolean or object.');
+function validateRecipeFetch(fetch: unknown, workspace: unknown, provider: unknown, servers: unknown): void {
+  if (fetch === undefined || fetch === false) return;
+  if (fetch !== true && (fetch === null || typeof fetch !== 'object' || Array.isArray(fetch))) {
+    throw new Error(`Recipe modules.fetch is ${JSON.stringify(fetch)}; it must be a boolean or object.`);
   }
-  const { model, local, allowPrivateNetwork, maxBytes } = fetch as Record<string, unknown>;
+  const { model, local, allowPrivateNetwork, maxBytes } = (fetch === true ? {} : fetch) as Record<string, unknown>;
   if (model !== undefined && (typeof model !== 'string' || !model.trim())) {
-    throw new Error('Recipe modules.fetch.model must be a non-empty string.');
+    throw new Error(`Recipe modules.fetch.model is ${JSON.stringify(model)}; it must be a non-empty string.`);
   }
   if (local !== undefined && typeof local !== 'boolean') {
-    throw new Error('Recipe modules.fetch.local must be a boolean.');
+    throw new Error(`Recipe modules.fetch.local is ${JSON.stringify(local)}; it must be a boolean.`);
   }
   if (allowPrivateNetwork !== undefined && typeof allowPrivateNetwork !== 'boolean') {
-    throw new Error('Recipe modules.fetch.allowPrivateNetwork must be a boolean.');
+    throw new Error(`Recipe modules.fetch.allowPrivateNetwork is ${JSON.stringify(allowPrivateNetwork)}; it must be a boolean.`);
   }
   if (maxBytes !== undefined && !(Number.isSafeInteger(maxBytes) && (maxBytes as number) > 0 && (maxBytes as number) <= MAX_FETCH_MAX_BYTES)) {
-    throw new Error(`Recipe modules.fetch.maxBytes must be a whole number from 1 to ${MAX_FETCH_MAX_BYTES}.`);
+    throw new Error(`Recipe modules.fetch.maxBytes is ${JSON.stringify(maxBytes)}; it must be a whole number from 1 to ${MAX_FETCH_MAX_BYTES}.`);
   }
   if (local === true && workspace === false) {
     throw new Error('Recipe modules.fetch.local reads files through the workspace, so it needs modules.workspace on.');
+  }
+  // The model that answers `prompt` defaults to a Claude id that only the
+  // Anthropic transport takes as written (the mock answers to any).
+  if (model === undefined && provider !== undefined && provider !== 'anthropic' && provider !== 'mock') {
+    throw new Error(
+      `Recipe turns modules.fetch on with agent.provider ${JSON.stringify(provider)} and no modules.fetch.model: `
+      + 'the model that answers a fetch prompt defaults to a Claude id this provider doesn\'t take. Set modules.fetch.model to one it serves.',
+    );
+  }
+  if (servers !== null && typeof servers === 'object' && Object.hasOwn(servers, 'fetch')) {
+    throw new Error(
+      'Recipe turns modules.fetch on and names mcpServers.fetch: their tools would share the names fetch--…. '
+      + 'Rename the server\'s key in mcpServers to keep both, or turn modules.fetch off to keep only the server.',
+    );
   }
 }
 
@@ -3333,7 +3347,12 @@ export function validateRecipe(raw: unknown): Recipe {
     // use as its default, so a typo would load as no setting at all.
     validateRecipeReplyJudge(mods.wake);
     validateRecipeHeartbeat(mods.heartbeat, (raw as { mcpServers?: unknown }).mcpServers);
-    validateRecipeFetch(mods.fetch, mods.workspace);
+    validateRecipeFetch(
+      mods.fetch,
+      mods.workspace,
+      (raw as { agent?: { provider?: unknown } }).agent?.provider,
+      (raw as { mcpServers?: unknown }).mcpServers,
+    );
 
     const retrieval = mods.retrieval;
     if (retrieval !== undefined && typeof retrieval !== 'boolean') {

@@ -6,13 +6,15 @@
  * the agent's context. Either way the result says which part was read, because
  * a reader that doesn't know it saw a part reads what's missing as absent.
  *
- * It adds no authority over files: a local read goes through the workspace's
- * own disk read, with its mounts, includes and symlink policy. On the network
- * it reaches only public addresses unless the recipe says otherwise, and sends
- * no credentials (fetch-http.ts).
+ * It adds no authority over files: a local read is the workspace's own read
+ * tool, called in process, so it shows a file as the workspace's tools do, a
+ * write not yet on disk included, under its mounts, includes and symlink
+ * policy. On the network it reaches only public addresses unless the recipe
+ * says otherwise, and sends no credentials (fetch-http.ts).
  *
- * Nothing here is written to the store, so an agent's history holds only the
- * tool calls themselves.
+ * The module writes nothing to the store itself, so an agent's history holds
+ * only the tool calls. A local read is the workspace's, which takes in a file
+ * it doesn't hold yet as any read of it does.
  */
 import { randomBytes } from 'node:crypto';
 import type {
@@ -26,7 +28,6 @@ import type {
   ToolResult,
   WorkspaceModule,
 } from '@animalabs/agent-framework';
-import { WorkspaceReadError } from '@animalabs/agent-framework';
 import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
 import type { RecipeModules } from '../recipe.js';
 import { decodeText, htmlToMarkdown, isHtmlPath, isHtmlType, looksBinary, looksLikeScriptShell, mediaType } from './fetch-convert.js';
@@ -38,9 +39,10 @@ export const DEFAULT_FETCH_MAX_BYTES = 5 * 1024 * 1024;
 
 /**
  * Most of a part read directly, which lands in the agent's context: about 6,000
- * tokens. It stays under agent-framework's limit for a result kept inline
- * (24,000 characters, DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS), past which a result
- * is spilled to a file and cut, which could take the note saying how to read on.
+ * tokens. It stays under agent-framework's default limit for a result kept
+ * inline (24,000 characters), past which a result is spilled to a file and
+ * cut, which could take the note saying how to read on. Where a call carries a
+ * lower limit (ToolCall.resultMaxChars), its part is shortened to fit.
  */
 const READ_CHARS = 20_000;
 /** Most of a part read by the small model: about 30,000 tokens of that model's input. */
@@ -55,6 +57,8 @@ const USER_AGENT = 'connectome-host (fetch tool; +https://github.com/anima-resea
 const SNAPSHOT_TTL_MS = 15 * 60_000;
 /** Most text the copies hold between them, at the cost of evicting the oldest. */
 const SNAPSHOT_MAX_CHARS = 16_000_000;
+/** Most copies kept, however small each is. */
+const SNAPSHOT_MAX_COUNT = 64;
 
 export interface FetchModuleConfig {
   membrane: Membrane;
@@ -91,6 +95,8 @@ interface Document {
   status: number | undefined;
   /** Little text and scripts: a browser may show much more. */
   scriptShell: boolean;
+  /** What the workspace said of the copy it read, such as which one it is. */
+  note?: string;
 }
 
 interface Snapshot {
@@ -106,11 +112,11 @@ const nothingFetched = (reason: string): ToolResult => ({
   error: `Nothing was fetched: ${reason}`,
 });
 
-/** A part of the text that stops short of cutting a surrogate pair in two. */
+/** A part of the text that doesn't cut a surrogate pair in two: it ends before the pair, or after it where the pair is all the part has. */
 function partOf(text: string, offset: number, limit: number): { part: string; end: number } {
   let end = Math.min(offset + limit, text.length);
   const code = text.charCodeAt(end - 1);
-  if (end < text.length && end - 1 > offset && code >= 0xd800 && code <= 0xdbff) end -= 1;
+  if (end < text.length && code >= 0xd800 && code <= 0xdbff) end += end - 1 > offset ? -1 : 1;
   return { part: text.slice(offset, end), end };
 }
 
@@ -119,10 +125,10 @@ function integerArg(value: unknown, name: string, least: number): string | null 
   return `${name} must be a whole number of at least ${least}.`;
 }
 
-/** What was and wasn't read, and how to read on: nothing when all of it was. */
+/** What was and wasn't read, and how to read on. */
 function coverageNote(document: Document, offset: number, end: number, maxBytes: number): string {
   const total = document.text.length;
-  if (offset === 0 && end >= total && !document.cut) return '';
+  if (offset === 0 && end >= total && !document.cut) return `This is the whole ${document.kind}, ${total} characters.`;
   const unread = total - end;
   const readOn = unread > 0
     ? ` The final ${unread} were not read. To read on, call fetch again with the same source and offset: ${end}.`
@@ -222,27 +228,34 @@ export class FetchModule implements Module {
     const asking = prompt as string | undefined;
     const most = asking === undefined ? READ_CHARS : PROMPT_CHARS;
     const size = Math.min((limit as number | undefined) ?? most, most);
-    const named = (rawSource as string).trim();
+    // A web address is trimmed, as one pasted with a space is still that
+    // address. A path is taken as written: a file's name can end in a space.
+    const named = /^\s*https?:\/\//i.test(rawSource as string) ? (rawSource as string).trim() : rawSource as string;
     const source = this.parseSource(named);
     if (typeof source === 'string') return nothingFetched(source);
 
     let document: Document;
     let copyAge: number | undefined;
+    let copyGone: boolean | undefined;
     try {
-      ({ document, copyAge } = await this.load(source, from));
+      ({ document, copyAge, copyGone } = await this.load(source, from, call));
     } catch (error) {
       if (error instanceof FetchRefusal) return nothingFetched(error.message);
-      if (error instanceof WorkspaceReadError) return nothingFetched(this.fileRefusal(error));
       throw error;
     }
 
     const total = document.text.length;
     if (from > 0 && from >= total) {
-      return nothingFetched(`offset ${from} is past the end of ${shownAddress(document.name)}, whose text is ${total} characters long.`);
+      return {
+        success: false,
+        isError: true,
+        error: `There is nothing to read there: offset ${from} is past the end of ${shownAddress(document.name)}, whose text is ${total} characters long.`,
+      };
     }
-    const { part, end } = partOf(document.text, from, size);
-    const copyNote = copyAge === undefined ? '' : ` This part is from the copy fetched ${Math.round(copyAge / 1000)} seconds ago, so the parts fit together.`;
-    const structured = {
+    const copyNote = copyAge !== undefined ? ` This part is from the copy fetched ${Math.round(copyAge / 1000)} seconds ago, so the parts fit together.`
+      : copyGone ? ' No copy from an earlier read is kept, so this part is from a fresh fetch: if the page changed since an earlier part was read, the parts may not line up.'
+      : '';
+    const structuredFor = (end: number) => ({
       source: named,
       name: document.name,
       kind: document.kind,
@@ -253,37 +266,51 @@ export class FetchModule implements Module {
       totalChars: total,
       nextOffset: end < total ? end : null,
       cut: document.cut,
-    };
+    });
 
-    if (asking !== undefined && part.trim() !== '') {
+    const asked = partOf(document.text, from, size);
+    if (asking !== undefined && asked.part.trim() !== '') {
+      const { part, end } = asked;
       const answer = await this.answer(document, part, from, end, asking);
       if (!answer.ok) return { success: false, isError: true, error: answer.error };
-      const cover = coverageNote(document, from, end, this.maxBytes);
       const note = [
         `Answered by a separate model (${this.model}) from ${shownAddress(document.name)}.${copyNote}`,
+        ...(document.note ? [document.note] : []),
         ...(answer.cutOff ? ['The answer reached its length limit and was cut off.'] : []),
-        ...(cover ? [cover] : []),
+        coverageNote(document, from, end, this.maxBytes),
         'Leave out prompt to read the text itself.',
       ].join(' ');
       return {
         success: true,
         data: [answer.text, ...(document.scriptShell ? [SCRIPT_SHELL_NOTE] : []), `[${note}]`].join('\n\n'),
-        structured: { ...structured, answeredBy: this.model },
+        structured: { ...structuredFor(end), answeredBy: this.model },
       };
     }
 
     const heading = document.kind === 'file'
-      ? `Read ${document.name} from disk.`
+      ? `Read ${document.name} through the workspace.${document.note ? ` ${document.note}` : ''}`
       : `Fetched ${shownAddress(document.name)} (${document.contentType ?? 'no content type given'}).` +
         (document.name === new URL(named).href.split('#')[0] ? '' : ` Redirected from ${shownAddress(named)}.`) +
         copyNote;
-    const cover = coverageNote(document, from, end, this.maxBytes);
-    const body = document.text.trim() === '' ? `[The ${document.kind} has no text.]` : part;
-    return {
-      success: true,
-      data: [heading, body, ...(document.scriptShell ? [SCRIPT_SHELL_NOTE] : []), ...(cover ? [`[${cover}]`] : [])].join('\n\n'),
-      structured,
+    const direct = ({ part, end }: { part: string; end: number }): { data: string; end: number } => {
+      const body = part.trim() !== '' ? part
+        : document.text.trim() === '' && !document.cut ? `[The ${document.kind} has no text.]`
+        : `[This part of the ${document.kind} is blank.]`;
+      const unasked = asking === undefined ? [] : ['[No model was asked, since there is no text here to ask about.]'];
+      const cover = coverageNote(document, from, end, this.maxBytes);
+      return {
+        data: [heading, body, ...unasked, ...(document.scriptShell ? [SCRIPT_SHELL_NOTE] : []), `[${cover}]`].join('\n\n'),
+        end,
+      };
     };
+    let read = direct(asked);
+    // Past this the framework spills the result to a file and cuts it, which
+    // would take the note saying how to read on, so the part gives way.
+    const over = call.resultMaxChars === undefined ? 0 : read.data.length - call.resultMaxChars;
+    if (over > 0 && asked.part.length > 1) {
+      read = direct(partOf(document.text, from, Math.max(1, asked.part.length - over - 32)));
+    }
+    return { success: true, data: read.data, structured: structuredFor(read.end) };
   }
 
   private parseSource(source: string): Source | string {
@@ -302,13 +329,8 @@ export class FetchModule implements Module {
     return { kind: 'file', path: source };
   }
 
-  private fileRefusal(error: WorkspaceReadError): string {
-    const hint = error.code === 'unknown_mount' ? ' A web address starts with http:// or https://.' : '';
-    return `${error.message}${hint}`;
-  }
-
-  private async load(source: Source, offset: number): Promise<{ document: Document; copyAge?: number }> {
-    if (source.kind === 'file') return { document: await this.loadFile(source.path) };
+  private async load(source: Source, offset: number, call: ToolCall): Promise<{ document: Document; copyAge?: number; copyGone?: boolean }> {
+    if (source.kind === 'file') return { document: await this.loadFile(source.path, call) };
     source.url.hash = '';
     const key = source.url.href;
     // Only a later part reads the copy: a first read is always fresh, so a page
@@ -319,25 +341,48 @@ export class FetchModule implements Module {
     }
     const document = await this.loadPage(source.url);
     this.keep(key, document);
-    return { document };
+    return { document, copyGone: offset > 0 };
   }
 
-  private async loadFile(path: string): Promise<Document> {
+  /**
+   * A workspace file, as the workspace's own read tool gives it: called in
+   * process, it answers with the file's whole text. So fetch and
+   * workspace--read show the same copy, where reading disk directly would
+   * miss what the workspace holds and hasn't written out.
+   */
+  private async loadFile(path: string, call: ToolCall): Promise<Document> {
     const workspace = this.ctx?.getModule<WorkspaceModule>('workspace') ?? null;
     if (!workspace) throw new FetchRefusal("this host has no workspace, so there are no local files to read.");
-    const read = await workspace.readFileFromDisk(path, { maxBytes: this.maxBytes });
-    if (looksBinary(read.bytes)) throw new FetchRefusal(`${path} is a binary file, and this tool reads only text.`);
+    const read = await workspace.handleToolCall({
+      id: call.id,
+      name: 'read',
+      input: { path, offsetChars: 0, limitChars: Number.MAX_SAFE_INTEGER },
+      ...(call.callerAgentName === undefined ? {} : { callerAgentName: call.callerAgentName }),
+    });
+    const page = read.structured as { content?: unknown; note?: unknown } | undefined;
+    if (!read.success || typeof page?.content !== 'string') {
+      const said = read.error ?? 'it gave no text';
+      const mounts = workspace.getMounts().map((mount) => mount.name);
+      const hint = mounts.includes(path.split('/')[0]!) ? '' : ' A web address starts with http:// or https://.';
+      throw new FetchRefusal(`the workspace's read of ${shownAddress(path)} did nothing: ${said.replace(/^The read (?:call )?did nothing: /, '')}${hint}`);
+    }
+    // The workspace keeps a byte-order mark in what it reads; it isn't text.
+    let decoded = page.content.replace(/^﻿/, '');
+    if (decoded.slice(0, 8192).includes('\u0000')) throw new FetchRefusal(`${path} is a binary file, and this tool reads only text.`);
+    const bytes = Buffer.from(decoded, 'utf8');
+    const cut = bytes.length > this.maxBytes;
+    if (cut) decoded = decodeText(bytes.subarray(0, this.maxBytes), undefined, false, true);
     const html = isHtmlPath(path);
-    const decoded = decodeText(read.bytes, undefined, html);
     const text = html ? await htmlToMarkdown(decoded, undefined) : decoded;
     return {
       text,
       name: path,
       kind: 'file',
-      cut: read.truncated,
+      cut,
       contentType: undefined,
       status: undefined,
       scriptShell: html && looksLikeScriptShell(decoded, text),
+      ...(typeof page.note === 'string' && page.note !== '' ? { note: page.note } : {}),
     };
   }
 
@@ -351,13 +396,13 @@ export class FetchModule implements Module {
     });
     const type = mediaType(got.contentType);
     const ok = got.status >= 200 && got.status < 300;
-    if (got.binary || looksBinary(got.body)) {
+    if (got.binary || looksBinary(got.body, got.contentType)) {
       const size = got.declaredBytes === undefined ? '' : `, ${got.declaredBytes} bytes`;
       const status = ok ? '' : ` It answered HTTP ${got.status}.`;
       throw new FetchRefusal(`${shownAddress(got.url)} is ${type ?? 'binary data'}${size}, and this tool reads only text.${status}`);
     }
     const html = isHtmlType(type);
-    const decoded = decodeText(got.body, got.contentType, html);
+    const decoded = decodeText(got.body, got.contentType, html, got.cut);
     if (!ok) {
       // A server's error page often says what's wrong, as an API's always
       // does. One that can't be converted isn't shown raw, hidden text and all.
@@ -380,12 +425,17 @@ export class FetchModule implements Module {
 
   private keep(key: string, document: Document): void {
     this.snapshots.delete(key);
-    if (document.text.length > SNAPSHOT_MAX_CHARS) return;
-    this.snapshots.set(key, { document, at: Date.now() });
+    // A fetch still under way when the module stopped keeps nothing for a later start.
+    if (this.ctx === null || document.text.length > SNAPSHOT_MAX_CHARS) return;
+    const now = Date.now();
+    this.snapshots.set(key, { document, at: now });
     let held = 0;
-    for (const { document: kept } of this.snapshots.values()) held += kept.text.length;
+    for (const [address, { document: kept, at }] of this.snapshots) {
+      if (now - at >= SNAPSHOT_TTL_MS) this.snapshots.delete(address);
+      else held += kept.text.length;
+    }
     for (const [oldest, { document: kept }] of this.snapshots) {
-      if (held <= SNAPSHOT_MAX_CHARS) break;
+      if (held <= SNAPSHOT_MAX_CHARS && this.snapshots.size <= SNAPSHOT_MAX_COUNT) break;
       this.snapshots.delete(oldest);
       held -= kept.text.length;
     }
@@ -423,7 +473,8 @@ export class FetchModule implements Module {
     try {
       response = await this.config.membrane.complete(request);
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
+      // The provider's own words, without a full stop of theirs before ours.
+      const reason = (error instanceof Error ? error.message : String(error)).replace(/[.\s]+$/, '');
       return { ok: false, error: `${leadIn}: ${reason}. ${instead} If it keeps failing, whoever runs this host can set modules.fetch.model.` };
     }
     if (response.stopReason === 'refusal') return { ok: false, error: `${leadIn}: it refused. ${instead}` };

@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -34,6 +34,8 @@ beforeAll(async () => {
     else if (path === '/long') send(200, 'text/plain', longBody);
     else if (path === '/changing') send(200, 'text/plain', changing + ' ' + 'x'.repeat(30_000));
     else if (path === '/emoji') send(200, 'text/plain; charset=utf-8', `${'a'.repeat(19_999)}😀${'b'.repeat(100)}`);
+    else if (path === '/emoji-first') send(200, 'text/plain; charset=utf-8', '😀abc');
+    else if (path === '/utf16-declared') send(200, 'text/plain; charset=utf-16le', Buffer.from('hello, declared', 'utf16le'));
     else if (path === '/api-error') send(500, 'application/json', '{"error":"quota exhausted"}');
     else if (path === '/html-error') send(404, 'text/html', '<html><body><h1>Not here</h1><script>x()</script></body></html>');
     else if (path === '/huge-error') send(500, 'text/plain', 'e'.repeat(50_000));
@@ -156,8 +158,9 @@ describe('reading without a prompt', () => {
     for (let round = 0; round < 5; round++) {
       const result = await call({ source: at('/long'), offset });
       const { end, nextOffset } = result.structured as { end: number; nextOffset: number | null };
-      parts.push(LONG.slice(offset, end));
-      expect(textOf(result)).toContain(LONG.slice(offset, end));
+      // The part as the result gives it: between the heading and the note.
+      parts.push(textOf(result).split('\n\n')[1]!);
+      expect(parts.at(-1)).toBe(LONG.slice(offset, end));
       if (nextOffset === null) {
         expect(textOf(result)).toContain(`Characters ${offset} to 50000 of 50000.`);
         expect(textOf(result)).not.toContain('To read on');
@@ -190,6 +193,52 @@ describe('reading without a prompt', () => {
     expect((later.structured as { totalChars: number }).totalChars).toBe('old '.length + 30_000);
   });
 
+  test('a later part with no copy to read fetches again, and says the parts may not line up', async () => {
+    const { call } = await started();
+    changing = 'new';
+    const before = hits['/changing'] ?? 0;
+    const later = await call({ source: at('/changing'), offset: 10 });
+    expect((hits['/changing'] ?? 0) - before).toBe(1);
+    expect(textOf(later)).toContain('No copy from an earlier read is kept, so this part is from a fresh fetch');
+    expect(textOf(later)).not.toContain('so the parts fit together');
+    // That fetch is kept, so the part after it does come from one copy.
+    expect(textOf(await call({ source: at('/changing'), offset: 20 }))).toContain('so the parts fit together');
+  });
+
+  test('a copy is not kept once the module has stopped', async () => {
+    const { mod, call } = await started();
+    const reading = call({ source: at('/changing') });
+    await mod.stop();
+    await reading;
+    await mod.start({ getModule: () => null } as never);
+    expect(textOf(await call({ source: at('/changing'), offset: 10 }))).toContain('No copy from an earlier read is kept');
+  });
+
+  test('a part that would hold only half of a pair takes the whole pair', async () => {
+    const { call } = await started();
+    const first = await call({ source: at('/emoji-first'), limit: 1 });
+    expect(first.structured).toMatchObject({ end: 2, nextOffset: 2 });
+    expect(textOf(first)).toContain('😀');
+    expect(textOf(await call({ source: at('/emoji-first'), offset: 2 }))).toContain('abc');
+  });
+
+  test('a call with a lower result limit gets a shorter part, with its note whole and the next part exact', async () => {
+    const { mod } = await started();
+    const ask = (offset: number) => mod.handleToolCall({ id: 'c', name: 'fetch', input: { source: at('/long'), offset }, resultMaxChars: 1_000 } as never);
+    const first = await ask(0);
+    const { end } = first.structured as { end: number };
+    expect(textOf(first).length).toBeLessThanOrEqual(1_000);
+    expect(end).toBeGreaterThan(500);
+    expect(textOf(first)).toContain(`To read on, call fetch again with the same source and offset: ${end}.`);
+    const second = await ask(end);
+    expect(textOf(first).split('\n\n')[1]! + textOf(second).split('\n\n')[1]!).toBe(LONG.slice(0, (second.structured as { end: number }).end));
+  });
+
+  test('a whole read says it is whole', async () => {
+    const { call } = await started();
+    expect(textOf(await call({ source: at('/vendor-json') }))).toContain('[This is the whole page, 11 characters.]');
+  });
+
   test('a part never cuts a surrogate pair in two', async () => {
     const { call } = await started();
     const first = await call({ source: at('/emoji') });
@@ -213,10 +262,13 @@ describe('reading without a prompt', () => {
 
   test('with a prompt, limit can reach further, up to what the model is given', async () => {
     longBody = 'z'.repeat(150_000);
-    const { call } = await started();
-    expect((await call({ source: at('/long'), prompt: 'q', limit: 50 })).structured).toMatchObject({ end: 50 });
-    expect((await call({ source: at('/long'), prompt: 'q', limit: 10_000_000 })).structured).toMatchObject({ end: 100_000 });
-    longBody = LONG;
+    try {
+      const { call } = await started();
+      expect((await call({ source: at('/long'), prompt: 'q', limit: 50 })).structured).toMatchObject({ end: 50 });
+      expect((await call({ source: at('/long'), prompt: 'q', limit: 10_000_000 })).structured).toMatchObject({ end: 100_000 });
+    } finally {
+      longBody = LONG;
+    }
   });
 
   test('an offset past the end says how long the text is', async () => {
@@ -224,6 +276,8 @@ describe('reading without a prompt', () => {
     const result = await call({ source: at('/long'), offset: 50_000 });
     expect(result.isError).toBe(true);
     expect(result.error).toContain('50000 characters long');
+    // The page was fetched to find that out, so the error doesn't say nothing was.
+    expect(result.error).not.toContain('Nothing was fetched');
   });
 
   test('a redirect is reported, and a fragment is not mistaken for one', async () => {
@@ -252,6 +306,14 @@ describe('reading without a prompt', () => {
     expect(textOf(result)).toContain('To read on, call fetch again with the same source and offset: 20000.');
   });
 
+  test('a blank start that the byte limit cut off isn\'t called a page with no text', async () => {
+    const { call } = await started({ maxBytes: 1_000 });
+    const result = await call({ source: at('/blank-start') });
+    expect(textOf(result)).not.toContain('has no text');
+    expect(textOf(result)).toContain('[This part of the page is blank.]');
+    expect(textOf(result)).toContain('goes on past the 1000 bytes');
+  });
+
   test('a very long redirect address can\'t push the note saying how to read on out of the result', async () => {
     const { call } = await started();
     const result = await call({ source: at('/to-long') });
@@ -264,6 +326,11 @@ describe('reading without a prompt', () => {
     const { call } = await started();
     expect(textOf(await call({ source: at('/vendor-json') }))).toContain('{"ok":true}');
     expect(textOf(await call({ source: at('/utf16') }))).toContain('hello from utf-16');
+  });
+
+  test('UTF-16 named by its Content-Type, with no mark, is read and not taken for binary', async () => {
+    const { call } = await started();
+    expect(textOf(await call({ source: at('/utf16-declared') }))).toContain('hello, declared');
   });
 
   test('a page that is only a script shell warns that a browser may show more', async () => {
@@ -302,7 +369,11 @@ describe('what is not text, or not there', () => {
 
   test('an error status never reaches the model', async () => {
     const { call, calls } = await started();
-    await call({ source: at('/api-error'), prompt: 'why?' });
+    const before = hits['/api-error'] ?? 0;
+    const result = await call({ source: at('/api-error'), prompt: 'why?' });
+    // It was fetched, and it's the status that stopped it there.
+    expect((hits['/api-error'] ?? 0) - before).toBe(1);
+    expect(result.error).toContain('answered HTTP 500');
     expect(calls).toHaveLength(0);
   });
 
@@ -325,6 +396,17 @@ describe('what is not text, or not there', () => {
     expect(result.isError).toBe(true);
     expect(result.error).toContain('private or local address');
     expect(hits['/page'] ?? 0).toBe(before);
+  });
+
+  test('the address guard is on when the option is left out, as a recipe that only turns fetch on leaves it', async () => {
+    const mod = new FetchModule(fetchModuleConfig(model().membrane, true));
+    await mod.start({ getModule: () => null } as never);
+    const before = hits['/page'] ?? 0;
+    const result = await mod.handleToolCall({ id: 'c', name: 'fetch', input: { source: at('/page') } } as never);
+    expect(result.isError).toBe(true);
+    expect(result.error).toContain('private or local address');
+    expect(hits['/page'] ?? 0).toBe(before);
+    expect(mod.getTools()[0]!.description).toContain('only public');
   });
 });
 
@@ -381,8 +463,7 @@ describe('answering a prompt', () => {
   test('reads a larger part than a direct read, and says which', async () => {
     longBody = 'y'.repeat(250_000);
     const { call, calls } = await started();
-    const result = await call({ source: at('/long'), prompt: 'q' });
-    longBody = LONG;
+    const result = await call({ source: at('/long'), prompt: 'q' }).finally(() => { longBody = LONG; });
     expect(userText(calls[0]!)).toContain('This is only part of the page: characters 0 to 100000 of 250000.');
     expect(userText(calls[0]!)).toContain('y'.repeat(100_000));
     expect(userText(calls[0]!)).not.toContain('y'.repeat(100_001));
@@ -399,6 +480,22 @@ describe('answering a prompt', () => {
     const { call, calls } = await started();
     expect(textOf(await call({ source: at('/empty'), prompt: 'q' }))).toContain('no text');
     expect(calls).toHaveLength(0);
+  });
+
+  test('a blank part of a document that has text asks the model nothing, and says so', async () => {
+    const { call, calls } = await started();
+    const result = await call({ source: at('/blank-start'), prompt: 'q', limit: 20_000 });
+    expect(calls).toHaveLength(0);
+    expect(textOf(result)).toContain('[This part of the page is blank.]');
+    expect(textOf(result)).toContain('[No model was asked, since there is no text here to ask about.]');
+    expect(textOf(result)).toContain('To read on, call fetch again with the same source and offset: 20000.');
+  });
+
+  test('a provider\'s message that ends in a full stop isn\'t given a second one', async () => {
+    const { membrane } = model([new Error('The model is overloaded. ')]);
+    const { call } = await started({ membrane });
+    const result = await call({ source: at('/page'), prompt: 'q' });
+    expect(result.error).toContain('The model is overloaded. Leave out prompt');
   });
 
   test.each([
@@ -437,10 +534,17 @@ describe('local files', () => {
     writeFileSync(join(notes, 'page.html'), '<html><body><h1>Local page</h1><a href="other.html">next</a></body></html>');
     writeFileSync(join(notes, 'huge.log'), 'line\n'.repeat(100_000));
     writeFileSync(join(notes, 'blob.bin'), Buffer.from([0, 1, 2, 3, 0, 5]));
+    writeFileSync(join(notes, 'spaced.txt '), 'a name that ends in a space');
+    mkdirSync(join(root, 'drafts'));
+    writeFileSync(join(root, 'drafts', 'kept.txt'), 'the version on disk');
     writeFileSync(join(root, 'secret.txt'), 'OUTSIDE_THE_MOUNT');
     symlinkSync(join(root, 'secret.txt'), join(notes, 'link.txt'));
     store = JsStore.openOrCreate({ path: join(root, 'store.chronicle') });
-    workspace = new WorkspaceModule({ mounts: [{ name: 'notes', path: notes, mode: 'read-only', watch: 'never' }] });
+    workspace = new WorkspaceModule({ mounts: [
+      { name: 'notes', path: notes, mode: 'read-only', watch: 'never' },
+      // Writable, and not written through to disk: a write here lives in the workspace alone.
+      { name: 'drafts', path: join(root, 'drafts'), mode: 'read-write', watch: 'never' },
+    ] });
     workspace.initStore(store);
     await workspace.start({ isRestart: false, getState: () => null, setState: () => {}, pushEvent: () => {} } as never);
   });
@@ -457,7 +561,7 @@ describe('local files', () => {
     const { call, calls } = await withLocal();
     const result = await call({ source: 'notes/hello.txt' });
     expect(result.success).toBe(true);
-    expect(textOf(result)).toContain('Read notes/hello.txt from disk.');
+    expect(textOf(result)).toContain('Read notes/hello.txt through the workspace.');
     expect(textOf(result)).toContain('hello from disk');
     expect(result.structured).toMatchObject({ kind: 'file', name: 'notes/hello.txt' });
     expect(calls).toHaveLength(0);
@@ -465,10 +569,16 @@ describe('local files', () => {
 
   test('is off unless the recipe turns it on, without touching the file', async () => {
     const { call } = await started({ local: false }, workspace);
-    const result = await call({ source: 'notes/hello.txt' });
-    expect(result.isError).toBe(true);
-    expect(result.error).toContain('must be an http:// or https:// address');
-    expect(result.error).not.toContain('hello from disk');
+    const reads = spyOn(workspace, 'handleToolCall');
+    try {
+      const result = await call({ source: 'notes/hello.txt' });
+      expect(result.isError).toBe(true);
+      expect(result.error).toContain('must be an http:// or https:// address');
+      expect(result.error).not.toContain('hello from disk');
+      expect(reads).not.toHaveBeenCalled();
+    } finally {
+      reads.mockRestore();
+    }
   });
 
   test('a local HTML file is converted, its relative links left as written', async () => {
@@ -534,7 +644,28 @@ describe('local files', () => {
     const { call } = await withLocal();
     const result = await call({ source: 'notes/blob.bin' });
     expect(result.isError).toBe(true);
-    expect(result.error).toContain('binary file');
+    expect(result.error!.startsWith('Nothing was fetched:')).toBe(true);
+    expect(result.error).toContain('binary');
+  });
+
+  test('shows what the workspace holds, as its own read does, where disk has an older version or none', async () => {
+    const write = (path: string, content: string) => workspace.handleToolCall({ id: 'w', name: 'write', input: { path, content }, callerAgentName: 'agent' } as never);
+    expect((await write('drafts/new.txt', 'written through the workspace only')).success).toBe(true);
+    expect((await write('drafts/kept.txt', 'the version the workspace holds')).success).toBe(true);
+    // The case this guards: neither write reached disk.
+    expect(existsSync(join(root, 'drafts', 'new.txt'))).toBe(false);
+    expect(readFileSync(join(root, 'drafts', 'kept.txt'), 'utf8')).toBe('the version on disk');
+    const { call } = await withLocal();
+    expect(textOf(await call({ source: 'drafts/new.txt' }))).toContain('written through the workspace only');
+    const kept = textOf(await call({ source: 'drafts/kept.txt' }));
+    expect(kept).toContain('the version the workspace holds');
+    expect(kept).not.toContain('the version on disk');
+  });
+
+  test('a path is taken as written, so a name that ends in a space is that file', async () => {
+    const { call } = await withLocal();
+    expect(textOf(await call({ source: 'notes/spaced.txt ' }))).toContain('a name that ends in a space');
+    expect((await call({ source: 'notes/hello.txt ' })).isError).toBe(true);
   });
 
   test('a host with no workspace says so', async () => {
@@ -639,6 +770,32 @@ describe('the recipe', () => {
     [{ fetch: { maxBytes: 64 * 1024 * 1024 + 1 } }, 'modules.fetch.maxBytes'],
   ])('refuses %j', (modules, message) => {
     expect(() => validateRecipe(recipe(modules))).toThrow(message);
+  });
+
+  test('a refusal shows the value it refuses', () => {
+    expect(() => validateRecipe(recipe({ fetch: { maxBytes: 1.5 } }))).toThrow('modules.fetch.maxBytes is 1.5; it must be');
+    expect(() => validateRecipe(recipe({ fetch: { local: 'yes' } }))).toThrow('modules.fetch.local is "yes"; it must be');
+  });
+
+  test('a server named fetch can\'t stand beside it, since their tools would share a name', () => {
+    const withServer = (modules: Record<string, unknown>) => ({ ...recipe(modules), mcpServers: { fetch: { command: 'x' } } });
+    expect(() => validateRecipe(withServer({ fetch: true }))).toThrow('names mcpServers.fetch');
+    expect(() => validateRecipe(withServer({ fetch: { local: true } }))).toThrow('names mcpServers.fetch');
+    expect(validateRecipe(withServer({ fetch: false })).modules?.fetch).toBe(false);
+    expect(validateRecipe(withServer({})).modules?.fetch).toBeUndefined();
+  });
+
+  test('a provider that doesn\'t take the default Claude model needs modules.fetch.model', () => {
+    const on = (provider: string | undefined, fetch: unknown) => ({ name: 't', agent: { systemPrompt: 's', ...(provider ? { provider, model: 'gpt-5' } : {}) }, modules: { fetch } });
+    for (const provider of ['openai-responses', 'openai-codex', 'bedrock', 'openrouter']) {
+      expect(() => validateRecipe(on(provider, true)), provider).toThrow('no modules.fetch.model');
+      expect(() => validateRecipe(on(provider, { local: true })), provider).toThrow('no modules.fetch.model');
+    }
+    expect(() => validateRecipe(on('openai-responses', { model: 'gpt-5-mini' }))).not.toThrow('modules.fetch');
+    expect(() => validateRecipe(on('openai-responses', false))).not.toThrow('modules.fetch');
+    expect(validateRecipe(on(undefined, true)).modules?.fetch).toBe(true);
+    expect(validateRecipe(on('anthropic', true)).modules?.fetch).toBe(true);
+    expect(validateRecipe(on('mock', true)).modules?.fetch).toBe(true);
   });
 
   test('local can\'t stand with the workspace off', () => {

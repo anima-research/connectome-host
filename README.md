@@ -787,24 +787,41 @@ a workspace path too:
 ```
 
 Without a `prompt` the tool returns the text itself, 20,000 characters at a
-time. With one, a separate small model reads up to 100,000 characters and
-answers, so a long document stays out of the agent's context. Every result says
-which part was read and gives the `offset` to read on from.
+time, or fewer where the agent's inline result limit
+(`toolResultInlineMaxChars`) is lower, so the note that says how to read on
+always arrives. With one, a separate small model reads up to 100,000 characters
+and answers, so a long document stays out of the agent's context. Every result
+says which part was read and gives the `offset` to read on from.
 
 | Option | Default | What it does |
 |---|---|---|
-| `model` | `claude-haiku-4-5-20251001` | The model that answers `prompt`. A recipe on another provider sets this |
-| `local` | `false` | Lets `source` be a workspace path. It reads through the workspace, so mounts, includes and the symlink policy all apply and it can reach nothing the workspace can't. Needs `modules.workspace` |
+| `model` | `claude-haiku-4-5-20251001` | The model that answers `prompt`. A recipe whose `agent.provider` is neither `anthropic` nor `mock` must set it, and is refused at load without it |
+| `local` | `false` | Lets `source` be a workspace path. The file is read with the workspace's own `read`, so the agent gets the copy `workspace--read` shows, a write not yet on disk included, under the same mounts, includes, symlink policy and size limit. Needs `modules.workspace` |
 | `allowPrivateNetwork` | `false` | Lets web addresses reach private and local addresses, such as loopback, the LAN or a tailnet |
-| `maxBytes` | 5 MiB | Most bytes of one document to read, up to 64 MiB. Past it, the tool reads the start and says the rest is out of reach |
+| `maxBytes` | 5 MiB | Most bytes of one document to read, up to 64 MiB. Past it, the tool reads the start and says the rest is out of reach. A workspace file is also held to its mount's `maxFileSize` |
+
+A recipe that turns `modules.fetch` on can't also name a server `fetch` in
+`mcpServers`, since their tools would share the names `fetch--…`.
 
 On the network, the tool decides what it may reach by the address it would
 connect to, on every redirect, so a public name that resolves to a private
 address is refused like the address itself. It sends no credentials and doesn't
 run JavaScript. HTML is converted in a separate process that holds none of the
-host's environment and is killed past 15 seconds or 1 GiB, which refuses the page. A first read is always fresh. Only reads with an `offset` use
-a copy of the page, for up to 15 minutes, so the parts of one reading fit
-together. The tool reads text only, and reports a binary document's type instead.
+host's environment and is killed once it passes 15 seconds or 1 GiB, which
+refuses the page; two convert at once and sixteen more may wait. A first read
+is always fresh. Only reads with an `offset` use a copy of the page, kept for
+up to 15 minutes, so the parts of one reading fit together; where no copy is
+kept any more, the part comes from a fresh fetch and its result says the parts
+may not line up. The tool reads text only, and reports a binary document's type
+instead.
+
+Text an element marks as not shown is left out of the markdown: the `hidden`
+attribute, `aria-hidden="true"`, and a `style` attribute's `display: none` or
+`visibility: hidden`. That removes the commonest hiding place for instructions
+aimed at a model, and no more: a stylesheet's rules aren't read, and text kept
+from the eye another way (opacity, size, colour, position) comes through. The
+model that answers a `prompt` is told to treat the document as data and to
+report instructions it finds there.
 
 ### Shared instructions
 

@@ -9,8 +9,8 @@
  * a compiled regular expression, and Bun ignores a worker's memory limits. A
  * process can be killed whatever it's doing, so the parent does that at its
  * deadline (fetch-convert.ts), and this process watches itself from a second
- * thread, which still runs however busy the first is, so it can't outlive a
- * parent that crashed.
+ * thread, which still runs however busy the first is, so one whose parent
+ * crashed still ends at its own deadline, a little after the parent's.
  *
  * The parent passes the limits as one JSON argument and the document as JSON on
  * stdin, and reads one JSON answer from stdout.
@@ -20,15 +20,18 @@ import TurndownService from 'turndown';
 
 const { memoryLimitBytes, deadlineMs } = JSON.parse(process.argv[2]!) as { memoryLimitBytes: number; deadlineMs: number };
 
+// It looks every 50 ms, so memory can pass the limit by what's taken in between,
+// and it times itself by performance.now(), which a change to the wall clock doesn't move.
 const WATCHDOG = `
   const { workerData } = require('node:worker_threads');
+  const started = performance.now();
   setInterval(() => {
-    if (process.memoryUsage().rss > workerData.memoryLimitBytes || Date.now() > workerData.deadline) {
+    if (process.memoryUsage().rss > workerData.memoryLimitBytes || performance.now() - started > workerData.deadlineMs) {
       process.kill(process.pid, 'SIGKILL');
     }
   }, 50);
 `;
-new Worker(WATCHDOG, { eval: true, workerData: { memoryLimitBytes, deadline: Date.now() + deadlineMs } }).unref();
+new Worker(WATCHDOG, { eval: true, workerData: { memoryLimitBytes, deadlineMs } }).unref();
 
 const { html, baseUrl } = JSON.parse(await new Response(Bun.stdin.stream()).text()) as { html: string; baseUrl?: string };
 
@@ -88,12 +91,34 @@ function isFirstRow(row: DomNode): boolean {
   return tableOf(row)?.querySelector?.('tr') === row;
 }
 
-/** An element a browser wouldn't show. External stylesheets are out of reach, so this catches only what's marked on the element. */
+/** Whether a style attribute ends with the element not displayed: comments aside, the last declaration of a property wins, unless an earlier one is !important. */
+function styleHides(style: string): boolean {
+  const final = new Map<string, { value: string; important: boolean }>();
+  for (const declaration of style.replace(/\/\*[\s\S]*?\*\//g, '').split(';')) {
+    const colon = declaration.indexOf(':');
+    if (colon === -1) continue;
+    const property = declaration.slice(0, colon).trim().toLowerCase();
+    const written = declaration.slice(colon + 1).trim().toLowerCase();
+    const important = /!\s*important$/.test(written);
+    if (final.get(property)?.important && !important) continue;
+    final.set(property, { value: written.replace(/\s*!\s*important$/, ''), important });
+  }
+  return final.get('display')?.value === 'none' || final.get('visibility')?.value === 'hidden';
+}
+
+/**
+ * An element marked as not shown, on the element itself: the `hidden`
+ * attribute, aria-hidden, or a style attribute's display: none or visibility:
+ * hidden. That's a reduction, not a guarantee: a stylesheet's rules are out of
+ * reach, and text can be kept from the eye in ways no list covers (opacity,
+ * size, colour, position). Those are left in, opacity: 0 among them, since
+ * pages that fade their content in start it that way.
+ */
 function isHidden(node: DomNode): boolean {
   if (typeof node.getAttribute !== 'function') return false;
   if (node.getAttribute('hidden') !== null) return true;
   if (node.getAttribute('aria-hidden') === 'true') return true;
-  return /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)/i.test(node.getAttribute('style') ?? '');
+  return styleHides(node.getAttribute('style') ?? '');
 }
 
 /** An address to follow from the page: absolute, and never one that runs or embeds something. */

@@ -81,6 +81,12 @@ async function refusal(run: Promise<unknown>): Promise<string> {
   return (error as FetchRefusal).message;
 }
 
+/** Waits for what another process or the server has yet to do, rather than for a fixed time. */
+async function until(done: () => boolean, withinMs = 5_000): Promise<void> {
+  const deadline = Date.now() + withinMs;
+  while (!done() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+}
+
 describe('isPublicAddress', () => {
   test.each([
     ['127.0.0.1'], ['127.8.8.8'], ['10.1.2.3'], ['172.16.0.1'], ['172.31.255.255'], ['192.168.1.1'],
@@ -90,6 +96,8 @@ describe('isPublicAddress', () => {
     ['::'], ['::1'], ['fc00::1'], ['fd12:3456::1'], ['fe80::1'], ['fe80::1%en0'], ['ff02::1'],
     ['::ffff:127.0.0.1'], ['::ffff:7f00:1'], ['::ffff:10.0.0.1'], ['::7f00:1'],
     ['64:ff9b::7f00:1'], ['64:ff9b:1::1'], ['2002:7f00:1::'], ['2001:db8::1'], ['::ffff:0:0'],
+    // NAT64 addresses whose IPv4 address is private: 10.0.0.1, 127.0.0.1, the metadata service, 0.0.0.0
+    ['64:ff9b::a00:1'], ['64:ff9b::127.0.0.1'], ['64:ff9b::a9fe:a9fe'], ['64:ff9b::'], ['64:ff9b::1'], ['64:ff9b:0:0:0:0:c0a8:101'],
     ['not an address'], [''],
   ])('%s is not public', (address) => {
     expect(isPublicAddress(address)).toBe(false);
@@ -98,6 +106,8 @@ describe('isPublicAddress', () => {
   test.each([
     ['8.8.8.8'], ['1.1.1.1'], ['172.32.0.1'], ['172.15.255.255'], ['100.63.255.255'], ['100.128.0.1'], ['192.169.0.1'],
     ['2606:4700:4700::1111'], ['2a00:1450:4001::1'], ['::ffff:8.8.8.8'],
+    // NAT64 addresses of public sites, as a DNS64 network gives for an IPv4-only one
+    ['64:ff9b::808:808'], ['64:ff9b::8.8.8.8'], ['64:ff9b:0:0:0:0:101:101'],
   ])('%s is public', (address) => {
     expect(isPublicAddress(address)).toBe(true);
   });
@@ -173,6 +183,11 @@ describe('a name server\'s answers', () => {
   ])('%s refuses the name', async (_label, addresses) => {
     const { error } = await ask(answering(...addresses), true);
     expect(error?.message).toContain('private or local address');
+  });
+
+  test('a resolver that answers with no address fails the lookup, rather than throwing from its callback', async () => {
+    expect((await ask(answering(), false)).error?.code).toBe('ENOTFOUND');
+    expect((await ask(answering(), true)).result).toEqual([]);
   });
 
   test('a name that changes its answer is checked on each lookup, the DNS rebinding case', async () => {
@@ -256,7 +271,7 @@ describe('what comes back', () => {
     const got = await httpGet(new URL(`http://127.0.0.1:${port}/endless`), { ...onlyLoopback, maxBytes: 200_000 });
     expect(got.cut).toBe(true);
     expect(got.body.length).toBe(200_000);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await until(() => closedEarly === before + 1);
     expect(closedEarly).toBe(before + 1);
   });
 
@@ -266,7 +281,7 @@ describe('what comes back', () => {
     expect(got.binary).toBe(true);
     expect(got.body.length).toBe(0);
     expect(got.declaredBytes).toBe(123456);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await until(() => closedEarly === before + 1);
     expect(closedEarly).toBe(before + 1);
   });
 
@@ -317,7 +332,8 @@ describe('https', () => {
     await new Promise<void>((resolve) => secure.listen(0, '127.0.0.1', resolve));
     const address = `https://127.0.0.1:${(secure.address() as AddressInfo).port}/`;
     try {
-      expect(await refusal(httpGet(new URL(address), { ...OPTIONS, addressAllowed: () => true }))).toContain('the request failed');
+      // Refused for the certificate, and not for something else that would pass with the check off.
+      expect(await refusal(httpGet(new URL(address), { ...OPTIONS, addressAllowed: () => true }))).toMatch(/the request failed: .*(certificate|self.signed)/i);
       expect(served).toBe(0);
     } finally {
       secure.closeAllConnections();

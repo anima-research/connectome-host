@@ -18,12 +18,15 @@ const CONVERT_MEMORY_BYTES = 1024 * 1024 * 1024;
 const CHILD_GRACE_MS = 2_000;
 /** Conversions at once, so a batch of big pages can't take many times the memory limit between them. */
 const MOST_AT_ONCE = 2;
+/** Conversions waiting for a turn, each holding its document in this process meanwhile. Past it, a page is refused. */
+const MOST_WAITING = 16;
 
 let running = 0;
 const waiting: Array<() => void> = [];
 
 async function turnToConvert(): Promise<() => void> {
   if (running < MOST_AT_ONCE) running++;
+  else if (waiting.length >= MOST_WAITING) throw new FetchRefusal('too many pages are being converted at once. Try again in a moment.');
   else await new Promise<void>((resolve) => waiting.push(resolve));
   // A finished conversion hands its turn straight to the next in line.
   return () => {
@@ -110,10 +113,14 @@ function convertInChild(html: string, baseUrl: string | undefined, options: Conv
  */
 export async function htmlToMarkdown(html: string, baseUrl: string | undefined, options: ConvertOptions = {}): Promise<string> {
   const done = await turnToConvert();
+  let child: ChildProcess | undefined;
   try {
-    return await convertInChild(html, baseUrl, options);
+    return await convertInChild(html, baseUrl, { ...options, onChild: (started) => { child = started; options.onChild?.(started); } });
   } finally {
-    done();
+    // The turn passes on once the process is gone, not once its answer is in:
+    // a killed one holds its memory until it has exited.
+    if (child === undefined || child.pid === undefined || child.exitCode !== null || child.signalCode !== null) done();
+    else child.once('exit', done);
   }
 }
 
@@ -141,20 +148,30 @@ function markedEncoding(bytes: Buffer): string | undefined {
   return BYTE_ORDER_MARKS.find(([mark]) => mark.every((byte, index) => bytes[index] === byte))?.[1];
 }
 
-/** Whether bytes hold binary data: a NUL early on, which text in the encodings served here doesn't have, UTF-16 being told apart by its byte-order mark. */
-export function looksBinary(bytes: Buffer): boolean {
-  return markedEncoding(bytes) === undefined && bytes.subarray(0, 8192).includes(0);
+function declaredCharset(contentType: string | undefined): string | undefined {
+  return contentType?.match(/charset\s*=\s*"?([^";\s]+)/i)?.[1];
+}
+
+/**
+ * Whether bytes hold binary data: a NUL early on, which text in the encodings
+ * served here doesn't have. UTF-16 has them, and is told apart by its
+ * byte-order mark or the charset its Content-Type names.
+ */
+export function looksBinary(bytes: Buffer, contentType?: string): boolean {
+  if (markedEncoding(bytes) !== undefined || /^utf-16/i.test(declaredCharset(contentType) ?? '')) return false;
+  return bytes.subarray(0, 8192).includes(0);
 }
 
 /**
  * Bytes as text. As a browser does, it takes the encoding from a byte-order
  * mark first, then the charset in the header, then for HTML a `<meta>` near the
- * start, and otherwise UTF-8, as it does for one this runtime doesn't know. A
- * multi-byte character cut off at the end of a prefix read is left out, rather
- * than shown as a replacement.
+ * start, and otherwise UTF-8, as it does for one this runtime doesn't know.
+ * When the bytes are a prefix (`cut`), a multi-byte character cut off at their
+ * end is left out; a whole document that ends partway through one shows the
+ * replacement character there, as its other invalid bytes do.
  */
-export function decodeText(bytes: Buffer, contentType: string | undefined, html = false): string {
-  const declared = contentType?.match(/charset\s*=\s*"?([^";\s]+)/i)?.[1];
+export function decodeText(bytes: Buffer, contentType: string | undefined, html = false, cut = false): string {
+  const declared = declaredCharset(contentType);
   const inMeta = html ? bytes.subarray(0, 1024).toString('latin1').match(/<meta\b[^>]*?charset\s*=\s*["']?\s*([\w.:-]+)/i)?.[1] : undefined;
   let decoder: TextDecoder;
   try {
@@ -162,7 +179,7 @@ export function decodeText(bytes: Buffer, contentType: string | undefined, html 
   } catch {
     decoder = new TextDecoder('utf-8');
   }
-  return decoder.decode(bytes, { stream: true });
+  return decoder.decode(bytes, { stream: cut });
 }
 
 /**

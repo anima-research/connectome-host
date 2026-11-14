@@ -40,8 +40,7 @@ for (const [address, prefix] of [
 ] as const) NOT_PUBLIC.addSubnet(address, prefix, 'ipv4');
 for (const [address, prefix] of [
   ['::', 96], // unspecified, loopback, and IPv4-compatible
-  ['64:ff9b::', 96], // NAT64, which can embed a private IPv4 address
-  ['64:ff9b:1::', 48], // local-use NAT64, likewise
+  ['64:ff9b:1::', 48], // local-use NAT64, which is for a network's own use
   ['100::', 64], // discard
   ['2001::', 23], // protocol assignments, Teredo among them
   ['2001:db8::', 32], // documentation
@@ -52,15 +51,32 @@ for (const [address, prefix] of [
   ['ff00::', 8], // multicast
 ] as const) NOT_PUBLIC.addSubnet(address, prefix, 'ipv6');
 
+/** NAT64's well-known prefix, whose addresses each stand for the IPv4 address in their last 32 bits. */
+const NAT64 = new BlockList();
+NAT64.addSubnet('64:ff9b::', 96, 'ipv6');
+
+/** The IPv4 address an IPv6 address's last 32 bits spell. */
+function embeddedIpv4(address: string): string {
+  const dotted = address.match(/(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+  if (dotted !== undefined) return dotted;
+  const [head, tail] = address.split('::');
+  const last = tail === undefined ? head!.split(':') : tail === '' ? [] : tail.split(':');
+  const [high, low] = ['0', '0', ...last].slice(-2).map((group) => parseInt(group, 16)) as [number, number];
+  return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+}
+
 /**
  * Whether an address is on the public internet. An IPv4-mapped IPv6 address
- * (`::ffff:127.0.0.1`) answers as the IPv4 address it maps. What isn't an
- * address at all isn't public.
+ * (`::ffff:127.0.0.1`) answers as the IPv4 address it maps, and so does a
+ * NAT64 one (`64:ff9b::808:808`), which is how an IPv6-only network reaches
+ * every IPv4 site, public ones included. What isn't an address at all isn't
+ * public.
  */
 export function isPublicAddress(address: string): boolean {
   const bare = address.split('%')[0]!;
   const family = isIP(bare);
   if (family === 0) return false;
+  if (family === 6 && NAT64.check(bare, 'ipv6')) return isPublicAddress(embeddedIpv4(bare));
   return !NOT_PUBLIC.check(bare, family === 4 ? 'ipv4' : 'ipv6');
 }
 
@@ -162,7 +178,12 @@ export function guardedLookup(allowed: (address: string) => boolean, resolve: Re
         return;
       }
       if (options.all) (callback as unknown as (e: null, a: dns.LookupAddress[]) => void)(null, addresses);
-      else callback(null, addresses[0]!.address, addresses[0]!.family);
+      else if (addresses[0] === undefined) {
+        // A resolver that answers with no error and no address: the name isn't found.
+        const missing = new Error(`getaddrinfo ENOTFOUND ${hostname}`) as NodeJS.ErrnoException;
+        missing.code = 'ENOTFOUND';
+        callback(missing, '', 0);
+      } else callback(null, addresses[0].address, addresses[0].family);
     });
   };
 }
@@ -173,11 +194,11 @@ function headerText(value: string | string[] | undefined): string | undefined {
 
 type Hop = Omit<HttpGetResult, 'url'> & { location: string | undefined };
 
-/** One request and its response, over a connection of its own. */
+/** One request and its response, over a connection of its own. `deadline` is on performance.now()'s clock, which a change to the wall clock doesn't move. */
 function requestOnce(url: URL, options: HttpGetOptions, allowed: (address: string) => boolean, deadline: number): Promise<Hop> {
   return new Promise<Hop>((resolve, reject) => {
     const client = url.protocol === 'https:' ? https : http;
-    const remaining = Math.max(deadline - Date.now(), 1);
+    const remaining = Math.max(deadline - performance.now(), 1);
     const request = client.request(url, {
       method: 'GET',
       agent: false,
@@ -271,7 +292,7 @@ function requestOnce(url: URL, options: HttpGetOptions, allowed: (address: strin
  */
 export async function httpGet(start: URL, options: HttpGetOptions): Promise<HttpGetResult> {
   const allowed = options.addressAllowed ?? isPublicAddress;
-  const deadline = Date.now() + options.timeoutMs;
+  const deadline = performance.now() + options.timeoutMs;
   let url = new URL(start);
   for (let hop = 0; ; hop++) {
     url.hash = '';

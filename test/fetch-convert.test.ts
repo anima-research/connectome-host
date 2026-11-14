@@ -38,6 +38,9 @@ describe('htmlToMarkdown', () => {
     ['display:none', 'style="display:none"'],
     ['display : none among other styles', 'style="color:red; display : none"'],
     ['visibility:hidden', 'style="visibility:hidden"'],
+    ['display:none with a comment inside it', 'style="display:/* x */none"'],
+    ['display:none !important before a later display', 'style="display:none !important; display:block"'],
+    ['the last of two displays, which is none', 'style="display:block; display:none"'],
   ] as const;
 
   test.each(HIDING)('text hidden by %s, where instructions to a model tend to hide, is dropped', async (_label, how) => {
@@ -65,6 +68,15 @@ describe('htmlToMarkdown', () => {
     const markdown = await htmlToMarkdown(page(html), undefined);
     expect(markdown).toContain('shown');
     expect(markdown).not.toContain('HIDDEN');
+  });
+
+  test.each([
+    ['a later display that shows it again', 'style="display:none;display:block"'],
+    // Left in on purpose: pages that fade their content in start it at opacity 0.
+    ['opacity: 0', 'style="opacity:0"'],
+  ])('text under %s is kept, as a browser would show it or may come to', async (_label, how) => {
+    const markdown = await htmlToMarkdown(page(`<p>shown</p><div ${how}>KEPT_TEXT</div>`), undefined);
+    expect(markdown).toContain('KEPT_TEXT');
   });
 
   test('an element that only mentions display:none in a value is kept', async () => {
@@ -164,13 +176,15 @@ describe('htmlToMarkdown', () => {
   });
 });
 
+/** Whether a process is still running. One that has ended and waits to be reaped still answers a signal, so its state is read. */
 const isAlive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  const state = new TextDecoder().decode(Bun.spawnSync(['ps', '-o', 'stat=', '-p', String(pid)]).stdout).trim();
+  return state !== '' && !state.startsWith('Z');
 };
 
 async function gone(pid: number, withinMs: number): Promise<boolean> {
@@ -203,7 +217,7 @@ describe('the converting process', () => {
     expect(await gone(child!.pid!, 2_000)).toBe(true);
   }, 15_000);
 
-  test('a page past the memory limit is killed before it gets there', async () => {
+  test('a page that passes the memory limit is killed', async () => {
     let child: ChildProcess | undefined;
     const error = await htmlToMarkdown('<p>'.repeat(3_000_000), undefined, { memoryLimitBytes: 300 * 1024 * 1024, onChild: (c) => { child = c; } }).then(() => null, (e: unknown) => e);
     expect(error).toBeInstanceOf(FetchRefusal);
@@ -233,6 +247,35 @@ describe('the converting process', () => {
     expect(most).toBe(2);
   }, 20_000);
 
+  test('a killed conversion keeps its turn until its process is gone, so no more than two are ever alive', async () => {
+    let alive = 0;
+    let most = 0;
+    const onChild = (child: ChildProcess) => {
+      alive++;
+      most = Math.max(most, alive);
+      child.once('exit', () => { alive--; });
+    };
+    await Promise.all(Array.from({ length: 5 }, () => htmlToMarkdown('<div>'.repeat(200_000) + 'x', undefined, { timeoutMs: 200, onChild }).catch(() => null)));
+    expect(most).toBe(2);
+  }, 15_000);
+
+  test('past sixteen waiting, a page is refused at once rather than held in memory', async () => {
+    // Both turns free to start with: a conversion's turn passes on when its process has exited, a moment after its answer.
+    let last: ChildProcess | undefined;
+    await htmlToMarkdown(page('<p>first</p>'), undefined, { onChild: (c) => { last = c; } });
+    if (last!.exitCode === null && last!.signalCode === null) await new Promise((exited) => last!.once('exit', exited));
+    await new Promise((turn) => setTimeout(turn, 0));
+    const slow = () => htmlToMarkdown('<div>'.repeat(200_000) + 'x', undefined, { timeoutMs: 300 }).then(() => 'converted', (error: Error) => error.message);
+    // Two running and sixteen waiting.
+    const held = Array.from({ length: 18 }, slow);
+    const started = Date.now();
+    const extra = await slow();
+    expect(extra).toContain('too many pages are being converted at once');
+    expect(Date.now() - started).toBeLessThan(250);
+    for (const message of await Promise.all(held)) expect(message).not.toContain('too many pages');
+    expect((await htmlToMarkdown(page('<p>after</p>'), undefined)).trim()).toBe('after');
+  }, 30_000);
+
   test('a refused conversion gives up its turn', async () => {
     await Promise.all(Array.from({ length: 3 }, () => htmlToMarkdown('<div>'.repeat(200_000) + 'x', undefined, { timeoutMs: 100 }).catch(() => null)));
     expect((await htmlToMarkdown(page('<p>next</p>'), undefined)).trim()).toBe('next');
@@ -255,14 +298,29 @@ describe('the converting process', () => {
       const running = htmlToMarkdown('<div>'.repeat(200_000) + 'x', undefined, { timeoutMs: 1_500, onChild: (c) => { child = c; } }).catch(() => null);
       await new Promise((done) => setTimeout(done, 300));
       expect(child!.spawnargs).toContain('--no-env-file');
+      // Looked at while it runs, or finding nothing would show nothing.
+      expect(isAlive(child!.pid!)).toBe(true);
       expect(await shows(child!.pid!)).toBe(false);
       await running;
+
+      // And the flag does what it's passed for: a .env beside the program is read without it, and not with it.
+      const dir = mkdtempSync(join(tmpdir(), 'fetch-dotenv-'));
+      try {
+        writeFileSync(join(dir, '.env'), 'FETCH_DOTENV_CANARY=loaded\n');
+        const prints = (flags: string[]) => new TextDecoder().decode(
+          Bun.spawnSync([process.execPath, ...flags, '-e', 'console.log(process.env.FETCH_DOTENV_CANARY ?? "absent")'], { cwd: dir, env: {} }).stdout,
+        ).trim();
+        expect(prints([])).toBe('loaded');
+        expect(prints(['--no-env-file'])).toBe('absent');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     } finally {
       delete process.env.FETCH_CANARY_SECRET;
     }
   }, 15_000);
 
-  test('does not keep the host from exiting, and does not outlive it', async () => {
+  test('does not keep the host from exiting, and once the host is gone ends at its own deadline', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fetch-orphan-'));
     const script = join(dir, 'host.ts');
     writeFileSync(script, `
@@ -309,6 +367,8 @@ describe('telling what a document is', () => {
     expect(looksBinary(Buffer.from([0x89, 0x50, 0x00, 0x47]))).toBe(true);
     expect(looksBinary(Buffer.alloc(0))).toBe(false);
     expect(looksBinary(Buffer.from('﻿hi', 'utf16le'))).toBe(false);
+    expect(looksBinary(Buffer.from('hi', 'utf16le'))).toBe(true);
+    expect(looksBinary(Buffer.from('hi', 'utf16le'), 'text/plain; charset=UTF-16LE')).toBe(false);
   });
 
   test('decodeText takes a byte-order mark first, over any charset the header names', () => {
@@ -340,7 +400,9 @@ describe('telling what a document is', () => {
 
   test('decodeText leaves out a character cut in half by a prefix read', () => {
     const whole = Buffer.from('ab✓');
-    expect(decodeText(whole.subarray(0, whole.length - 1), undefined)).toBe('ab');
+    expect(decodeText(whole.subarray(0, whole.length - 1), undefined, false, true)).toBe('ab');
+    // A whole document that ends partway through a character shows that, as its other bad bytes show.
+    expect(decodeText(whole.subarray(0, whole.length - 1), undefined)).toBe('ab\ufffd');
   });
 
   test('looksLikeScriptShell', () => {
