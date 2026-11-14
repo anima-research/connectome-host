@@ -68,10 +68,9 @@ export interface UpdateStatus {
   /** A release Restart would switch to. */
   installed: string | null;
   goBack: { to: string; since: string } | null;
-  restoreHeld: string | null;
   restart: RestartState | null;
   armed: ArmedSwitch | null;
-  armedDropped: (Pick<ArmedSwitch, 'to' | 'why' | 'keepData' | 'since'> & { at: string; reason: string }) | null;
+  armedDropped: (Pick<ArmedSwitch, 'to' | 'since'> & { at: string; reason: string }) | null;
   /** The reason the operator quiesced this host under, which it keeps
    *  through a restart. */
   operatorQuiesced: string | null;
@@ -85,8 +84,6 @@ export interface UpdateStatus {
 
 export interface ArmedSwitch {
   to: string;
-  why: 'update' | 'go-back';
-  keepData: boolean;
   since: string;
   by: string | null;
   lastTry: { at: string; waited: string; hosts: HostQuiet[] } | null;
@@ -155,20 +152,15 @@ export function toolWays(headless: boolean, command = 'connectome'): UpdateWays 
     wait: `the person's ${person.wait}`,
     now: `the person's ${person.now}`,
     resume: `the person's ${person.resume}`,
-    back: 'lifecycle--update back',
-    keep: 'lifecycle--update back with data keep',
-    restore: 'lifecycle--update back with data restore',
+    back: `the person's ${person.back}`,
+    keep: `the person's ${person.keep}`,
+    restore: `the person's ${person.restore}`,
     check: 'lifecycle--update check',
     person,
   };
 }
 
 export const TOOL_WAYS = toolWays(true);
-
-export function personWay(ways: UpdateWays, way: UpdateWay): string {
-  const person = (ways as Partial<{ person: UpdateWays }>).person;
-  return ways.reader === 'agent' && person !== undefined ? `the person's ${person[way]}` : ways[way];
-}
 
 export const QUIET_MOMENT = 'nothing the host counts as in flight is still going here, such as a turn, subagent run, ' +
   'background script, session switch, operator\'s work or credential action, and each fleet child says nothing is ' +
@@ -202,10 +194,8 @@ function bunFirst(ways: UpdateWays): string {
     : `upgrade Bun first, and ${ways.install} installs nothing until then.`;
 }
 
-export function armedName(armed: Pick<ArmedSwitch, 'to' | 'why' | 'keepData'>, opening = true): string {
-  const name = armed.why === 'go-back'
-    ? `a Go back to ${armed.to}, ${armed.keepData ? 'keeping the newer data' : 'restoring the copy'},`
-    : `a restart onto ${armed.to}`;
+export function armedName(armed: Pick<ArmedSwitch, 'to'>, opening = true): string {
+  const name = `a restart onto ${armed.to}`;
   return opening ? name.charAt(0).toUpperCase() + name.slice(1) : name;
 }
 
@@ -338,12 +328,7 @@ function busyHostLines(hosts: HostQuiet[], scriptsEnd = 'which a stop ends'): st
   return lines;
 }
 
-function restoreWays(status: UpdateStatus, ways: UpdateWays): UpdateWays {
-  return ways.reader === 'agent' && status.restoreHeld ? { ...ways, restore: personWay(ways, 'restore') } : ways;
-}
-
-export function statusLines(status: UpdateStatus, given: UpdateWays = COMMAND_WAYS): string[] {
-  const ways = restoreWays(status, given);
+export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAYS): string[] {
   const lines = [`connectome-host ${status.running}.`];
   const check = status.check;
   if (check === null) {
@@ -471,8 +456,7 @@ export function goBackUnread(status: UpdateStatus): string | undefined {
   return status.problems.find((problem) => problem.startsWith(GO_BACK_UNREAD));
 }
 
-export function goBackLines(status: UpdateStatus, given: UpdateWays = COMMAND_WAYS): string[] {
-  const ways = restoreWays(status, given);
+export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAYS): string[] {
   if (!status.install) return [notAnInstall(ways)];
   if (status.goBack === null) {
     const unread = goBackUnread(status);
@@ -481,7 +465,6 @@ export function goBackLines(status: UpdateStatus, given: UpdateWays = COMMAND_WA
       : 'No Go back is offered: the copy doesn\'t hold another installed release\'s data.'];
   }
   const { to, since } = status.goBack;
-  const held = ways.reader === 'agent' && status.restoreHeld ? status.restoreHeld : null;
   return [
     `Going back to ${to}, whose data the copy holds as it was at ${since}. Two ways:`,
     `- ${ways.keep}: ${to} runs on the data as it is now, so residents lose nothing. It comes back as the host is ` +
@@ -491,14 +474,9 @@ export function goBackLines(status: UpdateStatus, given: UpdateWays = COMMAND_WA
     `- ${ways.restore}: the copy is restored, and everything since ${since} is set aside, not deleted. For ` +
       'residents, that is everything they have lived since then. The host comes back answering new turns, unless ' +
       'it had been quiesced from the Web UI before the Restart that took the copy: then it comes back holding them, ' +
-      `and ${ways.reader === 'agent' ? 'the person\'s click on' : 'clicking'} "⏸ quiesced" in the Web UI's ` +
+      'and clicking "⏸ quiesced" in the Web UI\'s ' +
       'top bar lets them through. Whether it\'s quiesced now makes no difference.',
-    ...held !== null ? [`Restoring the copy is the person's here: ${held}.`] : [],
-    ways.reader === 'agent'
-      ? `${held !== null ? 'On' : 'Either way, on'} a headless host started with \`CONNECTOME_SUPERVISED=1\`, ` +
-        `${held !== null ? ways.keep : 'it'} begins at the host's first quiet moment, ${ASKS_NOBODY}. ${ARMED_RETRY} ` +
-        'Anywhere else, back refuses and arms nothing.'
-      : 'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
+    'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
   ];
 }
 

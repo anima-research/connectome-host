@@ -224,15 +224,12 @@ for (const [what, options, says] of [
   ['without CONNECTOME_SUPERVISED=1 at its start', { supervisedLine: false }, ['Ask whoever runs your host']],
   ['run in a terminal, whatever its environment', { mode: 'terminal' as const }, ['runs in a terminal, not headless']],
 ] as const) {
-  test(`on a host ${what}, restart and back refuse, naming the line and both restarts a restart needs, that asking again won't help, and arm nothing`, async () => {
-    const { root, dataDir } = installRunning0141(['0.15.0']);
-    placeCopyOf0140(root, dataDir);
+  test(`on a host ${what}, restart refuses, naming the line and both restarts it needs, that asking again won't help, and arms nothing`, async () => {
+    const { root } = installRunning0141(['0.15.0']);
     const host = residentHost({ root, ...options });
-    for (const input of [{ action: 'restart' }, { action: 'back', data: 'keep' }]) {
-      const answer = await host.call(input);
-      expect(answer.success).toBe(false);
-      for (const words of [...says, ...CONTRACT]) expect(text(answer)).toContain(words);
-    }
+    const answer = await host.call({ action: 'restart' });
+    expect(answer.success).toBe(false);
+    for (const words of [...says, ...CONTRACT]) expect(text(answer)).toContain(words);
     expect(host.update.armedSwitch()).toBeNull();
     expect(text(await host.call({ action: 'check' }))).not.toContain('armed');
     expect(host.stops).toEqual([]);
@@ -257,7 +254,7 @@ const HEADLESS_COMMANDS = 'They type it in a shell, as the user your host runs a
   'without waiting for a quiet moment: new turns are held, turns in progress get up to 2 min to end, and if any don\'t, ' +
   'their command says who is still busy and how to wait longer, stop now or call it off. notes and cancel have no ' +
   'command of theirs: their check gives them a link to the notes, and this tool\'s cancel is the one call that disarms a ' +
-  'restart or Go back before it begins without replacing it or stopping the host: their own restart or back goes ahead in ' +
+  'restart before it begins without replacing it or stopping the host: their own restart or back goes ahead in ' +
   'its place.';
 
 const LONG_COMMAND = '/home/alice/resident/connectome-host/connectome';
@@ -275,11 +272,9 @@ for (const [kind, options, command] of [
     const description = toolDescription(host);
     if (command !== '') expect(description).toContain(`their own command is \`${command} update\``);
     const items = actionItems(raw);
-    expect(Object.keys(items)).toEqual(['check', 'notes', 'install', 'restart', 'back', 'cancel']);
+    expect(Object.keys(items)).toEqual(['check', 'notes', 'install', 'restart', 'cancel']);
     for (const [action, words] of [
       ['restart', 'your turn ends as it would, as does every other agent\'s on this host and its fleet children'],
-      ['back', 'so you lose nothing, where that release can read it; otherwise its start comes back to the release you run by itself, and restore is the way'],
-      ['back', 'everything you have lived since is set aside, not deleted; on a host with fleet children, restore is the person\'s'],
       ['cancel', 'before it begins, whoever armed it'],
     ] as const) {
       expect({ action, says: items[action]?.includes(words) }).toEqual({ action, says: true });
@@ -309,7 +304,7 @@ test('on a headless host with no install of its own, the update tool names no co
   expect(toolDescription(host)).not.toContain('connectome update');
   expect(text(await host.call({ action: 'check' }))).toContain('This host runs headless with no install of its own, so it ' +
     'has no command of theirs to update it: a fleet child is updated with its parent\'s install where its parent has one, ' +
-    'and any other host by hand (docs/DEPLOYMENTS.md, "Updating an install"), and your restart and back refuse here, ' +
+    'and any other host by hand (docs/DEPLOYMENTS.md, "Updating an install"), and your restart refuses here, ' +
     'saying so.');
 });
 
@@ -326,7 +321,7 @@ test('on a host run in a terminal, the update tool names the person\'s /update, 
     'for a quiet moment: new turns are held, turns in progress get up to 2 min to end, and if any don\'t, its answer says ' +
     'who is still busy and how to wait longer, stop now or call it off. Once it stops, they start the host again ' +
     'themselves, and that start switches. notes and cancel have no command of theirs: their check gives them a link ' +
-    'to the notes, and this tool\'s cancel is the one call that disarms a restart or Go back before it begins without ' +
+    'to the notes, and this tool\'s cancel is the one call that disarms a restart before it begins without ' +
     'replacing it or stopping the host: their own restart or back goes ahead in its place.');
 });
 
@@ -401,17 +396,12 @@ test('restart answers at once, says it waits for the host to be quiet and how to
   expect(check).toContain(RETRY);
 });
 
-test('restart or back naming another release than the one they would go to arms nothing, and says how to see and get it', async () => {
-  const { root, dataDir } = installRunning0141(['0.15.0']);
-  placeCopyOf0140(root, dataDir);
-  const host = residentHost({ root, dataDir });
+test('restart naming another release than the one it would go to arms nothing, and says how to see and get it', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const host = residentHost({ root });
   const restart = await host.call({ action: 'restart', version: '0.16.0' });
   expect(restart.success).toBe(false);
   for (const words of ['0.15.0', 'lifecycle--update check', 'lifecycle--update install']) expect(text(restart)).toContain(words);
-  const back = await host.call({ action: 'back', data: 'keep', version: '0.13.0' });
-  expect(back.success).toBe(false);
-  expect(text(back)).toContain('0.14.0');
-  expect(text(back)).toContain('lifecycle--update check');
   expect(host.update.armedSwitch()).toBeNull();
 });
 
@@ -758,18 +748,6 @@ for (const [fromLook, when] of [[1, 'at the children\'s look'], [2, 'at the swit
   });
 }
 
-test('an armed Go back whose release is damaged by its quiet moment is dropped, saying why', async () => {
-  const { root, dataDir } = installRunning0141();
-  placeCopyOf0140(root, dataDir);
-  const host = residentHost({ root, dataDir });
-  await host.armed({ action: 'back', data: 'keep' });
-  rmSync(join(root, 'releases', '0.14.0', RELEASE_HOST, 'package.json'));
-  await host.update.runArmed(alwaysQuiet);
-  expect(readMark(root)).toBeNull();
-  expect(host.update.armedSwitch()).toBeNull();
-  expect(text(await host.call({ action: 'check' }))).toContain('0.14.0 can\'t be switched to');
-});
-
 test('a restart dropped before its try reserved anything ends the quiesce an earlier try left on a child', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const state = { busy: true, resumes: false };
@@ -883,163 +861,6 @@ test('check after a fallback says the quoted lines are the host\'s to the person
   expect(statusLines(host.update.status(), COMMAND_WAYS).join('\n')).not.toContain('Those quoted lines');
 });
 
-const RESTORE_IS_THE_PERSONS = "so restoring it is the person's, with connectome update back restore. " +
-  'lifecycle--update back with data keep is open to you.';
-const childEntry = (dataDir: string, name: string) => ({ name, pid: null, bootId: null, dataDir: join(dataDir, name) });
-const writeChildren = (dataDir: string, names: string[]) =>
-  writeFileSync(join(dataDir, 'fleet-children.json'), JSON.stringify({ v: 1, children: names.map((name) => childEntry(dataDir, name)) }));
-
-for (const [where, place] of [
-  ['a fleet child is running', (_root: string, _dataDir: string) => ({ fleet: fleetChild({ busy: false }).fleet })],
-  ['the live children file lists a child', (_root: string, dataDir: string) => { writeChildren(dataDir, ['kid']); return {}; }],
-  ["the copy's children file lists a child", (root: string) => {
-    writeChildren(join(installPaths(root).copy, '0-data'), ['kid']);
-    return {};
-  }],
-] as const) {
-  test(`back with restore is refused where ${where}, naming that child and the person's restore, and arms nothing`, async () => {
-    const { root, dataDir } = installRunning0141();
-    placeCopyOf0140(root, dataDir);
-    const host = residentHost({ root, dataDir, ...place(root, dataDir) });
-    const answer = await host.call({ action: 'back', data: 'restore' });
-    expect(answer.success).toBe(false);
-    expect(text(answer)).toBe('Nothing was armed: this host has fleet children, now or at the last switch (kid), so restoring ' +
-      "the copy is the person's, with connectome update back restore. lifecycle--update back with data keep is open to you.");
-    expect(host.update.armedSwitch()).toBeNull();
-  });
-}
-
-test("back with restore is refused where a children file can't be read, as a thing that can't be told", async () => {
-  for (const unreadable of ['live', 'copy'] as const) {
-    const { root, dataDir } = installRunning0141();
-    placeCopyOf0140(root, dataDir);
-    const at = unreadable === 'live' ? dataDir : join(installPaths(root).copy, '0-data');
-    writeFileSync(join(at, 'fleet-children.json'), '{"v": 1, "children": [');
-    const host = residentHost({ root, dataDir });
-    const answer = await host.call({ action: 'back', data: 'restore' });
-    expect(answer.success).toBe(false);
-    expect(text(answer)).toStartWith("Nothing was armed: whether the copy it would restore holds a fleet child's data can't " +
-      'be told (');
-    expect(text(answer)).toContain(join(at, 'fleet-children.json'));
-    expect(text(answer)).toEndWith(`), ${RESTORE_IS_THE_PERSONS}`);
-    expect(host.update.armedSwitch()).toBeNull();
-  }
-});
-
-test('back with restore arms where no fleet child is running or listed, and its answer names the copy\'s time', async () => {
-  const { root, dataDir } = installRunning0141();
-  placeCopyOf0140(root, dataDir);
-  writeChildren(dataDir, []);
-  const host = residentHost({ root, dataDir });
-  const answer = await host.call({ action: 'back', data: 'restore' });
-  expect(answer.success).toBe(true);
-  expect(text(answer).split('\n').at(-1)).toBe('The copy it restores is as it was at 2026-10-20T10:00:00.000Z.');
-  expect(host.update.armedSwitch()).toMatchObject({ to: '0.14.0', why: 'go-back', keepData: false });
-});
-
-test('back with keep arms where fleet children are running and listed, and its answer names no copy\'s time', async () => {
-  const { root, dataDir } = installRunning0141();
-  placeCopyOf0140(root, dataDir);
-  writeChildren(dataDir, ['kid']);
-  const host = residentHost({ root, dataDir, fleet: fleetChild({ busy: false }).fleet });
-  const answer = await host.call({ action: 'back', data: 'keep' });
-  expect(answer.success).toBe(true);
-  expect(text(answer)).not.toContain('The copy it restores');
-  expect(host.update.armedSwitch()).toMatchObject({ to: '0.14.0', why: 'go-back', keepData: true });
-});
-
-test('an armed keep goes ahead at its try where fleet children are running and listed', async () => {
-  const { root, dataDir } = installRunning0141();
-  placeCopyOf0140(root, dataDir);
-  const host = residentHost({ root, dataDir, fleet: fleetChild({ busy: false }).fleet });
-  await host.armed({ action: 'back', data: 'keep' });
-  writeChildren(dataDir, ['kid']);
-  await host.update.runArmed(alwaysQuiet);
-  expect(readMark(root)).toMatchObject({ to: '0.14.0', why: 'go-back', keepData: true });
-  expect(host.stops).toHaveLength(1);
-});
-
-test('back with restore is refused where the copy holds the data directory inside a larger item that lists a child', async () => {
-  const { root } = installRunning0141();
-  const outer = mkdtempSync(join(tmpdir(), 'lifecycle-update-outer-'));
-  dirs.push(outer);
-  const dataDir = join(outer, 'data');
-  mkdirSync(dataDir);
-  writeFileSync(installPaths(root).install, JSON.stringify({ v: 1, dataDir, extraState: [] }));
-  const { copy } = installPaths(root);
-  mkdirSync(join(copy, '0-outer', 'data'), { recursive: true });
-  writeChildren(join(copy, '0-outer', 'data'), ['kid']);
-  placeRelease(root, '0.14.0');
-  writeFileSync(copyLabelPath(copy), JSON.stringify({
-    v: 1, from: '0.14.0', at: '2026-10-20T10:00:00.000Z', items: [{ path: realOrResolved(outer), name: '0-outer' }], mark: 'm-0',
-  }));
-  const host = residentHost({ root, dataDir });
-  const answer = await host.call({ action: 'back', data: 'restore' });
-  expect(answer.success).toBe(false);
-  expect(text(answer)).toContain('(kid)');
-  expect(host.update.armedSwitch()).toBeNull();
-});
-
-test('back with restore arms where the copy was taken before the data directory was there', async () => {
-  const { root, dataDir } = installRunning0141();
-  const { copy } = installPaths(root);
-  const servers = join(root, 'mcpl-servers.json');
-  writeFileSync(servers, '{}');
-  mkdirSync(copy, { recursive: true });
-  writeFileSync(join(copy, '0-mcpl-servers.json'), '{}');
-  placeRelease(root, '0.14.0');
-  writeFileSync(copyLabelPath(copy), JSON.stringify({
-    v: 1, from: '0.14.0', at: '2026-10-20T10:00:00.000Z', items: [{ path: realOrResolved(servers), name: '0-mcpl-servers.json' }],
-    absent: [{ path: realOrResolved(dataDir), name: '1-data' }], mark: 'm-0',
-  }));
-  const host = residentHost({ root, dataDir });
-  const answer = await host.call({ action: 'back', data: 'restore' });
-  expect(answer.success).toBe(true);
-  expect(host.update.armedSwitch()).toMatchObject({ to: '0.14.0', why: 'go-back', keepData: false });
-});
-
-test('an armed restore whose try finds a fleet child listed is dropped, and check says why', async () => {
-  const { root, dataDir } = installRunning0141();
-  placeCopyOf0140(root, dataDir);
-  const host = residentHost({ root, dataDir });
-  await host.armed({ action: 'back', data: 'restore' });
-  const since = host.update.armedSwitch()!.since;
-  writeChildren(dataDir, ['kid']);
-  await host.update.runArmed(alwaysQuiet);
-  expect(host.update.armedSwitch()).toBeNull();
-  expect(readMark(root)).toBeNull();
-  expect(host.stops).toEqual([]);
-  expect(statusLines(host.update.status(), COMMAND_WAYS).join('\n')).toContain(`A Go back to 0.14.0, restoring the copy, armed at ${since} ` +
-    "didn't go ahead at 2026-10-26T20:00:00.000Z: this host has fleet children, now or at the last switch (kid), so " +
-    `restoring the copy is the person's, with ${join(root, 'connectome')} update back restore.`);
-});
-
-test('back needs the data kept or restored, and goes back the way it was asked', async () => {
-  for (const data of ['keep', 'restore'] as const) {
-    const { root, dataDir } = installRunning0141();
-    placeCopyOf0140(root, dataDir);
-    const host = residentHost({ root, dataDir });
-    const missing = await host.call({ action: 'back' });
-    expect(missing.success).toBe(false);
-    expect(text(missing)).toContain('keep');
-    expect(text(missing)).toContain('restore');
-    expect(text(missing).split('\n').at(-1)).toBe('Either way, on a headless host started with `CONNECTOME_SUPERVISED=1`, ' +
-      'it begins at the host\'s first quiet moment, however long that takes, so it goes only once every host has said ' +
-      'no turn is running there, and asks nobody. A try that finds something still going waits at least a minute ' +
-      'before the next. Anywhere else, back refuses and arms nothing.');
-    expect(text(missing)).toContain('the person\'s click on "⏸ quiesced" in the Web UI\'s top bar lets them through');
-    expect(host.update.armedSwitch()).toBeNull();
-    const arming = text(await host.call({ action: 'back', data }));
-    expect(arming).toContain('if 0.14.0 has lifecycle--update; the person\'s connectome update check shows it either way.');
-    expect(arming).not.toContain('/update');
-    await host.update.cancelArmed();
-    await host.armed({ action: 'back', data });
-    await host.update.runArmed(alwaysQuiet);
-    expect(readMark(root)).toMatchObject({ to: '0.14.0', why: 'go-back' });
-    expect(readMark(root)?.keepData === true).toBe(data === 'keep');
-  }
-});
-
 test('cancel disarms an armed restart, so nothing restarts, check shows nothing armed, and it says who cancelled it, whoever armed it', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const host = residentHost({ root });
@@ -1121,15 +942,13 @@ test('after an update\'s restart the update puts nothing in the resident\'s cont
   expect((await startAgain(other.dataDir)).length).toBeGreaterThan(0);
 });
 
-test('a host with no install of its own, such as a fleet child, refuses restart and back', async () => {
+test('a host with no install of its own, such as a fleet child, refuses restart', async () => {
   const host = residentHost({ root: null });
-  for (const input of [{ action: 'restart' }, { action: 'back', data: 'keep' }]) {
-    const answer = await host.call(input);
-    expect(answer.success).toBe(false);
-    expect(text(answer)).toContain('A fleet child is updated with its parent\'s install where its parent has one, and any ' +
-      'other host, or a child whose parent has none, by hand');
-    expect(text(answer)).toContain('Asking again');
-  }
+  const answer = await host.call({ action: 'restart' });
+  expect(answer.success).toBe(false);
+  expect(text(answer)).toContain('A fleet child is updated with its parent\'s install where its parent has one, and any ' +
+    'other host, or a child whose parent has none, by hand');
+  expect(text(answer)).toContain('Asking again');
   expect(host.update.armedSwitch()).toBeNull();
 });
 
@@ -1152,26 +971,21 @@ test('a restart of either kind waits alone: each refuses while the other is arme
   expect(update.success).toBe(false);
   expect(text(update)).toContain('a plain restart (lifecycle--restart) is pending');
   expect(host.update.armedSwitch()).toBeNull();
-  const back = await host.call({ action: 'back', data: 'keep' });
-  expect(back.success).toBe(false);
-  expect(text(back)).toContain('a plain restart (lifecycle--restart) is pending');
-  expect(host.update.armedSwitch()).toBeNull();
   expect(text(await host.call({ action: 'check' }))).toContain('A plain restart (lifecycle--restart) is pending');
   expect(text(await host.call({ action: 'cancel' }))).toContain('lifecycle--restart with cancel: true disarms it, for an ' +
     'agent given that tool.');
   expect(state.isArmed()).toBe(true);
 });
 
-test('a call whose action, version or data the tool can\'t use is refused, naming the field, and arms nothing', async () => {
-  const { root, dataDir } = installRunning0141(['0.15.0']);
-  placeCopyOf0140(root, dataDir);
-  const host = residentHost({ root, dataDir });
+test('a call whose action or version the tool can\'t use, or a field it doesn\'t take, is refused, naming the field, and arms nothing', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const host = residentHost({ root });
   for (const [input, field] of [
     [{ action: 'reboot' }, '`action`'],
+    [{ action: 'back' }, '`action`'],
     [{ action: 'restart', version: 'latest' }, '`version`'],
-    [{ action: 'back', data: 'maybe' }, '`data`'],
-    [{ action: 'check', version: '0.15.0' }, '`version` goes with restart, back or notes'],
-    [{ action: 'restart', data: 'keep' }, '`data` goes with back'],
+    [{ action: 'check', version: '0.15.0' }, '`version` goes with restart or notes'],
+    [{ action: 'restart', data: 'keep' }, '`data`'],
     [{ action: 'restart', verison: '0.15.0' }, '`verison`'],
   ] as const) {
     const answer = await host.call(input);
@@ -1203,16 +1017,13 @@ test('with no Go back offered, /update names only its Restart as going ahead in 
   expect(lines).not.toContain('/update back keep or');
 });
 
-test('a host with no stop at all, as a batch run, refuses restart and back and arms nothing', async () => {
-  const { root, dataDir } = installRunning0141(['0.15.0']);
-  placeCopyOf0140(root, dataDir);
-  const host = residentHost({ root, dataDir, noStop: true });
-  for (const input of [{ action: 'restart' }, { action: 'back', data: 'keep' }]) {
-    const answer = await host.call(input);
-    expect(answer.success).toBe(false);
-    expect(text(answer)).toContain('no stop a restart can use');
-    expect(text(answer)).toContain('Asking again');
-  }
+test('a host with no stop at all, as a batch run, refuses restart and arms nothing', async () => {
+  const { root } = installRunning0141(['0.15.0']);
+  const host = residentHost({ root, noStop: true });
+  const answer = await host.call({ action: 'restart' });
+  expect(answer.success).toBe(false);
+  expect(text(answer)).toContain('no stop a restart can use');
+  expect(text(answer)).toContain('Asking again');
   expect(host.update.armedSwitch()).toBeNull();
 });
 
@@ -1303,20 +1114,6 @@ test('restart asked while an install is under way arms nothing, and says to ask 
   const host = residentHost({ root, installOps: manager.ops, versions: ['0.14.1', '0.15.0', '0.16.0'] });
   expect((await host.call({ action: 'install' })).success).toBe(true);
   const answer = await host.call({ action: 'restart' });
-  expect(answer.success).toBe(false);
-  expect(text(answer)).toContain('Nothing was armed: an install of 0.16.0 is under way. Ask again once lifecycle--update check');
-  expect(host.update.armedSwitch()).toBeNull();
-  manager.finish();
-  await until(() => host.update.status().installing === null);
-});
-
-test('back asked while an install is under way arms nothing, and says to ask again once check shows it ended', async () => {
-  const { root, dataDir } = installRunning0141(['0.15.0']);
-  placeCopyOf0140(root, dataDir);
-  const manager = heldManager();
-  const host = residentHost({ root, dataDir, installOps: manager.ops, versions: ['0.14.1', '0.15.0', '0.16.0'] });
-  expect((await host.call({ action: 'install' })).success).toBe(true);
-  const answer = await host.call({ action: 'back', data: 'keep' });
   expect(answer.success).toBe(false);
   expect(text(answer)).toContain('Nothing was armed: an install of 0.16.0 is under way. Ask again once lifecycle--update check');
   expect(host.update.armedSwitch()).toBeNull();
@@ -1627,47 +1424,22 @@ test('with an older release installed than the one offered, the take line still 
     `${shellWord(join(root, 'connectome'))} update restart.`);
 });
 
-test("on a host with a fleet child, the agent's Go back lines and its check's cost name the person's restore, not its own", async () => {
+test("with a Go back offered, the agent's check names the person's Go back, since the tool has none", async () => {
   const { root, dataDir } = installRunning0141();
   placeCopyOf0140(root, dataDir);
-  writeChildren(dataDir, ['kid']);
   const host = residentHost({ root, dataDir });
-  const back = text(await host.call({ action: 'back' }));
-  expect(back).not.toContain('lifecycle--update back with data restore');
-  expect(back).toContain("- the person's connectome update back restore: the copy is restored");
-  expect(back).toContain("Restoring the copy is the person's here: this host has fleet children, now or at the last switch (kid).");
-  expect(back.split('\n').at(-1)).toStartWith('On a headless host started with `CONNECTOME_SUPERVISED=1`, ' +
-    'lifecycle--update back with data keep begins at the host\'s first quiet moment');
   const check = text(await host.call({ action: 'check' }));
-  expect(check).toContain("going back means the person's connectome update back restore");
-  expect(check).not.toContain('lifecycle--update back with data restore');
+  expect(check).toContain("the person's connectome update back says what each way does.");
+  expect(check).not.toContain('lifecycle--update back');
 });
 
-test("on a host with a fleet child running and no Go back yet, the agent's check names the person's restore in what going back after a switch can cost", async () => {
+test("with no Go back yet, the agent's check names the person's restore in what going back after a switch can cost", async () => {
   const { root, dataDir } = installRunning0141();
-  const { fleet } = fleetChild({ busy: false });
-  const host = residentHost({ root, dataDir, fleet });
+  const host = residentHost({ root, dataDir });
   expect(host.update.status().goBack).toBeNull();
   const check = text(await host.call({ action: 'check' }));
   expect(check).toContain("If it can't, going back means the person's connectome update back restore");
-  expect(check).not.toContain('lifecycle--update back with data restore');
-  expect(check).not.toContain("Restoring the copy is the person's here");
-});
-
-test('an armed restore is dropped where a fleet child starts while its host quiesces, and no mark is written', async () => {
-  const { root, dataDir } = installRunning0141();
-  placeCopyOf0140(root, dataDir);
-  const running: Array<{ name: string }> = [];
-  const { fleet } = fleetChild({ busy: false });
-  const host = residentHost({ root, dataDir, fleet: { ...fleet, runningChildren: () => running } });
-  await host.armed({ action: 'back', data: 'restore' });
-  const quiesce = host.fw.quiesce;
-  host.fw.quiesce = async (opts) => { running.push({ name: 'kid' }); return quiesce(opts); };
-  expect((await host.update.runArmed(alwaysQuiet)).done).toBe(false);
-  expect(readMark(root)).toBeNull();
-  expect(host.stops).toEqual([]);
-  expect(host.update.armedSwitch()).toBeNull();
-  expect(host.update.status().armedDropped?.reason).toStartWith('this host has fleet children, now or at the last switch (kid)');
+  expect(check).not.toContain('lifecycle--update back');
 });
 
 test("a fleet child whose answer holds an operatorHold that isn't an object can't be counted, so the switch stays armed and says why", async () => {

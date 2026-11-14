@@ -1,15 +1,14 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bunBelowFloor } from '../bun-floor.js';
 import {
-  ContractError, askedBy, childrenFilePath, installPaths, isChildEntry, isSwitchQuiesce, lastCopy, readCurrent, readJournal,
-  readRecord, readWithoutWaiting, realOrResolved, releaseDir, SUPERVISED_ENV, unsyncedText, writeMark,
-  type ChildrenFile,
+  ContractError, askedBy, installPaths, isSwitchQuiesce, readCurrent, readJournal, readWithoutWaiting, releaseDir,
+  SUPERVISED_ENV, unsyncedText, writeMark,
 } from './contract.js';
 import type { ReleaseHere } from './host.js';
 import { EXACT_VERSION, hostProblem, installRelease, machineInstallOps, type InstallOps } from './install.js';
-import { RELEASE_HOST, goBackOffer, isUnder, readInstallRecord } from './launcher.js';
+import { RELEASE_HOST, goBackOffer } from './launcher.js';
 import { installCommandAt } from './typed-command.js';
 import {
   NOT_THE_SWITCHS, SERVING, lookAtChildren, quiesceForSwitch, resumeAfterSwitchQuiesce, type QuiesceFramework,
@@ -20,7 +19,7 @@ import { readTrialLog } from './trial-log.js';
 import {
   ARMED_RETRY, ASKS_NOBODY, COMMAND_WAYS, GO_BACK_UNREAD, LAST_SWITCH, PHASE, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName,
   bunUpgrade, busyLines, cliWays, deprecatedLine, heldLines, registryPassOn,
-  notAnInstall, noticeLines, notesUrl, personWay, restartName, toolWays, type ArmedSwitch, type Check, type HostQuiet, type ReadCheck,
+  notAnInstall, noticeLines, notesUrl, restartName, toolWays, type ArmedSwitch, type Check, type HostQuiet, type ReadCheck,
   type RestartState,
   type SwitchOutcome, type UpdateStatus, type UpdateWays,
 } from '../web/update-text.js';
@@ -345,52 +344,7 @@ export class HostUpdate {
         `${ways.check} shows what's installed and what's out, and ${ways.install} installs the newest ` +
         'release offered.');
     }
-    return this.arm({ to, why: 'update', keepData: false }, by, ways);
-  }
-
-  armGoBack(
-    keepData: boolean, by: string | null, expected?: string, ways: UpdateWays = toolWays(this.need().headless === true),
-  ): UpdateAnswer {
-    const refusal = this.armRefusal(ways);
-    if (refusal !== null) return refused(refusal);
-    const here = this.need().here!;
-    let offer: { to: string; since: string } | null;
-    try {
-      offer = goBackOffer(here.root, here.release);
-    } catch (error) {
-      return refused(`Nothing was armed: whether a Go back is offered can't be told: ${said(error)}`);
-    }
-    if (offer === null) return refused('Nothing was armed: no Go back is offered, since the copy doesn\'t hold another installed release\'s data.');
-    if (expected !== undefined && offer.to !== expected) {
-      return refused(`Nothing was armed: going back is offered to ${offer.to}, not ${expected}. ${ways.check} shows ` +
-        'what\'s offered, and back without `data` says what each way does.');
-    }
-    if (!keepData) {
-      const held = this.restoreRefusal(ways);
-      if (held !== null) return refused(`Nothing was armed: ${held} ${ways.keep} is open to you.`);
-    }
-    const armed = this.arm({ to: offer.to, why: 'go-back', keepData }, by, ways);
-    if (keepData) return armed;
-    return { ...armed, lines: [...armed.lines, `The copy it restores is as it was at ${offer.since}.`] };
-  }
-
-  private restoreRefusal(ways: UpdateWays): string | null {
-    const held = this.restoreHeld();
-    if (held === null) return null;
-    const command = (ways as Partial<{ person: UpdateWays }>).person?.restore ?? ways.restore;
-    return `${held.why}, so restoring ${held.told ? 'the copy' : 'it'} is the person's, with ${command}.`;
-  }
-
-  private restoreHeld(): { why: string; told: boolean } | null {
-    const setup = this.need();
-    let children: string[];
-    try {
-      children = fleetChildren(setup.here!.root, setup.host.fleet());
-    } catch (error) {
-      return { why: `whether the copy it would restore holds a fleet child's data can't be told (${said(error)})`, told: false };
-    }
-    if (children.length === 0) return null;
-    return { why: `this host has fleet children, now or at the last switch (${children.join(', ')})`, told: true };
+    return this.arm({ to }, by, ways);
   }
 
   async cancelArmed(by: string | null = null, ways: UpdateWays = TOOL_WAYS): Promise<UpdateAnswer> {
@@ -447,17 +401,13 @@ export class HostUpdate {
       if (refusal !== null) return await this.dropArmed(refusal);
       let gone: string | null;
       try {
-        const offered = armed.why === 'update' || goBackOffer(here.root, here.release)?.to === armed.to;
-        const problem = offered ? hostProblem(releaseDir(here.root, armed.to), armed.to) : null;
-        gone = !offered ? `going back to ${armed.to} is no longer offered.`
-          : problem === null ? null : `${armed.to} can't be switched to: ${problem}`;
+        const problem = hostProblem(releaseDir(here.root, armed.to), armed.to);
+        gone = problem === null ? null : `${armed.to} can't be switched to: ${problem}`;
       } catch (error) {
         gone = `what it was armed for can't be read: ${said(error)}`;
       }
       if (gone !== null) return await this.dropArmed(gone);
-      const held = armed.why === 'go-back' && !armed.keepData ? this.restoreRefusal(this.hostWays()) : null;
-      if (held !== null) return await this.dropArmed(held);
-      this.restart = { to: armed.to, why: armed.why, keepData: armed.keepData, phase: 'quiescing', hosts: [] };
+      this.restart = { to: armed.to, why: 'update', keepData: false, phase: 'quiescing', hosts: [] };
       const fleet = setup.host.fleet();
       if ((fleet?.runningChildren().length ?? 0) > 0) {
         const children = await lookAtChildren(fleet, armed.to);
@@ -477,7 +427,7 @@ export class HostUpdate {
     }
   }
 
-  private arm(request: Pick<ArmedSwitch, 'to' | 'why' | 'keepData'>, by: string | null, ways: UpdateWays): UpdateAnswer {
+  private arm(request: Pick<ArmedSwitch, 'to'>, by: string | null, ways: UpdateWays): UpdateAnswer {
     this.armed = { ...request, since: this.now().toISOString(), by, lastTry: null };
     this.armedDropped = null;
     return done(`${armedName(this.armed)} is armed. It begins at the host's first quiet moment, once ${QUIET_MOMENT}, ` +
@@ -486,9 +436,7 @@ export class HostUpdate {
       'Restart or Go back also takes its place. Until the host next starts, or until you arm another, check says when ' +
       'one didn\'t go ahead for another reason, and why. ' +
       `Until it begins, ${TOOL_CANCEL} disarms it. After the restart, ${ways.check} shows whether it committed or ` +
-      'went back, and why' + (request.why === 'go-back'
-        ? `, if ${request.to} has lifecycle--update; ${personWay(ways, 'check')} shows it either way.`
-        : '.'));
+      'went back, and why.');
   }
 
   private armRefusal(ways: UpdateWays): string | null {
@@ -553,9 +501,9 @@ export class HostUpdate {
   }
 
   private disarm(reason: string): void {
-    const { to, why, keepData, since } = this.armed!;
+    const { to, since } = this.armed!;
     this.armed = null;
-    this.armedDropped = { to, why, keepData, since, at: this.now().toISOString(), reason: reason.replace(/\.?$/, '.') };
+    this.armedDropped = { to, since, at: this.now().toISOString(), reason: reason.replace(/\.?$/, '.') };
   }
 
   async waitLonger(ways: UpdateWays = COMMAND_WAYS): Promise<UpdateAnswer> {
@@ -612,7 +560,6 @@ export class HostUpdate {
       lastInstall: this.lastInstall,
       installed,
       goBack,
-      restoreHeld: here === null ? null : this.restoreHeld()?.why ?? null,
       restart: this.restart === null ? null : { ...this.restart, hosts: [...this.restart.hosts] },
       armed: this.armedSwitch(),
       armedDropped: this.armedDropped,
@@ -753,8 +700,6 @@ export class HostUpdate {
     const setup = this.need();
     const restart = this.restart!;
     if (this.trying && this.stopper?.stopping?.() === true) return this.callOff(STOPPING_FIRST, ways);
-    const held = this.trying && restart.why === 'go-back' && !restart.keepData ? this.restoreRefusal(this.hostWays()) : null;
-    if (held !== null) return this.callOff(held, ways);
     let unsynced: Error | null;
     try {
       const connected = this.quiescedFramework!.listMcplServers().filter((server) => server.connected).map((server) => server.id);
@@ -857,32 +802,6 @@ const NO_WAIT_RAN_OUT = 'No restart\'s wait for turns to end has run out, so the
   'stop now.';
 
 export const hostUpdate = new HostUpdate();
-
-function fleetChildren(root: string, fleet: SwitchFleet | null): string[] {
-  const names = new Set((fleet?.runningChildren() ?? []).map((child) => child.name));
-  const listed = (path: string, what: string): void => {
-    const file = readRecord<ChildrenFile>(path, what);
-    if (file === null) return;
-    if (!Array.isArray(file.children) || !file.children.every(isChildEntry)) {
-      throw new ContractError(`The ${what} at ${path} has no list of children this release can read.`);
-    }
-    for (const child of file.children) names.add(child.name);
-  };
-  const { dataDir } = readInstallRecord(root);
-  listed(childrenFilePath(dataDir), "fleet's children file");
-  const label = lastCopy(root);
-  if (label !== null) {
-    const data = realOrResolved(dataDir);
-    const holds = (item: { path: string }) => item.path === data || isUnder(data, item.path);
-    const item = label.items.find(holds);
-    if (item !== undefined) {
-      listed(childrenFilePath(join(installPaths(root).copy, item.name, relative(item.path, data))), "copy's fleet children file");
-    } else if (!(label.absent ?? []).some(holds)) {
-      throw new ContractError(`The copy's label lists no item that holds the data directory ${data}.`);
-    }
-  }
-  return [...names].sort();
-}
 
 export function lastSwitchOf(root: string, problems: string[] = []): SwitchOutcome | null {
   const lines = readJournal(root);

@@ -15,7 +15,7 @@ import { hostNoteMetadata } from '../speaker.js';
 import { EXACT_VERSION } from '../update/install.js';
 import { hostUpdate, type HostUpdate, type UpdateAnswer } from '../update/update.js';
 import {
-  TOOL_CANCEL, armedName, goBackLines, statusLines, toolWays,
+  TOOL_CANCEL, armedName, statusLines, toolWays,
 } from '../web/update-text.js';
 import {
   SELF_RESTART_EXIT_CODE,
@@ -65,24 +65,20 @@ const TOOL_DESCRIPTION =
   "After the restart, one line in the host's main conversation says who asked, when, why, and when the host came back. " +
   '`cancel: true` disarms a pending restart, whoever asked for it. There is a cooldown between restarts.';
 
-const UPDATE_ACTIONS = ['check', 'notes', 'install', 'restart', 'back', 'cancel'] as const;
+const UPDATE_ACTIONS = ['check', 'notes', 'install', 'restart', 'cancel'] as const;
 
 const UPDATE_DESCRIPTION =
-  'Update your own host to a newer connectome-host release, or go back to the one before. ' +
+  'Update your own host to a newer connectome-host release. ' +
   '`action`:\n' +
   '- check: what is out and its cost, what you run, and where an install, an armed switch and the last switch stand.\n' +
   '- notes: the release notes up to the one installed; with `version`, one release\'s.\n' +
   '- install: installs the newest release beside yours, which runs on.\n' +
   '- restart: arms a restart onto the newest release installed. It begins at the host\'s first quiet moment and asks ' +
   'nobody: your turn ends as it would, as does every other agent\'s on this host and its fleet children.\n' +
-  '- back: arms a Go back to the release whose data the copy holds, the same way, with `data`: keep runs it on your ' +
-  'data as it is now, so you lose nothing, where that release can read it; otherwise its start comes back to the ' +
-  'release you run by itself, and restore is the way; restore puts back the copy taken at the last switch, so ' +
-  'everything you have lived since is set aside, not deleted; on a host with fleet children, restore is the person\'s.\n' +
-  '- cancel: disarms an armed restart or Go back before it begins, whoever armed it.\n' +
-  '`version`, with restart or back, is the release you looked at: if they\'d go to another by then, nothing is armed. ' +
-  'Restart and back need a headless host started with `CONNECTOME_SUPERVISED=1`; elsewhere they refuse and ' +
-  'say why. After a restart nothing tells you it happened: check says what you run now. ' +
+  '- cancel: disarms an armed restart before it begins, whoever armed it.\n' +
+  '`version`, with restart, is the release you looked at: if it would go to another by then, nothing is armed. ' +
+  'Restart needs a headless host started with `CONNECTOME_SUPERVISED=1`; elsewhere it refuses and ' +
+  'says why. After a restart nothing tells you it happened: check says what you run now. ' +
   'The person who runs your host can\'t call this tool, ';
 
 const personWord = (headless: boolean, command: string | null): string =>
@@ -96,13 +92,13 @@ const personWord = (headless: boolean, command: string | null): string =>
 const NO_INSTALL_HEADLESS =
   'This host runs headless with no install of its own, so it has no command of theirs to update it: a fleet child is ' +
   'updated with its parent\'s install where its parent has one, and any other host by hand (docs/DEPLOYMENTS.md, ' +
-  '"Updating an install"), and your restart and back refuse here, saying so.';
+  '"Updating an install"), and your restart refuses here, saying so.';
 
 const THEIRS_GO_AT_ONCE = 'Their restart and back begin at once, without waiting for a quiet moment: new turns are held, ' +
   'turns in progress get up to 2 min to end, and if any don\'t,';
 
 const NO_NOTES_OR_CANCEL = 'notes and cancel have no command of theirs: their check gives them a link to the notes, and ' +
-  'this tool\'s cancel is the one call that disarms a restart or Go back before it begins without replacing it or ' +
+  'this tool\'s cancel is the one call that disarms a restart before it begins without replacing it or ' +
   'stopping the host: their own restart or back goes ahead in its place.';
 
 const personHeadless = (command: string): string =>
@@ -129,10 +125,9 @@ function updateTool(headless: boolean, command: string | null): ToolDefinition {
         action: { type: 'string', enum: [...UPDATE_ACTIONS] },
         version: {
           type: 'string',
-          description: 'With restart or back: the exact release you looked at, such as 0.15.0. With notes: the release ' +
+          description: 'With restart: the exact release you looked at, such as 0.15.0. With notes: the release ' +
             'whose notes you want.',
         },
-        data: { type: 'string', enum: ['keep', 'restore'], description: 'With back, and only then: keep or restore.' },
       },
       required: ['action'],
     },
@@ -328,11 +323,11 @@ export class LifecycleModule implements Module {
   }
 
   private async handleUpdate(call: ToolCall): Promise<ToolResult> {
-    const input = (call.input ?? {}) as { action?: unknown; version?: unknown; data?: unknown };
+    const input = (call.input ?? {}) as { action?: unknown; version?: unknown };
     const refuse = (error: string): ToolResult => ({ success: false, isError: true, error });
-    const unknown = Object.keys(input).filter((key) => !['action', 'version', 'data'].includes(key));
+    const unknown = Object.keys(input).filter((key) => !['action', 'version'].includes(key));
     if (unknown.length > 0) {
-      return refuse(`This tool takes \`action\`, \`version\` and \`data\`, not ${unknown.map((key) => `\`${key}\``).join(', ')}, ` +
+      return refuse(`This tool takes \`action\` and \`version\`, not ${unknown.map((key) => `\`${key}\``).join(', ')}, ` +
         'and nothing was done.');
     }
     if (typeof input.action !== 'string' || !(UPDATE_ACTIONS as readonly string[]).includes(input.action)) {
@@ -341,14 +336,8 @@ export class LifecycleModule implements Module {
     if (input.version !== undefined && (typeof input.version !== 'string' || !EXACT_VERSION.test(input.version))) {
       return refuse('`version` must be an exact release, such as 0.15.0, and nothing was done.');
     }
-    if (input.data !== undefined && input.data !== 'keep' && input.data !== 'restore') {
-      return refuse('`data` must be keep or restore, and nothing was done.');
-    }
-    if (input.version !== undefined && input.action !== 'restart' && input.action !== 'back' && input.action !== 'notes') {
-      return refuse(`\`version\` goes with restart, back or notes, not ${input.action}, and nothing was done.`);
-    }
-    if (input.data !== undefined && input.action !== 'back') {
-      return refuse(`\`data\` goes with back, not ${input.action}, and nothing was done.`);
+    if (input.version !== undefined && input.action !== 'restart' && input.action !== 'notes') {
+      return refuse(`\`version\` goes with restart or notes, not ${input.action}, and nothing was done.`);
     }
     const version = input.version as string | undefined;
     const by = call.callerAgentName ?? null;
@@ -384,12 +373,6 @@ export class LifecycleModule implements Module {
         break;
       case 'restart':
         answer = selfRestartPending() ?? this.update.armRestart(by, version, ways);
-        break;
-      case 'back':
-        answer = input.data === undefined
-          ? { done: false, lines: ['Nothing was armed: back needs `data`, keep or restore.',
-            ...goBackLines(this.update.status(), ways)] }
-          : selfRestartPending() ?? this.update.armGoBack(input.data === 'keep', by, version, ways);
         break;
       case 'cancel': {
         const armed = this.update.armedSwitch() !== null;
