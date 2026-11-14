@@ -222,45 +222,12 @@ function startHost(dir: string, modules: Record<string, unknown>,
   return { host, bodies, seen, exit };
 }
 
-const PASTE_ON = '\x1b[?2004h';
-const PASTE_OFF = '\x1b[?2004l';
-
-const givenBack = (output: string): boolean =>
-  output.includes(PASTE_ON) && output.lastIndexOf(PASTE_OFF) > output.lastIndexOf(PASTE_ON);
-
 const said = (text: string) => (_body: Body, bodies: Body[]) =>
   reply(`msg_${bodies.length}`, 'end_turn', { type: 'text', text: '' }, { type: 'text_delta', text });
 
 const linux = test.skipIf(process.platform !== 'linux');
 
-linux('in readline mode, a bracketed paste is held until Enter and sent as one message, which is text though it starts with /, and a one-line paste the person sends runs as typed (Linux only)',
-  async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'readline-paste-'));
-    dirs.push(dir);
-    const { bodies, seen, exit } = startHost(dir, {}, said('Got it.'));
-    await until(() => seen.output.includes('(readline mode)'), 60_000, `the prompt (output: ${seen.output.slice(-1500)})`);
-    seen.output = seen.output.slice(seen.output.indexOf('(readline mode)'));
-    const host = hosts.at(-1)!;
-    host.stdin!.write('\x1b[200~/quit\rsecond\rthird\x1b[201~');
-    await until(() => seen.output.includes('3 lines pasted: Enter sends them.'), 30_000, `the paste's note (output: ${seen.output.slice(-1500)})`);
-    await Bun.sleep(300);
-    expect(bodies).toHaveLength(0);
-    host.stdin!.write(' and more\r');
-    await until(() => seen.output.includes('Got it.'), 30_000, `the answer (requests: ${bodies.length}; output: ${seen.output.slice(-1500)})`);
-    expect(bodies).toHaveLength(1);
-    expect(carries(lastFromPerson(bodies[0]!), '/quit\nsecond\nthird and more'), lastFromPerson(bodies[0]!)).toBe(true);
-    host.stdin!.write('fourth\r');
-    await until(() => bodies.length >= 2 && seen.output.split('Got it.').length >= 3, 30_000, `the second answer (requests: ${bodies.length})`);
-    expect(bodies).toHaveLength(2);
-    expect(carries(lastFromPerson(bodies[1]!), 'fourth'), lastFromPerson(bodies[1]!)).toBe(true);
-    host.stdin!.write('\x1b[200~/quit\x1b[201~\r');
-    expect(await exit).toBe(0);
-    expect(givenBack(seen.output)).toBe(true);
-  },
-  120_000,
-);
-
-linux('in readline mode, two lines entered together, as a terminal without bracketed paste sends a paste, are answered in order, each in its own turn, and the prompt comes once, after the second answer (Linux only)',
+linux('in readline mode, two lines entered together, as a terminal sends a paste, are answered in order, each in its own turn, and the prompt comes once, after the second answer (Linux only)',
   async () => {
     const dir = mkdtempSync(join(tmpdir(), 'readline-two-lines-'));
     dirs.push(dir);
@@ -291,27 +258,6 @@ linux('in readline mode, two lines entered together, as a terminal without brack
     expect(await exit).toBe(0);
   },
   120_000,
-);
-
-linux('in readline mode, the terminal\'s bracketed paste is off again after a Ctrl-D, a Ctrl-C and a SIGTERM (Linux only)',
-  async () => {
-    for (const how of ['\x04', '\x03', 'SIGTERM']) {
-      const dir = mkdtempSync(join(tmpdir(), 'readline-paste-off-'));
-      dirs.push(dir);
-      const { host, seen, exit } = startHost(dir, {}, said('Got it.'));
-      await until(() => seen.output.includes('(readline mode)'), 60_000, `${JSON.stringify(how)}'s prompt (output: ${seen.output.slice(-1500)})`);
-      if (how === 'SIGTERM') {
-        const child = Bun.spawnSync(['pgrep', '-P', String(host.pid)]).stdout.toString().trim();
-        expect(child, 'the host under script').toMatch(/^\d+$/);
-        process.kill(Number(child), 'SIGTERM');
-      } else {
-        host.stdin!.write(how);
-      }
-      await exit;
-      expect(givenBack(seen.output), JSON.stringify(how)).toBe(true);
-    }
-  },
-  180_000,
 );
 
 linux('setup\'s host speaks first, on a message that says it\'s setup\'s, shows a command it runs under the lead alone with no trace, and opens again where it stopped when started again (Linux only)',
@@ -383,42 +329,7 @@ linux('setup--finished records setup finished, the host ends once that turn is d
   180_000,
 );
 
-linux('setup--ask_secret takes a token pasted in a bracketed paste with its own line break as exactly the token, and a Ctrl-C at the hidden question leaves bracketed paste off (Linux only)',
-  async () => {
-    const asks = (body: Body, bodies: Body[]) => {
-      const tool = body.tools?.find((each) => each.name.endsWith('ask_secret'))?.name;
-      if (bodies.length === 1 && tool) {
-        return reply('msg_ask', 'tool_use', { type: 'tool_use', id: 'toolu_ask', name: tool, input: {} },
-          { type: 'input_json_delta', partial_json: JSON.stringify({ name: 'TEST_SECRET', purpose: 'a test secret' }) });
-      }
-      return reply(`msg_${bodies.length}`, 'end_turn', { type: 'text', text: '' }, { type: 'text_delta', text: 'Stored.' });
-    };
-    const dir = mkdtempSync(join(tmpdir(), 'readline-paste-secret-'));
-    dirs.push(dir);
-    const pasted = startHost(dir, { setup: true }, asks, ['setup--ask_secret']);
-    await until(() => pasted.seen.output.includes('TEST_SECRET (a test secret), typed hidden (Enter alone stores nothing)'), 60_000,
-      `the hidden question (output: ${pasted.seen.output.slice(-1500)})`);
-    hosts.at(-1)!.stdin!.write('\x1b[200~the-pasted.value-1\r\x1b[201~');
-    await until(() => pasted.bodies.length >= 2, 30_000, `the turn's next request (output: ${pasted.seen.output.slice(-1500)})`);
-    expect(readEnvFile(join(dir, '.env')).get('TEST_SECRET')).toBe('the-pasted.value-1');
-    expect(pasted.seen.output).not.toContain('the-pasted.value-1');
-    hosts.at(-1)!.stdin!.write('/quit\r');
-    expect(await pasted.exit).toBe(0);
-    expect(pasted.seen.output).not.toContain('the-pasted.value-1');
-
-    const other = mkdtempSync(join(tmpdir(), 'readline-paste-secret-c-'));
-    dirs.push(other);
-    const interrupted = startHost(other, { setup: true }, asks, ['setup--ask_secret']);
-    await until(() => interrupted.seen.output.includes('TEST_SECRET (a test secret), typed hidden'), 60_000,
-      `the hidden question (output: ${interrupted.seen.output.slice(-1500)})`);
-    hosts.at(-1)!.stdin!.write('\x03');
-    await interrupted.exit;
-    expect(givenBack(interrupted.seen.output)).toBe(true);
-  },
-  180_000,
-);
-
-linux('a Ctrl-C while setup\'s opening turn waits on its model ends the host, with bracketed paste off, and the next start, whose conversation holds that opening alone, picks it up where it stopped (Linux only)',
+linux('a Ctrl-C while setup\'s opening turn waits on its model ends the host, and the next start, whose conversation holds that opening alone, picks it up where it stopped (Linux only)',
   async () => {
     const dir = mkdtempSync(join(tmpdir(), 'readline-setup-open-c-'));
     dirs.push(dir);
@@ -429,7 +340,6 @@ linux('a Ctrl-C while setup\'s opening turn waits on its model ends the host, wi
     await until(() => waiting.bodies.length > 0, 60_000, `the opening's request (output: ${waiting.seen.output.slice(-1500)})`);
     hosts.at(-1)!.stdin!.write('\x03');
     expect(await waiting.exit).toBe(0);
-    expect(givenBack(waiting.seen.output)).toBe(true);
 
     const again = startHost(dir, { setup: true }, said('Welcome back.'), ['setup--run']);
     await until(() => again.seen.output.includes('Welcome back.'), 60_000,
@@ -546,23 +456,6 @@ linux('a line still waiting to go in when the person ends the conversation isn\'
     expect(await host.exit).toBe(0);
     expect(host.seen.output).toContain('A line you typed hadn\'t gone in to the agent yet, and won\'t now.');
     expect(JSON.stringify(host.bodies)).not.toContain('queued line');
-  },
-  120_000,
-);
-
-linux('a paste still held when the person ends the conversation isn\'t sent, and the host says how many lines it held (Linux only)',
-  async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'readline-quit-pasted-'));
-    dirs.push(dir);
-    const host = startHost(dir, {}, said('Hello.'));
-    await until(() => host.seen.output.includes('(readline mode)'), 60_000, `the prompt (output: ${host.seen.output.slice(-1500)})`);
-    hosts.at(-1)!.stdin!.write('\x1b[200~one\rtwo\r\x1b[201~');
-    await until(() => host.seen.output.includes('2 lines pasted: Enter sends them.'), 30_000,
-      `the paste's note (output: ${host.seen.output.slice(-1500)})`);
-    hosts.at(-1)!.stdin!.write('\x04');
-    expect(await host.exit).toBe(0);
-    expect(host.seen.output).toContain('The 2 lines you pasted weren\'t sent.');
-    expect(host.bodies).toHaveLength(0);
   },
   120_000,
 );

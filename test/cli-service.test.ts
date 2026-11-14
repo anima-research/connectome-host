@@ -607,6 +607,41 @@ test('the host\'s unit gives the host the data directory install.json names', as
   expect(f.systemd.starts.find((start) => start.unit === HOST)!.environment).toContain(`DATA_DIR=${kept}`);
 });
 
+test('an install whose install.json names a data directory that isn\'t there, as after a move, is refused, writing nothing', async () => {
+  for (const instead of ['nothing', 'a file'] as const) {
+    const at = install('My Resident', { shell: true });
+    rmSync(at.data, { recursive: true });
+    if (instead === 'a file') writeFileSync(at.data, '');
+    const f = fake(at);
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+    const said = f.err.join('\n');
+    expect(said).toContain(`${join(at.root, 'install.json')} names ${at.data} as its data directory, and no directory ` +
+      'is there');
+    expect(said).toContain('nothing was written');
+    nothingWritten(at);
+    expect(existsSync(at.data) && statSync(at.data).isDirectory()).toBe(false);
+  }
+});
+
+test.skipIf(process.getuid?.() === 0)('a data directory that can\'t be looked at is refused with why, not as missing', async () => {
+  const at = install('My Resident', { shell: true });
+  const locked = join(dirname(at.work), 'locked');
+  const dataDir = join(locked, 'data');
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(join(at.root, 'install.json'), JSON.stringify({ v: 1, dataDir, extraState: [] }));
+  chmodSync(locked, 0o000);
+  try {
+    const f = fake(at);
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+    const said = f.err.join('\n');
+    expect(said).toContain(`the data directory ${dataDir} can't be read:`);
+    expect(said).not.toContain('no directory is there');
+    nothingWritten(at);
+  } finally {
+    chmodSync(locked, 0o755);
+  }
+});
+
 test('an install without install.json is refused, writing nothing', async () => {
   const at = install('My Resident', { shell: true });
   rmSync(join(at.root, 'install.json'));

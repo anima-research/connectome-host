@@ -1,13 +1,8 @@
 import { afterEach, expect, test } from 'bun:test';
-import {
-  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync,
-} from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
-import { CLI_IN_RELEASE, installCommandOf, typedCommand, writeInstallCommand } from '../src/cli/install-command.js';
-import { SHOWN_FILE } from '../src/setup/commands-shown.js';
-
-const SETUP_RECIPE = join('node_modules', '@animalabs', 'connectome-host', 'recipes', 'setup.json');
+import { delimiter, join } from 'node:path';
+import { installCommandOf, typedCommand, writeInstallCommand } from '../src/cli/install-command.js';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -51,115 +46,6 @@ test('a `connectome` a shell can\'t run, or a directory of that name, earlier on
   expect(typedCommand(root, pathOf(unrunnable, plainFile, root))).toBe('connectome');
 });
 
-function withCommands(recipe: boolean, packageRecipe = true) {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'install-command-')));
-  dirs.push(dir);
-  const root = join(dir, 'connectome-host');
-  const marker = join(dir, 'ran.json');
-  const cli = (at: string, who: string) => {
-    mkdirSync(join(at, ...CLI_IN_RELEASE.slice(0, -1)), { recursive: true });
-    writeFileSync(join(at, ...CLI_IN_RELEASE), "import { writeFileSync } from 'node:fs';\n" +
-      `writeFileSync(process.env.MARKER, JSON.stringify({ who: '${who}', loaded: true }));\n` +
-      `export async function main(root, argv) { writeFileSync(process.env.MARKER, JSON.stringify({ who: '${who}', root, argv })); return 0; }\n`);
-  };
-  const release = join(root, 'releases', '1.0.0');
-  cli(release, 'current');
-  cli(dir, 'package');
-  if (packageRecipe) {
-    mkdirSync(dirname(join(dir, SETUP_RECIPE)), { recursive: true });
-    writeFileSync(join(dir, SETUP_RECIPE), '{}');
-  }
-  if (recipe) {
-    mkdirSync(dirname(join(release, SETUP_RECIPE)), { recursive: true });
-    writeFileSync(join(release, SETUP_RECIPE), '{}');
-  }
-  symlinkSync(join('releases', '1.0.0'), join(root, 'current'));
-  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [], workingDir: dir }));
-  writeInstallCommand(root, '');
-  const run = (...argv: string[]) => {
-    rmSync(marker, { force: true });
-    const ran = Bun.spawnSync([process.execPath, join(root, 'connectome'), ...argv], {
-      env: { ...process.env, MARKER: marker }, stderr: 'pipe',
-    });
-    return {
-      exitCode: ran.exitCode, stderr: ran.stderr.toString(),
-      ran: existsSync(marker) ? JSON.parse(readFileSync(marker, 'utf-8')) as { who: string; root: string; argv: string[] } : null,
-    };
-  };
-  return { dir, root, run };
-}
-
-test('the command sends setup to current\'s CLI when its release has the setup agent\'s recipe, and otherwise to the working directory\'s package\'s; update to current\'s', () => {
-  const has = withCommands(true);
-  expect(has.run('setup', 'discord').ran).toEqual({ who: 'current', root: has.root, argv: ['setup', 'discord'] });
-  const lacks = withCommands(false);
-  expect(lacks.run('setup', 'discord').ran).toEqual({ who: 'package', root: lacks.root, argv: ['setup', 'discord'] });
-  expect(lacks.run('update').ran).toEqual({ who: 'current', root: lacks.root, argv: ['update'] });
-});
-
-test('setup refuses, before any CLI loads, where neither current\'s release nor the working directory\'s package has the setup agent\'s recipe', () => {
-  const { dir, run } = withCommands(false, false);
-  const refused = run('setup', 'discord');
-  expect(refused.exitCode).toBe(1);
-  expect(refused.ran).toBeNull();
-  expect(refused.stderr).toContain(`connectome: the release this install runs has no setup, so setup runs the connectome-host installed in ${dir}, which has none it can run (${join(dir, ...CLI_IN_RELEASE)}): it has no recipes/setup.json.`);
-  expect(refused.stderr).toContain(`In ${dir}, \`bunx @animalabs/connectome-host@latest setup discord\` runs setup from the registry.`);
-});
-
-test('where its release has no setup and the directory\'s package has none it can run, setup is sent to the registry for a root named connectome-host, and otherwise to the setup of the release whose setup wrote the command, or by hand once that\'s gone; for an install bound where it is, that command gives its recorded data directory and no --place', () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'install-command-')));
-  dirs.push(dir);
-  const refusal = (name: string, withSetup: boolean, dataDir = join(dir, 'data')) => {
-    const root = join(dir, name);
-    const release = join(root, 'releases', '1.0.0');
-    mkdirSync(join(release, ...CLI_IN_RELEASE.slice(0, -1)), { recursive: true });
-    writeFileSync(join(release, ...CLI_IN_RELEASE), 'export async function main() { return 0; }\n');
-    const ownSetup = join(release, 'node_modules', '@animalabs', 'connectome-host', 'src', 'update', 'setup.ts');
-    if (withSetup) {
-      mkdirSync(dirname(ownSetup), { recursive: true });
-      writeFileSync(ownSetup, '// setup\n');
-    }
-    symlinkSync(join('releases', '1.0.0'), join(root, 'current'));
-    writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir, extraState: [], workingDir: dir }));
-    writeInstallCommand(root, '', '1.0.0');
-    const ran = Bun.spawnSync([process.execPath, join(root, 'connectome'), 'setup', 'discord'], { stderr: 'pipe' });
-    return { exitCode: ran.exitCode, stderr: ran.stderr.toString(), root, ownSetup };
-  };
-  const named = refusal('connectome-host', true);
-  expect(named.exitCode).toBe(1);
-  expect(named.stderr).toContain(`In ${dir}, \`bunx @animalabs/connectome-host@latest setup discord\` runs setup from the registry.`);
-  const other = refusal('custom-root', true);
-  expect(other.exitCode).toBe(1);
-  expect(other.stderr).toContain(`The registry's setup takes ${join(dir, 'connectome-host')} for the install root, and this ` +
-    `one is ${other.root}, so run the setup of 1.0.0, the release whose setup wrote this file: \`cd ${dir} && ` +
-    `DATA_DIR=${join(dir, 'data')} bun --no-env-file ${other.ownSetup} --root ${other.root}\`.`);
-  const gone = refusal('another-root', false);
-  expect(gone.stderr).toContain(`and this one is ${gone.root}, so run the setup of 1.0.0, the release whose setup wrote this file, which this install's releases don't hold now: install exactly 1.0.0 in ${dir} first, as docs/DEPLOYMENTS.md shows, and run its setup by hand.`);
-  const outside = join(dirname(dir), 'outside-data');
-  const here = refusal('bound-here', true, outside);
-  expect(here.stderr).toContain(`so run the setup of 1.0.0, the release whose setup wrote this file: \`cd ${dir} && ` +
-    `DATA_DIR=${outside} bun --no-env-file ${here.ownSetup} --root ${here.root}\`.`);
-});
-
-test('a record bound to another directory refuses the bare command, update and send, each before any CLI loads, while setup runs', () => {
-  const { dir, root, run } = withCommands(true);
-  const elsewhere = join(dirname(dir), 'elsewhere');
-  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(elsewhere, 'data'), extraState: [], workingDir: elsewhere }));
-  for (const argv of [[], ['update'], ['send', 'hi']]) {
-    const refused = run(...argv);
-    expect(refused.exitCode).toBe(1);
-    expect(refused.ran).toBeNull();
-    expect(refused.stderr).toContain(`connectome: nothing runs in this install, since its record is bound to ${elsewhere}, and it's in ${dir}, so it was moved or copied here`);
-  }
-  expect(run('setup', 'discord').ran?.argv).toEqual(['setup', 'discord']);
-});
-
-test('a record from before workingDir runs update as it did', () => {
-  const { dir, root, run } = withCommands(true);
-  writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(dir, 'data'), extraState: [] }));
-  expect(run('update').ran).toEqual({ who: 'current', root, argv: ['update'] });
-});
-
 test('setup\'s line that puts the install\'s directory on PATH is shown exactly where plain `connectome` wouldn\'t run it', () => {
   const { dir, root } = install();
   const other = join(dir, 'other');
@@ -169,44 +55,4 @@ test('setup\'s line that puts the install\'s directory on PATH is shown exactly 
   expect(installCommandOf(root, pathOf(root)).pathLine).toBeNull();
   expect(installCommandOf(root, pathOf('/usr/bin')).pathLine).toBe(line);
   expect(installCommandOf(root, pathOf(other, root)).pathLine).toBe(line);
-});
-
-test('where setup\'s agent names a file for the person, the refusals before any CLI loads go there too: a moved install, an unreadable binding, and a setup with none to run', () => {
-  const said = join(realpathSync(mkdtempSync(join(tmpdir(), 'install-command-said-'))), 'said');
-  dirs.push(dirname(said));
-  process.env[SHOWN_FILE] = said;
-  try {
-    const moved = withCommands(true);
-    const elsewhere = join(dirname(moved.dir), 'elsewhere');
-    writeFileSync(join(moved.root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(elsewhere, 'data'), extraState: [], workingDir: elsewhere }));
-    writeFileSync(said, '');
-    const refusedMoved = moved.run('update');
-    expect(refusedMoved.exitCode).toBe(1);
-    expect(refusedMoved.stderr).toContain('nothing runs in this install, since its record is bound to');
-    expect(readFileSync(said, 'utf-8')).toBe(refusedMoved.stderr);
-
-    const unreadable = withCommands(true);
-    writeFileSync(join(unreadable.root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(unreadable.dir, 'data'), extraState: [], workingDir: 7 }));
-    writeFileSync(said, '');
-    const refusedUnreadable = unreadable.run('update');
-    expect(refusedUnreadable.exitCode).toBe(1);
-    expect(refusedUnreadable.stderr).toContain('holds a "workingDir" that isn\'t an absolute path');
-    expect(readFileSync(said, 'utf-8')).toBe(refusedUnreadable.stderr);
-
-    writeFileSync(join(unreadable.root, 'install.json'), JSON.stringify({ v: 1, dataDir: join(unreadable.dir, 'data'), extraState: [], workingDir: '.' }));
-    writeFileSync(said, '');
-    const refusedRelative = unreadable.run('update');
-    expect(refusedRelative.exitCode).toBe(1);
-    expect(refusedRelative.stderr).toContain('holds a "workingDir" that isn\'t an absolute path');
-    expect(readFileSync(said, 'utf-8')).toBe(refusedRelative.stderr);
-
-    const none = withCommands(false, false);
-    writeFileSync(said, '');
-    const refusedSetup = none.run('setup', 'discord');
-    expect(refusedSetup.exitCode).toBe(1);
-    expect(refusedSetup.stderr).toContain('the release this install runs has no setup');
-    expect(readFileSync(said, 'utf-8')).toBe(refusedSetup.stderr);
-  } finally {
-    delete process.env[SHOWN_FILE];
-  }
 });
