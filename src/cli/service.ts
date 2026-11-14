@@ -318,8 +318,9 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     const policy = restartPolicy(loaded);
     if (!policy.restarts) {
       throw new Refusal(`systemd shows ${names.host.name} with ${policy.settings}, so it doesn't restart the host both ` +
-        `when it exits with ${RESTART_EXIT_CODE}, as an update's restart does, and with 1, as a failed update does. ` +
-        `${dropInLine(sys, names.host.name)} Its unit is left without ${SUPERVISED_ENV}=1, and nothing was started or restarted. A host it runs ` +
+        `when it exits with ${RESTART_EXIT_CODE}, as an update's restart does, and with 1, as a failed update does. A ` +
+        `drop-in may override the unit: ${systemctlLine(sys, `cat ${names.host.name}`)} shows every file it's read ` +
+        `from. Its unit is left without ${SUPERVISED_ENV}=1, and nothing was started or restarted. A host it runs ` +
         `now keeps what it started with, ${SUPERVISED_ENV}=1 included if it started with it, until it starts again: ` +
         `${systemctlLine(sys, `restart ${names.host.name}`)} restarts it on the unit as it is now: the file this run ` +
         `wrote, with the recipe it was given, and any drop-in over it. Once the unit ` +
@@ -689,7 +690,7 @@ function mayRunHere(sys: ServiceSystem, manager: Manager, unit: ServiceUnit, wor
   return namedElsewhere(sys, manager, unit, work) === undefined;
 }
 
-export function namedElsewhere(sys: ServiceSystem, manager: Manager, unit: ServiceUnit,
+function namedElsewhere(sys: ServiceSystem, manager: Manager, unit: ServiceUnit,
   work: string): { runsIn: string | null } | undefined {
   try {
     const text = readOr(unit.file);
@@ -718,15 +719,6 @@ function shellRuns(sys: ServiceSystem, manager: Manager, env: Record<string, str
   return typeof shown !== 'string' && shown.get('ActiveState') === 'active';
 }
 
-export function reloadLine(sys: Pick<ServiceSystem, 'env' | 'uid'>, unit: ServiceUnit, work: string, next: string): string {
-  return `systemd shows ${unit.name} as it last loaded it, while its file names ${work}: if its file or drop-ins ` +
-    `changed since, ${systemctlLine(sys, 'daemon-reload')} loads them again, then ${next}.`;
-}
-
-export function dropInLine(sys: Pick<ServiceSystem, 'env' | 'uid'>, name: string): string {
-  return `A drop-in may override the unit: ${systemctlLine(sys, `cat ${name}`)} shows every file it's read from.`;
-}
-
 function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: ServiceSystem,
   env: Record<string, string>, afterWrite?: string): void {
   const owner = ownerOf(unit, manager, work, sys, env);
@@ -734,8 +726,9 @@ function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: Ser
     : `The service files already written remain in place. ${afterWrite}No further unit was changed.`;
   if (owner.kind === 'other') {
     throw new Refusal(configConflict(unit, owner.from, owner.runsIn, work, stopLine(sys, manager, unit.name)) +
-      (owner.loadedOnly ? ` ${reloadLine(sys, unit, work, 'repeat this service install command with the same recipe')}`
-        : '') +
+      (owner.loadedOnly ? ` systemd shows ${unit.name} as it last loaded it, while its file names ${work}: if its file ` +
+        `or drop-ins changed since, ${systemctlLine(sys, 'daemon-reload')} loads them again, then repeat this service ` +
+        'install command with the same recipe.' : '') +
       ` ${effect} Its name comes from this directory's name. Remove that unit if nothing uses it, or set this ` +
       'install up again in a directory of another name.');
   }
@@ -748,12 +741,12 @@ function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: Ser
   }
 }
 
-export function untold(sys: ServiceSystem, manager: Manager, unit: ServiceUnit): string {
+function untold(sys: ServiceSystem, manager: Manager, unit: ServiceUnit): string {
   return `${unit.name} is still ${manager === 'systemd-user' ? 'running' : 'loaded'}, but its file, ${unit.file}, is ` +
     'gone, so which install it runs can\'t be told';
 }
 
-export function stopLine(sys: Pick<ServiceSystem, 'env' | 'uid'>, manager: Manager, name: string): string {
+function stopLine(sys: ServiceSystem, manager: Manager, name: string): string {
   return manager === 'systemd-user' ? systemctlLine(sys, `stop ${name}`) : `launchctl bootout gui/${sys.uid}/${name}`;
 }
 

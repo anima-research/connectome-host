@@ -596,49 +596,6 @@ describe('context-manager\'s own strategy at the edges the fit computes', () => 
   }
 });
 
-describe('a count of the system prompt and tools the host sends beside the conversation', () => {
-  const bare = validateRecipe({ name: 'fit', agent: { systemPrompt: '' } });
-  const refusal = (fit: ReturnType<typeof recipeFit>) => (fit.checked && !fit.fits ? fit.refusal : '');
-
-  test('takes the place of the estimate and the 32k kept for tools, so a recipe that fits by estimate fails once its tools are counted past the room, and one that fits says what\'s spare', () => {
-    expect(recipeFit(bare, HAIKU)).toEqual({ checked: true, fits: true });
-    expect(recipeFit(bare, HAIKU, 20_000)).toEqual({ checked: true, fits: true, spare: 28_384 });
-    expect(recipeFit(bare, HAIKU, 48_384)).toEqual({ checked: true, fits: true, spare: 0 });
-    const over = refusal(recipeFit(bare, HAIKU, 48_385));
-    expect(over).toContain('The budget the host gives this recipe, 168,000, lets a turn\'s prompt reach 200,001 tokens');
-    expect(over).toContain('the system prompt and tools the host sends, counted at 48,385, come on top.');
-    expect(over).toContain('agent.contextBudgetTokens to 167,999 or less, so the system prompt and tools the host sends still fit');
-    expect(over).toContain('bring the system prompt and tools the host sends to about 48,384 tokens or fewer, with fewer tools, ' +
-      'or a shorter system prompt only where it counts more than the estimate the budget is worked out from');
-    expect(over).toContain('At an end of a named range, the compile can have no room left for older history, or the prompt, ' +
-      'with the system prompt and tools as counted, can fill the window, leaving nothing for the reply or for what modules add at ' +
-      'each turn.');
-    expect(over).not.toContain('32,000');
-    expect(over).not.toContain('less the size of the tools');
-    expect(over).not.toContain('leaving none for the tool definitions');
-  });
-
-  test('with a system prompt and the default budget, the budget comes from the prompt\'s estimate, not from the count', () => {
-    const prompted = validateRecipe({ name: 'fit', agent: { systemPrompt: promptOfAbout(10_000) } });
-    const budget = effectiveContextBudgetTokens(prompted, HAIKU);
-    expect(budget).toBe(200_000 - defaultTokenEstimator(prompted.agent.systemPrompt as string) - 32_000);
-    expect(recipeFit(prompted, HAIKU, 20_000)).toEqual({ checked: true, fits: true, spare: 200_000 - (budget - 16_384 + 20_000) });
-  });
-
-  test('the budget stays the one the host gives the recipe: its own, kept whole, or the default worked out from the estimate', () => {
-    const own = validateRecipe({ name: 'fit', agent: { systemPrompt: '', contextBudgetTokens: 150_000 } });
-    expect(recipeFit(own, HAIKU, 66_384)).toEqual({ checked: true, fits: true, spare: 0 });
-    expect(refusal(recipeFit(own, HAIKU, 66_385))).toContain('bring the system prompt and tools the host sends to about 66,384 ' +
-      'tokens or fewer, with a shorter system prompt or fewer tools');
-    expect(effectiveContextBudgetTokens(bare, HAIKU)).toBe(168_000);
-  });
-
-  test('a count that fills the window by itself is named as that', () => {
-    expect(refusal(recipeFit(bare, HAIKU, 200_000)))
-      .toContain('The system prompt and tools the host sends count 200,000 tokens, which by themselves fill');
-  });
-});
-
 describe('a recipe that sets no budget', () => {
   test('on a 200k model, the budget is the window less the system prompt and 32k, and the stream ceiling 20k above it', async () => {
     const config = agentConfig({ maxTokens: 16_000 }, HAIKU);

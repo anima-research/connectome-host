@@ -557,8 +557,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
           return;
         }
         const running = import('./web/panel-data.js').then(({ runPanelOp }) => runPanelOp(app, op, cmd.params ?? {}));
-        const result = await (changes ? trackOperatorWork(app, op, running)
-          : op === 'shell-check' || op === 'count-check' ? trackOperatorWork(app, null, running) : running);
+        const result = await (changes ? trackOperatorWork(app, op, running) : running);
         reply({ type: 'panel-response', corrId: cmd.corrId, op, ...result });
         return;
       }

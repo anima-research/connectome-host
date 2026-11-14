@@ -9,7 +9,7 @@ import {
 import type { Recipe, RecipeKvUnifiedConfig, RecipeStrategy } from './recipe.js';
 import { anthropicCacheReadMultiplier, openaiCacheMultipliers } from './call-pricing.js';
 import { resolvePromptCaching } from './framework-agent-config.js';
-import { headWindowTokens, startingTailTokens } from './recipe-fit.js';
+import { defaultRecentWindowTokens, headWindowTokens } from './recipe-fit.js';
 import { FrontdeskStrategy } from './strategies/frontdesk-strategy.js';
 import { isBuiltinStrategyType, type ExtensionRegistry } from './extensions.js';
 
@@ -110,13 +110,6 @@ export function standardKvUnifiedConfig(recipe: Recipe, model: string): RecipeKv
   };
 }
 
-export function compressionModelOf(recipe: Recipe, model: string): string | null {
-  const strategyConfig = recipe.agent.strategy;
-  const strategyType = strategyConfig?.type ?? 'autobiographical';
-  if (strategyType === 'passthrough' || !isBuiltinStrategyType(strategyType)) return null;
-  return strategyConfig?.compressionModel ?? model;
-}
-
 export function strategyMessageCap(recipe: Recipe): number | undefined {
   const strategyConfig = recipe.agent.strategy;
   const strategyType = strategyConfig?.type ?? 'autobiographical';
@@ -152,8 +145,8 @@ export function buildFrameworkStrategy(
   }
   const autobiographicalOpts: Record<string, unknown> = {
     headWindowTokens: headWindowTokens(recipe),
-    recentWindowTokens: startingTailTokens(recipe, model),
-    compressionModel: compressionModelOf(recipe, model) ?? model,
+    recentWindowTokens: strategyConfig?.recentWindowTokens ?? defaultRecentWindowTokens(recipe, model),
+    compressionModel: strategyConfig?.compressionModel ?? model,
     ...(strategyConfig?.compressionMaxTokens !== undefined
       ? { compressionMaxTokens: strategyConfig.compressionMaxTokens }
       : {}),

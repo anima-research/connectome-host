@@ -15,13 +15,12 @@
 
 import { readFileSync, renameSync, openSync, writeSync, closeSync, unlinkSync, fsyncSync } from 'node:fs';
 import type { CredentialResolver, CredentialContext } from '@animalabs/membrane';
-import type { CredentialSource, RefusedCall } from './credential-state.js';
+import type { CredentialSource } from './credential-state.js';
 import { parseHandWrittenJson } from './hand-written-json.js';
 
 /** Claude Code's public OAuth client id. */
 export const CLAUDE_CODE_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 export const ANTHROPIC_OAUTH_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
-const AUTO_REFRESH_FAILED = '[anthropic-credentials] automatic refresh failed:';
 
 export interface AnthropicCredentialsConfig {
   token?: string;
@@ -103,7 +102,7 @@ export class AnthropicOAuthCredentials implements CredentialSource {
         try {
           await this.refresh();
         } catch (err) {
-          console.error(AUTO_REFRESH_FAILED, err instanceof Error ? err.message : err);
+          console.error('[anthropic-credentials] automatic refresh failed:', err instanceof Error ? err.message : err);
         }
       }
       return { token: this.accessToken };
@@ -121,36 +120,6 @@ export class AnthropicOAuthCredentials implements CredentialSource {
 
   expiresAt(): number | undefined {
     return this.expiresAtMs;
-  }
-
-  refused(): RefusedCall {
-    const at = this.expiresAtMs;
-    const expiry = at === undefined ? ''
-      : ` Its access token ${at < this.now() ? 'expired' : 'expires'} at ${new Date(at).toISOString()}.`;
-    if (!this.canRefresh()) {
-      const kept = this.file === undefined
-        ? ' until the host restarts: to keep it past a restart, replace it where the host gets it too'
-        : `, and writes it to ${this.file}, with no restart`;
-      return {
-        line: 'The host\'s credential has no refresh token, so it needs replacing: the host\'s ' +
-          `\`/auth token <token>\`, in its terminal or the Web UI's command box, replaces it${kept}.${expiry}`,
-        mends: false,
-      };
-    }
-    if (this.autoRefresh) {
-      return {
-        line: 'The host\'s credential has a refresh token, and the host runs with ANTHROPIC_OAUTH_AUTO_REFRESH on, ' +
-          `so its next model call, refused the same way, tries to refresh it.${expiry} Where that refresh fails, ` +
-          `the host's log says why, in a line that starts "${AUTO_REFRESH_FAILED}".`,
-        mends: true,
-      };
-    }
-    return {
-      line: 'The host\'s credential has a refresh token, but the host runs with ANTHROPIC_OAUTH_AUTO_REFRESH off, ' +
-        'so its next model call is refused too: refresh it with the host\'s `/auth refresh`, in its terminal or the ' +
-        `Web UI's command box.${expiry}`,
-      mends: false,
-    };
   }
 
   refresh(): Promise<void> {

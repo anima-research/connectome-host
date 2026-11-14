@@ -11,13 +11,12 @@
  *   - Built-in default (generic assistant)
  */
 
-import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type ForkReaderConfig, type FrameworkConfig, type MountConfig, type PersistentReaderConfig } from '@animalabs/agent-framework';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { ENV_REFERENCE, readRecipeDocument, substituteEnvVars, type RecipeDocument, type RecipeSourceBase } from './recipe-document.js';
-export { ENV_REFERENCE, readRecipeDocument, substituteEnvVars, type RecipeDocument } from './recipe-document.js';
+export { readRecipeDocument, substituteEnvVars, type RecipeDocument } from './recipe-document.js';
 import { noteRecipeWarning } from './recipe-warnings.js';
 import { isBuiltinStrategyType } from './extensions.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
@@ -1760,7 +1759,7 @@ export async function loadRecipeDocument(document: RecipeDocument, source: strin
   resolveExtensionPaths(recipe, sourceBase);
   const resolved = options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe), options.env);
   copyResolvedPathsIntoRaw(persistable, resolved);
-  return { recipe: digested(resolved), persistable };
+  return { recipe: resolved, persistable };
 }
 
 function copyResolvedPathsIntoRaw(raw: Record<string, unknown>, recipe: Recipe): void {
@@ -1833,23 +1832,8 @@ async function resolveSystemPrompt(recipe: Recipe): Promise<Recipe> {
   return recipe;
 }
 
-export function recipeDigest(recipe: Recipe): string {
-  return createHash('sha256').update(JSON.stringify(recipe)).digest('hex');
-}
-
-const loadedDigests = new WeakMap<Recipe, string>();
-
-function digested(recipe: Recipe): Recipe {
-  loadedDigests.set(recipe, recipeDigest(recipe));
-  return recipe;
-}
-
-export function loadedRecipeDigest(recipe: Recipe): string {
-  return loadedDigests.get(recipe) ?? recipeDigest(recipe);
-}
-
-export function runningFit(recipe: Recipe, envModel: string | undefined, beside?: number): RecipeFit {
-  const fit = recipeFit(recipe, recipeModel(recipe, envModel), beside);
+export function runningFit(recipe: Recipe, envModel: string | undefined): RecipeFit {
+  const fit = recipeFit(recipe, recipeModel(recipe, envModel));
   const own = recipeModel(recipe, undefined);
   if (!envModel || envModel === own || !fit.checked || fit.fits) return fit;
   const replaced = recipe.agent.model ? 'agent.model' : `its default, ${own}`;
@@ -3729,13 +3713,13 @@ export async function loadSavedRecipe(dataDir: string, options: { fetchSystemPro
 
   if (!(SAVED_RECIPE_UNRESOLVED_KEY in raw)) {
     const legacy = validateRecipe(raw);
-    return digested(options.fetchSystemPrompt === false ? legacy : refuseUnfit(legacy));
+    return options.fetchSystemPrompt === false ? legacy : refuseUnfit(legacy);
   }
 
   const { [SAVED_RECIPE_UNRESOLVED_KEY]: _marker, ...unresolved } = raw as Record<string, unknown>;
   const substituted = substituteEnvVars(unresolved, path);
   const recipe = validateRecipe(substituted);
-  return digested(options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe)));
+  return options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe));
 }
 
 /**

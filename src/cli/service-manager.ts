@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { realOrResolved } from '../update/contract.js';
-import { systemdWorkingDirectory, type Manager, type ServiceUnit } from './service-unit.js';
+import type { Manager, ServiceUnit } from './service-unit.js';
 
 export interface Ran {
   status: number | null;
@@ -19,7 +19,7 @@ export interface ManagerSystem {
 // Keep ownerOf's own: a unit in one of these states still holds its process, while stopping too.
 const STOPPING = new Set(['active', 'activating', 'reloading', 'deactivating']);
 
-export type Owner = { kind: 'ok'; held?: true } | { kind: 'other'; runsIn: string | null; from: string; loadedOnly?: boolean } | { kind: 'untold' }
+export type Owner = { kind: 'ok' } | { kind: 'other'; runsIn: string | null; from: string; loadedOnly?: boolean } | { kind: 'untold' }
   | { kind: 'unshown'; shown: string };
 
 export function ownerOf(unit: ServiceUnit, manager: Manager, work: string, sys: ManagerSystem,
@@ -29,32 +29,20 @@ export function ownerOf(unit: ServiceUnit, manager: Manager, work: string, sys: 
     const runsIn = fileDirectory(sys, env, manager, unit, text);
     if (!runsHere(runsIn, work)) return { kind: 'other', runsIn, from: unit.file };
   }
-  return managerOwner(unit, manager, work, sys, env, text !== null);
-}
-
-export function managerOwner(unit: ServiceUnit, manager: Manager, work: string, sys: ManagerSystem,
-  env: Record<string, string>, fileThere: boolean): Owner {
   if (manager !== 'systemd-user') {
-    if (fileThere) return { kind: 'ok' };
+    if (text !== null) return { kind: 'ok' };
     const state = agentState(sys, env, unit);
     if (state.kind === 'unknown') return { kind: 'unshown', shown: `launchctl list ${unit.name} failed: ${state.why}` };
     return state.kind === 'unloaded' ? { kind: 'ok' } : { kind: 'untold' };
   }
-  const shown = showUnit(sys, env, unit.name, OWNER_PROPERTIES);
+  const shown = showUnit(sys, env, unit.name, ['LoadState', 'ActiveState', 'WorkingDirectory', 'FragmentPath']);
   if (typeof shown === 'string') return { kind: 'unshown', shown };
-  return loadedOwner(unit, work, sys, shown, fileThere);
-}
-
-export const OWNER_PROPERTIES = ['LoadState', 'ActiveState', 'WorkingDirectory', 'FragmentPath'];
-
-export function loadedOwner(unit: ServiceUnit, work: string, sys: Pick<ManagerSystem, 'home'>,
-  shown: Map<string, string>, fileThere: boolean): Owner {
   if (shown.get('LoadState') === 'not-found') {
     return STOPPING.has(shown.get('ActiveState') ?? '') ? { kind: 'untold' } : { kind: 'ok' };
   }
   const runsIn = runsFrom(shown.get('WorkingDirectory') ?? '', sys.home);
-  return runsHere(runsIn, work) ? (fileThere ? { kind: 'ok' } : { kind: 'ok', held: true })
-    : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file, loadedOnly: fileThere };
+  return runsHere(runsIn, work) ? { kind: 'ok' }
+    : { kind: 'other', runsIn, from: shown.get('FragmentPath') || unit.file, loadedOnly: text !== null };
 }
 
 export function runsHere(directory: string | null, work: string): boolean {
@@ -63,7 +51,9 @@ export function runsHere(directory: string | null, work: string): boolean {
 
 export function fileDirectory(sys: ManagerSystem, env: Record<string, string>, manager: Manager,
   unit: ServiceUnit, text: string): string | null {
-  const set = manager === 'systemd-user' ? systemdWorkingDirectory(text) : plistField(sys, env, unit.file, 'WorkingDirectory');
+  const set = manager === 'systemd-user'
+    ? [...text.matchAll(/^WorkingDirectory=(.*)$/gm)].at(-1)?.[1]?.replace(/^-/, '').replace(/%%/g, '%') ?? null
+    : plistField(sys, env, unit.file, 'WorkingDirectory');
   return set === null || set === '' ? null : realOrResolved(set === '~' ? sys.home : set);
 }
 
