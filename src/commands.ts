@@ -42,7 +42,7 @@ import { formatToolClassRows, readToolClasses } from './tool-lifecycle-config.js
 import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
 import { EXACT_VERSION } from './update/install.js';
 import {
-  HOST_STOPPING, refusedWhileSwitchQuiesced, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork,
+  HOST_STOPPING, SWITCH_UNDER_WAY, refusedWhileSwitchQuiesced, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork,
 } from './session-switch.js';
 import { hostUpdate, type UpdateAnswer } from './update/update.js';
 import {
@@ -273,7 +273,7 @@ function rollbackFailed(app: AppContext, from: string, failed: string, err: unkn
 const CHANGES_THE_SESSION = new Set(['undo', 'redo', 'checkout', 'branchto', 'newtopic', 'nudge', 'puppet']);
 const CHANGES_THE_SESSION_GIVEN_A_VALUE = new Set(['checkpoint', 'restore', 'budget']);
 const SUBCOMMANDS_THAT_CHANGE_THE_SESSION = new Map([
-  ['session', new Set(['rename', 'delete', 'rm', 'new', 'create', 'switch', 'sw'])],
+  ['session', new Set(['rename', 'delete', 'rm'])],
   ['fleet', new Set(['stop', 'kill', 'restart'])],
 ]);
 
@@ -699,12 +699,16 @@ function handleSessionList(app: AppContext): CommandResult {
   return { lines };
 }
 
+const switchUnderWay: CommandResult = {
+  lines: [{ text: `${SWITCH_UNDER_WAY[0]!.toUpperCase()}${SWITCH_UNDER_WAY.slice(1)}.`, style: 'system' }],
+};
 const hostStopping: CommandResult = {
   lines: [{ text: `${HOST_STOPPING[0]!.toUpperCase()}${HOST_STOPPING.slice(1)}.`, style: 'system' }],
 };
 
 function handleSessionNew(app: AppContext, name?: string): CommandResult {
   if (app.stopping) return hostStopping;
+  if (app.switching) return switchUnderWay;
   const running = stillRunning(app);
   if (running) return running;
   const session = app.sessionManager.createSession(name);
@@ -718,6 +722,7 @@ function handleSessionNew(app: AppContext, name?: string): CommandResult {
 
 function handleSessionSwitch(app: AppContext, nameOrId?: string): CommandResult {
   if (app.stopping) return hostStopping;
+  if (app.switching) return switchUnderWay;
   if (!nameOrId) {
     return { lines: [{ text: 'Usage: /session switch <name or id>', style: 'system' }] };
   }

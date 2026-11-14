@@ -544,30 +544,21 @@ reasons unless the grant holds `ops` too.
   and you choose: wait up to ten minutes more (`/update restart wait`), stop
   now and cut those turns off (`/update restart now`), or call it off
   (`/update restart resume`, which also ends a switch's quiesce left on a
-  host after an earlier try). A fleet child's own Resume during the wait
-  keeps that try from going ahead. The switch's last look quiesces nothing,
-  so a child that starts during the wait does too, and the next try quiesces
-  it. From that last look until the switch is decided, a child refuses a
-  Resume asked on it, and a change to its session such as `/session new`.
-  Stop now takes a last look of its own, and is called off where a child's
-  person has resumed that child, or where this host's own quiesce was ended
-  during the wait, so it cuts only the turns it named. A child the fleet
-  starts, starts again or stops during the last look calls the switch off.
-  Scripts a turn left running in the background aren't waited for, and the
-  stop ends them. Then the host stops, and its next start, which the service
-  makes, copies the data, starts the new release on trial, and commits once
-  that release has opened its stores and connected each MCPL server it's
-  configured with that the release before it had connected when it stopped
-  for the switch, closed tabs aside. A server that was already down then
-  doesn't hold the commit, and if it's still down the new release's log
-  names it. These wait for every configured server instead, as before: a
-  request asked by a release that doesn't record its servers, as releases
-  before this rule don't; one to such a release, whose own check ignores the
-  record; a Go back asked from a shell, which has no running host to ask;
-  and one whose record can't be read. The host comes back quiesced and
-  resumes once its agents have started; one you'd quiesced yourself stays
-  quiesced. A host run in a terminal stops as `/quit` does: once it has
-  stopped, start it again.
+  host after an earlier try). Scripts a turn left running in the background
+  aren't waited for, and the stop ends them. Then the host stops, and its
+  next start, which the service makes, copies the data, starts the new
+  release on trial, and commits once that release has opened its stores and
+  connected each MCPL server it's configured with that the release before it
+  had connected when it stopped for the switch, closed tabs aside. A server
+  that was already down then doesn't hold the commit, and if it's still down
+  the new release's log names it. These wait for every configured server
+  instead, as before: a request asked by a release that doesn't record its
+  servers, as releases before this rule don't; one to such a release, whose
+  own check ignores the record; a Go back asked from a shell, which has no
+  running host to ask; and one whose record can't be read. The host comes
+  back quiesced and resumes once its agents have started; one you'd quiesced
+  yourself stays quiesced. A host run in a terminal stops as `/quit` does:
+  once it has stopped, start it again.
 - **A release that ends before its commit** is undone at the next start: the
   copy is restored, what the new release changed is kept aside, and the
   release before starts. `/update` then says why, and shows the last 40

@@ -12,8 +12,8 @@ import { EXACT_VERSION, hostProblem, installRelease, machineInstallOps, type Ins
 import { RELEASE_HOST, goBackOffer, isUnder, readInstallRecord } from './launcher.js';
 import { installCommandAt } from './typed-command.js';
 import {
-  NOT_THE_SWITCHS, SERVING, fleetChanged, lookAtChildren, quiesceForSwitch, releaseHolds, resumeAfterSwitchQuiesce, takeLastLook,
-  type Looked, type QuiesceFramework, type SwitchFleet,
+  NOT_THE_SWITCHS, SERVING, lookAtChildren, quiesceForSwitch, resumeAfterSwitchQuiesce, type QuiesceFramework,
+  type SwitchFleet,
 } from './quiesce.js';
 import { candidateOf, rangeOf, readReleases, registryOf, type Release } from './releases.js';
 import { readTrialLog } from './trial-log.js';
@@ -156,9 +156,7 @@ export class HostUpdate {
   private installing: string | null = null;
   private lastInstall: UpdateStatus['lastInstall'] = null;
   private restart: RestartState | null = null;
-  private looked: Looked | null = null;
   private quiescedFramework: SwitchFramework | null = null;
-  private quiescedSince: number | undefined;
   private endingSwitchQuiesce = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private serviceLine = false;
@@ -552,7 +550,7 @@ export class HostUpdate {
     const restart = this.restart!;
     restart.phase = 'ending';
     restart.hosts = [];
-    const ended = await this.endQuiesce(this.looked?.look);
+    const ended = await this.endQuiesce();
     this.restart = null;
     const holding = hosts.filter((h) => !settled(h) || isHeld(h));
     const held = [
@@ -616,25 +614,8 @@ export class HostUpdate {
   }
 
   async stopNow(ways: UpdateWays = COMMAND_WAYS): Promise<UpdateAnswer> {
-    const restart = this.restart;
-    if (restart?.phase !== 'busy') return refused(NO_WAIT_RAN_OUT);
-    const setup = this.need();
-    if (setup.host.framework() !== this.quiescedFramework) return this.callOff(SESSION_CHANGED, ways);
-    restart.phase = 'quiescing';
-    restart.hosts = [];
-    const { hosts, look } = await takeLastLook(setup.host.fleet(), restart.to, installPaths(setup.here!.root).mark);
-    this.looked = look;
-    if (setup.host.framework() !== this.quiescedFramework) return this.callOff(SESSION_CHANGED, ways);
-    const own = this.quiescedFramework!.getHostModeStatus();
-    if (!own.quiesced || own.since !== this.quiescedSince) {
-      return this.callOff("stop now found that this host's quiesce was ended during the wait, so stopping now could cut work " +
-        "that wasn't named as busy.", ways);
-    }
-    const loose = hosts.filter((host) => !host.answered);
-    if (loose.length > 0) {
-      return this.callOff("stop now's last look found a fleet child that doesn't hold or didn't answer, so stopping now could " +
-        `cut work that wasn't named as busy: ${loose.map((host) => `${host.host}: ${host.answered ? '' : host.why}`).join('; ')}.`, ways);
-    }
+    if (this.restart?.phase !== 'busy') return refused(NO_WAIT_RAN_OUT);
+    if (this.need().host.framework() !== this.quiescedFramework) return this.callOff(SESSION_CHANGED, ways);
     return this.markAndStop(ways);
   }
 
@@ -800,15 +781,12 @@ export class HostUpdate {
     restart.hosts = [];
     const framework = setup.host.framework();
     this.quiescedFramework = framework;
-    this.looked = null;
     let quiet;
     try {
-      quiet = await quiesceForSwitch(framework, setup.host.fleet(), { to: restart.to, timeoutMs, mark: installPaths(setup.here!.root).mark });
+      quiet = await quiesceForSwitch(framework, setup.host.fleet(), { to: restart.to, timeoutMs });
     } catch (error) {
       return this.callOff(`its quiesce was refused: ${said(error)}`, ways);
     }
-    this.looked = quiet.look;
-    this.quiescedSince = quiet.since;
     if (setup.host.framework() !== framework) return this.callOff(SESSION_CHANGED, ways);
     if (armedQuiet !== undefined) {
       const hold = operatorHold(framework.getHostModeStatus()) ?? childHold(quiet.hosts);
@@ -816,7 +794,6 @@ export class HostUpdate {
       return quiet.drained && quiet.hosts.every(settled) && armedQuiet() ? this.markAndStop(ways) : this.endAndStayArmed(quiet.hosts);
     }
     if (quiet.drained) return this.markAndStop(ways);
-    await releaseHolds(setup.host.fleet(), quiet.look.look);
     restart.phase = 'busy';
     restart.hosts = quiet.hosts;
     return refused(...busyLines(restart, timeoutMs, ways));
@@ -828,14 +805,11 @@ export class HostUpdate {
     if (this.trying && this.stopper?.stopping?.() === true) return this.callOff(STOPPING_FIRST, ways);
     const held = this.trying && restart.why === 'go-back' && !restart.keepData ? this.restoreRefusal(this.hostWays()) : null;
     if (held !== null) return this.callOff(held, ways);
-    const changed = fleetChanged(setup.host.fleet(), this.looked);
-    if (changed !== null) return this.callOff(`${changed}. Ask again.`, ways);
     let unsynced: Error | null;
     try {
       const connected = this.quiescedFramework!.listMcplServers().filter((server) => server.connected).map((server) => server.id);
       ({ unsynced } = writeMark(setup.here!.root, {
         to: restart.to, why: restart.why, keepData: restart.keepData, connected, by: this.armed?.by ?? undefined,
-        look: this.looked?.look,
       }, this.now()));
     } catch (error) {
       return this.callOff(`its mark couldn't be written: ${said(error)}`, ways);
@@ -859,7 +833,7 @@ export class HostUpdate {
     const restart = this.restart!;
     restart.phase = 'ending';
     restart.hosts = [];
-    const ended = await this.endQuiesce(this.looked?.look);
+    const ended = await this.endQuiesce();
     this.restart = null;
     if (this.trying && this.armed !== null) {
       this.disarm((why ?? 'it was called off.').replace(/\.?$/, '.') + this.droppedLeft(ended));
@@ -871,10 +845,10 @@ export class HostUpdate {
     return why === null ? done(first, ...ended.lines) : refused(first, ...ended.lines);
   }
 
-  private async endQuiesce(look?: string): Promise<{ ended: string[]; lines: string[]; stuck: number }> {
+  private async endQuiesce(): Promise<{ ended: string[]; lines: string[]; stuck: number }> {
     const setup = this.need();
     try {
-      const { hosts } = await resumeAfterSwitchQuiesce(setup.host.framework(), setup.host.fleet(), look);
+      const { hosts } = await resumeAfterSwitchQuiesce(setup.host.framework(), setup.host.fleet());
       const said = (h: { host: string; why?: string }) => `${h.host}: ${(h.why ?? 'it didn\'t say why').replace(/\.$/, '')}.`;
       const told = hosts.filter((h) => h.why !== undefined && h.why !== SERVING);
       const stuck = told.filter((h) => !h.resumed && !h.why!.startsWith(NOT_THE_SWITCHS));

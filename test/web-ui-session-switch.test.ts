@@ -10,7 +10,6 @@ import {
   switchQuiesceRefusalFor,
 } from '../src/modules/web-ui-module.js';
 import { switchQuiesceReason } from '../src/update/contract.js';
-import { answerSwitchRequest } from '../src/update/quiesce.js';
 
 const USER = 'admin';
 const PASS = 'open-sesame';
@@ -219,34 +218,6 @@ describe("the web UI's own entry during a session switch", () => {
       expect(reached).toContain('rollback');
     } finally {
       client.close();
-    }
-  }, TEST_MS);
-
-  test("a Resume from the page while this host holds for a switch's last look is refused with the hold's words, the page reads the host mode again, and the host stays quiesced", async () => {
-    const HOLDING = "the release switch's last look has begun here, so nothing here changes until the install's host decides it. " +
-      "If it calls the switch off, Resume works here again; if the switch goes ahead, this host stops. Where the install's host " +
-      "can't reach this host, stopping the install's host or restarting this one ends the wait.";
-    let mode: { quiesced: boolean; reason?: string; drained: boolean } = { quiesced: true, reason: switchQuiesceReason('0.15.0'), drained: true };
-    const resumed: string[] = [];
-    const app = hostApp({
-      getHostModeStatus: () => mode,
-      resume: async () => { resumed.push('resume'); mode = { quiesced: false, drained: true }; return mode; },
-    }, false);
-    const { gateResume } = await import('../src/update/resume-gate.js');
-    gateResume(app.framework as never);
-    webUiModule.setApp(app as never);
-    const look = { op: 'quiesce', to: '0.15.0', waitMs: 0, last: { look: 'look-1', mark: join(dir, 'mark.json'), parent: process.pid } };
-    expect(await answerSwitchRequest(app.framework as never, look)).toMatchObject({ held: true });
-    const client = await connect();
-    try {
-      client.send({ type: 'host-resume', corrId: 'held' });
-      expect(await client.next('the refusal', (r) => r.corrId === 'held')).toEqual({ type: 'error', corrId: 'held', message: `resume failed: ${HOLDING}` });
-      expect((await client.next('the host mode after the refusal', (r) => r.type === 'host-mode')).hostMode).toMatchObject({ mode: 'quiesced' });
-      expect(resumed).toEqual([]);
-      expect(mode.quiesced).toBe(true);
-    } finally {
-      client.close();
-      await answerSwitchRequest(app.framework as never, { op: 'release', look: 'look-1' });
     }
   }, TEST_MS);
 
@@ -543,9 +514,7 @@ test("a host-quiesce over a switch's quiesce on a host that can't tell whether t
   expect(message).toStartWith('host-quiesce refused: ');
   expect(message).toContain('may still be under way or may have ended and left this quiesce behind');
   expect(message).toContain('clicking "⏸ quiesced" in the top bar ends it, and then quiesce again');
-  expect(message).toContain("That click also ends it while the switch waits, and that try then doesn't go ahead; during " +
-    "the switch's last look this host holds, and while the install's host runs, the click is refused until the switch is " +
-    'decided.');
+  expect(message).toContain("That click also ends it while the switch waits, and that try then doesn't go ahead.");
   expect(message).not.toContain('while the switch is under way');
   expect(message).not.toContain('Resume');
 });

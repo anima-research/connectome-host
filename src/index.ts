@@ -94,7 +94,6 @@ import { installCommandAt } from './update/typed-command.js';
 import { childrenFilePath, trialPlaces } from './update/contract.js';
 import { hostUpdate, hostVersionOf } from './update/update.js';
 import { armTrialLog } from './update/trial-log.js';
-import { gateResume } from './update/resume-gate.js';
 import { PRIVATE_DIR_MODE } from './update/data-swap.js';
 import { HOST_PACKAGE_JSON } from './bun-floor-check.js';
 import { switchLeftForStop, switchSessionSteps } from './session-switch.js';
@@ -557,7 +556,6 @@ agents: [agentConfig],
     inferenceBounds: recipe.inferenceBounds,
     toolResultInlineMaxChars: recipe.toolResultInlineMaxChars,
   });
-  gateResume(framework);
 
   // An agent-framework without the heartbeat ignores modules.heartbeat: the
   // agent then has no heartbeat or reminders at all, which is said here.
