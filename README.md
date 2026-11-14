@@ -757,6 +757,7 @@ unknown-key warning, like those at the other levels.
 - **Fleets** (opt-in, `modules.fleet`) — a conductor launches and supervises other recipes as headless child processes; one agent tree across processes in both UIs ([`docs/fleet-protocol.md`](docs/fleet-protocol.md))
 - **Subagent forking** (opt-in, `modules.subagents`) — spawn/fork parallel in-process agents, shown in the fleet tree (Tab)
 - **Persistent lessons** (opt-in, `modules.lessons`) — knowledge store with confidence scores and tags. Automatic retrieval-injection of lessons into context (`modules.retrieval`) is a separate opt-in — it adds per-turn context churn and retrieval-model calls, so enable it only for agents that actually curate a lesson library
+- **Fetch** (opt-in, `modules.fetch`) — `fetch--fetch` reads a web page as text, with HTML turned into markdown, whole or through a small model that answers a prompt. Set `local: true` to let it read workspace files too, within what the mounts allow. See [below](#the-fetch-tool)
 
 For `openai-responses` and `openai-codex`, an object-valued
 `modules.retrieval` can set `reasoningEffort` (`none`, `minimal`, `low`,
@@ -774,6 +775,36 @@ sets it, none for `passthrough`), and with `modules.subagents` on, a subagent's
 or a fork's 10,000. For a strategy an extension registers, retrieval knows only
 the recipe's `agent.strategy.maxMessageTokens`, so set it there if that strategy
 cuts long messages, or its cut can fall mid-lesson.
+
+### The fetch tool
+
+`modules.fetch` gives the agent one tool, `fetch--fetch`, which reads a document
+as text. Its `source` is an `http://` or `https://` address, or with `local` on,
+a workspace path too:
+
+```json
+{ "modules": { "fetch": { "local": true } } }
+```
+
+Without a `prompt` the tool returns the text itself, 20,000 characters at a
+time. With one, a separate small model reads up to 100,000 characters and
+answers, so a long document stays out of the agent's context. Every result says
+which part was read and gives the `offset` to read on from.
+
+| Option | Default | What it does |
+|---|---|---|
+| `model` | `claude-haiku-4-5-20251001` | The model that answers `prompt`. A recipe on another provider sets this |
+| `local` | `false` | Lets `source` be a workspace path. It reads through the workspace, so mounts, includes and the symlink policy all apply and it can reach nothing the workspace can't. Needs `modules.workspace` |
+| `allowPrivateNetwork` | `false` | Lets web addresses reach private and local addresses, such as loopback, the LAN or a tailnet |
+| `maxBytes` | 5 MiB | Most bytes of one document to read, up to 64 MiB. Past it, the tool reads the start and says the rest is out of reach |
+
+On the network, the tool decides what it may reach by the address it would
+connect to, on every redirect, so a public name that resolves to a private
+address is refused like the address itself. It sends no credentials and doesn't
+run JavaScript. HTML is converted in a separate process that holds none of the
+host's environment and is killed past 15 seconds or 1 GiB, which refuses the page. A first read is always fresh. Only reads with an `offset` use
+a copy of the page, for up to 15 minutes, so the parts of one reading fit
+together. The tool reads text only, and reports a binary document's type instead.
 
 ### Shared instructions
 

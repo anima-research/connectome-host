@@ -1011,6 +1011,28 @@ export interface RecipeModules {
     reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   };
   /**
+   * The fetch tool (`fetch--fetch`): read a web page as text, whole or through
+   * a small model that answers a prompt. OPT-IN, defaults to off.
+   */
+  fetch?: boolean | {
+    /** The model that answers `prompt`. Defaults to a Claude Haiku, so a recipe on another provider sets this. */
+    model?: string;
+    /**
+     * Let the tool read local files too. It reads them through the workspace,
+     * so it reaches what the workspace's mounts allow and nothing more, and
+     * needs `modules.workspace`. Off by default.
+     */
+    local?: boolean;
+    /**
+     * Let web addresses reach private and local addresses: loopback, the LAN,
+     * a tailnet, cloud metadata services. Off by default, so a page or a
+     * redirect can't point the tool at anything inside the network.
+     */
+    allowPrivateNetwork?: boolean;
+    /** Most bytes of one document to read. Defaults to 5 MiB, at most 64 MiB. */
+    maxBytes?: number;
+  };
+  /**
    * The gate (wake rules). `true` or left out: on, with the rules the agent
    * keeps in its gate.json. `false`: off. An object: on, with `policies` and
    * `default` as the host's starting rules (agent-framework's GateConfig),
@@ -2108,8 +2130,11 @@ const RECIPE_AGENT_MOCK_KEYS = [
 const RECIPE_MODULE_KEYS = [
   'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
-  'channelMode', 'selfRestart', 'heartbeat',
+  'channelMode', 'selfRestart', 'heartbeat', 'fetch',
 ] as const;
+const RECIPE_FETCH_KEYS = ['model', 'local', 'allowPrivateNetwork', 'maxBytes'] as const;
+/** The most a recipe can ask for: past this, little HTML would convert within its memory limit anyway. */
+const MAX_FETCH_MAX_BYTES = 64 * 1024 * 1024;
 const RECIPE_KV_UNIFIED_KEYS = [
   'policy', 'tokenBucketSize', 'continuityBucketSize', 'fidelityBucketSize', 'labelCeiling',
   'adoptEpsilon', 'thinkingLambda', 'thinkingHalfLifeTokens', 'treeifyNonContiguousSummaries', 'preserveGapBearingSummaries',
@@ -2274,7 +2299,36 @@ export function unknownRecipeKeys(raw: unknown): string[] {
     }
   }
   check('modules.', obj.modules, RECIPE_MODULE_KEYS);
+  if (isObject(obj.modules)) check('modules.fetch.', obj.modules.fetch, RECIPE_FETCH_KEYS);
   return found;
+}
+
+/**
+ * `modules.fetch`: true, false, or an object whose values are checked, since
+ * a wrong one would otherwise surface only on the agent's first call. Its
+ * `local` reads through the workspace, so it can't stand with the workspace off.
+ */
+function validateRecipeFetch(fetch: unknown, workspace: unknown): void {
+  if (fetch === undefined || typeof fetch === 'boolean') return;
+  if (fetch === null || typeof fetch !== 'object' || Array.isArray(fetch)) {
+    throw new Error('Recipe modules.fetch must be a boolean or object.');
+  }
+  const { model, local, allowPrivateNetwork, maxBytes } = fetch as Record<string, unknown>;
+  if (model !== undefined && (typeof model !== 'string' || !model.trim())) {
+    throw new Error('Recipe modules.fetch.model must be a non-empty string.');
+  }
+  if (local !== undefined && typeof local !== 'boolean') {
+    throw new Error('Recipe modules.fetch.local must be a boolean.');
+  }
+  if (allowPrivateNetwork !== undefined && typeof allowPrivateNetwork !== 'boolean') {
+    throw new Error('Recipe modules.fetch.allowPrivateNetwork must be a boolean.');
+  }
+  if (maxBytes !== undefined && !(Number.isSafeInteger(maxBytes) && (maxBytes as number) > 0 && (maxBytes as number) <= MAX_FETCH_MAX_BYTES)) {
+    throw new Error(`Recipe modules.fetch.maxBytes must be a whole number from 1 to ${MAX_FETCH_MAX_BYTES}.`);
+  }
+  if (local === true && workspace === false) {
+    throw new Error('Recipe modules.fetch.local reads files through the workspace, so it needs modules.workspace on.');
+  }
 }
 
 /**
@@ -3279,6 +3333,7 @@ export function validateRecipe(raw: unknown): Recipe {
     // use as its default, so a typo would load as no setting at all.
     validateRecipeReplyJudge(mods.wake);
     validateRecipeHeartbeat(mods.heartbeat, (raw as { mcpServers?: unknown }).mcpServers);
+    validateRecipeFetch(mods.fetch, mods.workspace);
 
     const retrieval = mods.retrieval;
     if (retrieval !== undefined && typeof retrieval !== 'boolean') {

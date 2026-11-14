@@ -59,6 +59,7 @@ import { historyModuleOptions, assertSemanticSearchRegistered } from './history-
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
 import { retrievalModuleConfig } from './retrieval-config.js';
+import { FetchModule, fetchModuleConfig } from './modules/fetch-module.js';
 import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { waitToBeListed } from './fleet-begin.js';
@@ -347,6 +348,10 @@ async function createFramework(
   if (workspaceMounts) {
     workspaceModule = new WorkspaceModule({ mounts: workspaceMounts });
     moduleInstances.push(workspaceModule);
+  }
+
+  if (modules.fetch) {
+    moduleInstances.push(new FetchModule(fetchModuleConfig(membrane, modules.fetch)));
   }
 
   if (modules.instructions) {
