@@ -1030,12 +1030,10 @@ both, or entered it and left it, or left it and entered it again, which
 leave it holding what it held. It gives the
 summary it wrote back as a `/newtopic …` to run: in the TUI, the Web UI and
 headless mode as written, line breaks included, and in the readline and
-piped modes as one line, its line breaks folded to spaces: each line goes
-alone there, except that, where stdin and stdout are both terminals and the
-terminal brackets a paste, a message of several lines pasted into readline
-mode goes to the agent whole, as text. A `/newtopic <text>` on several lines
-needs the TUI or the Web UI, which send a pasted text whole, or headless
-mode's `command`, which carries its text whole.
+piped modes, which read each line as its own input, as one line, its line
+breaks folded to spaces. A `/newtopic <text>` on several lines needs the
+TUI or the Web UI, which send a pasted text whole, or headless mode's
+`command`, which carries its text whole.
 `/checkout`, `/restore` and `/branchto` go through agent-framework's branch
 switch and rollback, which are refused unless every agent sharing the store is
 idle, take every agent's context to the new branch, and are written to the

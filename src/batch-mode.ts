@@ -8,16 +8,6 @@ import { parseCommand } from './command-name.js';
 
 const KEEP_SERVING_HINT = 'use --headless to keep serving';
 
-const BATCH_UNANSWERED_NOTICE = '[batch] a line hasn\'t been answered yet, and batch mode stops the agent now, ' +
-  'so its answer won\'t print here';
-const BATCH_RUNNING_NOTICE = '[batch] a turn is still running, and batch mode stops the agent now, ' +
-  'so its answer won\'t print here';
-
-export function batchEndNotice(turns: { owed(): boolean; running(): boolean }): string | null {
-  if (turns.owed()) return BATCH_UNANSWERED_NOTICE;
-  return turns.running() ? BATCH_RUNNING_NOTICE : null;
-}
-
 export function batchModeStartNotice(): string {
   return (
     '[batch] stdin is not a TTY, so this is batch mode: commands are read until stdin closes, ' +
