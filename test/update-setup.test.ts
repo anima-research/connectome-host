@@ -165,6 +165,23 @@ describe('setup', () => {
     expect(said.some((line) => line.startsWith(`The service starts the host with \`${join(links, 'bun')} ${join(root, ENTRY_POINT)}\``))).toBe(true);
   });
 
+  test('the line saying what the service starts the host with doesn\'t name a temporary directory first on PATH whose node is the bun setup runs on, as bunx puts there', () => {
+    const standIn = join(dir, 'bun-node-stand-in');
+    mkdirSync(standIn);
+    symlinkSync(process.execPath, join(standIn, 'bun'));
+    symlinkSync(process.execPath, join(standIn, 'node'));
+    const before = process.env.PATH;
+    process.env.PATH = `${standIn}:${before ?? ''}`;
+    try {
+      setup(options());
+    } finally {
+      process.env.PATH = before;
+    }
+    const line = said.find((l) => l.startsWith('The service starts the host with'));
+    expect(line).toBeDefined();
+    expect(line).not.toContain(standIn);
+  });
+
   test("writes the install's own command beside the entry point, running current's CLI, and says it with how to put it on PATH; a later run writes it again where it's gone", () => {
     const host = join(install, 'node_modules', '@animalabs', 'connectome-host');
     mkdirSync(join(host, 'src', 'cli'), { recursive: true });

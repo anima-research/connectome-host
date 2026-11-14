@@ -549,6 +549,30 @@ test('a bun on PATH that doesn\'t resolve to the bun install runs on, such as a 
   }
 });
 
+test('a temporary directory first on PATH whose node is the bun install runs on, as bunx puts there, is no part of the units: they run that bun from where it lasts, and their PATH leaves the directory out', async () => {
+  const at = install();
+  const bun = '/home/resident/.bun/bin/bun';
+  const standIn = '/tmp/bun-node-1001-38afee6c8';
+  const f = fake(at, { bun, env: { PATH: `${standIn}:/home/resident/.bun/bin:${at.root}:/usr/bin:/bin` },
+    files: { [join(standIn, 'bun')]: bun, [join(standIn, 'node')]: bun, [bun]: bun } });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const text = readFileSync(hostUnit(at), 'utf-8');
+  expect(text).toContain(`ExecStart="${bun}" "${at.root}/start.js" "${at.recipe}" "--headless"\n`);
+  expect(text).toContain(`Environment="PATH=/home/resident/.bun/bin:/opt/node/bin:${at.root}:/usr/bin:/bin:`);
+  expect(text).not.toContain(standIn);
+});
+
+test('a shell whose only node on PATH is in that temporary directory, the bun install runs on, is refused as with no Node on PATH, before anything is written', async () => {
+  const at = install('My Resident', { shell: true });
+  const bun = '/home/resident/.bun/bin/bun';
+  const standIn = '/tmp/bun-node-1001-38afee6c8';
+  const f = fake(at, { bun, node: null, env: { PATH: `${standIn}:${at.root}:/usr/bin:/bin` },
+    files: { [join(standIn, 'bun')]: bun, [join(standIn, 'node')]: bun } });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('no node is on this PATH');
+  nothingWritten(at);
+});
+
 test('the host\'s unit, as install first writes it and in its supervised form, has systemd send its stop\'s SIGTERM to the host alone', async () => {
   const at = install();
   mkdirSync(`${hostUnit(at)}.d`, { recursive: true });

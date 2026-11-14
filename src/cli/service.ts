@@ -14,7 +14,7 @@ import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type No
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
 import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/systemd-units.js';
-import { lookup, serviceBun, type BunLookup } from '../update/service-bun.js';
+import { lastingPath, lookup, serviceBun, type BunLookup } from '../update/service-bun.js';
 import {
   type ManagerSystem, agentState, childEnv, fileDirectory, launchctlFailure, ownerOf, readOr, runsFrom, runsHere, showUnit, stateOf, stderrOf, systemctlLine,
 } from './service-manager.js';
@@ -248,10 +248,11 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     ctx.out('This run sets up no shell daemon: the recipe names no shell client or shell setting.');
   }
 
-  const bun = serviceBun(sys.bun, sys.env.PATH ?? '', sys);
-  const node = sys.which('node', sys.env.PATH ?? '');
+  const lasting = lastingPath(sys.env.PATH ?? '', sys.bun, sys);
+  const bun = serviceBun(sys.bun, lasting, sys);
+  const node = sys.which('node', lasting);
   const path = [...new Set([dirname(bun), ...(node ? [dirname(node)] : []),
-    ...(sys.env.PATH ?? '').split(':').filter((entry) => isAbsolute(entry)),
+    ...lasting.split(':').filter((entry) => isAbsolute(entry)),
     '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])].join(':');
   const logPath = join(work, 'logs', 'agent.log');
   const hostVars: Array<[string, string]> = [['PATH', path], ['DATA_DIR', dataDir]];
@@ -793,7 +794,7 @@ function shellOf(work: string, sys: ServiceSystem): string | null {
     throw new Refusal(`${SHELL_PACKAGE} is installed in ${work}, for the resident's shell, but its package.json names no ` +
       `${SHELL_BIN} for its daemon. Nothing was written.`);
   }
-  if (sys.which('node', sys.env.PATH ?? '') === null) {
+  if (sys.which('node', lastingPath(sys.env.PATH ?? '', sys.bun, sys)) === null) {
     throw new Refusal(`${SHELL_PACKAGE} is installed in ${work}, for the resident's shell, and its daemon runs on Node, ` +
       'but no node is on this PATH. Nothing was written.');
   }
