@@ -384,7 +384,8 @@ describe.skipIf(ladderUnrunnable)('where the ladder reads a unit\'s output', () 
     expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
       text: `connectome-test.service's unit file, ${unitFile}, can't be read (Is a directory), so whether it sends the host's ` +
         'output to a file isn\'t known', counts: false });
-    expect(out).toContain('400 prompt is too long');
+    expect(out).toContain('recent failures in connectome-test.service\'s journal, their text left out, since it can quote a model provider or a person:\n' +
+      '  [inference-failed]: 1, the newest at ');
   });
 });
 
@@ -1138,11 +1139,38 @@ describe.skipIf(ladderUnrunnable)('what the ladder cuts', () => {
     return at;
   };
 
-  test('under --findings-json, a message\'s preview, a model call\'s error and a failure line are printed whole, with no "…", since its caller hides each line it shows', async () => {
-    const { out } = ladder(await longFields(), ['--findings-json']);
-    expect(out).toMatch(/discord event seen .*#general: p{60}PREVIEW-TAIL-END(?!…)/);
-    expect(out).toMatch(/err=z{100}ERR-TAIL-END/);
-    expect(out).toMatch(/y{200}FAIL-TAIL-END/);
+  const stamp = (seconds: number) => new Date(seconds * 1000).toISOString().replace(/^\d{4}-(\d\d-\d\d)T(\d\d:\d\d:\d\d).*$/, '$1 $2');
+
+  test('under --findings-json, it prints no provider or message text: the inference stage names the call log, each source of failures gives each kind\'s count, its newest time and the command that shows them, and the Discord stage names the channel', async () => {
+    const at = await longFields();
+    const { out } = ladder(at, ['--findings-json']);
+    for (const text of ['PREVIEW-TAIL-END', 'ERR-TAIL-END', 'FAIL-TAIL-END', 'pppp', 'zzzz', 'yyyy', '400 prompt is too long']) {
+      expect(out).not.toContain(text);
+    }
+    expect(out).toMatch(/discord event seen .*#general$/m);
+    expect(out).toContain('ended in an error. Its text can be a model provider\'s own words, so doctor leaves it out. It is in ' +
+      `${join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl')}\n`);
+    const why = ', their text left out, since it can quote a model provider or a person:';
+    expect(out).toContain(`recent failures in connectome-test.service's journal${why}\n  [inference-failed]: 1, the newest at ${stamp(at.now - 20)}\n` +
+      '  to see them: journalctl --user -u connectome-test.service --since @');
+    expect(out).toContain(` -g '\\[inference-(failed|hard-down|dropped)\\]|\\[push-event-rejected\\]|Error'\n`);
+    const failures = join(at.work, 'logs', 'failures.log');
+    expect(out).toContain(`recent failures in ${failures}${why}\n  Error: 1, the newest at a time not known\n` +
+      `  to see them: grep -v -F -- '"kind":"subscription-gc-close"' ${failures}\n`);
+  });
+
+  test('under --findings-json, each kind of failure is counted once, with its newest time from its record, the newest kind first', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    const iso = (s: number) => new Date(s * 1000).toISOString();
+    writeFileSync(join(at.work, 'logs', 'failures.log'), [
+      { kind: 'push-event-rejected', at: iso(at.now - 300), reason: 'PERSON-TEXT-1' },
+      { kind: 'inference-exhausted', at: iso(at.now - 200), reason: 'PROVIDER-TEXT-1' },
+      { kind: 'inference-exhausted', at: iso(at.now - 100), reason: 'PROVIDER-TEXT-2' },
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n');
+    const { out } = ladder(at, ['--findings-json']);
+    expect(out).toContain(`  inference-exhausted: 2, the newest at ${stamp(at.now - 100)}\n` +
+      `  push-event-rejected: 1, the newest at ${stamp(at.now - 300)}\n`);
+    for (const text of ['PERSON-TEXT', 'PROVIDER-TEXT']) expect(out).not.toContain(text);
   });
 
   test('run alone, it cuts a message\'s preview at 40 characters with "…", a model call\'s error at 80 and a failure line at 150', async () => {
@@ -1159,7 +1187,7 @@ describe.skipIf(ladderUnrunnable)('what the ladder cuts', () => {
     const first = `${'x'.repeat(100)}${secret} tail\n`;
     const cut = Buffer.byteLength(first) - (100 + 10);
     writeFileSync(join(at.work, 'logs', 'failures.log'), `${first}${'y'.repeat(400_000 - cut - 1)}\n`);
-    const { out } = ladder(at, ['--findings-json']);
+    const { out } = ladder(at);
     expect(out).toContain('yyyy');
     expect(out).not.toContain(secret.slice(10));
   });

@@ -1129,7 +1129,7 @@ describe('connectome doctor', () => {
     expect(r.out).not.toContain(value);
   });
 
-  test('the service\'s environment is read with the Bun its unit runs, and one that can\'t be run is named', async () => {
+  test('the service\'s environment is read with the Bun its unit runs, one there that can\'t be run is named, and one that isn\'t there is a problem naming how to write the unit anew, while a bare name or one behind a directory doctor can\'t search isn\'t called missing', async () => {
     const at = install();
     const ran = join(at.work, 'unit-bun-ran');
     const bun = join(at.work, 'unit-bun');
@@ -1139,12 +1139,33 @@ describe('connectome doctor', () => {
     const r = await withHost(at, HEALTHY_HOST, () => run(at));
     expect(existsSync(ran)).toBe(true);
     expect(r.out).not.toContain('Doctor stops here');
+    const unrunnable = join(at.work, 'unrunnable-bun');
+    writeFileSync(unrunnable, 'not a program\n');
+    writeUnit(at, join(at.work, 'recipe.json'), at.work, unrunnable);
+    const cant = await withHost(at, HEALTHY_HOST, () => run(at));
+    expect(cant.out).toContain(`✗ ${unrunnable}, the Bun the service's unit runs, couldn't be run in ${at.work} to read the ` +
+      'service\'s environment: ');
+    expect(cant.out).toContain('Doctor stops here');
+    expect(cant.status).toBe(1);
+    const closed = join(at.work, 'closed');
+    mkdirSync(closed);
+    writeFileSync(join(closed, 'bun'), 'not a program\n');
+    chmodSync(closed, 0o000);
+    try {
+      for (const unsure of ['bun', join(closed, 'bun')]) {
+        writeUnit(at, join(at.work, 'recipe.json'), at.work, unsure);
+        const seen = await withHost(at, HEALTHY_HOST, () => run(at));
+        expect(seen.out).not.toContain('which isn\'t there');
+      }
+    } finally {
+      chmodSync(closed, 0o755);
+    }
     const missing = join(at.work, 'no-such-bun');
     writeUnit(at, join(at.work, 'recipe.json'), at.work, missing);
     const gone = await withHost(at, HEALTHY_HOST, () => run(at));
-    expect(gone.out).toContain(`✗ ${missing}, the Bun the service's unit runs, couldn't be run in ${at.work} to read the ` +
-      'service\'s environment: ');
-    expect(gone.out).toContain('Doctor stops here');
+    expect(gone.out).toContain(`✗ ${at.unit} runs ${missing}, which isn't there, so the service fails at its next start. ` +
+      `\`${join(at.root, 'connectome')} service install <recipe>\` writes it anew, or says why it can't.`);
+    expect(gone.out).not.toContain('Doctor stops here');
     expect(gone.status).toBe(1);
   });
 

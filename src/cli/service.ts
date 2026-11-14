@@ -13,6 +13,7 @@ import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type No
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, shellWord, typedCommand } from '../update/typed-command.js';
 import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/systemd-units.js';
+import { lastingPath, lookup, serviceBun, type BunLookup } from '../update/service-bun.js';
 import {
   type ManagerSystem, agentState, childEnv, fileDirectory, launchctlFailure, ownerOf, readOr, runsFrom, runsHere, showUnit, stateOf, stderrOf, systemctlLine,
 } from './service-manager.js';
@@ -36,13 +37,12 @@ const serviceUsage = (cmd: string) => `${cmd} service install <recipe>`;
 // Keep this install's own: a unit in one of these states has its process up, or coming up.
 const RUNNING = new Set(['active', 'activating', 'reloading']);
 
-export interface ServiceSystem extends ManagerSystem {
+export interface ServiceSystem extends ManagerSystem, BunLookup {
   user: string;
   cwd: string;
   bun: string;
   owner(path: string): number;
   cgroup(): string | null;
-  which(name: string): string | null;
   readRecipe(recipe: string): Promise<unknown>;
   linger(user: string): boolean | null;
   portFree(port: number): Promise<boolean>;
@@ -72,7 +72,8 @@ export function machine(): ServiceSystem {
         return null;
       }
     },
-    which: (name) => Bun.which(name),
+    which: lookup.which,
+    realpath: lookup.realpath,
     run: (command, args, env) => {
       try {
         const ran = Bun.spawnSync([command, ...args], { env, stdout: 'pipe', stderr: 'pipe' });
@@ -246,13 +247,15 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     ctx.out('This run sets up no shell daemon: the recipe names no shell client or shell setting.');
   }
 
-  const node = sys.which('node');
-  const path = [...new Set([dirname(sys.bun), ...(node ? [dirname(node)] : []),
-    ...(sys.env.PATH ?? '').split(':').filter((entry) => isAbsolute(entry)),
+  const lasting = lastingPath(sys.env.PATH ?? '', sys.bun, sys);
+  const bun = serviceBun(sys.bun, lasting, sys);
+  const node = sys.which('node', lasting);
+  const path = [...new Set([dirname(bun), ...(node ? [dirname(node)] : []),
+    ...lasting.split(':').filter((entry) => isAbsolute(entry)),
     '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])].join(':');
   const logPath = join(work, 'logs', 'agent.log');
   const hostVars: Array<[string, string]> = [['PATH', path], ['DATA_DIR', dataDir]];
-  const hostArgv = [sys.bun, join(root, 'start.js'), recipe, '--headless'];
+  const hostArgv = [bun, join(root, 'start.js'), recipe, '--headless'];
   const shellArgv = shell === null ? [] : [node!, shell.bin, '--host', 'localhost', '--headless'];
   const shellVars: Array<[string, string]> = shell === null ? []
     : [['PATH', path], ['SESSION_SERVER_PORT', shell.port], ['SESSION_SERVER_TOKEN', shell.token]];
@@ -797,7 +800,7 @@ function shellOf(work: string, sys: ServiceSystem): string | null {
     throw new Refusal(`${SHELL_PACKAGE} is installed in ${work}, for the resident's shell, but its package.json names no ` +
       `${SHELL_BIN} for its daemon. Nothing was written.`);
   }
-  if (sys.which('node') === null) {
+  if (sys.which('node', lastingPath(sys.env.PATH ?? '', sys.bun, sys)) === null) {
     throw new Refusal(`${SHELL_PACKAGE} is installed in ${work}, for the resident's shell, and its daemon runs on Node, ` +
       'but no node is on this PATH. Nothing was written.');
   }
