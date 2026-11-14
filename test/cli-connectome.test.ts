@@ -186,6 +186,16 @@ test('an install\'s own command, run from anywhere, says which install it is, th
     'to put it right.');
 });
 
+test('the start line an install\'s own command gives names the bun first on PATH where it resolves to the bun the command runs on, as the unit service install writes does', async () => {
+  const { root } = install();
+  const written = writeInstallCommand(root, '/usr/bin:/bin');
+  const links = realpathSync(mkdtempSync(join(tmpdir(), 'cli-links-')));
+  made.push(links);
+  symlinkSync(process.execPath, join(links, 'bun'));
+  const ran = await run(written.path, [], root, undefined, links);
+  expect(ran.out).toContain(`If no host is running, have its service start it with \`${join(links, 'bun')} ${join(root, 'start.js')}\``);
+});
+
 test('a PATH entry that leads to the root through a link counts as the root on PATH', () => {
   const { work, root } = install();
   symlinkSync(root, join(work, 'linked-root'));

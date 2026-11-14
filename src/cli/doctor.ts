@@ -2,7 +2,7 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compressionModelOf } from '../framework-strategy.js';
 import { effectiveContextBudgetTokens, effectiveMaxTokens, startingTailTokens } from '../recipe-fit.js';
@@ -296,6 +296,8 @@ function findService(root: string, typed: string, units: ServiceUnits | null, sy
           // read of its environment wouldn't.
           serviceError = `${units.host.file} doesn't run this install's start.js, ${launcher}, right after its Bun, with a ` +
             'recipe after it, as the one service install writes does.';
+        } else if (isAbsolute(read.argv[0]!) && pathState(read.argv[0]!) === 'gone') {
+          serviceError = `${units.host.file} runs ${read.argv[0]}, which isn't there, so the service fails at its next start.`;
         } else {
           service = { units, recipe: read.argv[2]!, work: runsIn, bun: read.argv[0]! };
         }

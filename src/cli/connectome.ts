@@ -8,6 +8,7 @@ import { EXACT_VERSION } from '../update/install.js';
 import {
   KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRecord, type LauncherOps,
 } from '../update/launcher.js';
+import { serviceBun } from '../update/service-bun.js';
 import {
   COMMAND_WAYS, cliWays, statusLines, type UpdateStatus,
 } from '../web/update-text.js';
@@ -478,7 +479,7 @@ function startHost(root: string, then: string): string {
 }
 
 function startCommand(root: string): string {
-  return `${shellWord(process.execPath)} ${shellWord(join(root, ENTRY_POINT))}`;
+  return `${shellWord(serviceBun(process.execPath, process.env.PATH ?? ''))} ${shellWord(join(root, ENTRY_POINT))}`;
 }
 
 function thisRelease(root: string): string {
