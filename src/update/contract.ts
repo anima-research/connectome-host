@@ -98,9 +98,6 @@ export interface InstallPaths {
   /** The last lines a release on trial wrote, if it exited before its commit
    *  (TrialLog, trial-log.ts). */
   trialLog: string;
-  /** An armed restart or Go back a stop dropped, which the next start reads,
-   *  reports and removes (HostUpdate.recordStop). */
-  armedDropped: string;
 }
 
 export function installPaths(root: string): InstallPaths {
@@ -117,7 +114,6 @@ export function installPaths(root: string): InstallPaths {
     copyPrev: join(root, 'copy.prev'),
     setAside: join(root, 'set-aside'),
     trialLog: join(root, 'trial-log.json'),
-    armedDropped: join(root, 'armed-dropped.json'),
   };
 }
 

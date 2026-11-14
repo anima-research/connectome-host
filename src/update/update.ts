@@ -1,10 +1,10 @@
-import { readdirSync, readFileSync, rmSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bunBelowFloor } from '../bun-floor.js';
 import {
   ContractError, askedBy, childrenFilePath, installPaths, isChildEntry, isSwitchQuiesce, lastCopy, readCurrent, readJournal,
-  readRecord, readWithoutWaiting, realOrResolved, releaseDir, SUPERVISED_ENV, unsyncedText, writeMark, writeTextAtomic,
+  readRecord, readWithoutWaiting, realOrResolved, releaseDir, SUPERVISED_ENV, unsyncedText, writeMark,
   type ChildrenFile,
 } from './contract.js';
 import type { ReleaseHere } from './host.js';
@@ -162,53 +162,18 @@ export class HostUpdate {
   private serviceLine = false;
   private armed: ArmedSwitch | null = null;
   private armedDropped: UpdateStatus['armedDropped'] = null;
-  private stopRecord: { path: string; record: Record<string, unknown> & { reason: string } } | null = null;
-  private droppedFile: string | null = null;
   private trying = false;
 
   configure(setup: UpdateSetup): void {
     this.setup = setup;
     this.serviceLine = (setup.env ?? process.env)[SUPERVISED_ENV] === '1';
-    const path = setup.here === null ? null : installPaths(setup.here.root).armedDropped;
-    const taken = path === null ? null : takeDroppedArm(path, (line) => { this.log(line); });
-    this.armedDropped = taken?.dropped ?? null;
-    this.droppedFile = taken?.remove === true ? path : null;
-  }
-
-  recordStop(reason: string): string | null {
-    const armed = this.armed;
-    const here = this.setup?.here ?? null;
-    if (armed === null || here === null) return null;
-    const { to, why, keepData, since } = armed;
-    const dropped = { v: 1, to, why, keepData, since, at: this.now().toISOString(), reason: `the host stopped first (${reason}).` };
-    try {
-      writeTextAtomic(installPaths(here.root).armedDropped, `${JSON.stringify(dropped)}\n`);
-      this.stopRecord = { path: installPaths(here.root).armedDropped, record: dropped };
-    } catch (error) {
-      return `${armedName(armed)} armed at ${since} is dropped by this stop, and the record of that for the next start ` +
-        `couldn't be written: ${said(error)}`;
-    }
-    return `${armedName(armed)} armed at ${since} is dropped by this stop, and the next start's check says so.`;
   }
 
   attachStop(stop: HostStop): void {
     this.stopper = stop;
-    this.removeDroppedRecord();
     const serve = this.serving;
     this.serving = null;
     serve?.();
-  }
-
-  private removeDroppedRecord(): void {
-    const path = this.droppedFile;
-    this.droppedFile = null;
-    if (path === null) return;
-    try {
-      rmSync(path, { force: true });
-    } catch (error) {
-      this.log(`[update] ${path}, the record of an armed switch the last stop dropped, couldn't be removed, so a later ` +
-        `start may say the same again: ${said(error)}`);
-    }
   }
 
   whenStopAttached(serve: () => void): void {
@@ -517,9 +482,7 @@ export class HostUpdate {
     this.armedDropped = null;
     return done(`${armedName(this.armed)} is armed. It begins at the host's first quiet moment, once ${QUIET_MOMENT}, ` +
       `${ASKS_NOBODY}. ${ARMED_RETRY} The host then stops, and its service starts it again on ${request.to}. If the host ` +
-      'stops for any other reason first, nothing stays armed, and from its next start check says the ' +
-      `${request.why === 'go-back' ? 'Go back' : 'restart'} didn't go ahead, with that stop as the reason, though a ` +
-      'crash, a forced kill (SIGKILL) or a record the host can\'t write leaves no word of it. An operator\'s own ' +
+      'stops for any other reason first, nothing stays armed. An operator\'s own ' +
       'Restart or Go back also takes its place. Until the host next starts, or until you arm another, check says when ' +
       'one didn\'t go ahead for another reason, and why. ' +
       `Until it begins, ${TOOL_CANCEL} disarms it. After the restart, ${ways.check} shows whether it committed or ` +
@@ -575,21 +538,8 @@ export class HostUpdate {
     this.disarm(reason);
     const ended = await this.endLeftQuiesce();
     const dropped = this.armedDropped!;
-    if (ended !== null) dropped.reason += this.droppedLeft(ended);
+    if (ended !== null) dropped.reason += leftQuiesced(ended, false, this.hostWays());
     return refused(`${armedName(armed)} didn't go ahead: ${dropped.reason}`);
-  }
-
-  private droppedLeft(ended: { lines: string[]; stuck: number }): string {
-    const left = leftQuiesced(ended, false, this.hostWays());
-    const stop = this.stopRecord;
-    if (left === '' || stop === null) return left;
-    try {
-      writeTextAtomic(stop.path, `${JSON.stringify({ ...stop.record, reason: stop.record.reason + left })}\n`);
-    } catch (error) {
-      this.log(`[update] ${stop.path}, the record of the armed switch this stop dropped, couldn't be written again to add ` +
-        `that ending its quiesce didn't reach every host, so the next start's check won't say so: ${said(error)}`);
-    }
-    return left;
   }
 
   private async endLeftQuiesce(): Promise<{ lines: string[]; stuck: number } | null> {
@@ -836,7 +786,7 @@ export class HostUpdate {
     const ended = await this.endQuiesce();
     this.restart = null;
     if (this.trying && this.armed !== null) {
-      this.disarm((why ?? 'it was called off.').replace(/\.?$/, '.') + this.droppedLeft(ended));
+      this.disarm((why ?? 'it was called off.').replace(/\.?$/, '.') + leftQuiesced(ended, false, this.hostWays()));
     }
     const first = why === null
       ? `${restartName(restart, true)} is called off, and nothing switches.`
@@ -905,36 +855,6 @@ const leftQuiesced = (ended: { lines: string[]; stuck: number }, tryingAgain: bo
     `host's next start${tryingAgain ? ', and so does this restart\'s next try' : ''}.`;
 const NO_WAIT_RAN_OUT = 'No restart\'s wait for turns to end has run out, so there is nothing to wait longer for or ' +
   'stop now.';
-
-function takeDroppedArm(path: string, log: (line: string) => void): { dropped: UpdateStatus['armedDropped']; remove: boolean } | null {
-  let text: string;
-  try {
-    text = readFileSync(path, 'utf-8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      log(`[update] ${path}, the record of an armed switch the last stop dropped, couldn't be read, so check can't say ` +
-        `whether one was: ${said(error)}`);
-    }
-    return null;
-  }
-  let read: Record<string, unknown> | null = null;
-  try {
-    read = JSON.parse(text);
-  } catch {}
-  const { v, to, why, keepData, since, at, reason } = read ?? {};
-  if (typeof v === 'number' && v !== 1) {
-    log(`[update] ${path} holds the record of an armed switch a stop dropped, but its version is ${v}, and this release ` +
-      'reads only version 1, so check can\'t say whether one was. The record stays for a release that reads it.');
-    return { dropped: null, remove: false };
-  }
-  if (v === 1 && typeof to === 'string' && (why === 'update' || why === 'go-back') && typeof keepData === 'boolean' &&
-    typeof since === 'string' && typeof at === 'string' && typeof reason === 'string') {
-    return { dropped: { to, why, keepData, since, at, reason }, remove: true };
-  }
-  log(`[update] ${path} doesn't hold the record of an armed switch the last stop dropped, so check can't say whether ` +
-    'one was.');
-  return { dropped: null, remove: true };
-}
 
 export const hostUpdate = new HostUpdate();
 

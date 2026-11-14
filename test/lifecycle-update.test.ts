@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HostModeStatus, ModuleContext, ToolResult } from '@animalabs/agent-framework';
@@ -388,9 +388,8 @@ test('restart answers at once, says it waits for the host to be quiet and how to
   const answer = await host.call({ action: 'restart' });
   expect(answer.success).toBe(true);
   for (const words of ['0.15.0', 'quiet', QUIET, 'cancel', 'check', RETRY]) expect(text(answer)).toContain(words);
-  expect(text(answer)).toContain('If the host stops for any other reason first, nothing stays armed, and from its next ' +
-    'start check says the restart didn\'t go ahead, with that stop as the reason, though a crash, a forced kill (SIGKILL) ' +
-    'or a record the host can\'t write leaves no word of it. An operator\'s own Restart or Go back also takes its place.');
+  expect(text(answer)).toContain('If the host stops for any other reason first, nothing stays armed. An operator\'s own ' +
+    'Restart or Go back also takes its place.');
   expect(toolDescription(host)).toContain('first quiet moment');
   for (const words of [QUIET, RETRY, 'SIGKILL']) expect(toolDescription(host)).not.toContain(words);
   expect(host.stops).toEqual([]);
@@ -425,87 +424,6 @@ test('at the host\'s first quiet moment, an armed restart writes the switch to t
   expect(readMark(root)).toMatchObject({ to: '0.15.0', why: 'update', connected: ['discord', 'matrix'] });
   expect(host.stops).toHaveLength(1);
   expect(host.update.armedSwitch()).toBeNull();
-});
-
-test('a stop before an armed restart begins is kept for the next start, whose check says it didn\'t go ahead, with the stop as the reason, once', async () => {
-  const { root } = installRunning0141(['0.15.0']);
-  const host = residentHost({ root });
-  await host.armed({ action: 'restart', version: '0.15.0' });
-  const since = host.update.armedSwitch()!.since;
-  expect(host.update.recordStop('SIGTERM'))
-    .toBe(`A restart onto 0.15.0 armed at ${since} is dropped by this stop, and the next start's check says so.`);
-  const next = residentHost({ root });
-  expect(text(await next.call({ action: 'check' }))).toContain(
-    `A restart onto 0.15.0 armed at ${since} didn't go ahead at 2026-10-26T20:00:00.000Z: the host stopped first (SIGTERM).`);
-  expect(existsSync(installPaths(root).armedDropped)).toBe(false);
-  expect(residentHost({ root }).update.status().armedDropped).toBeNull();
-});
-
-test("a start that ends before it serves leaves the dropped switch's record, so the next start that serves names it in check", async () => {
-  const { root } = installRunning0141(['0.15.0']);
-  const host = residentHost({ root });
-  await host.armed({ action: 'restart', version: '0.15.0' });
-  const since = host.update.armedSwitch()!.since;
-  host.update.recordStop('SIGTERM');
-  residentHost({ root, noStop: true });
-  expect(existsSync(installPaths(root).armedDropped)).toBe(true);
-  const next = residentHost({ root });
-  expect(text(await next.call({ action: 'check' }))).toContain(
-    `A restart onto 0.15.0 armed at ${since} didn't go ahead at 2026-10-26T20:00:00.000Z: the host stopped first (SIGTERM).`);
-  expect(existsSync(installPaths(root).armedDropped)).toBe(false);
-});
-
-test('a stop with nothing armed, or the switch\'s own stop, keeps nothing for the next start', async () => {
-  const { root } = installRunning0141(['0.15.0']);
-  const host = residentHost({ root });
-  expect(host.update.recordStop('SIGTERM')).toBeNull();
-  await host.armed({ action: 'restart', version: '0.15.0' });
-  expect((await host.update.runArmed(alwaysQuiet)).done).toBe(true);
-  expect(host.update.recordStop('update: switch to 0.15.0')).toBeNull();
-  expect(existsSync(installPaths(root).armedDropped)).toBe(false);
-});
-
-test('a dropped arm whose record can\'t be written is a line to log, and a record the next start can\'t read is a line in its log and nothing in check', async () => {
-  const { root } = installRunning0141(['0.15.0']);
-  const host = residentHost({ root });
-  await host.armed({ action: 'restart', version: '0.15.0' });
-  chmodSync(root, 0o500);
-  let line: string | null;
-  try {
-    line = host.update.recordStop('SIGINT');
-  } finally {
-    chmodSync(root, 0o700);
-  }
-  expect(line).toMatch(/is dropped by this stop, and the record of that for the next start couldn't be written: /);
-  for (const garbled of ['{"to": "0.15.0", "why": "sideways"', '{"to": "0.15.0", "why": "sideways"}']) {
-    writeFileSync(installPaths(root).armedDropped, garbled);
-    const logged: string[] = [];
-    expect(residentHost({ root, log: (said) => { logged.push(said); } }).update.status().armedDropped).toBeNull();
-    expect(existsSync(installPaths(root).armedDropped)).toBe(false);
-    expect(logged.filter((said) => said.includes(installPaths(root).armedDropped))).toHaveLength(1);
-  }
-  mkdirSync(installPaths(root).armedDropped);
-  const logged: string[] = [];
-  expect(residentHost({ root, log: (said) => { logged.push(said); } }).update.status().armedDropped).toBeNull();
-  expect(logged.filter((said) => said.includes(installPaths(root).armedDropped))).toHaveLength(1);
-});
-
-test('a dropped arm\'s record the next start can\'t remove is still reported, and its log says a later start may report it again', async () => {
-  const { root } = installRunning0141(['0.15.0']);
-  const host = residentHost({ root });
-  await host.armed({ action: 'restart', version: '0.15.0' });
-  host.update.recordStop('SIGTERM');
-  const logged: string[] = [];
-  chmodSync(root, 0o500);
-  let next: ReturnType<typeof residentHost>;
-  try {
-    next = residentHost({ root, log: (said) => { logged.push(said); } });
-  } finally {
-    chmodSync(root, 0o700);
-  }
-  expect(next.update.status().armedDropped).toMatchObject({ to: '0.15.0', reason: 'the host stopped first (SIGTERM).' });
-  expect(existsSync(installPaths(root).armedDropped)).toBe(true);
-  expect(logged.filter((said) => said.includes(installPaths(root).armedDropped))).toHaveLength(1);
 });
 
 test('an arm asked for once the host has begun stopping is refused, and nothing is armed', async () => {
@@ -1788,38 +1706,6 @@ test("a fleet child's operator hold that keeps a switch armed is named once on t
   const without = page(sent.update);
   expect(without).toContain('Holding it then:\n- kid: quiesced by its operator\n');
   expect(without).not.toContain('moving disks');
-});
-
-test('the record of a dropped arm is version 1, and a start takes one of another version as nothing it reads, saying so in its log and leaving it for a release that reads it', async () => {
-  const { root } = installRunning0141(['0.15.0']);
-  const host = residentHost({ root });
-  await host.armed({ action: 'restart', version: '0.15.0' });
-  host.update.recordStop('SIGTERM');
-  const record = JSON.parse(readFileSync(installPaths(root).armedDropped, 'utf-8')) as Record<string, unknown>;
-  expect(record.v).toBe(1);
-  writeFileSync(installPaths(root).armedDropped, JSON.stringify({ ...record, v: 2 }));
-  const logged: string[] = [];
-  expect(residentHost({ root, log: (said) => { logged.push(said); } }).update.status().armedDropped).toBeNull();
-  expect(logged.filter((said) => said.includes(installPaths(root).armedDropped) && said.includes('its version is 2'))).toHaveLength(1);
-  expect(existsSync(installPaths(root).armedDropped)).toBe(true);
-});
-
-test("a stop during a try whose call-off can't resume a fleet child leaves the next start's check saying so", async () => {
-  const { root, dataDir } = installRunning0141(['0.15.0']);
-  let release = () => {};
-  const held = new Promise<void>((done) => { release = done; });
-  const { fleet, child } = fleetChild({ busy: false, held, resumes: false });
-  let stopping = false;
-  const host = residentHost({ root, dataDir, fleet, stopping: () => stopping });
-  await host.armed({ action: 'restart', version: '0.15.0' });
-  const trying = host.update.runArmed(alwaysQuiet);
-  await until(() => child.looks > 0);
-  stopping = true;
-  host.update.recordStop('SIGTERM');
-  release();
-  await trying;
-  expect(statusLines(residentHost({ root, dataDir }).update.status(), COMMAND_WAYS).join('\n')).toContain(
-    "the host stopped first (SIGTERM). Ending the switch's quiesce didn't reach every host: kid: the socket closed.");
 });
 
 test('the restart tool, while an update is armed, names lifecycle--update cancel for an agent given that tool, and who armed it', async () => {

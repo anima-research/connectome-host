@@ -44,7 +44,6 @@ for (const [mode, what] of [
       .toEqual({ code: RESTART_EXIT_CODE, signal: null, output: '' });
     expect(readFileSync(join(dir, 'stopped'), 'utf-8')).toBe('idle');
     expect(readMark(join(dir, 'install'))).toMatchObject({ to: '0.15.0', why: 'update' });
-    expect(existsSync(join(dir, 'install', 'armed-dropped.json'))).toBe(false);
     expect(existsSync(join(dir, 'seen-turn'))).toBe(true);
     expect(existsSync(join(dir, 'quiesced-while-busy'))).toBe(false);
     expect(existsSync(join(dir, 'seen-token'))).toBe(mode === 'token-held-after-turn');
@@ -58,12 +57,10 @@ for (const [mode, what] of [
   }, 20_000);
 }
 
-test('a stop that begins during an armed update\'s quiesce ends the host as that stop does, writes no switch, and keeps the dropped arm for the next start', async () => {
+test('a stop that begins during an armed update\'s quiesce ends the host as that stop does, and writes no switch', async () => {
   const { dir, result, output } = await runFixture('stop-in-quiesce');
   expect(readFileSync(join(dir, 'started'), 'utf-8')).toBe('stop');
   expect({ code: result.code, signal: result.signal, output: result.code === 0 ? '' : output })
     .toEqual({ code: 0, signal: null, output: '' });
   expect(readMark(join(dir, 'install'))).toBeNull();
-  expect(JSON.parse(readFileSync(join(dir, 'install', 'armed-dropped.json'), 'utf-8')))
-    .toMatchObject({ to: '0.15.0', why: 'update', reason: 'the host stopped first (SIGTERM).' });
 }, 20_000);
