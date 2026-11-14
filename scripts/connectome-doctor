@@ -63,10 +63,6 @@ def warn(msg, counts=True):
     WARNINGS.append((msg, counts))
 
 
-def shown(text, width):
-    return text if findings_json else text[:width]
-
-
 def run(cmd, timeout=15, no_match=None, cut_is_end=False):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, encoding="utf-8", errors="replace",
@@ -249,8 +245,7 @@ else:
         enter_ts = parse_iso(ln.split(" ", 1)[0])
         mm = re.search(r'"channelName":"?([^",]*)"?.*?"contentPreview":"((?:[^"\\]|\\.)*)', ln)
         if mm:
-            enter_detail = (f"#{mm.group(1)}: {mm.group(2)}" if findings_json
-                            else f"#{mm.group(1)}: {mm.group(2)[:40]}…")
+            enter_detail = f"#{mm.group(1)}" if findings_json else f"#{mm.group(1)}: {mm.group(2)[:40]}…"
     ln = last_in_dbg(r'gateway:message-create-drop (?!.*"reason":"self-authored")')
     if ln:
         dts = parse_iso(ln.split(" ", 1)[0])
@@ -464,7 +459,9 @@ if llm_files:
         err = resp.get("error") or call.get("error")
         stop = "" if sr is None else f"stop={sr}  "
         if call.get("type") == "error" or err:
-            llm_detail = f"{stop}{C_RED}err={shown(err_text(err), 80) or '(no text)'}{C_OFF}"
+            said = (f"ended in an error, whose text is in {newest}" if findings_json
+                    else f"err={err_text(err)[:80] or '(no text)'}")
+            llm_detail = f"{stop}{C_RED}{said}{C_OFF}"
         else:
             llm_detail = stop.strip() or "answered"
         if sr == "refusal":
@@ -552,11 +549,34 @@ elif last is not None:
 stages.append((DELIVERY, del_ts, del_detail))
 
 
-def file_failures(path, is_failure):
+def file_failures(path, is_failure, show):
     text, why = read_text(path, last=400_000)
     if text is None:
-        return path, None, f"it can't be read ({why})", f"{path} can't be read ({why}), so its failures aren't shown"
-    return path, [ln for ln in text.split("\n") if ln.strip() and is_failure(ln)], None, None
+        return path, None, f"it can't be read ({why})", f"{path} can't be read ({why}), so its failures aren't shown", [], show
+    found = [ln for ln in text.split("\n") if ln.strip() and is_failure(ln)]
+    return path, found, None, None, [line_time(ln) for ln in found], show
+
+
+def line_time(ln):
+    try:
+        record = json.loads(ln)
+    except ValueError:
+        return parse_iso(ln.split(" ", 1)[0])
+    if not isinstance(record, dict):
+        return None
+    stamp = record.get("at", record.get("timestamp"))
+    return parse_iso(stamp) if isinstance(stamp, str) else None
+
+
+def failure_tag(ln):
+    try:
+        record = json.loads(ln)
+    except ValueError:
+        record = None
+    if isinstance(record, dict) and isinstance(record.get("kind"), str):
+        return record["kind"]
+    m = re.search(FAILURE, ln)
+    return m.group(0) if m else "a line of another form"
 
 
 def record_of(ln, kind):
@@ -567,17 +587,22 @@ def record_of(ln, kind):
     return record if isinstance(record, dict) and record.get("kind") == kind else None
 
 
+GC_CLOSE = '"kind":"subscription-gc-close"'
+
+
 def exhausted(ln):
     return record_of(ln, "inference-exhausted")
 
 
 sources = []
 if journal_log:
-    sources.append((f"{unit}'s journal", None if journal_error is not None
-                    else [msg for _, msg in journal if re.search(FAILURE, msg)],
-                    f"it {journal_unread} ({journal_error})", None))
+    failing = [(ts, msg) for ts, msg in journal if re.search(FAILURE, msg)]
+    sources.append((f"{unit}'s journal", None if journal_error is not None else [msg for _, msg in failing],
+                    f"it {journal_unread} ({journal_error})", None, [ts for ts, _ in failing],
+                    f"journalctl --user -u {unit_q} --since @{int(start_ts or 0)} -g {shlex.quote(FAILURE)}"))
 else:
-    sources.append(file_failures(agent_log, lambda ln: re.search(FAILURE, ln)))
+    sources.append(file_failures(agent_log, lambda ln: re.search(FAILURE, ln),
+                                 f"grep -E -- {shlex.quote(FAILURE)} {shlex.quote(agent_log)}"))
 failures_log = os.path.join(logs_dir, "failures.log")
 try:
     os.lstat(failures_log)
@@ -587,10 +612,11 @@ except (FileNotFoundError, NotADirectoryError):
 except OSError:
     failures_there = True
 if failures_there:
-    sources.append(file_failures(failures_log, lambda ln: record_of(ln, "subscription-gc-close") is None))
+    sources.append(file_failures(failures_log, lambda ln: record_of(ln, "subscription-gc-close") is None,
+                                 f"grep -v -F -- {shlex.quote(GC_CLOSE)} {shlex.quote(failures_log)}"))
 times = [ts for ts, msg in journal if "inference-failed" in msg] if journal_log else []
 untimed = False
-for index, (_, found, _, _) in enumerate(sources):
+for index, (_, found, _, _, _, _) in enumerate(sources):
     for ln in found or []:
         record = exhausted(ln)
         if record is not None:
@@ -638,15 +664,25 @@ if globals().get("_last_ingest_triggered") and rec_ts and no_turn_after and not 
          "budget failures / [diagnostics] dump below)")
 
 print()
-for where, found, why, unread in sources:
+for where, found, why, unread, found_at, show in sources:
     if unread is not None:
         warn(unread, counts=False)
     if found is None:
         print(f"recent failures in {where}: {C_YEL}not known: {why}{C_OFF}")
+    elif found and findings_json:
+        print(f"recent failures in {where}:")
+        kinds = {}
+        for ln, ts in zip(found, found_at):
+            count, newest = kinds.get(failure_tag(ln), (0, None))
+            kinds[failure_tag(ln)] = (count + 1, ts if newest is None or (ts is not None and ts > newest) else newest)
+        for tag, (count, newest) in sorted(kinds.items(), key=lambda kind: -(kind[1][1] or 0)):
+            when = f"at {hhmm(newest)}" if newest is not None else "at a time not known"
+            print(f"  {C_RED}{tag}{C_OFF}: {count}, the newest {when}")
+        print(f"  to see them: {show}")
     elif found:
         print(f"recent failures in {where}:")
         for ln in found[-5:]:
-            print(f"  {C_RED}{shown(ln, 150)}{C_OFF}")
+            print(f"  {C_RED}{ln[:150]}{C_OFF}")
         if len(found) > 5:
             print(f"  and {len(found) - 5} more, older")
     else:
