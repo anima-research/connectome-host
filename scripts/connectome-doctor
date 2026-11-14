@@ -459,7 +459,8 @@ if llm_files:
         err = resp.get("error") or call.get("error")
         stop = "" if sr is None else f"stop={sr}  "
         if call.get("type") == "error" or err:
-            said = (f"ended in an error, whose text is in {newest}" if findings_json
+            said = ("ended in an error. Its text can be a model provider's own words, so doctor leaves it out. "
+                    f"It is in {newest}" if findings_json
                     else f"err={err_text(err)[:80] or '(no text)'}")
             llm_detail = f"{stop}{C_RED}{said}{C_OFF}"
         else:
@@ -670,7 +671,7 @@ for where, found, why, unread, found_at, show in sources:
     if found is None:
         print(f"recent failures in {where}: {C_YEL}not known: {why}{C_OFF}")
     elif found and findings_json:
-        print(f"recent failures in {where}:")
+        print(f"recent failures in {where}, their text left out, since it can quote a model provider or a person:")
         kinds = {}
         for ln, ts in zip(found, found_at):
             count, newest = kinds.get(failure_tag(ln), (0, None))

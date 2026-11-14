@@ -384,7 +384,8 @@ describe.skipIf(ladderUnrunnable)('where the ladder reads a unit\'s output', () 
     expect(JSON.parse(line.slice('connectome-doctor findings: '.length))).toContainEqual({
       text: `connectome-test.service's unit file, ${unitFile}, can't be read (Is a directory), so whether it sends the host's ` +
         'output to a file isn\'t known', counts: false });
-    expect(out).toContain('recent failures in connectome-test.service\'s journal:\n  [inference-failed]: 1, the newest at ');
+    expect(out).toContain('recent failures in connectome-test.service\'s journal, their text left out, since it can quote a model provider or a person:\n' +
+      '  [inference-failed]: 1, the newest at ');
   });
 });
 
@@ -1147,12 +1148,14 @@ describe.skipIf(ladderUnrunnable)('what the ladder cuts', () => {
       expect(out).not.toContain(text);
     }
     expect(out).toMatch(/discord event seen .*#general$/m);
-    expect(out).toContain(`ended in an error, whose text is in ${join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl')}`);
-    expect(out).toContain(`recent failures in connectome-test.service's journal:\n  [inference-failed]: 1, the newest at ${stamp(at.now - 20)}\n` +
+    expect(out).toContain('ended in an error. Its text can be a model provider\'s own words, so doctor leaves it out. It is in ' +
+      `${join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl')}\n`);
+    const why = ', their text left out, since it can quote a model provider or a person:';
+    expect(out).toContain(`recent failures in connectome-test.service's journal${why}\n  [inference-failed]: 1, the newest at ${stamp(at.now - 20)}\n` +
       '  to see them: journalctl --user -u connectome-test.service --since @');
     expect(out).toContain(` -g '\\[inference-(failed|hard-down|dropped)\\]|\\[push-event-rejected\\]|Error'\n`);
     const failures = join(at.work, 'logs', 'failures.log');
-    expect(out).toContain(`recent failures in ${failures}:\n  Error: 1, the newest at a time not known\n` +
+    expect(out).toContain(`recent failures in ${failures}${why}\n  Error: 1, the newest at a time not known\n` +
       `  to see them: grep -v -F -- '"kind":"subscription-gc-close"' ${failures}\n`);
   });
 

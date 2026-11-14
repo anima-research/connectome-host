@@ -208,7 +208,9 @@ the working directory):
   prints none of those three. Its inference stage says the call ended in an
   error and names the call log file. Each source of recent failures gives
   each kind's tag, how many, the newest one's time, and the command that
-  shows the lines. Its Discord stage names the channel. `connectome doctor`,
+  shows the lines. The inference stage and each source's heading say that
+  the text is left out, since it can quote a model provider or a person. Its
+  Discord stage names the channel. `connectome doctor`,
   which passes it, replaces each stored value in every line of the ladder's
   it shows, then cuts each line but the gate dump's at 300 characters. With
   `--findings-json` the ladder also prints the findings, once it finishes,
