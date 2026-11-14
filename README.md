@@ -794,7 +794,7 @@ unknown-key warning, like those at the other levels.
 - **TUI, readline and batch modes** — OpenTUI interactive terminal, `--no-tui` for a plain prompt, or piped stdin for a one-shot batch run
 - **Headless mode** — `--headless`: no terminal, JSONL over a Unix socket; how residents run under a supervisor
 - **Self-restart** (opt-in, `modules.selfRestart`) — `lifecycle--restart`: the agent restarts its own host, for an edited recipe or rebuilt code. It happens once the asking turn has ended; the host exits with code 75 for its supervisor to start it again, so enable it only under one that does (launchd `KeepAlive`, systemd `Restart=on-failure`, a fleet parent's `autoRestart`, which is off unless the child's entry sets it, and which counts a self-restart toward its cap of 3 restarts in 60 s). A fleet parent's own self-restart stops its children as any shutdown does, and the restarted parent starts again only its `autoStart` children. `cooldownMinutes` (default 10) spaces restarts out
-- **Self-update** (opt-in, `modules.selfUpdate`) — `lifecycle--update`: the agent's own `/update`. It checks what's out, installs a release beside the running one, and arms a restart onto it or a Go back for the host's first quiet moment. A restart or Go back arms only on a headless host started with `CONNECTOME_SUPERVISED=1`, which `connectome service install` sets only for a service that restarts the host when it exits with 75 and with 1; anywhere else it refuses and says why. The changelog's entry has the rest
+- **Self-update** (opt-in, `modules.selfUpdate`) — `lifecycle--update`: the agent's own `/update`. It checks what's out, installs a release beside the running one, and arms a restart onto it for the host's first quiet moment. A restart arms only on a headless host started with `CONNECTOME_SUPERVISED=1`, which `connectome service install` sets only for a service that restarts the host when it exits with 75 and with 1; anywhere else it refuses and says why. The changelog's entry has the rest
 - **Time-travel** — undo/redo on the agent's window; Chronicle-backed checkpoints, rollback and branch exploration; in the web UI, rolling back to a message and suppressing messages
 - **Session management** — isolated sessions with auto-naming
 - **Ops alerts** — compression quarantine, refusal streaks, inference exhaustion and more surface as `ops:alert` traces, `logs/failures.log` records, and an optional webhook (`CONNECTOME_OPS_WEBHOOK`)
@@ -1055,12 +1055,10 @@ both, or entered it and left it, or left it and entered it again, which
 leave it holding what it held. It gives the
 summary it wrote back as a `/newtopic …` to run: in the TUI, the Web UI and
 headless mode as written, line breaks included, and in the readline and
-piped modes as one line, its line breaks folded to spaces: each line goes
-alone there, except that, where stdin and stdout are both terminals and the
-terminal brackets a paste, a message of several lines pasted into readline
-mode goes to the agent whole, as text. A `/newtopic <text>` on several lines
-needs the TUI or the Web UI, which send a pasted text whole, or headless
-mode's `command`, which carries its text whole.
+piped modes, which read each line as its own input, as one line, its line
+breaks folded to spaces. A `/newtopic <text>` on several lines needs the
+TUI or the Web UI, which send a pasted text whole, or headless mode's
+`command`, which carries its text whole.
 `/checkout`, `/restore` and `/branchto` go through agent-framework's branch
 switch and rollback, which are refused unless every agent sharing the store is
 idle, take every agent's context to the new branch, and are written to the
@@ -1076,8 +1074,8 @@ the window again.
 
 While a session switch is under way, these are refused, each saying
 nothing changed: `/undo`, `/redo`, `/checkout`, `/branchto`, `/newtopic`,
-`/nudge`, `/puppet`, `/session new`, `/session switch`, `/session rename`,
-`/session delete`, `/fleet stop` and `/fleet restart`, and `/checkpoint`, `/restore` and `/budget` given a name or
+`/nudge`, `/puppet`, `/session rename`, `/session delete`, `/fleet stop` and
+`/fleet restart`, and `/checkpoint`, `/restore` and `/budget` given a name or
 a value. The forms of those three that only list or show answer as they do
 without a switch. The same goes for the fleet view's stop and restart keys,
 and for the Web UI's rollback, suppress, fleet stop and restart, host
@@ -1086,9 +1084,9 @@ made for a fleet child is passed on to it, and the child refuses it while
 its own session is switching, and while it is quiesced for a release
 switch. Once the switch has stopped the old
 session's framework, the Web UI answers "host not ready" until the next one
-is installed, as before. `/session new` and `/session switch` also start no
-switch while one of the commands above, given earlier, or one of these
-actions on this host is still running.
+is installed, as before. `/session new` and `/session switch` start no
+switch while one is under way, or while one of the commands above, given
+earlier, or one of these actions on this host is still running.
 
 ## TUI controls
 

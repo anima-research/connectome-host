@@ -5,7 +5,7 @@ import {
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { ContractError, RESTART_EXIT_CODE, SUPERVISED_ENV, writeTextAtomic } from '../update/contract.js';
+import { ContractError, RESTART_EXIT_CODE, SUPERVISED_ENV, installPaths, writeTextAtomic } from '../update/contract.js';
 import { lingerOf } from '../setup/linger.js';
 import { StoredSecrets, envForm, envLink, readEnvFile, writeEnvValue } from '../setup/secrets.js';
 import { readRecipeDocument } from '../recipe-document.js';
@@ -191,7 +191,22 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     throw new Refusal(`a service's name comes from its working directory's name, and ${basename(work)} has no letter ` +
       `or digit to make one from, so nothing was written. Set this resident up again in a directory whose name has one.`);
   }
-  const dataDir = dataDirOf(root);
+  const dataDir = plain(dataDirOf(root), 'DATA_DIR');
+  let data: Stats | undefined;
+  try {
+    data = statSync(dataDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Refusal(`the data directory ${dataDir} can't be read: ${errorText(error)}. Nothing was written.`);
+    }
+  }
+  if (data === undefined || !data.isDirectory()) {
+    const record = installPaths(root).install;
+    throw new Refusal(`${record} names ${dataDir} as its data directory, and no directory is there, as after the ` +
+      'install is moved. A host started now would begin with an empty one, so nothing was written. Put that ' +
+      `directory back, or write its present absolute path into ${record} as dataDir, or make an empty directory ` +
+      'there to start the resident with no memory. Then repeat this service install command with the same recipe.');
+  }
   let raw: unknown;
   try {
     raw = await sys.readRecipe(recipe);

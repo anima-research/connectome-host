@@ -257,8 +257,7 @@ export function switchQuiesceRefusalFor(
       'still be under way or may have ended and left this quiesce behind, and a quiesce asked for now would be taken as ' +
       'the switch\'s and end with it. Nothing changed; quiesce again once the switch has gone ahead, or, if it has ' +
       'ended and left this quiesce behind, clicking "⏸ quiesced" in the top bar ends it, and then quiesce again. That ' +
-      'click also ends it while the switch waits, and that try then doesn\'t go ahead; during the switch\'s last look ' +
-      'this host holds, and while the install\'s host runs, the click is refused until the switch is decided.');
+      'click also ends it while the switch waits, and that try then doesn\'t go ahead.');
   }
   return refusalReply(message, (what) => `${what} refused: this host is quiesced for an update's switch right now, and ` +
     'a quiesce asked for now would be taken as the switch\'s and end with it. Nothing changed; quiesce again once the ' +

@@ -33,8 +33,3 @@ test('a fleet child mid-turn answers the switch\'s quiesce undrained, naming the
   expect(answer.data).toMatchObject({ drained: false, activeTurnAgents: ['fixture'] });
   expect((answer.data as Record<string, unknown>).inFlight).toBeUndefined();
 }, 20_000);
-test("a quiesced fleet child answers the switch's last look over its socket holding, mid-turn too", async () => {
-  const answer = await answerToQuiesce('mid-turn', [], { last: true });
-  expect(answer.ok).toBe(true);
-  expect(answer.data).toMatchObject({ answered: true, drained: false, activeTurnAgents: ['fixture'], held: true });
-}, 20_000);

@@ -763,8 +763,6 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     app.stopping = true;
     const switchUnderWay = app.switching ? app.switchSettled : undefined;
     log(`shutdown: ${reason}`);
-    const dropped = hostUpdate.recordStop(reason);
-    if (dropped !== null) log(dropped);
     emit({ type: 'lifecycle', phase: 'exiting', reason });
 
     await new Promise((r) => setTimeout(r, EXITING_FLUSH_MS));

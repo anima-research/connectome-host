@@ -75,14 +75,13 @@ import { LifecycleModule } from './modules/lifecycle-module.js';
 import {
   REFUSED_TURN, SETUP_MODULE, SetupModule, lastReplyRefused, openingMessage, showsItself, type SecretAsker,
 } from './modules/setup-module.js';
-import { bracketedPaste } from './readline-paste.js';
 import { speakerOf } from './speaker.js';
 import { askHidden, holdsAnswer } from './setup/terminal-secret.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
 import { serversForRecipe, composeMcplChildEnv, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
-import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, batchEchoLine, BATCH_MCPL_LOG_NOTE, batchEndNotice } from './batch-mode.js';
+import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, batchEchoLine, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
 import { createPipedTurns, switchFollowing, traceFollower } from './piped-turns.js';
 import { openReadlineTerminal, type ReadlineTerminal, type ShownPrompt } from './readline-terminal.js';
 import { opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts.js';
@@ -94,7 +93,6 @@ import { installCommandAt } from './update/typed-command.js';
 import { childrenFilePath, trialPlaces } from './update/contract.js';
 import { hostUpdate, hostVersionOf } from './update/update.js';
 import { armTrialLog } from './update/trial-log.js';
-import { gateResume } from './update/resume-gate.js';
 import { PRIVATE_DIR_MODE } from './update/data-swap.js';
 import { HOST_PACKAGE_JSON } from './bun-floor-check.js';
 import { switchLeftForStop, switchSessionSteps } from './session-switch.js';
@@ -557,7 +555,6 @@ agents: [agentConfig],
     inferenceBounds: recipe.inferenceBounds,
     toolResultInlineMaxChars: recipe.toolResultInlineMaxChars,
   });
-  gateResume(framework);
 
   // An agent-framework without the heartbeat ignores modules.heartbeat: the
   // agent then has no heartbeat or reminders at all, which is said here.
@@ -802,7 +799,7 @@ async function runPiped(app: AppContext) {
   async function processLine(line: string): Promise<boolean> {
     const trimmed = line.trim();
     if (!trimmed) return false;
-    if (trimmed.startsWith('/') && !trimmed.includes('\n')) {
+    if (trimmed.startsWith('/')) {
       const result = handleCommand(trimmed, app, { lineByLine: true });
       if (result.quit) return true;
       for (const l of result.lines) console.log(l.text);
@@ -860,8 +857,6 @@ async function runPiped(app: AppContext) {
       console.log(`> ${batchEchoLine(line)}`);
       if (await processLine(line)) break;
     }
-    const endNotice = batchEndNotice(turns);
-    if (endNotice !== null) console.log(endNotice);
     app.stopping = true;
     console.log('Done.');
     const serverIds = app.framework.listMcplServers().map((s) => s.id);
@@ -912,8 +907,7 @@ async function runPiped(app: AppContext) {
       ask: async (name, purpose) => {
         const release = turns.holdCaps();
         try {
-          const answer = await askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone stores nothing)`,
-            paste ?? undefined);
+          const answer = await askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone stores nothing)`);
           const given = answer.split('\n').map((line) => line.trim()).filter((line) => line !== '');
           for (const waiting of waitingLines) {
             if (holdsAnswer(waiting.line, given)) waiting.holdsHidden = true;
@@ -926,11 +920,6 @@ async function runPiped(app: AppContext) {
     };
     console.log('connectome-host (readline mode). Type /help for commands.');
     if (terminal.logging()) terminal.say(`The host's diagnostics go to ${terminal.logPath}, not to this terminal.`);
-    const paste = process.stdin.isTTY && process.stdout.isTTY
-      ? bracketedPaste(rl, process.stdin, process.stdout, (count) => {
-        terminal.say(`\x1b[2m${count === 1 ? '1 line pasted: Enter sends it.' : `${count} lines pasted: Enter sends them.`}\x1b[22m`);
-      })
-      : null;
     let closed = false;
     rl.on('close', () => {
       terminalAsker = null;
@@ -938,12 +927,10 @@ async function runPiped(app: AppContext) {
       turns.endAll();
       conversationEnded = true;
       atPrompt = false;
-      const pasted = paste?.end() ?? 0;
       if (linesWaiting > 0) {
         const lines = linesWaiting === 1 ? 'A line you typed' : `${linesWaiting} lines you typed`;
         say(`${lines} hadn't gone in to the agent yet, and won't now.`);
       }
-      if (pasted > 0) say(pasted === 1 ? 'The line you pasted wasn\'t sent.' : `The ${pasted} lines you pasted weren't sent.`);
     });
     const ended = new Promise<void>((done) => rl.once('close', () => done()));
     let unanswered = 0;
@@ -979,13 +966,11 @@ async function runPiped(app: AppContext) {
       if (switched && setup) await opening('switch');
     };
     rl.on('line', async (line: string) => {
-      const message = paste === null ? line : paste.take(line);
-      if (message === null) return;
       atPrompt = false;
       unanswered++;
       let quit = false;
       try {
-        quit = await processLine(message);
+        quit = await processLine(line);
       } catch (error) {
         say(`That line stopped at an error, and nothing after the error ran: ${error instanceof Error ? error.message : String(error)}`);
       } finally {

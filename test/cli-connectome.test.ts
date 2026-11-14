@@ -706,7 +706,7 @@ test('bare gives a reason the host stored, such as an armed try\'s, as the host 
   await fakeHost(data, (message, reply) => {
     if (message.type === 'panel-request' && message.op === 'health') {
       reply({ type: 'panel-response', corrId: message.corrId, op: 'health', ok: true, data: { update: { ...STATUS, armed: {
-        to: '0.15.0', why: 'update', keepData: true, since: '2026-10-26T06:00:00.000Z', by: 'resident',
+        to: '0.15.0', since: '2026-10-26T06:00:00.000Z', by: 'resident',
         lastTry: { at: '2026-10-26T06:10:00.000Z', waited, hosts: [] },
       } } } });
     }
@@ -1313,7 +1313,7 @@ test('update back with no host answering, whose lock stays held, gives the launc
     const ran = await updating(root, ['back', 'keep', '0.13.0'],
       { ...machineOps(), now: () => new Date((clock += 61_000)), sleep: () => {} });
     expect(ran.status).toBe(1);
-    expect(ran.err).toContain(`If that process is this install's own host, it goes back with \`${path} update back\``);
+    expect(ran.err).toContain(`A host that's up goes back with \`${path} update back\``);
     expect(ran.err).not.toContain('/update');
   } finally {
     holder.kill('SIGKILL');

@@ -4,15 +4,9 @@ import { isSwitchQuiesce, switchQuiesceReason } from '../src/update/contract.js'
 import {
   type QuiesceFramework, type SwitchFleet, type SwitchRequest, answerSwitchRequest, quiesceForSwitch, resumeAfterSwitchQuiesce, resumeIfSwitch,
 } from '../src/update/quiesce.js';
-import * as quiesce from '../src/update/quiesce.js';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 const TIMER_LIMIT_LESS_ANSWER_MARGIN = 2 ** 31 - 1 - 10_000;
 const SWITCH = switchQuiesceReason('0.14.0');
-const MARK = '/srv/resident/.connectome/update/mark.json';
-const LAST_LOOK_SERVING = "it was serving at the switch's last look, which quiesces nothing";
 
 function fakeFramework(options: {
   quiesced?: boolean; reason?: string; holders?: string[]; drainAfter?: number; resumeFails?: 'before' | 'after'; quiesceFails?: Error;
@@ -64,7 +58,7 @@ function fakeFleet(
   const asked: Array<{ name: string; request: SwitchRequest; timeoutMs: number }> = [];
   const running = new Map(Object.entries(answers));
   const fleet: SwitchFleet = {
-    runningChildren: () => [...running.keys()].map((name) => ({ name, incarnation: `${name}@1` })),
+    runningChildren: () => [...running.keys()].map((name) => ({ name })),
     requestSwitch: async (name, request, timeoutMs) => {
       asked.push({ name, request, timeoutMs });
       for (const [laterName, answer] of Object.entries(later)) if (!running.has(laterName)) running.set(laterName, answer);
@@ -74,7 +68,7 @@ function fakeFleet(
   return { fleet, asked, running };
 }
 
-const drained = (holders: string[] = []) => () => ({ ok: true, data: { drained: true, activeTurnAgents: holders, backgroundScripts: 0, held: true } });
+const drained = (holders: string[] = []) => () => ({ ok: true, data: { drained: true, activeTurnAgents: holders, backgroundScripts: 0 } });
 
 function held<T = void>(): { promise: Promise<T>; settle: (value: T) => void } {
   let settle!: (value: T) => void;
@@ -102,19 +96,17 @@ describe('quiesceForSwitch', () => {
     const { framework, calls } = fakeFramework({ holders: [] });
     const { fleet, asked } = fakeFleet({
       kid: drained(),
-      busy: () => ({ ok: true, data: { drained: false, activeTurnAgents: ['helper'], backgroundScripts: 3, held: true } }),
+      busy: () => ({ ok: true, data: { drained: false, activeTurnAgents: ['helper'], backgroundScripts: 3 } }),
       mute: () => ({ ok: false, error: "the switch's quiesce timed out" }),
     });
-    const result = await quiesceForSwitch(framework, fleet, { to: '0.14.0', mark: MARK, timeoutMs: 2_000 });
-    const lastLook = { look: result.look.look, mark: MARK, parent: process.pid };
+    const result = await quiesceForSwitch(framework, fleet, { to: '0.14.0', timeoutMs: 2_000 });
     expect(calls).toEqual([`quiesce ${SWITCH} for 2000 ms`]);
     expect(asked.map((a) => [a.name, a.request, a.timeoutMs])).toEqual([
       ...['kid', 'busy', 'mute'].map((name) => [name, { op: 'quiesce', to: '0.14.0', waitMs: 2_000 }, 12_000]),
-      ...['kid', 'busy', 'mute'].map((name) => [name, { op: 'quiesce', to: '0.14.0', waitMs: 0, last: lastLook }, 10_000]),
+      ...['kid', 'busy', 'mute'].map((name) => [name, { op: 'quiesce', to: '0.14.0', waitMs: 0 }, 10_000]),
     ]);
     expect(result).toEqual({
       drained: false,
-      look: { look: expect.any(String), children: ['kid', 'busy', 'mute'].map((name) => ({ name, incarnation: `${name}@1` })) },
       hosts: [
         { host: 'this host', answered: true, drained: true, activeTurnAgents: [], backgroundScripts: 1 },
         { host: 'kid', answered: true, drained: true, activeTurnAgents: [], backgroundScripts: 0 },
@@ -131,7 +123,7 @@ describe('quiesceForSwitch', () => {
     const { fleet, asked } = fakeFleet({
       a: (times) => (times === 1 ? answers.a.promise : drained()()), b: (times) => (times === 1 ? answers.b.promise : drained()()),
     });
-    const quiet = quiesceForSwitch(framework, fleet, { to: '0.14.0', mark: MARK, timeoutMs: 1_000 });
+    const quiet = quiesceForSwitch(framework, fleet, { to: '0.14.0', timeoutMs: 1_000 });
     await until(() => entered() === 1 && asked.length === 2, "this host's quiesce is entered and both children are asked");
     for (const child of [answers.a, answers.b]) child.settle(drained()());
     own.settle();
@@ -140,21 +132,21 @@ describe('quiesceForSwitch', () => {
 
   test("an undrained host, or a child that didn't answer, keeps the whole from draining", async () => {
     const busyHost = fakeFramework({ drainAfter: 1_000_000, holders: ['agent'] });
-    expect((await quiesceForSwitch(busyHost.framework, fakeFleet({ kid: drained() }).fleet, { to: '0.14.0', mark: MARK, timeoutMs: 0 })).drained).toBe(false);
+    expect((await quiesceForSwitch(busyHost.framework, fakeFleet({ kid: drained() }).fleet, { to: '0.14.0', timeoutMs: 0 })).drained).toBe(false);
     const mute = fakeFleet({ kid: drained(), mute: () => ({ ok: false, error: 'no answer' }) });
-    expect((await quiesceForSwitch(fakeFramework().framework, mute.fleet, { to: '0.14.0', mark: MARK, timeoutMs: 0 })).drained).toBe(false);
+    expect((await quiesceForSwitch(fakeFramework().framework, mute.fleet, { to: '0.14.0', timeoutMs: 0 })).drained).toBe(false);
   });
 
   test('drains when this host and every child answer drained', async () => {
     const { framework } = fakeFramework();
     const { fleet } = fakeFleet({ kid: drained() });
-    expect((await quiesceForSwitch(framework, fleet, { to: '0.14.0', mark: MARK, timeoutMs: 1_000 })).drained).toBe(true);
-    expect((await quiesceForSwitch(framework, null, { to: '0.14.0', mark: MARK, timeoutMs: 1_000 })).drained).toBe(true);
+    expect((await quiesceForSwitch(framework, fleet, { to: '0.14.0', timeoutMs: 1_000 })).drained).toBe(true);
+    expect((await quiesceForSwitch(framework, null, { to: '0.14.0', timeoutMs: 1_000 })).drained).toBe(true);
   });
 
   test('a host quiesced already keeps its reason and is waited on until it drains', async () => {
     const { framework } = fakeFramework({ quiesced: true, reason: 'operator: maintenance', drainAfter: 3 });
-    const result = await quiesceForSwitch(framework, null, { to: '0.14.0', mark: MARK, timeoutMs: 5_000 });
+    const result = await quiesceForSwitch(framework, null, { to: '0.14.0', timeoutMs: 5_000 });
     expect(result.drained).toBe(true);
     expect(framework.getHostModeStatus().reason).toBe('operator: maintenance');
   });
@@ -163,7 +155,7 @@ describe('quiesceForSwitch', () => {
     const { framework, mode } = fakeFramework({ drainAfter: 1_000_000, holders: ['agent'] });
     for (const round of [1, 2]) {
       const started = Date.now();
-      const result = await quiesceForSwitch(framework, null, { to: '0.14.0', mark: MARK, timeoutMs: 500 });
+      const result = await quiesceForSwitch(framework, null, { to: '0.14.0', timeoutMs: 500 });
       expect(Date.now() - started, `round ${round}`).toBeGreaterThanOrEqual(480);
       expect(result.hosts[0]).toMatchObject({ drained: false, activeTurnAgents: ['agent'] });
       expect(result.drained).toBe(false);
@@ -173,41 +165,39 @@ describe('quiesceForSwitch', () => {
 
   test("a host whose quiesce is ended while the switch waits can't be counted, and the wait stops on it", async () => {
     const { framework } = fakeFramework({ drainAfter: 1_000_000, holders: ['agent'], resumeBy: 2 });
-    const result = await quiesceForSwitch(framework, null, { to: '0.14.0', mark: MARK, timeoutMs: 600_000 });
+    const result = await quiesceForSwitch(framework, null, { to: '0.14.0', timeoutMs: 600_000 });
     expect(result).toEqual({
       drained: false,
-      look: { look: expect.any(String), children: [] },
       hosts: [{ host: 'this host', answered: false, why: "its quiesce was ended during the switch's quiesce, so it was serving" }],
     });
   });
 
-  test("a child that appears or connects while this host still waits is asked at the last look, which quiesces nothing, so it counts as serving and the whole doesn't drain", async () => {
+  test('a child that appears or connects while this host still waits is quiesced at the look, and counted as it is then', async () => {
     const own = held();
-    const serving = { ok: true, data: { host: 'this host', answered: false, why: LAST_LOOK_SERVING } };
     const { framework, entered } = fakeFramework({ quiesceWaits: own.promise });
     const { fleet, asked } = fakeFleet(
-      { kid: drained(), unconnected: (times) => (times === 1 ? { ok: false, error: "child 'unconnected' is still starting" } : serving) },
-      { late: () => serving },
+      { kid: drained(), unconnected: (times) => (times === 1 ? { ok: false, error: "child 'unconnected' is still starting" } : drained()()) },
+      { late: drained(['late-agent']) },
     );
-    const quiet = quiesceForSwitch(framework, fleet, { to: '0.14.0', mark: MARK, timeoutMs: 5_000 });
+    const quiet = quiesceForSwitch(framework, fleet, { to: '0.14.0', timeoutMs: 5_000 });
     await until(() => entered() === 1 && asked.length === 2, 'the first two children are asked while this host waits');
     own.settle();
     const result = await quiet;
-    expect(asked.map((a) => [a.name, (a.request as { waitMs: number }).waitMs, 'last' in a.request])).toEqual([
-      ['kid', 5_000, false], ['unconnected', 5_000, false], ['kid', 0, true], ['unconnected', 0, true], ['late', 0, true],
+    expect(asked.map((a) => [a.name, (a.request as { waitMs: number }).waitMs])).toEqual([
+      ['kid', 5_000], ['unconnected', 5_000], ['kid', 0], ['unconnected', 0], ['late', 0],
     ]);
     expect(result.hosts.slice(1)).toEqual([
       { host: 'kid', answered: true, drained: true, activeTurnAgents: [], backgroundScripts: 0 },
-      { host: 'unconnected', answered: false, why: LAST_LOOK_SERVING },
-      { host: 'late', answered: false, why: LAST_LOOK_SERVING },
+      { host: 'unconnected', answered: true, drained: true, activeTurnAgents: [], backgroundScripts: 0 },
+      { host: 'late', answered: true, drained: true, activeTurnAgents: ['late-agent'], backgroundScripts: 0 },
     ]);
-    expect(result.drained).toBe(false);
+    expect(result.drained).toBe(true);
   });
 
   test("an answer from the wait that no longer holds at the look isn't counted, for a child or for this host", async () => {
-    const busy = { ok: true, data: { drained: false, activeTurnAgents: ['kid-agent'], backgroundScripts: 0, held: true } };
+    const busy = { ok: true, data: { drained: false, activeTurnAgents: ['kid-agent'], backgroundScripts: 0 } };
     const { fleet } = fakeFleet({ kid: (times) => (times === 1 ? drained()() : busy) });
-    const child = await quiesceForSwitch(fakeFramework().framework, fleet, { to: '0.14.0', mark: MARK, timeoutMs: 1_000 });
+    const child = await quiesceForSwitch(fakeFramework().framework, fleet, { to: '0.14.0', timeoutMs: 1_000 });
     expect(child.hosts[1]).toEqual({ host: 'kid', answered: true, drained: false, activeTurnAgents: ['kid-agent'], backgroundScripts: 0 });
     expect(child.drained).toBe(false);
 
@@ -215,7 +205,7 @@ describe('quiesceForSwitch', () => {
       const answer = held<Answer>();
       const host = fakeFramework();
       const late = fakeFleet({ kid: (times) => (times === during ? answer.promise : drained()()) });
-      const quiet = quiesceForSwitch(host.framework, late.fleet, { to: '0.14.0', mark: MARK, timeoutMs: 1_000 });
+      const quiet = quiesceForSwitch(host.framework, late.fleet, { to: '0.14.0', timeoutMs: 1_000 });
       await until(() => host.calls.length === 1 && late.asked.length === during, "this host has quiesced and the child's answer is out");
       await host.framework.resume();
       answer.settle(drained()());
@@ -230,7 +220,7 @@ describe('quiesceForSwitch', () => {
     async function look(host: ReturnType<typeof fakeFramework>, meanwhile: (kids: ReturnType<typeof fakeFleet>) => Promise<void> | void) {
       const answer = held<Answer>();
       const kids = fakeFleet({ kid: (times) => (times === 2 ? answer.promise : drained()()) });
-      const quiet = quiesceForSwitch(host.framework, kids.fleet, { to: '0.14.0', mark: MARK, timeoutMs: 0 });
+      const quiet = quiesceForSwitch(host.framework, kids.fleet, { to: '0.14.0', timeoutMs: 0 });
       await until(() => kids.asked.length === 2, "the child's answer to the look is out");
       await meanwhile(kids);
       answer.settle(drained()());
@@ -272,7 +262,7 @@ describe('quiesceForSwitch', () => {
       const host = fakeFramework();
       const answers = [held<Answer>(), held<Answer>()];
       const kids = fakeFleet({ kid: (times) => answers[times - 1]!.promise });
-      const quiet = quiesceForSwitch(host.framework, kids.fleet, { to: '0.14.0', mark: MARK, timeoutMs: 1_000 });
+      const quiet = quiesceForSwitch(host.framework, kids.fleet, { to: '0.14.0', timeoutMs: 1_000 });
       await until(() => host.calls.length === 1 && kids.asked.length === 1, "this host has quiesced and the child's answer is out");
       await host.framework.resume();
       answers[0]!.settle(drained()());
@@ -290,7 +280,7 @@ describe('quiesceForSwitch', () => {
     const longest = TIMER_LIMIT_LESS_ANSWER_MARGIN;
     const { framework, calls } = fakeFramework();
     const { fleet, asked } = fakeFleet({ kid: drained() });
-    expect((await quiesceForSwitch(framework, fleet, { to: '0.14.0', mark: MARK, timeoutMs: longest })).drained).toBe(true);
+    expect((await quiesceForSwitch(framework, fleet, { to: '0.14.0', timeoutMs: longest })).drained).toBe(true);
     expect(calls).toEqual([`quiesce ${SWITCH} for ${longest} ms`]);
     expect(asked[0]!.timeoutMs).toBe(2 ** 31 - 1);
     expect(await answerSwitchRequest(fakeFramework().framework, { op: 'quiesce', to: '0.14.0', waitMs: longest })).toMatchObject({ answered: true });
@@ -300,7 +290,7 @@ describe('quiesceForSwitch', () => {
     for (const timeoutMs of [Number.POSITIVE_INFINITY, Number.NaN, -1, 2 ** 31, TIMER_LIMIT_LESS_ANSWER_MARGIN + 1]) {
       const { framework, entered } = fakeFramework();
       const { fleet, asked } = fakeFleet({ kid: drained() });
-      await expect(quiesceForSwitch(framework, fleet, { to: '0.14.0', mark: MARK, timeoutMs }), String(timeoutMs)).rejects.toThrow(RangeError);
+      await expect(quiesceForSwitch(framework, fleet, { to: '0.14.0', timeoutMs }), String(timeoutMs)).rejects.toThrow(RangeError);
       expect(entered()).toBe(0);
       expect(asked).toEqual([]);
     }
@@ -311,7 +301,7 @@ describe('quiesceForSwitch', () => {
     const { framework, entered } = fakeFramework({ quiesceFails: new Error("the deferred writes can't reach disk") });
     const { fleet, asked } = fakeFleet({ kid: () => answer.promise });
     let thrown = false;
-    const quiet = quiesceForSwitch(framework, fleet, { to: '0.14.0', mark: MARK, timeoutMs: 1_000 }).catch((error: unknown) => { thrown = true; throw error; });
+    const quiet = quiesceForSwitch(framework, fleet, { to: '0.14.0', timeoutMs: 1_000 }).catch((error: unknown) => { thrown = true; throw error; });
     await until(() => entered() === 1 && asked.length === 1, "this host's quiesce has failed and the child's answer is out");
     // A tick lets a rejection already made reach the catch above.
     await Bun.sleep(0);
@@ -332,7 +322,7 @@ describe('quiesceForSwitch', () => {
       { drained: true, activeTurnAgents: [], backgroundScripts: 0.5 },
     ]) {
       const { fleet } = fakeFleet({ odd: () => ({ ok: true, data }) });
-      expect((await quiesceForSwitch(fakeFramework().framework, fleet, { to: '0.14.0', mark: MARK, timeoutMs: 0 })).hosts[1])
+      expect((await quiesceForSwitch(fakeFramework().framework, fleet, { to: '0.14.0', timeoutMs: 0 })).hosts[1])
         .toEqual({ host: 'odd', answered: false, why });
     }
   });
@@ -342,7 +332,7 @@ describe('quiesceForSwitch', () => {
       serving: () => ({ ok: true, data: { host: 'this host', answered: false, why: "its quiesce was ended during the switch's quiesce, so it was serving" } }),
       silent: () => ({ ok: true, data: { answered: false } }),
     });
-    expect((await quiesceForSwitch(fakeFramework().framework, fleet, { to: '0.14.0', mark: MARK, timeoutMs: 0 })).hosts.slice(1)).toEqual([
+    expect((await quiesceForSwitch(fakeFramework().framework, fleet, { to: '0.14.0', timeoutMs: 0 })).hosts.slice(1)).toEqual([
       { host: 'serving', answered: false, why: "its quiesce was ended during the switch's quiesce, so it was serving" },
       { host: 'silent', answered: false, why: "its answer doesn't say why" },
     ]);
@@ -455,274 +445,4 @@ describe("a fleet child's answer", () => {
       "host does: fleet--restart of it starts it on the host's release.",
     );
   });
-});
-
-const HOLDING = "the release switch's last look has begun here, so nothing here changes until the install's host decides it. " +
-  'If it calls the switch off, Resume works here again; if the switch goes ahead, this host stops. Where the install\'s host ' +
-  "can't reach this host, stopping the install's host or restarting this one ends the wait.";
-const BEGUN = "the release switch has begun, and it finishes at the install's host's next start.";
-const lastLookOf = (look: string, mark = MARK, parent = process.pid) => ({ op: 'quiesce', to: '0.14.0', waitMs: 0, last: { look, mark, parent } });
-
-async function deadPid(): Promise<number> {
-  const gone = Bun.spawn([process.execPath, '-e', '']);
-  await gone.exited;
-  return gone.pid;
-}
-
-describe("the switch's last look", () => {
-  test("the look after the wait is the last: it carries a new id each time, the mark's path and this process's pid, and the wait's look carries none", async () => {
-    const { fleet, asked } = fakeFleet({ kid: drained() });
-    const first = await quiesceForSwitch(fakeFramework().framework, fleet, { to: '0.14.0', mark: MARK, timeoutMs: 0 });
-    const second = await quiesceForSwitch(fakeFramework().framework, fleet, { to: '0.14.0', mark: MARK, timeoutMs: 0 });
-    expect(asked.map((a) => a.request)).toEqual([
-      { op: 'quiesce', to: '0.14.0', waitMs: 0 }, lastLookOf(first.look.look),
-      { op: 'quiesce', to: '0.14.0', waitMs: 0 }, lastLookOf(second.look.look),
-    ]);
-    expect(first.look.look).not.toBe(second.look.look);
-    expect(first.look.children).toEqual([{ name: 'kid', incarnation: 'kid@1' }]);
-  });
-
-  test("a child's answer to the last look that doesn't say it holds counts as no answer, since it may run an older release", async () => {
-    const { fleet } = fakeFleet({ old: () => ({ ok: true, data: { drained: true, activeTurnAgents: [], backgroundScripts: 0 } }) });
-    const result = await quiesceForSwitch(fakeFramework().framework, fleet, { to: '0.14.0', mark: MARK, timeoutMs: 0 });
-    expect(result.hosts[1]).toEqual({
-      host: 'old', answered: false,
-      why: "its answer to the switch's last look doesn't say that it holds, so it may run another release than the install's " +
-        "host does: fleet--restart of it starts it on the host's release",
-    });
-    expect(result.drained).toBe(false);
-  });
-
-  test("a look that asks no child at all records none, so a child the fleet starts later shows as a change", async () => {
-    const result = await quiesceForSwitch(fakeFramework().framework, null, { to: '0.14.0', mark: MARK, timeoutMs: 0 });
-    expect(result.look.children).toEqual([]);
-    const { fleet } = fakeFleet({ late: drained() });
-    expect(quiesce.fleetChanged(fleet, result.look)).toBe("late started during the switch's last look");
-  });
-
-  test('the fleet is unchanged only while every child the last look asked runs as the same incarnation, and no other has started', () => {
-    const look = { look: 'look-1', children: [{ name: 'a', incarnation: 'a@1' }, { name: 'b', incarnation: 'b@1' }] };
-    const fleetOf = (children: Array<{ name: string; incarnation: string }>) =>
-      ({ runningChildren: () => children, requestSwitch: async () => ({ ok: true }) }) as SwitchFleet;
-    expect(quiesce.fleetChanged(fleetOf(look.children), look)).toBeNull();
-    expect(quiesce.fleetChanged(fleetOf([{ name: 'a', incarnation: 'a@1' }, { name: 'b', incarnation: 'b@2' }]), look))
-      .toBe("b started again during the switch's last look");
-    expect(quiesce.fleetChanged(fleetOf([{ name: 'a', incarnation: 'a@1' }]), look)).toBe("b stopped during the switch's last look");
-    expect(quiesce.fleetChanged(fleetOf([...look.children, { name: 'c', incarnation: 'c@1' }]), look))
-      .toBe("c started during the switch's last look");
-    expect(quiesce.fleetChanged(null, look)).toBe("a stopped during the switch's last look; b stopped during the switch's last look");
-  });
-
-  test("stop now's own last look asks every running child at once, with no wait, and holds them", async () => {
-    const { fleet, asked } = fakeFleet({ kid: drained(), busy: () => ({ ok: true, data: { drained: false, activeTurnAgents: ['bob'], backgroundScripts: 0, held: true } }) });
-    const taken = await quiesce.takeLastLook(fleet, '0.14.0', MARK);
-    expect(asked.map((a) => [a.name, a.request, a.timeoutMs])).toEqual([
-      ['kid', lastLookOf(taken.look.look), 10_000], ['busy', lastLookOf(taken.look.look), 10_000],
-    ]);
-    expect(taken.hosts).toEqual([
-      { host: 'kid', answered: true, drained: true, activeTurnAgents: [], backgroundScripts: 0 },
-      { host: 'busy', answered: true, drained: false, activeTurnAgents: ['bob'], backgroundScripts: 0 },
-    ]);
-  });
-
-  test("not yet is sent to every running child, with the look's id", async () => {
-    const { fleet, asked } = fakeFleet({ a: () => ({ ok: true, data: { released: true } }), b: () => ({ ok: false, error: 'its socket closed' }) });
-    await quiesce.releaseHolds(fleet, 'look-1');
-    expect(asked.map((a) => [a.name, a.request, a.timeoutMs])).toEqual([
-      ['a', { op: 'release', look: 'look-1' }, 10_000], ['b', { op: 'release', look: 'look-1' }, 10_000],
-    ]);
-  });
-
-  test("a resume after a last look carries the look's id", async () => {
-    const { framework } = fakeFramework({ quiesced: true, reason: SWITCH });
-    const { fleet, asked } = fakeFleet({ kid: () => ({ ok: true, data: { resumed: true } }) });
-    await resumeAfterSwitchQuiesce(framework, fleet, 'look-1');
-    expect(asked.map((a) => a.request)).toEqual([{ op: 'resume', look: 'look-1' }]);
-  });
-});
-
-describe("a fleet child's hold on the last look", () => {
-  test('a child quiesced for the switch or by its operator holds, drained or not, and says so', async () => {
-    for (const [label, options] of [
-      ['drained', { quiesced: true, reason: SWITCH }],
-      ['mid-turn', { quiesced: true, reason: SWITCH, holders: ['kid-agent'], drainAfter: Number.POSITIVE_INFINITY }],
-      ['held by its operator', { quiesced: true, reason: 'operator: maintenance' }],
-    ] as const) {
-      const hold = new quiesce.SwitchHold();
-      const { framework } = fakeFramework(options);
-      expect(await answerSwitchRequest(framework, lastLookOf('look-1'), hold), label).toMatchObject({ answered: true, held: true });
-      expect(hold.held(), label).toBe(true);
-      expect(hold.refusal(), label).toBe(HOLDING);
-    }
-  });
-
-  test("a child serving when the last look comes isn't quiesced by it, doesn't hold, and says it's serving", async () => {
-    const hold = new quiesce.SwitchHold();
-    const { framework, calls, mode } = fakeFramework();
-    expect(await answerSwitchRequest(framework, lastLookOf('look-1'), hold)).toEqual({
-      host: 'this host', answered: false, why: LAST_LOOK_SERVING,
-    });
-    expect(calls).toEqual([]);
-    expect(mode().quiesced).toBe(false);
-    expect(hold.held()).toBe(false);
-    expect(hold.refusal()).toBeNull();
-  });
-
-  test("the status read, the hold and the answer are one step: a Resume of the gated framework still under way leaves the look a child that may serve, and one asked in the hold is refused", async () => {
-    const hold = new quiesce.SwitchHold();
-    const { framework, calls } = fakeFramework({ quiesced: true, reason: SWITCH });
-    const resuming = held<void>();
-    const resume = framework.resume.bind(framework);
-    framework.resume = async (opts) => { await resuming.promise; return resume(opts); };
-    const { gateResume } = await import('../src/update/resume-gate.js');
-    gateResume(framework, hold);
-    const asked = framework.resume();
-    expect(await answerSwitchRequest(framework, lastLookOf('look-1'), hold)).toEqual({
-      host: 'this host', answered: false, why: "a Resume asked here was under way at the switch's last look, so it may serve",
-    });
-    expect(hold.held()).toBe(false);
-    resuming.settle();
-    await asked;
-    await framework.quiesce({ reason: SWITCH });
-    await answerSwitchRequest(framework, lastLookOf('look-2'), hold);
-    for (const opts of [undefined, { force: true }]) {
-      const refused = await framework.resume(opts).then(() => null, (error: unknown) => error as Error & { verdicts?: unknown });
-      expect(refused?.message).toBe(HOLDING);
-      expect(refused?.name).toBe('ResumeBlockedError');
-      expect(refused?.verdicts).toEqual([]);
-    }
-    expect(calls.filter((call) => call === 'resume')).toHaveLength(1);
-  });
-
-  test("not yet for that look ends the hold and leaves the child quiesced, so its person's Resume works again", async () => {
-    const hold = new quiesce.SwitchHold();
-    const { framework, calls, mode } = fakeFramework({ quiesced: true, reason: SWITCH });
-    await answerSwitchRequest(framework, lastLookOf('look-1'), hold);
-    expect(await answerSwitchRequest(framework, { op: 'release', look: 'look-1' }, hold)).toEqual({ released: true });
-    expect(hold.refusal()).toBeNull();
-    expect(mode()).toEqual({ quiesced: true, reason: SWITCH });
-    expect(calls).toEqual([]);
-  });
-
-  test("the install's host's resume for that look, or with none, ends the hold, and a switch's quiesce, though not an operator's", async () => {
-    for (const resume of [{ op: 'resume', look: 'look-1' }, { op: 'resume' }]) {
-      const hold = new quiesce.SwitchHold();
-      const own = fakeFramework({ quiesced: true, reason: SWITCH });
-      await answerSwitchRequest(own.framework, lastLookOf('look-1'), hold);
-      expect(await answerSwitchRequest(own.framework, resume, hold)).toEqual({ resumed: true });
-      expect(hold.held()).toBe(false);
-      expect(own.mode().quiesced).toBe(false);
-
-      const operator = fakeFramework({ quiesced: true, reason: 'operator: maintenance' });
-      const kept = new quiesce.SwitchHold();
-      await answerSwitchRequest(operator.framework, lastLookOf('look-1'), kept);
-      expect(await answerSwitchRequest(operator.framework, resume, kept)).toEqual({
-        resumed: false, why: "its quiesce isn't the switch's (operator: maintenance), so it stays",
-      });
-      expect(kept.held()).toBe(false);
-      expect(operator.mode()).toEqual({ quiesced: true, reason: 'operator: maintenance' });
-    }
-  });
-
-  test('a resume or not yet for another look is answered, and changes nothing', async () => {
-    const hold = new quiesce.SwitchHold();
-    const { framework, calls, mode } = fakeFramework({ quiesced: true, reason: SWITCH });
-    await answerSwitchRequest(framework, lastLookOf('look-2'), hold);
-    const why = 'it holds for a later look of the switch, so this word from an earlier one changes nothing';
-    expect(await answerSwitchRequest(framework, { op: 'resume', look: 'look-1' }, hold)).toEqual({ resumed: false, why });
-    expect(await answerSwitchRequest(framework, { op: 'release', look: 'look-1' }, hold)).toEqual({ released: false, why });
-    expect(hold.refusal()).toBe(HOLDING);
-    expect(mode()).toEqual({ quiesced: true, reason: SWITCH });
-    expect(calls).toEqual([]);
-  });
-
-  test("a later last look takes the hold over, and a look before it doesn't end it", async () => {
-    const hold = new quiesce.SwitchHold();
-    const { framework } = fakeFramework({ quiesced: true, reason: SWITCH });
-    await answerSwitchRequest(framework, lastLookOf('look-1'), hold);
-    await answerSwitchRequest(framework, { op: 'quiesce', to: '0.14.0', waitMs: 0 }, hold);
-    expect(hold.refusal()).toBe(HOLDING);
-    await answerSwitchRequest(framework, lastLookOf('look-2'), hold);
-    expect(await answerSwitchRequest(framework, { op: 'release', look: 'look-1' }, hold)).toMatchObject({ released: false });
-    expect(await answerSwitchRequest(framework, { op: 'release', look: 'look-2' }, hold)).toEqual({ released: true });
-  });
-
-  describe('where the install\'s host may be gone', () => {
-    const dirs: string[] = [];
-    const markIn = (look?: string) => {
-      const dir = mkdtempSync(join(tmpdir(), 'switch-hold-'));
-      dirs.push(dir);
-      const mark = join(dir, 'mark.json');
-      if (look !== undefined) {
-        writeFileSync(mark, JSON.stringify({ v: 1, id: 'mark-1', to: '0.14.0', why: 'update', at: '2026-11-12T17:00:00.000Z', look }));
-      }
-      return mark;
-    };
-    const cleanup = () => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); };
-
-    test("with the install's host gone and no mark of this look in place, a Resume finds the hold ended", async () => {
-      try {
-        const parent = await deadPid();
-        for (const mark of [markIn(), markIn('look-0')]) {
-          const hold = new quiesce.SwitchHold();
-          await answerSwitchRequest(fakeFramework({ quiesced: true, reason: SWITCH }).framework, lastLookOf('look-1', mark, parent), hold);
-          expect(hold.refusal()).toBeNull();
-          expect(hold.held()).toBe(false);
-        }
-      } finally {
-        cleanup();
-      }
-    });
-
-    test("with this look's mark in place, a Resume is refused: the switch has begun, and finishes at the next start", async () => {
-      try {
-        for (const parent of [process.pid, await deadPid()]) {
-          const hold = new quiesce.SwitchHold();
-          await answerSwitchRequest(fakeFramework({ quiesced: true, reason: SWITCH }).framework, lastLookOf('look-1', markIn('look-1'), parent), hold);
-          expect(hold.refusal()).toBe(BEGUN);
-          expect(hold.held()).toBe(true);
-        }
-      } finally {
-        cleanup();
-      }
-    });
-
-    test('with the install\'s host running, the hold stands, whatever the mark', async () => {
-      try {
-        const hold = new quiesce.SwitchHold();
-        await answerSwitchRequest(fakeFramework({ quiesced: true, reason: SWITCH }).framework, lastLookOf('look-1', markIn(), process.pid), hold);
-        expect(hold.refusal()).toBe(HOLDING);
-      } finally {
-        cleanup();
-      }
-    });
-  });
-});
-
-describe("the gate on a real framework's resume", () => {
-  test("agent-framework's own host/command resume meets the hold, and answers with its words", async () => {
-    const { AgentFramework } = await import('@animalabs/agent-framework');
-    const { Membrane, MockAdapter } = await import('@animalabs/membrane');
-    const dir = mkdtempSync(join(tmpdir(), 'switch-hold-gate-'));
-    const framework = await AgentFramework.create({ storePath: join(dir, 'store'), membrane: new Membrane(new MockAdapter()), agents: [], modules: [] });
-    try {
-      const { gateResume } = await import('../src/update/resume-gate.js');
-      gateResume(framework);
-      await framework.quiesce({ reason: SWITCH });
-      expect(await answerSwitchRequest(framework, lastLookOf('look-1'))).toMatchObject({ held: true });
-      try {
-        const command = framework as unknown as { handleHostCommand(server: string, params: { command: string; force?: boolean }): Promise<{ ok: boolean; error?: string }> };
-        expect(await command.handleHostCommand('ops', { command: 'resume' })).toMatchObject({ ok: false, error: HOLDING });
-        expect(await command.handleHostCommand('ops', { command: 'resume', force: true })).toMatchObject({ ok: false, error: HOLDING });
-        expect(framework.getHostModeStatus().quiesced).toBe(true);
-      } finally {
-        await answerSwitchRequest(framework, { op: 'release', look: 'look-1' });
-      }
-      await framework.resume();
-      expect(framework.getHostModeStatus().quiesced).toBe(false);
-    } finally {
-      await framework.stop();
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }, 30_000);
 });

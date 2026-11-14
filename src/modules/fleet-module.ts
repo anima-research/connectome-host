@@ -22,7 +22,7 @@ import { existsSync, lstatSync, fstatSync, readSync, readFileSync, writeFileSync
 import { join, resolve, isAbsolute } from 'node:path';
 import { uptime } from 'node:os';
 import { type IncomingCommand, type WireEvent, type PanelResponseEvent, type UpdateResponseEvent, matchesSubscription } from './fleet-types.js';
-import type { RunningChild, SwitchRequest } from '../update/quiesce.js';
+import type { SwitchRequest } from '../update/quiesce.js';
 import { loadRecipeDetailed } from '../recipe.js';
 import { REDUCER_REQUIRED_EVENTS } from '../state/agent-tree-reducer.js';
 import { parseCommand } from '../command-name.js';
@@ -31,7 +31,6 @@ import { CHILD_AGENT_OVERLAY_FILE_NAME, seedChildAgentOverlay } from '../child-a
 import { unknownToolResult } from './unknown-tool.js';
 import { INSTALL_ROOT_ENV, isChildEntry, readRecord, writeJsonAtomic, type ChildrenFile } from '../update/contract.js';
 import { PRIVATE_DIR_MODE } from '../update/data-swap.js';
-import { sameDirectory } from '../update/rebind.js';
 import { FLEET_BEGIN_ENV } from '../fleet-begin.js';
 import { socketRefusesConnection } from './fleet-socket-probe.js';
 
@@ -162,7 +161,6 @@ interface FleetChild {
   reopenedAt?: number;
   reopenFailure?: string;
   closingAgainUntil?: number;
-  owedSwitch?: { request: SwitchRequest; timeoutMs: number };
 }
 
 function exitText(code: number | null, signal: NodeJS.Signals | string | null): string {
@@ -397,7 +395,7 @@ export class FleetModule implements Module {
       );
       return why;
     };
-    const earlier = this.childrenFileRead();
+    const earlier = this.childrenFileEntries();
     if (typeof earlier === 'string') return failed(earlier);
     const children: unknown[] = [];
     const listedDirs = new Set<string>();
@@ -410,7 +408,7 @@ export class FleetModule implements Module {
       if (pid !== null) knownPids.add(pid);
       children.push({ name: c.name, pid, bootId: c.bootId ?? null, dataDir: c.dataDir });
     }
-    for (const entry of earlier.children) {
+    for (const entry of earlier) {
       if (!isChildEntry(entry)) {
         children.push(entry);
         continue;
@@ -425,15 +423,15 @@ export class FleetModule implements Module {
       }
     }
     try {
-      writeJsonAtomic(this.childrenFile, { v: 1, children, ...(earlier.boundTo !== undefined ? { boundTo: earlier.boundTo } : {}) });
+      writeJsonAtomic(this.childrenFile, { v: 1, children });
       return null;
     } catch (err) {
       return failed(err instanceof Error ? err.message : String(err));
     }
   }
 
-  private childrenFileRead(): { children: unknown[]; boundTo?: unknown } | string {
-    if (this.childrenFile === null) return { children: [] };
+  private childrenFileEntries(): unknown[] | string {
+    if (this.childrenFile === null) return [];
     let file: ChildrenFile | null;
     const fix = 'Replacing it would drop the children it lists, which an update reads to see which may still be ' +
       'running, so every launch that spawns a child fails this way until whoever runs this host fixes it, or ' +
@@ -444,9 +442,9 @@ export class FleetModule implements Module {
     } catch (err) {
       return `${err instanceof Error ? err.message : String(err)} ${fix}`;
     }
-    if (file === null) return { children: [] };
+    if (file === null) return [];
     if (!Array.isArray(file.children)) return `The file at ${this.childrenFile} holds no list of children. ${fix}`;
-    return { children: file.children, ...(file.boundTo !== undefined ? { boundTo: file.boundTo } : {}) };
+    return file.children;
   }
 
   private async adoptPersistedChildren(): Promise<void> {
@@ -461,24 +459,10 @@ export class FleetModule implements Module {
     }
     if (!state?.children) return;
 
-    const listed = this.childrenFileRead();
-    const keptAt = (name: string): string[] => {
-      const entries = typeof listed === 'string' ? [] : listed.children.filter(isChildEntry).filter((entry) => entry.name === name);
-      if (entries.length > 0) return entries.map((entry) => entry.dataDir);
-      const configured = this.autoStartChildren.find((child) => child.name === name);
-      const dir = configured === undefined ? null : fleetChildDataDir(configured);
-      return dir !== null && existsSync(dir) ? [dir] : [];
-    };
     this.adopting = true;
     try {
       for (const [name, p] of Object.entries(state.children)) {
         if (name !== p.name || p.socketPath !== join(p.dataDir, 'ipc.sock')) continue;
-        const kept = this.childrenFile === null ? [] : keptAt(name);
-        if (kept.length > 0 && existsSync(p.dataDir) && !kept.some((dir) => sameDirectory(p.dataDir, dir))) {
-          console.error(`[fleet] child ${JSON.stringify(name)} isn't adopted: this host's store names it at ${p.dataDir}, ` +
-            `and this install keeps it at ${kept.join(' or ')}, so it's another install's, as after a copy of this one`);
-          continue;
-        }
 
         if (!this.canRetryAdoption(p)) {
           this.children.set(name, this.reconstructOrphan(p));
@@ -1963,8 +1947,6 @@ export class FleetModule implements Module {
       this.takeChecked(c, checked, c.subscription);
       console.error(`[fleet] child "${c.name}" closed this host's connection while it ran, and this host ` +
         `connected to it again (pid ${c.pid}).`);
-      const owed = c.owedSwitch;
-      if (owed !== undefined) void this.sendSwitch(c, owed.request, owed.timeoutMs);
     } catch (err) {
       c.reopenFailure = err instanceof Error ? err.message : String(err);
       console.error(`[fleet] connecting to child "${c.name}" again failed: ${c.reopenFailure}`);
@@ -2336,30 +2318,18 @@ export class FleetModule implements Module {
       (corrId) => ({ type: 'panel-request', op, ...(params ? { params } : {}), corrId }));
   }
 
-  runningChildren(): RunningChild[] {
+  runningChildren(): Array<{ name: string }> {
     return [...this.children.values()].filter((child) => child.status === 'starting' || child.status === 'ready')
-      .map((child) => ({ name: child.name, incarnation: `${child.pid ?? 'unspawned'}@${child.startedAt}` }));
+      .map((child) => ({ name: child.name }));
   }
 
   async requestSwitch(childName: string, request: SwitchRequest, timeoutMs: number): Promise<{ ok: boolean; data?: unknown; error?: string }> {
     const child = this.children.get(childName);
-    // Keep the switch's requests outside the bound: each is sent once, for a step the switch or its operator takes, so
-    // they make no loop.
+    // Keep the switch's requests outside the bound: a switch sends a child three at most, so they make no loop,
+    // and a child whose resume can't be sent stays quiesced until a later resume or its next start.
     if (child) await this.tryReopen(child, { withinBound: true });
-    return child ? this.sendSwitch(child, request, timeoutMs)
-      : this.requestAnswer(childName, `update-${request.op}`, 'update-response', `the switch's ${request.op}`, timeoutMs,
-        (corrId) => ({ type: 'update-request', request, corrId }));
-  }
-
-  private async sendSwitch(child: FleetChild, request: SwitchRequest, timeoutMs: number): Promise<{ ok: boolean; data?: unknown; error?: string }> {
-    const earlier = child.owedSwitch;
-    const asked = request.op === 'quiesce' ? undefined : { request, timeoutMs };
-    if (asked !== undefined && this.children.get(child.name) === child) child.owedSwitch = asked;
-    const answer = await this.requestAnswer(child.name, `update-${request.op}`, 'update-response', `the switch's ${request.op}`,
-      timeoutMs, (corrId) => ({ type: 'update-request', request, corrId }));
-    const undelivered = !answer.ok && (answer.status === 502 || answer.status === 504);
-    if (!undelivered && (child.owedSwitch === earlier || child.owedSwitch === asked)) child.owedSwitch = undefined;
-    return answer;
+    return this.requestAnswer(childName, `update-${request.op}`, 'update-response', `the switch's ${request.op}`, timeoutMs,
+      (corrId) => ({ type: 'update-request', request, corrId }));
   }
 
   private requestAnswer(
