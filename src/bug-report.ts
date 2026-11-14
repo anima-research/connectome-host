@@ -86,12 +86,12 @@ const MODEL_FAMILY: Record<string, (first: string) => boolean> = {
 const BUILT_IN_MODULES = [
   'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc', 'channelMode',
-  'selfRestart',
+  'selfRestart', 'setup',
 ];
 const LIVE_MODULE_NAMES = new Set([
   'activity', 'api', 'channel-mode', 'discord', 'fleet', 'health', 'history', 'identity', 'instructions',
-  'lessons', 'lifecycle', 'mcpl-admin', 'notices', 'observers', 'openai-codex', 'retrieval', 'settings', 'subagent',
-  'subscription-gc', 'time', 'tts-relay', 'tui', 'webui', 'workspace',
+  'lessons', 'lifecycle', 'mcpl-admin', 'notices', 'observers', 'openai-codex', 'retrieval', 'settings', 'setup',
+  'subagent', 'subscription-gc', 'time', 'tts-relay', 'tui', 'webui', 'workspace',
 ]);
 
 const FORMATTERS = new Set(['native', 'anthropic-xml']);

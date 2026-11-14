@@ -1334,6 +1334,7 @@ export interface RecipeModules {
    * the agent stays down after its own request.
    */
   selfRestart?: boolean | { cooldownMinutes?: number };
+  setup?: boolean;
 }
 
 export interface RecipeWebUi {
@@ -2108,7 +2109,7 @@ const RECIPE_AGENT_MOCK_KEYS = [
 const RECIPE_MODULE_KEYS = [
   'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
-  'channelMode', 'selfRestart', 'heartbeat',
+  'channelMode', 'selfRestart', 'heartbeat', 'setup',
 ] as const;
 const RECIPE_KV_UNIFIED_KEYS = [
   'policy', 'tokenBucketSize', 'continuityBucketSize', 'fidelityBucketSize', 'labelCeiling',
@@ -3376,6 +3377,10 @@ export function validateRecipe(raw: unknown): Recipe {
       if (cd !== undefined && (typeof cd !== 'number' || !Number.isFinite(cd) || cd < 0)) {
         throw new Error('modules.selfRestart.cooldownMinutes must be a non-negative number of minutes');
       }
+    }
+
+    if (mods.setup !== undefined && typeof mods.setup !== 'boolean') {
+      throw new Error('modules.setup must be true or false');
     }
 
     if (mods.ttsRelay !== undefined && mods.ttsRelay !== false) {

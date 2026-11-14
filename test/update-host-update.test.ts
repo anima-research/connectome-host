@@ -951,7 +951,7 @@ describe('/update', () => {
       host: { framework: () => fakeFramework().framework, fleet: () => null },
       fetchManifest, now: () => new Date('2026-10-22T12:00:00.000Z'),
     });
-    const app = { framework: {} } as unknown as Parameters<typeof handleCommand>[1];
+    const app = { framework: {}, recipe: {} } as unknown as Parameters<typeof handleCommand>[1];
     const run = async (line: string) => {
       const result = handleCommand(line, app);
       return [...result.lines, ...(result.asyncWork ? (await result.asyncWork).lines : [])].map((l) => l.text);

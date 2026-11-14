@@ -190,7 +190,7 @@ test('in readline mode, what libraries write to stderr goes to readline-error.lo
     expect(shown).not.toContain('[probe-warn]');
     expect(shown).not.toContain('[probe-direct]');
     expect(holdsInOrder(session.lines(), REPLY_WITH_ALERTS)).toBe(true);
-    expect(session.lines()).toContain(`Error log: ${join(session.dir, 'readline-error.log')}`);
+    expect(session.lines()).toContain(`The host's diagnostics go to ${join(session.dir, 'readline-error.log')}, not to this terminal.`);
     expect(statSync(join(session.dir, 'readline-error.log')).mode & 0o777).toBe(0o600);
     const log = readFileSync(join(session.dir, 'readline-error.log'), 'utf-8');
     expect(log).toMatch(/--- session \S+ ---\n/);
@@ -272,7 +272,7 @@ for (const { how, prepare, on } of UNWRITABLE) {
     try {
       await converse(session);
       expect(session.lines().some((line) => line.startsWith(`[host] ${join(session.dir, 'readline-error.log')} can't be written (`))).toBe(true);
-      expect(session.lines().some((line) => line.startsWith('Error log:'))).toBe(false);
+      expect(session.lines().some((line) => line.startsWith('The host\'s diagnostics go to'))).toBe(false);
       expect(session.lines().some((line) => line.startsWith('--- session'))).toBe(false);
       const shown = session.lines().join('\n');
       expect(shown).toContain('[probe-console] a library line mid-reply');

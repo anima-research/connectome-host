@@ -10,8 +10,14 @@ import type {
 } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
 
+export interface TuiModuleConfig {
+  onHostLineTakenIn?: () => void;
+}
+
 export class TuiModule implements Module {
   readonly name = 'tui';
+
+  constructor(private readonly config: TuiModuleConfig = {}) {}
 
   async start(_ctx: ModuleContext): Promise<void> {}
   async stop(): Promise<void> {}
@@ -61,6 +67,7 @@ export class TuiModule implements Module {
       response.requestInference = targetAgents ?? true;
     }
 
+    if (source === 'cli' || source === 'system') this.config.onHostLineTakenIn?.();
     return response;
   }
 }

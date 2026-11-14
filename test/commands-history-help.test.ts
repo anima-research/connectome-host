@@ -8,7 +8,7 @@ function appWithMessages(count: number) {
     content: [{ type: 'text', text: `message ${i + 1}` }],
   }));
   const cm = { queryMessages: () => ({ messages }) };
-  return { framework: { getAllAgents: () => [{ getContextManager: () => cm }] } } as never;
+  return { framework: { getAllAgents: () => [{ getContextManager: () => cm }] }, recipe: {} } as never;
 }
 
 const rows = (command: string, count: number) =>

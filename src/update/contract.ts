@@ -36,8 +36,8 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
-  closeSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync,
-  symlinkSync, truncateSync, unlinkSync, writeSync,
+  closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync,
+  renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -222,8 +222,11 @@ export const WRITE_RECORD_AGAIN = 'To put it right, write the record again as\n'
   './data, resolved from that working directory. If it isn\'t the one its service starts the host with, the ' +
   'host\'s next start through start.js refuses, naming both.\n' +
   'And <places> are the places of state kept outside the data directory that each update copies, such as an MCPL ' +
-  'server\'s state, each a JSON string, or none. Only setup writes that list, and each setup run that finished ' +
-  `printed it, after "${EXTRA_STATE_LINE}". If the install has updated, copy/copy.json beside the record ` +
+  'server\'s state, each a JSON string, or none. Only the install\'s setup writes that list, and each of its runs ' +
+  `that finished printed what it recorded, after "${EXTRA_STATE_LINE}", though \`connectome setup\` shows that ` +
+  'block only at its end, only while the record still holds it, and not at all when it holds none; a run that stopped ' +
+  'partway may have written ' +
+  'the record without printing it. If the install has updated, copy/copy.json beside the record ' +
   `${copyShows('which stay out of the list')} An update copies only the places the ` +
   'record lists, beside those, so a place that isn\'t one of them or inside one isn\'t in an update\'s copy, and a Go ' +
   'back from that update doesn\'t put it back.\n' +
@@ -474,6 +477,18 @@ export function syncDir(dir: string): void {
 function writeAll(fd: number, text: string): void {
   const bytes = Buffer.from(text, 'utf-8');
   for (let done = 0; done < bytes.length;) done += writeSync(fd, bytes, done, bytes.length - done);
+}
+
+export function readWithoutWaiting(path: string): string {
+  // O_NONBLOCK: opening a named pipe that no process writes to otherwise waits for one.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() && !stat.isDirectory()) throw new Error('it isn\'t a file');
+    return readFileSync(fd, 'utf-8');
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /** Write `value` as JSON at `path`, as writeTextAtomic writes. */

@@ -128,8 +128,9 @@ the working directory):
   `mcpl-stderr/<server>.log` (each MCPL server's stderr plus connect/close/error
   lines; rolls to `.1` at 10 MB).
 - Readline mode (`--no-tui` with stdin on a terminal):
-  `data/readline-error.log`. From readline mode's banner until the host has
-  stopped, it takes what the process writes through `process.stderr.write`,
+  `data/readline-error.log`. From readline mode's banner, or for setup's host
+  from before its extensions load, until the host has stopped, it takes what
+  the process writes through `process.stderr.write`,
   `console.error` and `console.warn`: library diagnostics, `[routeSpeech]`,
   `[routing]` and `[inference-failed]` among them. It is created readable by
   its owner alone, and each line is written to it as it comes. What the person
@@ -303,10 +304,18 @@ DATA_DIR=... bun node_modules/@animalabs/connectome-host/src/update/setup.ts [--
 It copies the install as the first release of an install root,
 `./connectome-host` unless `--root` names another, and writes the entry point
 `start.js` there, with the install's own command, `connectome`, beside it.
+That command's `connectome setup` works in the directory that holds the
+install root, reading and writing its `.env`, `.setup`, `package.json` and
+`node_modules` there. So for a root anywhere but directly in the service's
+working directory, it sets up the root's parent instead: to use it, keep the
+root directly in the working directory, as the default root is.
 Give `--extra-state` for each place an MCPL server keeps its state outside
 the data directory, so each update copies it with the data.
-Then have the service start the host with `bun <root>/start.js`, followed by
-the arguments it gives the host now, and restart it. Setup says whether the
+Then have the service start the host with `bun '<root>/start.js'`, followed by
+the arguments it gives the host now, and restart it. In a systemd unit,
+write each `%` in a path as `%%` and each `$` as `$$`, since systemd reads `%`
+as a specifier, and `${...}` as a variable, even between quotes. Setup
+says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
 

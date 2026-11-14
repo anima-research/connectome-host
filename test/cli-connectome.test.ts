@@ -7,10 +7,12 @@ import {
 import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { bare, send } from '../src/cli/connectome.js';
+import { bare, COMMANDS, send } from '../src/cli/connectome.js';
 import { openHost } from '../src/cli/host-socket.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
+import { SHOWN_FILE } from '../src/setup/commands-shown.js';
 import { installPaths } from '../src/update/contract.js';
+import { shellWord } from '../src/update/launcher.js';
 import type { UpdateStatus } from '../src/web/update-text.js';
 
 const REPO = resolve(import.meta.dir, '..');
@@ -55,10 +57,11 @@ function stubPackage(root: string, body: string | null): string {
   return dir;
 }
 
-async function run(file: string, args: string[], cwd: string, spawned?: (child: ChildProcess) => void):
+async function run(file: string, args: string[], cwd: string, spawned?: (child: ChildProcess) => void, first?: string):
   Promise<{ status: number | null; out: string; err: string }> {
+  const path = `${dirname(process.execPath)}:${process.env.PATH ?? ''}`;
   const child = spawn(file, args, {
-    cwd, env: { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ''}` },
+    cwd, env: { ...process.env, PATH: first === undefined ? path : `${first}:${path}` },
   });
   spawned?.(child);
   let out = '';
@@ -131,12 +134,23 @@ test('the package\'s bin, in a directory with no install, says there\'s none', a
     expect(ran.status).toBe(1);
     expect(ran.err).toContain('no connectome-host install here');
   }
+  const typed = `bunx @animalabs/connectome-host@${JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).version}`;
   const wrong = await run(BIN, ['frobnicate'], empty);
   expect(wrong.status).toBe(2);
   expect(wrong.err).toContain('there\'s no command frobnicate');
+  expect(wrong.err).toContain(`\n  ${typed} send <text>\n`);
   const help = await run(BIN, ['help'], empty);
   expect(help.status).toBe(0);
-  expect(help.out).toContain('connectome send <text>');
+  expect(help.out).toContain(`\n  ${typed} send <text>\n`);
+  expect(help.out).not.toMatch(/\n {2}connectome /);
+});
+
+test('help names an install\'s command by its path as it is, a `$&` in it included', async () => {
+  const { root } = install('a$&b');
+  const { path } = writeInstallCommand(root, '');
+  const help = await run(path, ['help'], root);
+  expect(help.status).toBe(0);
+  expect(help.out).toContain(`\n  ${shellWord(path)} send <text>\n`);
 });
 
 test('the package\'s bin is connectome-host, at the dispatcher, executable', () => {
@@ -215,16 +229,16 @@ test('help lists the commands, and a word that isn\'t one is a usage error', asy
   const { path } = writeInstallCommand(root, '');
   const help = await run(path, ['help'], root);
   expect(help.status).toBe(0);
-  expect(help.out).toContain('\n  connectome\n');
-  expect(help.out).toContain('connectome send <text>');
-  expect(help.out).toContain('connectome update [check | install');
+  expect(help.out).toContain(`\n  ${path}\n`);
+  expect(help.out).toContain(`\n  ${path} send <text>\n`);
+  expect(help.out).toContain(`\n  ${path} update [check | install`);
   expect(help.out).toContain('Words it doesn\'t take are a usage error, which exits 2 before any host is looked for. ' +
     'It exits 1 when the host answers no, such as an install with nothing newer offered or one that failed, a check ' +
     'that couldn\'t read the registry or a back that couldn\'t read the Go back offer: the host\'s words on stdout ' +
     'say why. When no host answers a word it takes, it asks nothing and exits 1, saying so on stderr. The exception ' +
     'is back when nothing listens on the host\'s socket: then back says whether a Go back is offered, and back keep ' +
     'or back restore asks the next start to go back.');
-  expect(help.out).toContain('\n  connectome help\n');
+  expect(help.out).toContain(`\n  ${path} help\n`);
   expect(help.out).toContain('Its own refusals go to stderr, and what the host answers to update to stdout, a refusal ' +
     'or a failure it answers included; an error that stops the host\'s update command goes to stderr. send prints only ' +
     'what the agent says on stdout, and its own notes on stderr.');
@@ -235,6 +249,18 @@ test('help lists the commands, and a word that isn\'t one is a usage error', asy
   const wrong = await run(path, ['frobnicate'], root);
   expect(wrong.status).toBe(2);
   expect(wrong.err).toContain('there\'s no command frobnicate');
+});
+
+test('help names no command by the install\'s path, and its usage lines and send\'s usage hint name plain `connectome`, once the install\'s own command is the first on PATH', async () => {
+  const { root } = install();
+  const { path } = writeInstallCommand(root, '');
+  const help = await run(path, ['help'], root, undefined, root);
+  const usageLines = help.out.split('\n').filter((line) => /^  \S/.test(line));
+  expect(usageLines).toEqual(['  connectome', ...COMMANDS.map((command) => `  ${command.usage}`), '  connectome help']);
+  for (const line of usageLines) expect(line).toMatch(/^  connectome(?: |$)/);
+  expect(help.out).not.toContain(path);
+  const empty = await run(path, ['send', ' '], root, undefined, root);
+  expect(empty.err).toBe('connectome: usage: connectome send <text>\n');
 });
 
 test('the package\'s bin, in a directory with an install, runs that install\'s own command', async () => {
@@ -255,6 +281,21 @@ test('the package\'s bin, in a directory with an install, runs that install\'s o
   expect(killed.status).toBe(1);
   expect(killed.err).toContain(`${join(root, 'connectome')} ended on SIGKILL, so whether what it asked of the host ` +
     'happened isn\'t known here.');
+});
+
+test('the package\'s bin runs the install\'s own command under the Bun flags it was started with, either spelling of --env-file included', async () => {
+  const { work, root } = install();
+  writeInstallCommand(root, '');
+  release(root, '0.15.0', stubPackage(root, 'export async function main() { ' +
+    'console.log(JSON.stringify(process.execArgv)); return 0; }\n'));
+  moveCurrent(root, '0.15.0');
+  const file = join(work, 'private.env');
+  writeFileSync(file, 'PRIVATE_NAME=private-value\n');
+  for (const flags of [[`--env-file=${file}`], ['--env-file', file]]) {
+    const ran = await run(process.execPath, [...flags, BIN, 'shell', 'install'], work);
+    expect(ran.status).toBe(0);
+    expect(JSON.parse(ran.out.trim())).toEqual(flags);
+  }
 });
 
 test('the package\'s bin, by an install without its own command, says so and how setup writes it', async () => {
@@ -454,7 +495,7 @@ test('send to an older host, whose ready says nothing of turn work, sends nothin
   expect(ran.status).toBe(1);
   expect(asked.filter((type) => type !== 'connected')).toEqual([]);
   expect(ran.err).toContain('connectome: nothing was sent: the running host is an older release than this command');
-  expect(ran.err).toContain(`A host started with \`${process.execPath} ${join(root, 'start.js')}\` runs this release: have its service start it that way, followed by the arguments it gives the host now, and restart it. Then connectome send works.`);
+  expect(ran.err).toContain(`A host started with \`${process.execPath} ${join(root, 'start.js')}\` runs this release: have its service start it that way, followed by the arguments it gives the host now, and restart it. Then ${path} send works.`);
 });
 
 test('bare, at an older host, says it is older and how a host on this release starts, and still gives its update state', async () => {
@@ -799,7 +840,7 @@ test('send with no host answering sends nothing, starts nothing, and says so', a
   expect(ran.err).not.toContain('wrote the line');
   expect(existsSync(started)).toBe(false);
   const empty = await run(path, ['send', ' '], root);
-  expect({ status: empty.status, err: empty.err }).toEqual({ status: 2, err: 'connectome: usage: connectome send <text>\n' });
+  expect({ status: empty.status, err: empty.err }).toEqual({ status: 2, err: `connectome: usage: ${path} send <text>\n` });
   expect(existsSync(join(data, 'ipc.sock'))).toBe(false);
   expect(existsSync(join(data, 'headless.pid'))).toBe(false);
 });
@@ -1138,4 +1179,42 @@ test('bare whose host doesn\'t answer the health request gives up and says so', 
   expect(status).toBe(0);
   expect(out.join('\n')).toContain('Its host is running: pid 4242');
   expect(out.join('\n')).toContain('Its update state couldn\'t be read: no answer came within 0.3 s');
+});
+
+test('where setup\'s agent names a file for the person, the install command\'s refusals and the package\'s hand-over line go there too', async () => {
+  const said = join(realpathSync(mkdtempSync(join(tmpdir(), 'cli-said-'))), 'said');
+  made.push(dirname(said));
+  process.env[SHOWN_FILE] = said;
+  try {
+    const none = install();
+    const noneCommand = writeInstallCommand(none.root, '');
+    unlinkSync(join(none.root, 'current'));
+    writeFileSync(said, '');
+    const noCurrent = await run(noneCommand.path, ['service', 'install'], none.root);
+    expect(noCurrent.status).toBe(1);
+    expect(noCurrent.err).toContain('has no current release');
+    expect(readFileSync(said, 'utf-8')).toBe(noCurrent.err);
+
+    const broken = install();
+    const brokenCommand = writeInstallCommand(broken.root, '');
+    release(broken.root, '0.13.0', stubPackage(broken.root, null));
+    moveCurrent(broken.root, '0.13.0');
+    writeFileSync(said, '');
+    const noLoad = await run(brokenCommand.path, ['service', 'install'], broken.root);
+    expect(noLoad.status).toBe(1);
+    expect(noLoad.err).toContain('has no connectome command that loads');
+    expect(readFileSync(said, 'utf-8')).toBe(noLoad.err);
+
+    const handed = install();
+    writeInstallCommand(handed.root, '');
+    release(handed.root, '0.15.0', stubPackage(handed.root, 'export async function main() { process.kill(process.pid, "SIGKILL"); }\n'));
+    moveCurrent(handed.root, '0.15.0');
+    writeFileSync(said, '');
+    const killed = await run(BIN, ['service', 'install'], handed.work);
+    expect(killed.status).toBe(1);
+    expect(killed.err).toContain('ended on SIGKILL');
+    expect(readFileSync(said, 'utf-8')).toBe(killed.err);
+  } finally {
+    delete process.env[SHOWN_FILE];
+  }
 });
