@@ -1,10 +1,7 @@
-import { accessSync, constants, realpathSync, statSync } from 'node:fs';
-import { delimiter, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { writeTextAtomic } from '../update/contract.js';
-import { shellWord } from '../update/launcher.js';
+import { INSTALL_COMMAND, shellWord, typedCommand } from '../update/typed-command.js';
 import { SHOWN_FILE } from '../setup/commands-shown.js';
-
-export const INSTALL_COMMAND = 'connectome';
 
 export const CLI_IN_RELEASE = ['node_modules', '@animalabs', 'connectome-host', 'src', 'cli', 'connectome.ts'];
 
@@ -50,33 +47,6 @@ export function installCommandText(): string {
     'process.exit(await main(root, process.argv.slice(2)));',
     '',
   ].join('\n');
-}
-
-export function typedCommand(root: string, path: string | undefined = process.env.PATH): string {
-  const own = join(root, INSTALL_COMMAND);
-  const first = firstOnPath(INSTALL_COMMAND, path);
-  return first !== null && sameFile(first, own) ? INSTALL_COMMAND : shellWord(own);
-}
-
-function firstOnPath(name: string, path: string | undefined): string | null {
-  for (const dir of (path ?? '').split(delimiter)) {
-    const candidate = resolve(dir === '' ? '.' : dir, name);
-    try {
-      if (!statSync(candidate).isFile()) continue;
-      accessSync(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-    }
-  }
-  return null;
-}
-
-function sameFile(a: string, b: string): boolean {
-  try {
-    return realpathSync(a) === realpathSync(b);
-  } catch {
-    return false;
-  }
 }
 
 export function installCommandOf(root: string, path: string | undefined = process.env.PATH):

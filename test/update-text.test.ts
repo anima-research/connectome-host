@@ -2,15 +2,21 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  COMMAND_WAYS, PAGE_WAYS, bannerOf, busyLines, commandFor, dialogStill, goBackLines, keptDismissal, noticeLines, openWays,
-  restartLines, shownBanner, statusLines,
+  COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS, bannerOf, busyLines, commandFor, dialogStill, goBackLines, keptDismissal,
+  noticeLines, openWays, pageRequest, restartLines, shownBanner, statusLines,
   type ReadCheck, type RestartState, type SwitchOutcome, type UpdateStatus,
 } from '../src/web/update-text.js';
 
 const base: UpdateStatus = {
   running: '0.12.1', install: true, checks: true, check: null, installing: null, lastInstall: null, installed: null,
-  goBack: null, restart: null, operatorQuiesced: null, switchQuiesceLeft: false, lastSwitch: null, problems: [],
+  goBack: null, restart: null, armed: null, armedDropped: null, operatorQuiesced: null, switchQuiesceLeft: false,
+  lastSwitch: null, problems: [],
 };
+
+test('a status from a release before an agent could arm its own update reads as nothing armed', () => {
+  const { armed: _armed, armedDropped: _dropped, ...older } = base;
+  expect(statusLines(older as UpdateStatus, PAGE_WAYS)).toEqual(statusLines(base, PAGE_WAYS));
+});
 
 const read: ReadCheck = {
   at: '2026-10-24T05:00:00.000Z', ok: true, candidate: '0.13.1', bunFloorUnmet: null, runningDeprecated: null,
@@ -163,6 +169,8 @@ describe('the Restart dialog', () => {
         'now and Resume.',
       'Breaking: 0.12.2. Read its notes before updating.',
       "Each resident's prompt cache is written in full once: 0.13.0.",
+      "Going back after a switch keeps the newer data only if 0.12.1 can still read it. If it can't, going back means " +
+        'Restore the copy, and what was lived since the switch is set aside.',
       'Notes: https://github.com/anima-research/connectome-host/blob/v0.13.0/CHANGELOG.md',
     ]);
   });
@@ -188,6 +196,55 @@ describe('the Restart dialog', () => {
     expect(restartLines({ ...base, check: read, installed: '0.13.1', lastSwitch: refused })?.join('\n')).not.toContain('last request');
     expect(restartLines({ ...base, check: read, installed: '0.13.1', lastSwitch: fellBack })?.join('\n')).not.toContain('last try');
     expect(restartLines({ ...base, check: read })).toBeNull();
+  });
+});
+
+describe('before a switch, check says what going back can cost', () => {
+  const line = (running: string, restore: string) => `Going back after a switch keeps the newer data only if ${running} ` +
+    `can still read it. If it can't, going back means ${restore}, and what was lived since the switch is set aside.`;
+
+  test('each reader gets the line in its own spelling, before the notes', () => {
+    for (const ways of [COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS]) {
+      const lines = noticeLines(read, '0.12.1', true, ways);
+      const at = lines.indexOf(line('0.12.1', ways.restore));
+      expect({ reader: ways.restore, at: at >= 0, beforeNotes: at < lines.findIndex((each) => each.startsWith('Notes: ')) })
+        .toEqual({ reader: ways.restore, at: true, beforeNotes: true });
+    }
+  });
+
+  test("the Web UI's Restart dialog gives it too, above its button and before the notes", () => {
+    const lines = restartLines({ ...base, check: read, installed: '0.13.1' }) ?? [];
+    const at = lines.indexOf(line('0.12.1', PAGE_WAYS.restore));
+    expect({ at: at >= 0, beforeNotes: at < lines.findIndex((each) => each.startsWith('Notes: ')) })
+      .toEqual({ at: true, beforeNotes: true });
+  });
+
+  test('a host that is no install, and so has no switch to go back from, says nothing of it', () => {
+    expect(noticeLines(read, '0.12.1', false).join('\n')).not.toContain('Going back after a switch');
+  });
+
+  test('the banner leaves it out, as it leaves out the notes', () => {
+    expect(bannerOf({ ...base, check: read })?.line).not.toContain('Going back after a switch');
+  });
+
+  test('with a release installed and no release offered, each reader gets it beside the installed one, before the notes', () => {
+    const checks: UpdateStatus['check'][] = [
+      null, { at: read.at, ok: false, error: 'the registry answered 503' }, { ...read, candidate: null, costs: [] },
+    ];
+    for (const ways of [COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS]) {
+      for (const check of checks) {
+        const lines = statusLines({ ...base, check, installed: '0.13.0' }, ways);
+        const at = lines.indexOf(line('0.12.1', ways.restore));
+        expect({ reader: ways.restore, check: check?.ok ?? null, at: at >= 0, once: lines.lastIndexOf(line('0.12.1', ways.restore)) === at,
+          beforeNotes: at < lines.findIndex((each) => each.startsWith('Notes: ')) })
+          .toEqual({ reader: ways.restore, check: check?.ok ?? null, at: true, once: true, beforeNotes: true });
+      }
+    }
+  });
+
+  test('beside a release offered, it comes once, from the notice', () => {
+    const lines = statusLines({ ...base, check: read, installed: '0.13.0' });
+    expect(lines.filter((each) => each === line('0.12.1', COMMAND_WAYS.restore))).toHaveLength(1);
   });
 });
 
@@ -222,6 +279,55 @@ describe('each way named as its caller names it', () => {
     ]);
   });
 
+  test('the agent is told whose a fallback\'s quoted lines are right after them, and after no other status', () => {
+    const said = (status: UpdateStatus) => statusLines(status, TOOL_WAYS);
+    const told = (line: string) => line.startsWith('Those quoted lines are your host\'s');
+    const fell = said({ ...base, lastSwitch: fellBack });
+    expect(fell.slice(-4))
+      .toEqual(['  loading the recipe', '  ', '  Error: no such recipe', expect.stringMatching(/^Those quoted lines/)]);
+    const withProblem = said({ ...base, lastSwitch: fellBack, problems: ['the journal couldn\'t be read'] });
+    expect(withProblem.findIndex(told)).toBe(withProblem.indexOf('  Error: no such recipe') + 1);
+    expect(withProblem.at(-1)).toBe('the journal couldn\'t be read');
+    const others: SwitchOutcome[] = [
+      { ...fellBack, trialLog: null },
+      { ...fellBack, trialLog: [] },
+      { outcome: 'committed', from: '0.12.1', to: '0.13.0', at: '2026-10-24T04:00:00.000Z' },
+      {
+        outcome: 'refused', step: 'children-check', from: '0.12.1', to: '0.13.0', at: '2026-10-24T04:00:00.000Z',
+        reason: 'fleet children are still running: kid',
+      },
+    ];
+    for (const lastSwitch of [null, ...others]) expect(said({ ...base, lastSwitch }).some(told)).toBe(false);
+  });
+
+  test("the agent is told that a failed install's remedy is the person's, right after it, and a person isn't", () => {
+    const error = 'releases/0.13.0 is there, but its package.json names 0.12.0, so it isn\'t the release 0.13.0. Remove it, ' +
+      'then update again.';
+    const status: UpdateStatus = { ...base, lastInstall: { version: '0.13.0', at: read.at, ok: false, error } };
+    const agent = statusLines(status, TOOL_WAYS);
+    expect(agent.slice(agent.indexOf(`Last install: ${error}`), agent.indexOf(`Last install: ${error}`) + 2)).toEqual([
+      `Last install: ${error}`,
+      "That error is your host's, written to the person who runs it: what it asks of that person is theirs to do, so " +
+        'pass it on.',
+    ]);
+    for (const ways of [COMMAND_WAYS, PAGE_WAYS]) {
+      expect(statusLines(status, ways).join('\n')).not.toContain('pass it on');
+    }
+  });
+
+  test('after a fallback that kept no lines, the agent is sent to the person for the log, and a person to the log', () => {
+    for (const trialLog of [null, [], ['', '']]) {
+      const last: SwitchOutcome = { ...fellBack, trialLog };
+      const agent = statusLines({ ...base, lastSwitch: last }, TOOL_WAYS).at(-1) ?? '';
+      expect(agent).toEndWith("The service's log, or the terminal your host was started in, says more, and the person " +
+        'who runs your host can read either: ask them.');
+      for (const ways of [COMMAND_WAYS, PAGE_WAYS]) {
+        expect(statusLines({ ...base, lastSwitch: last }, ways).at(-1))
+          .toEndWith("The service's log, or the terminal the host was started in, says more.");
+      }
+    }
+  });
+
   test('a trial log keeps its blank lines', () => {
     const lines = statusLines({ ...base, lastSwitch: fellBack });
     expect(lines.slice(-3)).toEqual(['  loading the recipe', '  ', '  Error: no such recipe']);
@@ -239,7 +345,7 @@ describe('each way named as its caller names it', () => {
     expect(dialogStill('restart', null)).toBeNull();
   });
 
-  test('a page sends each way as its command, Restart and Go back naming the release it showed', () => {
+  test('a page sends each way as its command, marked as the page\'s, Restart and Go back naming the release it showed', () => {
     const shown: UpdateStatus = { ...base, installed: '0.13.0', goBack: { to: '0.12.0', since: 'then' } };
     expect(commandFor('restart', shown)).toBe('/update restart 0.13.0');
     expect(commandFor('keep', shown)).toBe('/update back keep 0.12.0');
@@ -249,6 +355,10 @@ describe('each way named as its caller names it', () => {
     expect(commandFor('check', shown)).toBe('/update');
     expect(commandFor('restart', base)).toBeNull();
     expect(commandFor('keep', base)).toBeNull();
+    for (const way of ['restart', 'keep', 'restore', 'install', 'now', 'check'] as const) {
+      expect(pageRequest(way, shown)).toEqual({ type: 'command', command: commandFor(way, shown)!, page: true });
+    }
+    expect(pageRequest('restart', base)).toBeNull();
   });
 
   test('both tables name the same ways', () => {

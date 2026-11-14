@@ -7,15 +7,17 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
-  ContractError, ITEM_UPDATE_DIR, appendJournal, childrenFilePath, copyLabelPath, goBackListPath, installPaths,
+  ContractError, ENTRY_POINT, ITEM_UPDATE_DIR, appendJournal, childrenFilePath, copyLabelPath, goBackListPath, installPaths,
   itemSetAsideDir, lastCopy,
   moveCurrent, readJournal, readRecord, setAsideDir, writeJsonAtomic, type CopyLabel, type InstallRecord, type Mark,
 } from '../src/update/contract.js';
 import {
   CHILDREN_WAIT_MS, GO_BACK_LOCK_WAIT_MS, HOST_ENTRY, KEEP_DATA_FLAG, LAUNCHER, LockHeld, dataItems, decide,
-  goBackFromShell, goBackLine, goBackOffer, itemStagingDir, linuxMountPoints, machineMountPoints, machineOps,
-  macMountPoints, shellWord, takeLock, type LauncherOps,
+  goBackFromShell, goBackFromStart, goBackLine, goBackOffer, itemStagingDir, linuxMountPoints, machineMountPoints, machineOps,
+  macMountPoints, takeLock, type LauncherOps,
 } from '../src/update/launcher.js';
+import * as typedCommandModule from '../src/update/typed-command.js';
+import { shellWord } from '../src/update/typed-command.js';
 import { copyTree, removeTree, spaceTaken } from '../src/update/data-swap.js';
 
 const ROOM_MARGIN = 256 * 2 ** 20;
@@ -355,6 +357,27 @@ describe('what a switch copies', () => {
 });
 
 describe('a switch', () => {
+  test('each line a switch writes names the agent its mark says asked for it, through its fallback', async () => {
+    mark({ to: '0.11.0', why: 'update', by: 'resident' });
+    await decide(root, ops());
+    await decide(root, ops());
+    expect(readJournal(root).map((l) => `${l.step} ${l.outcome} ${l.by}`))
+      .toEqual(['copy ok resident', 'trial-start ok resident', 'fallback ok resident']);
+  });
+
+  test("a refused switch's line names that agent too, and a mark that names none writes none", async () => {
+    rmSync(data, { recursive: true });
+    mark({ to: '0.11.0', why: 'update', by: 'resident' });
+    await decide(root, ops());
+    expect(readJournal(root).map((l) => `${l.step} ${l.outcome} ${l.by}`)).toEqual(['copy refused resident']);
+    mkdirSync(join(data, 'sessions'), { recursive: true });
+    writeFileSync(join(data, 'sessions', 'store.txt'), 'A wrote this');
+    mark({ id: 'm2', to: '0.11.0', why: 'update' });
+    await decide(root, ops());
+    expect(readJournal(root).filter((l) => l.mark === 'm2').map((l) => `${l.step} ${l.outcome}`)).toEqual(['copy ok', 'trial-start ok']);
+    expect(readJournal(root).filter((l) => l.mark === 'm2').some((l) => 'by' in l)).toBe(false);
+  });
+
   test('takes a copy of the data, kept private, then starts the new release on trial', async () => {
     mark({ to: '0.11.0', why: 'update' });
     expect(await decide(root, ops())).toEqual({ release: '0.11.0', trial: true });
@@ -470,7 +493,8 @@ describe('a switch', () => {
       expect(existsSync(installPaths(root).copy)).toBe(false);
       const said = reports.find((l) => l.includes("didn't go ahead"))!;
       expect(said).toMatch(r.says);
-      expect(said).toContain('The request is dropped: once what refused it has cleared, ask again with /update restart.');
+      expect(said).toContain('The request is dropped: once what refused it has cleared, ask again with ' +
+        'Restart in the Web UI, `/update restart` in the host\'s terminal, or the install\'s own `connectome update restart` in a shell.');
       expect(said).not.toContain('..');
     });
   }
@@ -1104,6 +1128,15 @@ const failingAfterLine = (): LauncherOps => ({
 });
 
 describe('a Go back', () => {
+  test('each line a Go back writes names the agent its mark says asked for it, through its fallback', async () => {
+    await committedSwitch();
+    mark({ id: 'g1', to: '0.10.2', why: 'go-back', keepData: true, by: 'resident' });
+    await decide(root, ops());
+    await decide(root, ops());
+    expect(readJournal(root).filter((l) => l.mark === 'g1').map((l) => `${l.step} ${l.outcome} ${l.by}`))
+      .toEqual(['go-back ok resident', 'trial-start ok resident', 'fallback ok resident']);
+  });
+
   test("restoring the copy: puts the older release's data in place, keeps the newer aside, and starts the older on trial", async () => {
     await committedSwitch();
     mark({ id: 'g1', to: '0.10.2', why: 'go-back' });
@@ -2410,18 +2443,24 @@ describe('a refused request', () => {
     expect(failed).toBe(true);
     expect(existsSync(installPaths(root).mark)).toBe(false);
     expect(reports.find((l) => l.includes("didn't go ahead"))).toContain('The request is dropped: once what refused it has ' +
-      'cleared, ask again with /update restart. Syncing its removal failed (EIO), so a power cut could bring the mark back, ' +
+      'cleared, ask again with Restart in the Web UI, `/update restart` in the host\'s terminal, or the install\'s own ' +
+      '`connectome update restart` in a shell. Syncing its removal failed (EIO), so a power cut could bring the mark back, ' +
       'for the next start to try the request once more.');
   });
 
-  test('a refused Go back names the ways to ask for one again', async () => {
-    await committedSwitch();
-    mark({ to: '0.10.2', why: 'go-back' });
-    free = 1024;
-    await decide(root, ops());
-    expect(reports.find((l) => l.includes("didn't go ahead"))).toContain(
-      'once what refused it has cleared, ask again with /update back, or `--go-back` from a shell.');
-  });
+  for (const keepData of [false, true]) {
+    test(`a refused Go back ${keepData ? 'that keeps the data' : 'that restores the copy'} names each way an install offers to ask again, and the whole command for its own way`, async () => {
+      await committedSwitch();
+      mark({ to: '0.10.2', why: 'go-back', keepData });
+      free = 1024;
+      await decide(root, ops());
+      const said = reports.find((l) => l.includes("didn't go ahead"))!;
+      expect(said).toContain('once what refused it has cleared, ask again with Go back in the Web UI, `/update back` in the ' +
+        'host\'s terminal, or the install\'s own `connectome update back` in a shell. Where the host doesn\'t stay up, ' +
+        `\`bun ${shellWord(join(root, ENTRY_POINT))} --go-back${keepData ? ' --keep-data' : ''}\` asks its next start to go back.`);
+      expect(said).not.toContain('`--go-back` from a shell');
+    });
+  }
 });
 
 describe('the lock', () => {
@@ -2562,6 +2601,33 @@ describe('a Go back from a shell', () => {
     expect(reports[0]).toContain("Waiting up to 60 s for this install's host to give up its lock");
     expect(reports.at(-1)).toMatch(/^\[update\] Nothing was asked for: this install's lock has been held for the last 60 s\. Another start .* holds its lock .*`\/update back`/);
     expect(reports.at(-1)).toEndWith('Otherwise stop the service, run this again, and start the service.');
+  });
+
+  test("start.js --go-back names the install's own command for a host that holds the lock, as connectome update back does", async () => {
+    await committedSwitch();
+    reports = [];
+    lockOf(4242);
+    alive.add(4242);
+    expect(await goBackFromStart(root, [], ops())).toBe(1);
+    expect(reports.at(-1)).toEndWith(`A host that's up goes back with \`${shellWord(join(root, 'connectome'))} ` +
+      'update back`, which lets its turns end first. Otherwise stop the service, run this again, and start the service.');
+  });
+
+  test("start.js --go-back answers in /update back's words where the install's own command can't be worked out, as where its spelling can't load", async () => {
+    await committedSwitch();
+    reports = [];
+    lockOf(4242);
+    alive.add(4242);
+    const spelling = spyOn(typedCommandModule, 'typedCommand').mockImplementation(() => {
+      throw new Error('the working directory was removed');
+    });
+    try {
+      expect(await goBackFromStart(root, [], ops())).toBe(1);
+    } finally {
+      spelling.mockRestore();
+    }
+    expect(reports.at(-1)).toEndWith('A host that\'s up goes back with `/update back`, which ' +
+      'lets its turns end first. Otherwise stop the service, run this again, and start the service.');
   });
 
   test('takes the lock a host that keeps exiting gives up, writes the mark with no servers recorded, gives the lock up, and the next start goes back', async () => {

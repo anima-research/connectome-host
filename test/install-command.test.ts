@@ -2,7 +2,8 @@ import { afterEach, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { installCommandOf, typedCommand, writeInstallCommand } from '../src/cli/install-command.js';
+import { installCommandOf, writeInstallCommand } from '../src/cli/install-command.js';
+import { typedCommand } from '../src/update/typed-command.js';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });

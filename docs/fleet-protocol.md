@@ -30,7 +30,7 @@ bun src/index.ts <recipe> --headless [--exit-when-idle] [--socket-path <path>]
 | Flag | Effect |
 |---|---|
 | `--headless` | Start the framework as usual, then run the headless runtime instead of the TUI or the piped loop. Takes precedence over `--no-tui`. |
-| `--exit-when-idle` | One-shot: once the host has said `lifecycle:idle` (below) and nothing at all has been in flight for ≥500 ms, a running background script included, shut down gracefully with exit code 0. An armed self-restart (`modules.selfRestart`) takes its place and exits 75 instead; if it is cancelled, the host exits 0 once nothing at all has been in flight for 500 ms after the poll, every 100 ms, that sees the cancel. FleetModule never passes this flag. |
+| `--exit-when-idle` | One-shot: once the host has said `lifecycle:idle` (below) and nothing at all has been in flight for ≥500 ms, a running background script included, shut down gracefully with exit code 0. An armed self-restart (`modules.selfRestart`) takes its place and exits 75 instead; if it is cancelled, the host exits 0 once nothing at all has been in flight for 500 ms after the poll, every 100 ms, that sees the cancel. An armed self-update (`modules.selfUpdate`) takes its place too: the host tries it there, and exits 75 once it switches, but stays running while a try can't go ahead, until the update goes ahead or is disarmed. FleetModule never passes this flag. |
 | `--socket-path <p>` | Override the socket location. FleetModule never passes this either; it always expects `{dataDir}/ipc.sock`. |
 
 **Put the recipe first.** The recipe argument is the *first argument that does
@@ -72,10 +72,11 @@ were cut. After that, events emitted while no client is connected are
 dropped, not buffered: a later client sends `describe` for a `snapshot`.
 
 **Shutdown.** Triggered by `{"type":"shutdown"}`, by `/quit` sent as a
-`command`, by SIGTERM or SIGINT, by `--exit-when-idle`, or by an agent's
+`command`, by SIGTERM or SIGINT, by `--exit-when-idle`, by an agent's
 armed self-restart (`modules.selfRestart`), which goes once the host has said
 `lifecycle:idle` (below) and nothing at all has been in flight for ≥500 ms, a
-running background script included. The child emits
+running background script included, or by an update's switch, whether a
+person asked for it or an agent armed it (`modules.selfUpdate`). The child emits
 `lifecycle:exiting`; from then on it starts no session switch, and one under
 way that hasn't installed its new framework stops at its next step, stopping a
 framework it has made rather than starting it (one already installing
@@ -86,7 +87,7 @@ extension's `register()`, or an MCPL server's tool listing under
 `requestTimeoutMs: 0`, isn't. Then it calls `framework.stop()`
 (which cancels in-flight streams rather than letting them finish), closes the
 server, unlinks the socket and pid file, and exits once `headless.log` has
-taken its last lines: 0 (75 for a self-restart), or 1 if `framework.stop()`, or stopping what the switch made, failed. It waits at
+taken its last lines: 0 (75 for a self-restart or an update's switch), or 1 if `framework.stop()`, or stopping what the switch made, failed. It waits at
 most 2 s, then exits anyway with a line on its stderr. What it writes
 through `process.stdout.write` and `process.stderr.write` once the log has
 ended goes to its stderr too; Bun's `console.*` writes to its stdout and
@@ -127,7 +128,7 @@ Types live in `IncomingCommand` (`src/modules/fleet-types.ts`).
 | `request-workspace-file` | `path`, `corrId?` | → `workspace-file-snapshot` (≤5000 lines, with `truncated`, or `error`) |
 | `cancel-subagent` | `name`, `corrId?` | → `cancel-subagent-result`. The only way to stop a subagent that lives inside a child. |
 | `panel-request` | `op`, `params?`, `corrId?` | → `panel-response`, via the same `runPanelOp` the WebUI runs in-process (§3). |
-| `update-request` | `request`, `corrId` | → `update-response`. A switch's request from the install's host (`src/update/quiesce.ts`): `{op: 'quiesce', to, waitMs}` quiesces the child under the switch's reason for `to` and waits up to `waitMs` for its turns to end (a `waitMs` under a second still waits up to a second, agent-framework's least), answering whether it drained, which agents hold a turn and how many scripts run outside a turn, or, for a child whose quiesce was ended meanwhile, that it can't be counted; `{op: 'resume'}` ends the switch's quiesce, leaving any other. A request it can't read is answered `ok: false` with why. |
+| `update-request` | `request`, `corrId` | → `update-response`. A switch's request from the install's host (`src/update/quiesce.ts`): `{op: 'quiesce', to, waitMs}` quiesces the child under the switch's reason for `to` and waits up to `waitMs` for its turns to end (a `waitMs` under a second still waits up to a second, agent-framework's least), answering whether it drained, which agents hold a turn and how many scripts run outside a turn, with `operatorHold` (and its `reason`, if it has one) when the child was already quiesced under another reason, and `inFlight` naming the work it has in flight beside the framework's drained (where the answer reads drained, turn work its own idle check still counts, such as a text the framework refused that it holds for the next; a session switch, an operator's work, a credential action, subagent runs) when it has any, or, for a child whose quiesce was ended meanwhile, that it can't be counted; `{op: 'resume'}` ends the switch's quiesce, leaving any other. A host also sends it at its own start to each child it adopted, since a stop during a switch's try can leave a child holding the switch's quiesce. A request it can't read is answered `ok: false` with why. |
 
 ### 2.2 Child → parent
 

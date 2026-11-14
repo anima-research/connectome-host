@@ -788,7 +788,9 @@ export const UPDATE_STRINGS = {
   installed: true,
   goBack: { to: true, since: true },
   restart: { to: true, why: true, phase: true, hosts: { host: true, activeTurnAgents: true } },
-  lastSwitch: { outcome: true, step: true, from: true, to: true, at: true },
+  armed: { to: true, since: true, by: true, lastTry: { at: true, hosts: { host: true, activeTurnAgents: true, inFlight: true } } },
+  armedDropped: { to: true, since: true, at: true },
+  lastSwitch: { outcome: true, step: true, from: true, to: true, at: true, by: true },
 } satisfies KeptStrings;
 
 export const HEALTH_STRINGS: KeptStrings = {

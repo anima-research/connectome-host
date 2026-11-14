@@ -770,6 +770,7 @@ unknown-key warning, like those at the other levels.
 - **TUI, readline and batch modes** — OpenTUI interactive terminal, `--no-tui` for a plain prompt, or piped stdin for a one-shot batch run
 - **Headless mode** — `--headless`: no terminal, JSONL over a Unix socket; how residents run under a supervisor
 - **Self-restart** (opt-in, `modules.selfRestart`) — `lifecycle--restart`: the agent restarts its own host, for an edited recipe or rebuilt code. It happens once the asking turn has ended; the host exits with code 75 for its supervisor to start it again, so enable it only under one that does (launchd `KeepAlive`, systemd `Restart=on-failure`, a fleet parent's `autoRestart`, which is off unless the child's entry sets it, and which counts a self-restart toward its cap of 3 restarts in 60 s). A fleet parent's own self-restart stops its children as any shutdown does, and the restarted parent starts again only its `autoStart` children. `cooldownMinutes` (default 10) spaces restarts out
+- **Self-update** (opt-in, `modules.selfUpdate`) — `lifecycle--update`: the agent's own `/update`. It checks what's out, installs a release beside the running one, and arms a restart onto it for the host's first quiet moment. A restart arms only on a headless host started with `CONNECTOME_SUPERVISED=1`, which `connectome service install` sets only for a service that restarts the host when it exits with 75 and with 1; anywhere else it refuses and says why. The changelog's entry has the rest
 - **Time-travel** — undo/redo on the agent's window; Chronicle-backed checkpoints, rollback and branch exploration; in the web UI, rolling back to a message and suppressing messages
 - **Session management** — isolated sessions with auto-naming
 - **Ops alerts** — compression quarantine, refusal streaks, inference exhaustion and more surface as `ops:alert` traces, `logs/failures.log` records, and an optional webhook (`CONNECTOME_OPS_WEBHOOK`)
@@ -1055,8 +1056,9 @@ a value. The forms of those three that only list or show answer as they do
 without a switch. The same goes for the fleet view's stop and restart keys,
 and for the Web UI's rollback, suppress, fleet stop and restart, host
 quiesce and resume, and pin and settings changes. A pin or settings change
-made for a fleet child is passed on to it, and the child refuses it only
-while its own session is switching. Once the switch has stopped the old
+made for a fleet child is passed on to it, and the child refuses it while
+its own session is switching, and while it is quiesced for a release
+switch. Once the switch has stopped the old
 session's framework, the Web UI answers "host not ready" until the next one
 is installed, as before. `/session new` and `/session switch` start no
 switch while one is under way, or while one of the commands above, given

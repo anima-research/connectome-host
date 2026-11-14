@@ -27,16 +27,20 @@ export type Check = ReadCheck | { at: string; ok: false; error: string };
 /** How the last switch or Go back ended, by the journal. A fallback carries
  *  the last lines the failed release kept itself, or null when it kept
  *  none. */
-export type SwitchOutcome =
+export type SwitchOutcome = (
   | { outcome: 'committed'; from: string; to: string; at: string }
   | { outcome: 'fell-back'; from: string; to: string; at: string; reason: string; trialLog: string[] | null }
-  | { outcome: 'refused'; step: string; from: string; to: string; at: string; reason: string };
+  | { outcome: 'refused'; step: string; from: string; to: string; at: string; reason: string }
+) & { by?: string };
 
 /** One host's state after a switch's quiesce: `host` is "this host" or the
  *  child's name. A host that can't be counted, such as a child that didn't
  *  answer or a host serving again, says why. */
 export type HostQuiet =
-  | { host: string; answered: true; drained: boolean; activeTurnAgents: string[]; backgroundScripts: number }
+  | {
+    host: string; answered: true; drained: boolean; activeTurnAgents: string[]; backgroundScripts: number;
+    operatorHold?: { reason?: string }; inFlight?: string[];
+  }
   | { host: string; answered: false; why: string };
 
 export interface RestartState {
@@ -65,6 +69,8 @@ export interface UpdateStatus {
   installed: string | null;
   goBack: { to: string; since: string } | null;
   restart: RestartState | null;
+  armed: ArmedSwitch | null;
+  armedDropped: (Pick<ArmedSwitch, 'to' | 'since'> & { at: string; reason: string }) | null;
   /** The reason the operator quiesced this host under, which it keeps
    *  through a restart. */
   operatorQuiesced: string | null;
@@ -76,7 +82,15 @@ export interface UpdateStatus {
   problems: string[];
 }
 
+export interface ArmedSwitch {
+  to: string;
+  since: string;
+  by: string | null;
+  lastTry: { at: string; waited: string; hosts: HostQuiet[] } | null;
+}
+
 export interface UpdateWays {
+  reader: 'person' | 'agent';
   install: string;
   restart: string;
   wait: string;
@@ -89,6 +103,7 @@ export interface UpdateWays {
 }
 
 export const COMMAND_WAYS: UpdateWays = {
+  reader: 'person',
   install: '/update install',
   restart: '/update restart',
   wait: '/update restart wait',
@@ -101,6 +116,7 @@ export const COMMAND_WAYS: UpdateWays = {
 };
 
 export const PAGE_WAYS: UpdateWays = {
+  reader: 'person',
   install: 'Update',
   restart: 'Restart',
   wait: 'Wait longer',
@@ -112,27 +128,114 @@ export const PAGE_WAYS: UpdateWays = {
   check: 'Check now',
 };
 
-export const CLI_WAYS: UpdateWays = {
-  install: 'connectome update install',
-  restart: 'connectome update restart',
-  wait: 'connectome update restart wait',
-  now: 'connectome update restart now',
-  resume: 'connectome update restart resume',
-  back: 'connectome update back',
-  keep: 'connectome update back keep',
-  restore: 'connectome update back restore',
-  check: 'connectome update check',
-};
+export function cliWays(typed: string): UpdateWays {
+  return {
+    reader: 'person',
+    install: `${typed} update install`,
+    restart: `${typed} update restart`,
+    wait: `${typed} update restart wait`,
+    now: `${typed} update restart now`,
+    resume: `${typed} update restart resume`,
+    back: `${typed} update back`,
+    keep: `${typed} update back keep`,
+    restore: `${typed} update back restore`,
+    check: `${typed} update check`,
+  };
+}
 
-function notesUrl(version: string): string {
+export function toolWays(headless: boolean, command = 'connectome'): UpdateWays & { person: UpdateWays } {
+  const person = headless ? cliWays(command) : COMMAND_WAYS;
+  return {
+    reader: 'agent',
+    install: 'lifecycle--update install',
+    restart: 'lifecycle--update restart',
+    wait: `the person's ${person.wait}`,
+    now: `the person's ${person.now}`,
+    resume: `the person's ${person.resume}`,
+    back: `the person's ${person.back}`,
+    keep: `the person's ${person.keep}`,
+    restore: `the person's ${person.restore}`,
+    check: 'lifecycle--update check',
+    person,
+  };
+}
+
+export const TOOL_WAYS = toolWays(true);
+
+export const QUIET_MOMENT = 'nothing the host counts as in flight is still going here, such as a turn, subagent run, ' +
+  'background script, session switch, operator\'s work or credential action, and each fleet child says nothing is ' +
+  'going there, such as a turn, background script, operator\'s work or credential action, though a child on a ' +
+  'release that doesn\'t report its work outside turns says only that its turns and scripts are done';
+
+export const ASKS_NOBODY = 'however long that takes, so it goes only once every host has said no turn is running ' +
+  'there, and asks nobody';
+
+export const ARMED_RETRY = 'A try that finds something still going waits at least a minute before the next.';
+
+export const TOOL_CANCEL = 'lifecycle--update cancel';
+
+export const LAST_SWITCH = 'the last switch';
+
+export const QUOTED = '  ';
+
+const WROTE_LAST = ', as it kept it (the service\'s log, or the terminal it was started in, also has what this leaves ' +
+  'out, such as an error Bun reported itself):';
+
+export function bunUpgrade(ways: UpdateWays): string {
+  return ways.reader === 'agent'
+    ? 'Only the person who runs your host can upgrade its Bun (`bun upgrade`, or the package manager that installed ' +
+      `it) and start the host again; then ${ways.install} can install it.`
+    : `Upgrade Bun (\`bun upgrade\`, or the package manager that installed it), start the host again, then ${ways.install}.`;
+}
+
+function bunFirst(ways: UpdateWays): string {
+  return ways.reader === 'agent'
+    ? `the person who runs your host upgrades Bun first, and ${ways.install} installs nothing until then.`
+    : `upgrade Bun first, and ${ways.install} installs nothing until then.`;
+}
+
+export function armedName(armed: Pick<ArmedSwitch, 'to'>, opening = true): string {
+  const name = `a restart onto ${armed.to}`;
+  return opening ? name.charAt(0).toUpperCase() + name.slice(1) : name;
+}
+
+export function notesUrl(version: string): string {
   return `https://github.com/anima-research/connectome-host/blob/v${version}/CHANGELOG.md`;
 }
 
-export const NOT_AN_INSTALL = 'This host wasn\'t started through an install\'s entry point, so it can\'t update itself. ' +
-  'Installed from npm, it can: run the package\'s src/update/setup.ts with bun once, from the directory you start ' +
-  'the host in and with the DATA_DIR you start it with (`bun node_modules/@animalabs/connectome-host/src/update/setup.ts` ' +
-  'when it\'s installed there); setup then says how to start the host. A clone updates by hand: ' +
-  'docs/DEPLOYMENTS.md, "Updating an install", "By hand".';
+export function notAnInstall(ways: UpdateWays): string {
+  return 'This host wasn\'t started through an install\'s entry point, so it can\'t update itself. ' +
+    (ways.reader === 'agent'
+      ? 'Nothing you call changes that: only the person who runs your host can, by making it an install with setup or ' +
+        'by updating it by hand.'
+      : 'Installed from npm, it can: run the package\'s src/update/setup.ts with bun once, from the directory you start ' +
+        'the host in and with the DATA_DIR you start it with ' +
+        '(`bun node_modules/@animalabs/connectome-host/src/update/setup.ts` when it\'s installed there); setup then says ' +
+        'how to start the host. A clone updates by hand: docs/DEPLOYMENTS.md, "Updating an install", "By hand".');
+}
+
+const operatorHeld = (hold: { reason?: string }): string =>
+  `quiesced by its operator${hold.reason ? ` (${hold.reason})` : ''}`;
+
+export function heldLines(hosts: HostQuiet[]): string[] {
+  return hosts.flatMap((host) => host.answered && host.operatorHold !== undefined
+    ? [`- ${host.host}: ${operatorHeld(host.operatorHold)}`] : []);
+}
+
+export function passItOn(ways: UpdateWays, said: string): string[] {
+  return ways.reader === 'agent'
+    ? [`${said}, written to the person who runs it: what it asks of that person is theirs to do, so pass it on.`] : [];
+}
+
+export function registryPassOn(ways: UpdateWays): string[] {
+  return ways.reader === 'agent'
+    ? ['That error is from your host\'s read of its registry. If a later check gives it again, tell the person who runs ' +
+      'your host.'] : [];
+}
+
+const HOST_LINES = 'Those quoted lines are your host\'s, written to the person who runs it: what they ask of that person ' +
+  'is theirs to do, so pass it on. Where they say a store was refused, trying that release again before what they ask is ' +
+  'done falls back the same way.';
 
 export const GO_BACK_UNREAD = 'whether a Go back is offered';
 
@@ -170,16 +273,25 @@ function costLines(costs: Cost[]): string[] {
   return lines;
 }
 
-export function noticeLines(check: ReadCheck, running: string, install: boolean, ways: UpdateWays = COMMAND_WAYS): string[] {
+function goingBackCost(running: string, ways: UpdateWays): string {
+  return `Going back after a switch keeps the newer data only if ${running} can still read it. If it can't, going back ` +
+    `means ${ways.restore}, and what was lived since the switch is set aside.`;
+}
+
+export function noticeLines(
+  check: ReadCheck, running: string, install: boolean, ways: UpdateWays = COMMAND_WAYS, installed: string | null = null,
+): string[] {
   if (check.candidate === null) return [];
   const lines = [`connectome-host ${check.candidate} is out; this host runs ${running}.`];
   if (check.runningDeprecated !== null) lines.push(deprecatedLine(running, check.runningDeprecated));
   lines.push(...costLines(check.costs));
   if (check.bunFloorUnmet !== null) {
-    lines.push(`${check.candidate} needs Bun ${check.bunFloorUnmet}: upgrade Bun first, and Update installs nothing until then.`);
+    lines.push(`${check.candidate} needs Bun ${check.bunFloorUnmet}: ${bunFirst(ways)}`);
   }
+  if (install) lines.push(goingBackCost(running, ways));
   lines.push(`Notes: ${notesUrl(check.candidate)}`);
-  lines.push(install ? `To take it: ${ways.install}, then ${ways.restart}.` : NOT_AN_INSTALL);
+  lines.push(!install ? notAnInstall(ways)
+    : installed === check.candidate ? `To take it: ${ways.restart}.` : `To take it: ${ways.install}, then ${ways.restart}.`);
   return lines;
 }
 
@@ -193,7 +305,7 @@ export function busyLines(restart: RestartState, waitedMs: number, ways: UpdateW
   ];
 }
 
-function busyHostLines(hosts: HostQuiet[]): string[] {
+function busyHostLines(hosts: HostQuiet[], scriptsEnd = 'which a stop ends'): string[] {
   const lines: string[] = [];
   for (const host of hosts) {
     if (!host.answered) {
@@ -207,7 +319,7 @@ function busyHostLines(hosts: HostQuiet[]): string[] {
           : 'not drained, though no agent holds a turn: a wake is waiting on an auxiliary call before its turn starts',
         // Drain doesn't wait for them.
         ...(host.backgroundScripts > 0
-          ? [`${host.backgroundScripts} background script${host.backgroundScripts === 1 ? '' : 's'}, which a stop ends`]
+          ? [`${host.backgroundScripts} background script${host.backgroundScripts === 1 ? '' : 's'}, ${scriptsEnd}`]
           : []),
       ];
       lines.push(`- ${host.host}: ${parts.join('; ')}`);
@@ -223,23 +335,28 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
     lines.push(`${status.checks ? 'The registry hasn\'t been read yet' : 'This host doesn\'t read the registry on its ' +
       'own'}: ${ways.check} reads it.`);
   } else if (!check.ok) {
-    lines.push(told(`Reading the registry failed at ${check.at}`, check.error));
+    lines.push(told(`Reading the registry failed at ${check.at}`, check.error), ...registryPassOn(ways));
   } else if (check.candidate === null) {
     lines.push(`No newer release is offered (read at ${check.at}): Update offers final releases that aren't deprecated.`);
     if (check.runningDeprecated !== null) lines.push(deprecatedLine(status.running, check.runningDeprecated));
   } else {
-    lines.push(...noticeLines(check, status.running, status.install, ways));
+    lines.push(...noticeLines(check, status.running, status.install, ways, status.installed));
   }
   if (!status.install) {
-    if (check === null || !check.ok || check.candidate === null) lines.push(NOT_AN_INSTALL);
+    if (check === null || !check.ok || check.candidate === null) lines.push(notAnInstall(ways));
     return [...lines, ...problemLines(status.problems)];
   }
   if (status.installing !== null) lines.push(`Installing ${status.installing}.`);
-  else if (status.lastInstall?.ok === false) lines.push(failedInstall(status.lastInstall));
+  else if (status.lastInstall?.ok === false) {
+    lines.push(failedInstall(status.lastInstall), ...passItOn(ways, 'That error is your host\'s'));
+  }
   if (status.installed !== null) {
     lines.push(retrying(status)
       ? `${status.installed} is installed, and ended before its commit at its last try: ${ways.restart} tries it again.`
       : `${status.installed} is installed: ${ways.restart} switches to it.`);
+    if (!check?.ok || check.candidate === null) {
+      lines.push(goingBackCost(status.running, ways), `Notes: ${notesUrl(status.installed)}`);
+    }
   }
   if (status.goBack !== null) {
     lines.push(`Going back to ${status.goBack.to} is offered, with the copy of its data taken ${status.goBack.since}: ` +
@@ -254,6 +371,37 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
       lines.push(`${restartName(restart, true)} is ${PHASE[restart.phase]}.`);
     }
   }
+  const armed = status.armed ?? null;
+  if (armed !== null) {
+    lines.push(`${armedName(armed)} is armed since ${armed.since}${armed.by !== null ? `, asked for by ${armed.by}` : ''}: it ` +
+      `begins at the host's first quiet moment, once ${QUIET_MOMENT}.` + (armed.lastTry === null ? ` ${ARMED_RETRY}` : ''));
+    const last = armed.lastTry;
+    if (last !== null) {
+      lines.push(told(`Its try at ${last.at} didn't go ahead`, last.waited) + ' It tries again at a quiet moment at ' +
+        'least a minute later.');
+      const holding = last.hosts.flatMap((host) => {
+        const held = host.answered && host.operatorHold !== undefined ? [operatorHeld(host.operatorHold)] : [];
+        if (!host.answered || !host.drained) {
+          return busyHostLines([host], 'which the switch waits for').map((line) =>
+            [line, ...held, ...host.answered && host.inFlight !== undefined ? [list(host.inFlight)] : []].join('; '));
+        }
+        const parts = [...held, ...host.inFlight ?? [], ...(host.backgroundScripts > 0
+          ? [`${host.backgroundScripts} background script${host.backgroundScripts === 1 ? '' : 's'} running outside any turn`]
+          : [])];
+        return parts.length > 0 ? [`- ${host.host}: ${parts.join('; ')}`] : [];
+      });
+      if (holding.length > 0) lines.push('Holding it then:', ...holding);
+    }
+    const instead = [...status.installed !== null ? [ways.restart] : [], ...status.goBack !== null ? [ways.keep, ways.restore] : []];
+    lines.push(ways.reader === 'agent' || instead.length === 0
+      ? `${ways.reader === 'agent' ? '' : 'The agent\'s own '}${TOOL_CANCEL} disarms it.`
+      : `The agent's own ${TOOL_CANCEL} disarms it, and ${instead.length > 1 ? `${instead.slice(0, -1).join(', ')} or ` +
+        instead.at(-1) : instead[0]} here goes ahead in its place.`);
+  }
+  const dropped = status.armedDropped ?? null;
+  if (dropped !== null) {
+    lines.push(told(`${armedName(dropped)} armed at ${dropped.since} didn't go ahead at ${dropped.at}`, dropped.reason));
+  }
   if (status.operatorQuiesced !== null) {
     lines.push(`This host is quiesced${status.operatorQuiesced ? ` (${status.operatorQuiesced})` : ''}: a restart, or ` +
       'a Go back that keeps the data, keeps it so. Restoring the copy brings back the copy\'s own state instead.');
@@ -261,22 +409,23 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   if (status.switchQuiesceLeft) {
     lines.push(`This host is quiesced for a switch that isn't going ahead: ${ways.resume} ends it.`);
   }
-  const last = status.lastSwitch;
-  if (last?.outcome === 'committed') lines.push(`Last switch: ${last.from} to ${last.to}, committed at ${last.at}.`);
-  if (last?.outcome === 'refused') lines.push(told(`Last request: to ${last.to}, didn't go ahead at ${last.at}`, last.reason));
-  if (last?.outcome === 'fell-back') {
-    const head = `Last switch: ${last.from} came back with its data at ${last.at}, from a try of ${last.to}` +
-      (last.reason ? `: ${last.reason}.` : '.');
-    const kept = keptLines(last);
-    if (kept.length === 0) {
-      lines.push(`${head} ${MORE_IN_LOG}`);
-    } else {
-      lines.push(`${head} What ${last.to} wrote last, as it kept it (the service's log, or the terminal it was started ` +
-        'in, also has what this leaves out, such as an error Bun reported itself):',
-      ...kept.map((line) => `  ${line}`));
-    }
-  }
+  if (status.lastSwitch !== null) lines.push(...lastSwitchLines(status.lastSwitch, ways));
   return [...lines, ...problemLines(status.problems)];
+}
+
+export function lastSwitchLines(last: SwitchOutcome, ways: UpdateWays = COMMAND_WAYS): string[] {
+  const asked = last.by !== undefined ? `, asked for by ${last.by}` : '';
+  if (last.outcome === 'committed') return [`Last switch: ${last.from} to ${last.to}, committed at ${last.at}${asked}.`];
+  if (last.outcome === 'refused') {
+    return [told(`Last request: to ${last.to}${asked}, didn't go ahead at ${last.at}`, last.reason),
+      ...passItOn(ways, 'That reason is your host\'s')];
+  }
+  const head = `Last switch: ${last.from} came back with its data at ${last.at}, from a try of ${last.to}${asked}` +
+    (last.reason ? `: ${last.reason}.` : '.');
+  const kept = keptLines(last);
+  if (kept.length === 0) return [`${head} ${ways.reader === 'agent' ? MORE_IN_LOG_ASK : MORE_IN_LOG}`];
+  return [`${head} What ${last.to} wrote last${WROTE_LAST}`, ...kept.map((line) => `${QUOTED}${line}`),
+    ...ways.reader === 'agent' ? [HOST_LINES] : []];
 }
 
 function failedInstall(install: { version: string; error?: string }): string {
@@ -284,6 +433,9 @@ function failedInstall(install: { version: string; error?: string }): string {
 }
 
 const MORE_IN_LOG = 'The service\'s log, or the terminal the host was started in, says more.';
+
+const MORE_IN_LOG_ASK = 'The service\'s log, or the terminal your host was started in, says more, and the person who ' +
+  'runs your host can read either: ask them.';
 
 function keptLines(last: Extract<SwitchOutcome, { outcome: 'fell-back' }>): string[] {
   return last.trialLog !== null && last.trialLog.some((line) => line !== '') ? last.trialLog : [];
@@ -305,7 +457,7 @@ export function goBackUnread(status: UpdateStatus): string | undefined {
 }
 
 export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAYS): string[] {
-  if (!status.install) return [NOT_AN_INSTALL];
+  if (!status.install) return [notAnInstall(ways)];
   if (status.goBack === null) {
     const unread = goBackUnread(status);
     return [unread !== undefined
@@ -315,12 +467,16 @@ export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   const { to, since } = status.goBack;
   return [
     `Going back to ${to}, whose data the copy holds as it was at ${since}. Two ways:`,
-    `- ${ways.keep}: ${to} runs on the data as it is now, so residents lose nothing. If ${to} can't read it, its ` +
-      `start goes back to ${status.running} by itself, and ${ways.restore} is the way then.`,
+    `- ${ways.keep}: ${to} runs on the data as it is now, so residents lose nothing. It comes back as the host is ` +
+      'now: answering new turns, or holding them if its operator quiesced it, though a switch\'s quiesce left behind ' +
+      `ends at that start. If ${to} can't read the data, its start goes back to ${status.running} by itself, and ` +
+      `${ways.restore} is the way then.`,
     `- ${ways.restore}: the copy is restored, and everything since ${since} is set aside, not deleted. For ` +
-      'residents, that is everything they have lived since then. The host comes back quiesced or serving as the ' +
-      'copy holds it, so a quiesce made since then doesn\'t come back.',
-    'Either way the host quiesces first, as Restart does.',
+      'residents, that is everything they have lived since then. The host comes back answering new turns, unless ' +
+      'it had been quiesced from the Web UI before the Restart that took the copy: then it comes back holding them, ' +
+      'and clicking "⏸ quiesced" in the Web UI\'s ' +
+      'top bar lets them through. Whether it\'s quiesced now makes no difference.',
+    'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
   ];
 }
 
@@ -346,11 +502,12 @@ export function restartLines(status: UpdateStatus): string[] | null {
     lines.push(`This host is quiesced${status.operatorQuiesced ? ` (${status.operatorQuiesced})` : ''}, and comes back ` +
       'quiesced.');
   }
+  lines.push(goingBackCost(status.running, PAGE_WAYS));
   lines.push(`Notes: ${notesUrl(to)}`);
   return lines;
 }
 
-export type UpdateWay = keyof UpdateWays;
+export type UpdateWay = Exclude<keyof UpdateWays, 'reader'>;
 
 function updateOffered(status: UpdateStatus): boolean {
   const check = status.check;
@@ -378,6 +535,11 @@ export function commandFor(way: UpdateWay, status: UpdateStatus): string | null 
   if (way === 'restart') return status.installed === null ? null : `${COMMAND_WAYS.restart} ${status.installed}`;
   if (way === 'keep' || way === 'restore') return status.goBack === null ? null : `${COMMAND_WAYS[way]} ${status.goBack.to}`;
   return COMMAND_WAYS[way];
+}
+
+export function pageRequest(way: UpdateWay, status: UpdateStatus): { type: 'command'; command: string; page: true } | null {
+  const command = commandFor(way, status);
+  return command === null ? null : { type: 'command', command, page: true };
 }
 
 export interface Banner {
@@ -420,7 +582,8 @@ export function bannerOf(status: UpdateStatus): Banner | null {
   const check = status.check;
   if (check?.ok && check.candidate !== null) {
     const notice = noticeLines(check, status.running, status.install, ways)
-      .filter((line) => !line.startsWith('Notes: ') && !line.startsWith('To take it: '));
+      .filter((line) => !line.startsWith('Notes: ') && !line.startsWith('To take it: ') &&
+        line !== goingBackCost(status.running, ways));
     return {
       line: notice.join(' '),
       ways: updateOffered(status) ? ['install'] : [],

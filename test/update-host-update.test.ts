@@ -3,8 +3,9 @@ import * as fs from 'node:fs';
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { HostModeStatus } from '@animalabs/agent-framework';
+import type { HostModeStatus, ModuleContext } from '@animalabs/agent-framework';
 import { handleCommand } from '../src/commands.js';
+import { WebUiModule, __getSharedServerPortForTests, stopWebUiServer } from '../src/modules/web-ui-module.js';
 import {
   appendJournal, copyLabelPath, installPaths, moveCurrent, readMark, realOrResolved, switchQuiesceReason, writeJsonAtomic,
   type CopyLabel,
@@ -14,7 +15,8 @@ import { RELEASE_HOST } from '../src/update/launcher.js';
 import type { SwitchFleet } from '../src/update/quiesce.js';
 import { HostUpdate, hostUpdate as theHostUpdate, type HostStop, type SwitchFramework, type UpdateSetup } from '../src/update/update.js';
 import {
-  COMMAND_WAYS, commandFor, goBackLines, noticeLines, statusLines, type HostQuiet, type ReadCheck, type UpdateStatus,
+  COMMAND_WAYS, PAGE_WAYS, TOOL_WAYS, cliWays, commandFor, goBackLines, noticeLines, pageRequest, statusLines,
+  type HostQuiet, type ReadCheck, type UpdateStatus,
   type UpdateWay,
 } from '../src/web/update-text.js';
 
@@ -217,7 +219,9 @@ describe('the notice', () => {
     expect(noticeLines(check, '0.12.1', true)).toEqual([
       'connectome-host 0.13.0 is out; this host runs 0.12.1.',
       'None of the releases since this one is breaking.',
-      '0.13.0 needs Bun >=1.5.0: upgrade Bun first, and Update installs nothing until then.',
+      '0.13.0 needs Bun >=1.5.0: upgrade Bun first, and /update install installs nothing until then.',
+      "Going back after a switch keeps the newer data only if 0.12.1 can still read it. If it can't, going back means " +
+        '/update back restore, and what was lived since the switch is set aside.',
       'Notes: https://github.com/anima-research/connectome-host/blob/v0.13.0/CHANGELOG.md',
       'To take it: /update install, then /update restart.',
     ]);
@@ -283,13 +287,22 @@ describe('the notice', () => {
 });
 
 describe('Update', () => {
+  test("tells the page, once it has installed, that its Restart switches to the newest release installed", async () => {
+    const { root, dataDir } = install('0.12.1');
+    const { ops } = manager();
+    const { update } = hostUpdate({ root, dataDir, installOps: ops, fetchManifest: registry({ '0.12.1': {}, '0.13.0': field(false, false) }).fetchManifest });
+    expect(await update.install(PAGE_WAYS)).toEqual({ done: true, lines: [
+      '0.13.0 is installed beside 0.12.1, which runs on: Restart switches to the newest release installed.',
+    ] });
+  });
+
   test('installs the candidate beside the running release, and asks for no switch', async () => {
     const { root, dataDir } = install('0.12.1');
     const { ops, runs } = manager();
     const { update } = hostUpdate({ root, dataDir, installOps: ops, fetchManifest: registry({ '0.12.1': {}, '0.13.0': field(false, false) }).fetchManifest });
     const answer = await update.install();
     expect(answer).toEqual({ done: true, lines: [
-      '0.13.0 is installed beside 0.12.1, which runs on. Restart switches to the newest release installed: /update restart.',
+      '0.13.0 is installed beside 0.12.1, which runs on: /update restart switches to the newest release installed.',
     ] });
     expect(runs).toEqual(['npm install --save-exact --no-audit --no-fund @animalabs/connectome-host@0.13.0']);
     expect(readMark(root)).toBeNull();
@@ -353,10 +366,10 @@ describe('Restart', () => {
     mkdirSync(join(root, 'releases', '0.14.0'));
     placeRelease(root, 'latest');
     const { framework, calls } = fakeFramework();
-    const { update, stops } = hostUpdate({ root, dataDir, framework }, { supervised: true });
+    const { update, stops } = hostUpdate({ root, dataDir, framework, env: { CONNECTOME_SUPERVISED: '1' } }, { supervised: true });
     const answer = await update.restartToInstalled();
     expect(answer).toEqual({ done: true, lines: [
-      'Stopping to switch to 0.13.0: the host\'s next start does it, which a service set up for updates makes by itself.',
+      'Stopping to switch to 0.13.0. The service starts the host again by itself, and that start does it.',
     ] });
     expect(calls).toEqual(['quiesce']);
     expect(readMark(root)).toMatchObject({ v: 1, to: '0.13.0', why: 'update', at: '2026-10-22T12:00:00.000Z' });
@@ -405,10 +418,21 @@ describe('Restart', () => {
   });
 
   test("an unsupervised host stops as /quit does, and says to start it again", async () => {
+    for (const env of [{}, { CONNECTOME_SUPERVISED: '1' }]) {
+      const { root, dataDir } = install('0.12.1', ['0.13.0']);
+      const { update, stops } = hostUpdate({ root, dataDir, env }, { supervised: false });
+      expect((await update.restartToInstalled()).lines).toEqual([
+        'Stopping to switch to 0.13.0: once it has stopped, start the host again, and that start does it.',
+      ]);
+      expect(stops).toHaveLength(1);
+    }
+  });
+
+  test("a headless host started without the service's line says its next start does the switch, which a service set up for updates makes by itself", async () => {
     const { root, dataDir } = install('0.12.1', ['0.13.0']);
-    const { update, stops } = hostUpdate({ root, dataDir }, { supervised: false });
+    const { update, stops } = hostUpdate({ root, dataDir, env: {} }, { supervised: true });
     expect((await update.restartToInstalled()).lines).toEqual([
-      'Stopping to switch to 0.13.0: once it has stopped, start the host again, and that start does it.',
+      'Stopping to switch to 0.13.0: the host\'s next start does it, which a service set up for updates makes by itself.',
     ]);
     expect(stops).toHaveLength(1);
   });
@@ -659,7 +683,7 @@ describe('Restart', () => {
   test("a mark in place whose sync fails still stops the host, and the farewell names the failed sync", async () => {
     const { root, dataDir } = install('0.12.1', ['0.13.0']);
     const { framework, calls } = fakeFramework();
-    const { update, stops } = hostUpdate({ root, dataDir, framework }, { supervised: true });
+    const { update, stops } = hostUpdate({ root, dataDir, framework, env: { CONNECTOME_SUPERVISED: '1' } }, { supervised: true });
     const spies = failSyncAfterRenameTo(installPaths(root).mark);
     let answer;
     try {
@@ -667,9 +691,8 @@ describe('Restart', () => {
     } finally {
       for (const spy of spies) spy.mockRestore();
     }
-    const farewell = "Stopping to switch to 0.13.0: the host's next start does it, which a service set up for updates makes by " +
-      'itself. The request is written, though syncing it to the disk failed (EIO: i/o error, fsync), so a power cut could ' +
-      'still undo it.';
+    const farewell = 'Stopping to switch to 0.13.0. The service starts the host again by itself, and that start does it. The ' +
+      'request is written, though syncing it to the disk failed (EIO: i/o error, fsync), so a power cut could still undo it.';
     expect(answer).toEqual({ done: true, lines: [farewell] });
     expect(readMark(root)).toMatchObject({ to: '0.13.0', why: 'update' });
     expect(calls).toEqual(['quiesce']);
@@ -710,7 +733,11 @@ describe('Restart', () => {
   test("is refused with nothing newer installed, with no stop to use, before this host's commit, or during an install", async () => {
     const { root, dataDir } = install('0.12.1', ['0.11.0']);
     expect((await hostUpdate({ root, dataDir }, { supervised: true }).update.restartToInstalled()).lines)
-      .toEqual(['No release newer than 0.12.1 is installed: Update installs one first.']);
+      .toEqual(['No release newer than 0.12.1 is installed: /update install installs one first.']);
+    for (const ways of [cliWays('connectome'), TOOL_WAYS]) {
+      expect((await hostUpdate({ root, dataDir }, { supervised: true }).update.restartToInstalled(undefined, ways)).lines)
+        .toEqual([`No release newer than 0.12.1 is installed: ${ways.install} installs one first.`]);
+    }
     placeRelease(root, '0.13.0');
     expect((await hostUpdate({ root, dataDir }).update.restartToInstalled()).lines)
       .toEqual([expect.stringContaining('This host has no stop a restart can use')]);
@@ -793,12 +820,16 @@ describe('Go back', () => {
     expect(update.status().goBack).toEqual({ to: '0.12.1', since: '2026-10-20T10:00:00.000Z' });
     expect(goBackLines(update.status())).toEqual([
       'Going back to 0.12.1, whose data the copy holds as it was at 2026-10-20T10:00:00.000Z. Two ways:',
-      "- /update back keep: 0.12.1 runs on the data as it is now, so residents lose nothing. If 0.12.1 can't read it, " +
-        'its start goes back to 0.13.0 by itself, and /update back restore is the way then.',
-      '- /update back restore: the copy is restored, and everything since 2026-10-20T10:00:00.000Z is set aside, not ' +
-        'deleted. For residents, that is everything they have lived since then. The host comes back quiesced or serving ' +
-        "as the copy holds it, so a quiesce made since then doesn't come back.",
-      'Either way the host quiesces first, as Restart does.',
+      '- /update back keep: 0.12.1 runs on the data as it is now, so residents lose nothing. It comes back as the ' +
+        'host is now: answering new turns, or holding them if its operator quiesced it, though a switch\'s quiesce ' +
+        'left behind ends at that start. If 0.12.1 can\'t read the data, its start goes back to 0.13.0 by itself, and ' +
+        '/update back restore is the way then.',
+      '- /update back restore: the copy is restored, and everything since 2026-10-20T10:00:00.000Z is set aside, ' +
+        'not deleted. For residents, that is everything they have lived since then. The host comes back answering ' +
+        'new turns, unless it had been quiesced from the Web UI before the Restart that took the copy: then it ' +
+        'comes back holding them, and clicking "⏸ quiesced" in the Web UI\'s top bar lets them through. Whether it\'s ' +
+        'quiesced now makes no difference.',
+      'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
     ]);
     expect(statusLines(update.status())).toContain('Going back to 0.12.1 is offered, with the copy of its data taken ' +
       '2026-10-20T10:00:00.000Z: /update back says what each way does.');
@@ -825,6 +856,40 @@ describe('Go back', () => {
 describe('the last switch', () => {
   const line = (step: string, outcome: string, extra: Record<string, unknown> = {}) =>
     ({ at: '2026-10-21T09:00:00.000Z', step, from: '0.12.1', to: '0.13.0', outcome, mark: 'm1', ...extra }) as Parameters<typeof appendJournal>[1];
+
+  test('names the agent that asked for the switch, however it ended, and nobody where no agent asked', () => {
+    const { root, dataDir } = install('0.12.1');
+    const lines = () => statusLines(hostUpdate({ root, dataDir }).update.status()).join('\n');
+    appendJournal(root, line('copy', 'ok', { by: 'resident' }));
+    appendJournal(root, line('trial-start', 'ok', { by: 'resident' }));
+    appendJournal(root, { at: '2026-10-21T09:05:00.000Z', step: 'commit', from: '0.12.1', to: '0.13.0', outcome: 'ok' });
+    expect(lines()).toContain('Last switch: 0.12.1 to 0.13.0, committed at 2026-10-21T09:05:00.000Z, asked for by resident.');
+    appendJournal(root, line('children-check', 'refused', { reason: 'fleet children are still running: kid', mark: 'm2', by: 'other' }));
+    expect(lines()).toContain('Last request: to 0.13.0, asked for by other, didn\'t go ahead at 2026-10-21T09:00:00.000Z: ' +
+      'fleet children are still running: kid');
+    appendJournal(root, { at: '2026-10-21T09:10:00.000Z', step: 'fallback', from: '0.13.0', to: '0.12.1', outcome: 'ok',
+      reason: '0.13.0 ended before its commit', mark: 'm3', by: 'resident' });
+    expect(lines()).toContain('Last switch: 0.12.1 came back with its data at 2026-10-21T09:10:00.000Z, from a try of 0.13.0, ' +
+      'asked for by resident: 0.13.0 ended before its commit.');
+    appendJournal(root, line('trial-start', 'ok', { mark: 'm4' }));
+    appendJournal(root, { at: '2026-10-21T09:15:00.000Z', step: 'commit', from: '0.12.1', to: '0.13.0', outcome: 'ok' });
+    expect(lines()).toContain('Last switch: 0.12.1 to 0.13.0, committed at 2026-10-21T09:15:00.000Z.');
+    expect(lines()).not.toContain('asked for by');
+  });
+
+  test("a refused request's reason reaches the agent as the person's to act on, and the person as it is", () => {
+    const { root, dataDir } = install('0.12.1');
+    const reason = "/srv/data can't be read, written and searched by this process (EACCES), and an update changes what's " +
+      'in it, and syncs it. Give this user read, write and search on it';
+    appendJournal(root, line('children-check', 'refused', { reason }));
+    const status = hostUpdate({ root, dataDir }).update.status();
+    const agent = statusLines(status, TOOL_WAYS);
+    const at = agent.findIndex((said) => said.startsWith('Last request:'));
+    expect(agent[at]).toEndWith(reason);
+    expect(agent[at + 1]).toBe("That reason is your host's, written to the person who runs it: what it asks of that person is " +
+      'theirs to do, so pass it on.');
+    expect(statusLines(status, COMMAND_WAYS).join('\n')).not.toContain('pass it on');
+  });
 
   test('is the journal\'s last commit, fallback or refusal', () => {
     const { root, dataDir } = install('0.12.1');
@@ -910,11 +975,15 @@ test('nothing it reads can make the status throw', () => {
 test("/update's text names an install and a restart under way, and what's installed", () => {
   const base: UpdateStatus = {
     running: '0.12.1', install: true, checks: true, check: null, installing: null, lastInstall: null, installed: null,
-    goBack: null, restart: null, operatorQuiesced: null, switchQuiesceLeft: false, lastSwitch: null, problems: [],
+    goBack: null, restart: null, armed: null, armedDropped: null, operatorQuiesced: null, switchQuiesceLeft: false,
+    lastSwitch: null, problems: [],
   };
   expect(statusLines(base)).toEqual(['connectome-host 0.12.1.', "The registry hasn't been read yet: /update reads it."]);
   expect(statusLines({ ...base, installing: '0.13.0', installed: '0.12.2' }).slice(2))
-    .toEqual(['Installing 0.13.0.', '0.12.2 is installed: /update restart switches to it.']);
+    .toEqual(['Installing 0.13.0.', '0.12.2 is installed: /update restart switches to it.',
+      "Going back after a switch keeps the newer data only if 0.12.1 can still read it. If it can't, going back means " +
+        '/update back restore, and what was lived since the switch is set aside.',
+      'Notes: https://github.com/anima-research/connectome-host/blob/v0.12.2/CHANGELOG.md']);
   const fellBack = { outcome: 'fell-back', from: '0.12.1', to: '0.12.2', at: '2026-10-24T03:00:00.000Z', reason: '0.12.2 ended before its commit', trialLog: null } as const;
   expect(statusLines({ ...base, installed: '0.12.2', lastSwitch: fellBack })).toContain(
     '0.12.2 is installed, and ended before its commit at its last try: /update restart tries it again.');
@@ -981,10 +1050,10 @@ describe('/update', () => {
     try {
       const shown: UpdateStatus = {
         running: '0.12.1', install: true, checks: true, check: null, installing: null, lastInstall: null, installed: '0.13.1',
-        goBack: { to: '0.12.0', since: 'then' }, restart: null, operatorQuiesced: null, switchQuiesceLeft: false, lastSwitch: null,
-        problems: [],
+        goBack: { to: '0.12.0', since: 'then' }, restart: null, armed: null, armedDropped: null, operatorQuiesced: null,
+        switchQuiesceLeft: false, lastSwitch: null, problems: [],
       };
-      const ways = (Object.keys(COMMAND_WAYS) as UpdateWay[]).filter((way) => way !== 'back' && way !== 'check');
+      const ways = (Object.keys(COMMAND_WAYS) as UpdateWay[]).filter((way) => !['back', 'check', 'reader'].includes(way));
       for (const way of ways) expect((await run(commandFor(way, shown)!)).at(-1)).toBe('answered');
       expect(calls).toEqual(['install', 'restart 0.13.1', 'wait', 'now', 'resume', 'back true 0.12.0', 'back false 0.12.0']);
       for (const line of ['/update restart', '/update back keep', '/update restart 0.13.1-rc.1', '/update back restore 0.12.0-rc.2']) {
@@ -1046,3 +1115,55 @@ describe('/update', () => {
   });
 });
 
+describe("the page's own Update controls", () => {
+  test("a Restart the page sends, with nothing newer installed by then, names the page's Update", async () => {
+    const { root, dataDir } = install('0.12.1', ['0.11.0']);
+    const local = hostUpdate({ root, dataDir }, { supervised: true }).update;
+    const restart = spyOn(theHostUpdate, 'restartToInstalled')
+      .mockImplementation((expected, ways) => local.restartToInstalled(expected, ways));
+    const page = mkdtempSync(join(tmpdir(), 'webui-update-'));
+    dirs.push(page);
+    writeFileSync(join(page, 'index.html'), '<!doctype html><title>t</title>');
+    const module = new WebUiModule({ port: 0, host: '127.0.0.1', basicAuth: { username: 'u', password: 'p' }, staticDir: page });
+    await module.start({} as ModuleContext);
+    const cm = { getAllMessages: () => [], currentBranch: () => ({ id: 'b1', name: 'main' }) };
+    const agent = { name: 'main', model: 'test-model', state: { status: 'idle' }, getContextManager: () => cm };
+    module.setApp({
+      framework: {
+        getAllAgents: () => [agent], getAgent: () => agent, getAllModules: () => [], getModule: () => undefined,
+        getSessionUsage: () => { throw new Error('no usage here'); }, onTrace: () => () => {},
+        getHostModeStatus: () => ({ quiesced: false }),
+      },
+      frameworkSessionId: 's1',
+      sessionManager: { getActiveSession: () => ({ id: 's1', name: 'first', manuallyNamed: true }), findSession: () => undefined },
+      recipe: { name: 'test', agent: { name: 'main' } },
+      branchState: { checkpoints: new Map(), undoStack: [], redoStack: [] },
+      switchSession: async () => {},
+      switching: false,
+    } as never);
+    const port = __getSharedServerPortForTests()!;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+      headers: { origin: `http://127.0.0.1:${port}`, authorization: `Basic ${Buffer.from('u:p').toString('base64')}` },
+    } as unknown as undefined);
+    try {
+      const results: Array<{ lines: Array<{ text: string }> }> = [];
+      const done = new Promise<void>((resolve) => ws.addEventListener('message', (event) => {
+        const reply = JSON.parse(String(event.data)) as { type: string; corrId?: string; lines?: Array<{ text: string }> };
+        if (reply.type === 'command-result' && reply.lines) results.push({ lines: reply.lines });
+        if (results.length === 2) resolve();
+      }));
+      await new Promise((resolve) => ws.addEventListener('open', resolve));
+      const shown = { installed: '0.13.0' } as UpdateStatus;
+      ws.send(JSON.stringify(pageRequest('restart', shown)));
+      await done;
+      expect(results[1]!.lines.map((line) => line.text))
+        .toEqual([`No release newer than 0.12.1 is installed: ${PAGE_WAYS.install} installs one first.`]);
+      expect(restart).toHaveBeenCalledTimes(1);
+    } finally {
+      ws.close();
+      restart.mockRestore();
+      await module.stop();
+      await stopWebUiServer();
+    }
+  });
+});

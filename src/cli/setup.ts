@@ -27,9 +27,9 @@ import {
   releaseDir, writeJsonAtomic, writeTextAtomic, type InstallRecord,
 } from '../update/contract.js';
 import { AGENT_OVERLAY_FILE_ENV } from '../update/agent-overlay-path.js';
-import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
+import { HOST_ENTRY, RELEASE_HOST } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
-import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, shellWord, typedCommand } from '../update/typed-command.js';
 
 export const SETUP_USAGE = 'connectome setup discord';
 

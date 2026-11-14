@@ -14,10 +14,14 @@ export type IncomingCommand =
   | { type: 'text'; content: string; from?: 'console' }
   /** Run a slash command in the child's commands.ts handler. With a corrId,
    *  each output line carries it and a `command-done` ends the answer.
+   *  `typed` is how the reader types the install's command in a shell, as
+   *  `connectome update` sends it: /update then names each way as they type
+   *  it. A host older than the field ignores it and answers in its
+   *  terminal's /update spelling.
    *  `from: 'fleet'` is a parent's fleet--command: the child's operator log
    *  records the move, rollback, undo, redo or nudge it makes as the fleet's,
    *  and without it as the headless socket's. */
-  | { type: 'command'; command: string; corrId?: string; from?: 'fleet' }
+  | { type: 'command'; command: string; corrId?: string; typed?: string; from?: 'fleet' }
   /** Shut down; `graceful: false` changes only the reason `lifecycle:exiting` gives. */
   | { type: 'shutdown'; graceful?: boolean }
   /** Request a state snapshot. The child responds with a single 'snapshot'

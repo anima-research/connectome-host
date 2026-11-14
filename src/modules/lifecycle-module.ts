@@ -12,6 +12,11 @@ import type {
 import { formatZonedDateTime, resolveTimeZone } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
 import { hostNoteMetadata } from '../speaker.js';
+import { EXACT_VERSION } from '../update/install.js';
+import { hostUpdate, type HostUpdate, type UpdateAnswer } from '../update/update.js';
+import {
+  TOOL_CANCEL, armedName, statusLines, toolWays,
+} from '../web/update-text.js';
 import {
   SELF_RESTART_EXIT_CODE,
   selfRestart as processSelfRestart,
@@ -29,6 +34,11 @@ export interface LifecycleModuleConfig {
   state?: SelfRestartState;
   now?: () => Date;
   hostVersion?: string;
+  selfRestart?: boolean;
+  selfUpdate?: boolean;
+  update?: HostUpdate;
+  headless: boolean;
+  installCommand?: string;
 }
 
 function readHostVersion(): string | undefined {
@@ -55,6 +65,78 @@ const TOOL_DESCRIPTION =
   "After the restart, one line in the host's main conversation says who asked, when, why, and when the host came back. " +
   '`cancel: true` disarms a pending restart, whoever asked for it. There is a cooldown between restarts.';
 
+const UPDATE_ACTIONS = ['check', 'notes', 'install', 'restart', 'cancel'] as const;
+
+const UPDATE_DESCRIPTION =
+  'Update your own host to a newer connectome-host release. ' +
+  '`action`:\n' +
+  '- check: what is out and its cost, what you run, and where an install, an armed switch and the last switch stand.\n' +
+  '- notes: the release notes up to the one installed; with `version`, one release\'s.\n' +
+  '- install: installs the newest release beside yours, which runs on.\n' +
+  '- restart: arms a restart onto the newest release installed. It begins at the host\'s first quiet moment and asks ' +
+  'nobody: your turn ends as it would, as does every other agent\'s on this host and its fleet children.\n' +
+  '- cancel: disarms an armed restart before it begins, whoever armed it.\n' +
+  '`version`, with restart, is the release you looked at: if it would go to another by then, nothing is armed. ' +
+  'Restart needs a headless host started with `CONNECTOME_SUPERVISED=1`; elsewhere it refuses and ' +
+  'says why. After a restart nothing tells you it happened: check says what you run now. ' +
+  'The person who runs your host can\'t call this tool, ';
+
+const personWord = (headless: boolean, command: string | null): string =>
+  !headless ? 'so never give them its name to type: their own command is `/update`, typed in the host\'s terminal, and ' +
+    'check says how they use it.'
+    : command === null ? 'so never give them its name to type. This host has no command of theirs to update it: check ' +
+    'says how it\'s updated.'
+      : `so never give them its name to type: their own command is \`${command} update\`, typed in a shell, and check ` +
+      'says how they use it.';
+
+const NO_INSTALL_HEADLESS =
+  'This host runs headless with no install of its own, so it has no command of theirs to update it: a fleet child is ' +
+  'updated with its parent\'s install where its parent has one, and any other host by hand (docs/DEPLOYMENTS.md, ' +
+  '"Updating an install"), and your restart refuses here, saying so.';
+
+const THEIRS_GO_AT_ONCE = 'Their restart and back begin at once, without waiting for a quiet moment: new turns are held, ' +
+  'turns in progress get up to 2 min to end, and if any don\'t,';
+
+const NO_NOTES_OR_CANCEL = 'notes and cancel have no command of theirs: their check gives them a link to the notes, and ' +
+  'this tool\'s cancel is the one call that disarms a restart before it begins without replacing it or ' +
+  'stopping the host: their own restart or back goes ahead in its place.';
+
+const personHeadless = (command: string): string =>
+  'The person who runs your host updates it with their own command, not this tool. They type it in a shell, as the ' +
+  `user your host runs as: check is \`${command} update check\`, install is \`${command} update install\`, restart is ` +
+  `\`${command} update restart\`, and back is \`${command} update back\`, then \`${command} update back keep\` or ` +
+  `\`${command} update back restore\`. ${THEIRS_GO_AT_ONCE} their command says who is still busy and how to wait longer, ` +
+  `stop now or call it off. ${NO_NOTES_OR_CANCEL}`;
+
+const PERSON_IN_A_TERMINAL =
+  'The person who runs your host updates it with their own command, not this tool. They type it in the host\'s ' +
+  'terminal: check is `/update check`, install is `/update install`, restart is `/update restart`, and back is ' +
+  '`/update back`, then `/update back keep` or `/update back restore`. `connectome update` in another shell doesn\'t ' +
+  `reach this host. ${THEIRS_GO_AT_ONCE} its answer says who is still busy and how to wait longer, stop now or call it ` +
+  `off. Once it stops, they start the host again themselves, and that start switches. ${NO_NOTES_OR_CANCEL}`;
+
+function updateTool(headless: boolean, command: string | null): ToolDefinition {
+  return {
+    name: 'update',
+    description: UPDATE_DESCRIPTION + personWord(headless, command),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: [...UPDATE_ACTIONS] },
+        version: {
+          type: 'string',
+          description: 'With restart: the exact release you looked at, such as 0.15.0. With notes: the release ' +
+            'whose notes you want.',
+        },
+      },
+      required: ['action'],
+    },
+  };
+}
+
+const updateCancel = (by: string | null): string =>
+  `${TOOL_CANCEL} disarms it, for an agent given that tool${by !== null ? `, such as ${by}, who armed it` : ''}`;
+
 export class LifecycleModule implements Module {
   readonly name = 'lifecycle';
 
@@ -64,6 +146,12 @@ export class LifecycleModule implements Module {
   private readonly state: SelfRestartState;
   private readonly now: () => Date;
   private readonly hostVersion: string | undefined;
+  private readonly selfRestart: boolean;
+  private readonly selfUpdate: boolean;
+  private readonly update: HostUpdate;
+  private readonly headless: boolean;
+  private readonly command: string;
+  private readonly ownInstall: boolean;
 
   constructor(config: LifecycleModuleConfig) {
     this.dataDir = config.dataDir;
@@ -72,6 +160,12 @@ export class LifecycleModule implements Module {
     this.state = config.state ?? processSelfRestart;
     this.now = config.now ?? (() => new Date());
     this.hostVersion = 'hostVersion' in config ? config.hostVersion : readHostVersion();
+    this.selfRestart = config.selfRestart ?? true;
+    this.selfUpdate = config.selfUpdate ?? false;
+    this.update = config.update ?? hostUpdate;
+    this.headless = config.headless;
+    this.command = config.installCommand ?? 'connectome';
+    this.ownInstall = config.installCommand !== undefined;
   }
 
   async start(ctx: ModuleContext): Promise<void> {
@@ -89,28 +183,34 @@ export class LifecycleModule implements Module {
 
   getTools(): ToolDefinition[] {
     return [
-      {
-        name: 'restart',
-        description: TOOL_DESCRIPTION,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            reason: {
-              type: 'string',
-              description: 'Why you are restarting, in a sentence. The line after the restart shows it, and the host\'s data dir keeps it.',
-            },
-            cancel: {
-              type: 'boolean',
-              description: 'true disarms a pending restart instead of requesting one; it needs no reason.',
-            },
-          },
-        },
-      },
+      ...(this.selfRestart ? [this.restartTool()] : []),
+      ...(this.selfUpdate ? [updateTool(this.headless, this.ownInstall ? this.command : null)] : []),
     ];
   }
 
+  private restartTool(): ToolDefinition {
+    return {
+      name: 'restart',
+      description: TOOL_DESCRIPTION,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          reason: {
+            type: 'string',
+            description: 'Why you are restarting, in a sentence. The line after the restart shows it, and the host\'s data dir keeps it.',
+          },
+          cancel: {
+            type: 'boolean',
+            description: 'true disarms a pending restart instead of requesting one; it needs no reason.',
+          },
+        },
+      },
+    };
+  }
+
   async handleToolCall(call: ToolCall): Promise<ToolResult> {
-    if (call.name !== 'restart') return unknownToolResult(this, call.name);
+    if (call.name === 'update' && this.selfUpdate) return this.handleUpdate(call);
+    if (call.name !== 'restart' || !this.selfRestart) return unknownToolResult(this, call.name);
     const input = (call.input ?? {}) as { reason?: unknown; cancel?: unknown };
     if (input.cancel !== undefined && typeof input.cancel !== 'boolean') {
       return { success: false, error: '`cancel` must be true or false.', isError: true };
@@ -131,7 +231,11 @@ export class LifecycleModule implements Module {
         };
       }
       if (!cancelled) {
-        return { success: true, data: 'No restart was pending, so there was nothing to cancel.' };
+        const update = this.update.armedSwitch();
+        return { success: true, data: update === null
+          ? 'No restart was pending, so there was nothing to cancel.'
+          : `No plain restart was pending. ${armedName(update)} is armed since ` +
+            `${this.when(update.since)}: ${updateCancel(update.by)}.` };
       }
       return {
         success: true,
@@ -162,6 +266,16 @@ export class LifecycleModule implements Module {
           `A restart is already pending, asked for by ${this.asker(pending, caller)} at ${this.when(pending.requestedAt)} ` +
           `(reason: ${pending.reason}). It happens once this turn ends and nothing is in flight. ` +
           '`cancel: true` disarms it.',
+      };
+    }
+
+    const update = this.update.armedSwitch();
+    if (update !== null) {
+      return {
+        success: false,
+        isError: true,
+        error: `Nothing was armed: ${armedName(update, false)} is armed since ${this.when(update.since)}, and it restarts ` +
+          `the host at a quiet moment. If you'd rather restart without it, ${updateCancel(update.by)}.`,
       };
     }
 
@@ -206,6 +320,74 @@ export class LifecycleModule implements Module {
         'changed system prompt writes your prompt cache afresh on your first turn after it. ' +
         'To disarm it before then, call this again with cancel: true.',
     };
+  }
+
+  private async handleUpdate(call: ToolCall): Promise<ToolResult> {
+    const input = (call.input ?? {}) as { action?: unknown; version?: unknown };
+    const refuse = (error: string): ToolResult => ({ success: false, isError: true, error });
+    const unknown = Object.keys(input).filter((key) => !['action', 'version'].includes(key));
+    if (unknown.length > 0) {
+      return refuse(`This tool takes \`action\` and \`version\`, not ${unknown.map((key) => `\`${key}\``).join(', ')}, ` +
+        'and nothing was done.');
+    }
+    if (typeof input.action !== 'string' || !(UPDATE_ACTIONS as readonly string[]).includes(input.action)) {
+      return refuse(`\`action\` must be one of ${UPDATE_ACTIONS.join(', ')}, and nothing was done.`);
+    }
+    if (input.version !== undefined && (typeof input.version !== 'string' || !EXACT_VERSION.test(input.version))) {
+      return refuse('`version` must be an exact release, such as 0.15.0, and nothing was done.');
+    }
+    if (input.version !== undefined && input.action !== 'restart' && input.action !== 'notes') {
+      return refuse(`\`version\` goes with restart or notes, not ${input.action}, and nothing was done.`);
+    }
+    const version = input.version as string | undefined;
+    const by = call.callerAgentName ?? null;
+    const plainRestart = (pending: NonNullable<ReturnType<SelfRestartState['armedRequest']>>): string =>
+      `a plain restart (lifecycle--restart) is pending, asked for by ${this.asker(pending, call.callerAgentName)} at ` +
+      `${this.when(pending.requestedAt)}. It restarts the host once every agent is idle and nothing is in flight, and ` +
+      (this.selfRestart ? 'lifecycle--restart with cancel: true disarms it, for an agent given that tool.'
+        : 'it isn\'t yours to cancel, since ' +
+        'lifecycle--restart isn\'t granted here.');
+    const selfRestartPending = (): UpdateAnswer | null => {
+      const pending = this.state.armedRequest();
+      return pending === null ? null : { done: false, lines: [`Nothing was armed: ${plainRestart(pending)}`] };
+    };
+    const capital = (line: string) => line.charAt(0).toUpperCase() + line.slice(1);
+    const ways = toolWays(this.headless, this.command);
+    let answer: UpdateAnswer;
+    switch (input.action as (typeof UPDATE_ACTIONS)[number]) {
+      case 'check': {
+        await this.update.readRegistry();
+        const status = this.update.status();
+        const pending = this.state.armedRequest();
+        answer = { done: status.check?.ok !== false, lines: [
+          ...statusLines(status, ways), ...(pending === null ? [] : [capital(plainRestart(pending))]),
+          ...this.update.notesPointer(status.installed), this.personLine(),
+        ] };
+        break;
+      }
+      case 'notes':
+        answer = this.update.installedNotes(version, ways, call.resultMaxChars);
+        break;
+      case 'install':
+        answer = await this.update.startInstall(ways);
+        break;
+      case 'restart':
+        answer = selfRestartPending() ?? this.update.armRestart(by, version, ways);
+        break;
+      case 'cancel': {
+        const armed = this.update.armedSwitch() !== null;
+        answer = await this.update.cancelArmed(call.callerAgentName ?? null, ways);
+        const pending = this.state.armedRequest();
+        if (!armed && pending !== null) answer = { done: true, lines: [...answer.lines, capital(plainRestart(pending))] };
+        break;
+      }
+    }
+    const text = answer.lines.join('\n');
+    return answer.done ? { success: true, data: text } : refuse(text);
+  }
+
+  private personLine(): string {
+    return !this.headless ? PERSON_IN_A_TERMINAL : this.ownInstall ? personHeadless(this.command) : NO_INSTALL_HEADLESS;
   }
 
   private when(iso: string): string {

@@ -54,6 +54,7 @@ function makeStubWorld() {
 
   const app = {
     framework: {
+      getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
       getAgent: () => undefined,
       getAllAgents: () => [{ name: 'stub-agent', getContextManager: () => cm }],
       getAllModules: () => [],

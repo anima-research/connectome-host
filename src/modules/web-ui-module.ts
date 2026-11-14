@@ -38,6 +38,7 @@ import { handleCommand } from '../commands.js';
 import {
   PANEL_OPS_THAT_CHANGE_THE_SESSION,
   refusedForAnotherSession,
+  refusedWhileSwitchQuiesced,
   refusedWhileSwitching,
   switchLeftForStop,
   trackOperatorWork,
@@ -107,6 +108,9 @@ import {
   type McplLiveServer,
 } from '../web/panel-data.js';
 import { loadRecipeDetailed } from '../recipe.js';
+import { isSwitchQuiesce } from '../update/contract.js';
+import { hostUpdate } from '../update/update.js';
+import { PAGE_WAYS } from '../web/update-text.js';
 import {
   ObserverRegistry,
   ObserverSessions,
@@ -232,6 +236,40 @@ export function switchRefusalFor(
 ): WebUiServerMessage | null {
   if (message.type === 'cancel-subagent') return null;
   return refusalReply(message, (what) => refusedWhileSwitching(app, what));
+}
+
+export function switchQuiesceRefusalFor(
+  app: { framework: { getHostModeStatus(): { quiesced: boolean; reason?: string } } },
+  message: WebUiClientMessage,
+  underWay: boolean | null = hostUpdate.switchUnderWay(),
+): WebUiServerMessage | null {
+  if (message.type !== 'host-quiesce') return null;
+  const status = app.framework.getHostModeStatus();
+  if (!status.quiesced || !isSwitchQuiesce(status.reason)) return null;
+  if (underWay === false) {
+    return refusalReply(message, (what) => `${what} refused: this host is still quiesced for a switch that isn't ` +
+      'going ahead, and a quiesce asked for now would be taken as that switch\'s, which the host\'s next start ends. ' +
+      `Nothing changed; ${PAGE_WAYS.resume} ends the switch's quiesce, and then quiesce again.`);
+  }
+  if (underWay === null) {
+    return refusalReply(message, (what) => `${what} refused: this host is quiesced for an update's switch, which may ` +
+      'still be under way or may have ended and left this quiesce behind, and a quiesce asked for now would be taken as ' +
+      'the switch\'s and end with it. Nothing changed; quiesce again once the switch has gone ahead, or, if it has ' +
+      'ended and left this quiesce behind, clicking "⏸ quiesced" in the top bar ends it, and then quiesce again.');
+  }
+  return refusalReply(message, (what) => `${what} refused: this host is quiesced for an update's switch right now, and ` +
+    'a quiesce asked for now would be taken as the switch\'s and end with it. Nothing changed; quiesce again once the ' +
+    'switch has gone ahead or ended.');
+}
+
+export function releaseQuiesceRefusalFor(
+  app: { framework: { getHostModeStatus(): { quiesced: boolean; reason?: string } } },
+  message: WebUiClientMessage,
+): WebUiServerMessage | null {
+  if (message.type !== 'rollback' && message.type !== 'suppress' && !PANEL_OPS_THAT_CHANGE_THE_SESSION.has(message.type)) {
+    return null;
+  }
+  return refusalReply(message, (what) => refusedWhileSwitchQuiesced(app, what));
 }
 
 const CHANGES_STAMPED_WITH_THEIR_SESSION: ReadonlySet<string> = new Set([
@@ -1772,7 +1810,8 @@ export class WebUiModule implements Module {
       return;
     }
     const app = sharedServer.app;
-    const refused = switchRefusalFor(app, parsed) ?? sessionRefusalFor(app, parsed);
+    const refused = switchRefusalFor(app, parsed) ?? sessionRefusalFor(app, parsed) ?? switchQuiesceRefusalFor(app, parsed) ??
+      releaseQuiesceRefusalFor(app, parsed);
     if (refused) {
       this.send(client, refused);
       if (parsed.type === 'host-quiesce' || parsed.type === 'host-resume') this.broadcastHostMode();
@@ -1794,7 +1833,7 @@ export class WebUiModule implements Module {
         return;
 
       case 'command': {
-        void this.dispatchCommand(client, parsed.command, parsed.corrId);
+        void this.dispatchCommand(client, parsed.command, parsed.corrId, parsed.page === true);
         return;
       }
 
@@ -2642,13 +2681,13 @@ export class WebUiModule implements Module {
     sharedServer?.clients.delete(id);
   }
 
-  private async dispatchCommand(client: ClientState, command: string, corrId?: string): Promise<void> {
+  private async dispatchCommand(client: ClientState, command: string, corrId?: string, page = false): Promise<void> {
     if (!sharedServer?.app) return;
     const app = sharedServer.app;
     let result;
     try {
       // The operator log names who typed it, as the surgery dialog's does.
-      result = handleCommand(command, app, { requester: this.requesterFor(client) });
+      result = handleCommand(command, app, { requester: this.requesterFor(client), page });
     } catch (err) {
       this.send(client, {
         type: 'error',

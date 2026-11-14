@@ -3,7 +3,7 @@ import { lstatSync, mkdirSync, readlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseEnv } from 'node:util';
 import { readWithoutWaiting, writeJsonAtomic, writeTextAtomic } from '../update/contract.js';
-import { shellWord } from '../update/launcher.js';
+import { shellWord } from '../update/typed-command.js';
 
 export const PROVIDER_SECRETS = [
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'OPENAI_API_KEY',

@@ -6,11 +6,10 @@ import { checkDiscordToken, sentToken, withSentForms, type TokenCheck } from '..
 import {
   DISCORD_TOKEN, DotenvReadError, EnvFormError, readEnvFile, shownByName, storedSecrets, type Secret,
 } from '../setup/secrets.js';
-import { shellWord } from '../update/launcher.js';
 import { serviceBun } from '../update/service-bun.js';
 import type { CliContext } from './connectome.js';
 import { dataDirOf, openHost, type HostClient, type NoHost } from './host-socket.js';
-import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND, shellWord, typedCommand } from '../update/typed-command.js';
 import { agentState, childEnv, showUnit, systemctlLine } from './service-manager.js';
 import { machine, serviceCommands, type ServiceCommands, type ServiceSystem } from './service.js';
 import { readUnit, serviceUnits, type ServiceUnit, type ServiceUnits } from './service-unit.js';

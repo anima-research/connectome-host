@@ -4,9 +4,9 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import {
-  ContractError, ENTRY_POINT, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, appendJournal, childrenFilePath, connectedWhenMarked,
-  copyItemName, copyLabelPath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir, lastCopy, pendingGoBack,
-  readCurrent, readGoBackList, readJournal, readMark, readRecord, realOrResolved, releaseDir, setAsideDir,
+  ContractError, ENTRY_POINT, INSTALL_ROOT_ENV, ITEM_UPDATE_DIR, appendJournal, askedBy, childrenFilePath,
+  connectedWhenMarked, copyItemName, copyLabelPath, goBackListPath, installPaths, isChildEntry, itemSetAsideDir, lastCopy,
+  pendingGoBack, readCurrent, readGoBackList, readJournal, readMark, readRecord, realOrResolved, releaseDir, setAsideDir,
   unfinishedTrial, unsyncedText, writeJsonAtomic, writeMark,
   type ChildrenFile, type CopyLabel, type GoBackList, type InstallRecord, type JournalLine, type LockRecord, type Mark,
   type PlaceKind,
@@ -16,6 +16,7 @@ import {
   spaceTaken, syncEntries, syncPath, type FileKeep,
 } from './data-swap.js';
 import { agentOverlayPath } from './agent-overlay-path.js';
+import { shellWord, typedCommand } from './typed-command.js';
 
 /** Where a release's host is inside its directory, one npm install of the
  *  package. The entry point imports the launcher from here, so neither path
@@ -651,10 +652,16 @@ function line(ops: LauncherOps, fields: Omit<JournalLine, 'v' | 'at'>): Omit<Jou
 
 function refuse(root: string, ops: LauncherOps, step: JournalLine['step'], current: string, mark: Mark, reason: string,
   outcome: 'refused' | 'failed' = 'refused'): Start {
-  appendJournal(root, line(ops, { step, from: current, to: mark.to, outcome, reason, mark: mark.id }));
+  appendJournal(root, line(ops, { step, from: current, to: mark.to, outcome, reason, mark: mark.id, ...askedBy(mark.by) }));
   const what = mark.why === 'go-back' ? 'Go back' : 'switch';
   const { mark: markPath } = installPaths(root);
-  const again = mark.why === 'go-back' ? `/update back, or \`${GO_BACK_FLAG}\` from a shell` : '/update restart';
+  const again = mark.why === 'go-back'
+    ? 'Go back in the Web UI, `/update back` in the host\'s terminal, or the install\'s own `connectome update back` in a ' +
+      `shell. Where the host doesn't stay up, \`bun ${shellWord(join(root, ENTRY_POINT))} ${GO_BACK_FLAG}` +
+      `${mark.keepData ? ` ${KEEP_DATA_FLAG}` : ''}\` asks its next ` +
+      'start to go back'
+    : 'Restart in the Web UI, `/update restart` in the host\'s terminal, or the install\'s own `connectome update restart` in ' +
+      'a shell';
   let dropped = `The request is dropped: once what refused it has cleared, ask again with ${again}.`;
   try {
     rmSync(markPath, { force: true });
@@ -734,8 +741,8 @@ async function switchTo(root: string, record: InstallRecord, mark: Mark, current
     dropUnfinishedCopy(root, ops);
     return refuse(root, ops, 'copy', current, mark, `the copy failed: ${errorText(error)}`, 'failed');
   }
-  appendJournal(root, line(ops, { step: 'copy', from: current, to: mark.to, outcome: 'ok', mark: mark.id }));
-  appendJournal(root, line(ops, { step: 'trial-start', from: current, to: mark.to, outcome: 'ok', mark: mark.id }));
+  appendJournal(root, line(ops, { step: 'copy', from: current, to: mark.to, outcome: 'ok', mark: mark.id, ...askedBy(mark.by) }));
+  appendJournal(root, line(ops, { step: 'trial-start', from: current, to: mark.to, outcome: 'ok', mark: mark.id, ...askedBy(mark.by) }));
   const asked = connectedWhenMarked(mark);
   const commits = asked === null ? 'opened its stores and connected its servers, closed tabs aside'
     : asked.length === 0 ? `opened its stores, since ${current} had no server connected when it stopped`
@@ -911,7 +918,9 @@ async function goBack(root: string, record: InstallRecord, mark: Mark, current: 
     clearGoBack(root, mark.id, ops);
     return refuse(root, ops, 'go-back', current, mark, `preparing it failed: ${errorText(error)}`, 'failed');
   }
-  const goBackLine = line(ops, { step: 'go-back', from: current, to: mark.to, outcome: 'ok', mark: mark.id, keptData: Boolean(mark.keepData) });
+  const goBackLine = line(ops, {
+    step: 'go-back', from: current, to: mark.to, outcome: 'ok', mark: mark.id, keptData: Boolean(mark.keepData), ...askedBy(mark.by),
+  });
   appendJournal(root, goBackLine);
   return finishGoBack(root, record, { v: 1, ...goBackLine }, current, ops);
 }
@@ -933,10 +942,12 @@ async function finishGoBack(root: string, record: InstallRecord, goBackLine: Jou
     }
     await checkRelease(root, goBackLine.to, ops);
   } catch (error) {
-    appendJournal(root, line(ops, { step: 'trial-start', from: current, to: goBackLine.to, outcome: 'refused', reason: errorText(error), mark: markId }));
+    appendJournal(root, line(ops, {
+      step: 'trial-start', from: current, to: goBackLine.to, outcome: 'refused', reason: errorText(error), mark: markId, ...askedBy(goBackLine.by),
+    }));
     return fallBackGoBack(root, goBackLine, current, `${goBackLine.to} couldn't start: ${errorText(error)}`, ops);
   }
-  appendJournal(root, line(ops, { step: 'trial-start', from: current, to: goBackLine.to, outcome: 'ok', mark: markId }));
+  appendJournal(root, line(ops, { step: 'trial-start', from: current, to: goBackLine.to, outcome: 'ok', mark: markId, ...askedBy(goBackLine.by) }));
   ops.report(`[update] Starting ${goBackLine.to} on trial, going back from ${current}` +
     (goBackLine.keptData
       ? ' with the newer data kept'
@@ -951,13 +962,15 @@ function fallBackGoBack(root: string, goBackLine: JournalLine, current: string, 
     try {
       putBack(root, markId, ops);
     } catch (error) {
-      appendJournal(root, line(ops, { step: 'fallback', from: goBackLine.to, to: current, outcome: 'failed', reason: errorText(error), mark: markId }));
+      appendJournal(root, line(ops, {
+        step: 'fallback', from: goBackLine.to, to: current, outcome: 'failed', reason: errorText(error), mark: markId, ...askedBy(goBackLine.by),
+      }));
       throw new ContractError(`The Go back to ${goBackLine.to} couldn't go on (${why}), and putting ${current}'s data back ` +
         `failed too (${errorText(error)}), so nothing starts: a release started now would run on data that's partly each. ` +
         'Each start tries again, going on with the Go back.');
     }
   }
-  appendJournal(root, line(ops, { step: 'fallback', from: goBackLine.to, to: current, outcome: 'ok', reason: why, mark: markId }));
+  appendJournal(root, line(ops, { step: 'fallback', from: goBackLine.to, to: current, outcome: 'ok', reason: why, mark: markId, ...askedBy(goBackLine.by) }));
   if (goBackLine.keptData) clearGoBack(root, markId, ops);
   ops.report(`[update] The Go back to ${goBackLine.to} didn't go ahead (${why}), so ` +
     (goBackLine.keptData ? `${current} starts on its data as it was.` : `${current}'s data is back and it starts.`));
@@ -986,11 +999,14 @@ function fallBackTrial(root: string, record: InstallRecord, trial: JournalLine, 
       for (const place of copyTargets(copy, label)) restorePlace(root, copy, place, place.target, markId, ops);
     }
   } catch (error) {
-    appendJournal(root, line(ops, { step: 'fallback', from: trial.to, to: current, outcome: 'failed', reason: errorText(error), ...(typeof markId === 'string' ? { mark: markId } : {}) }));
+    appendJournal(root, line(ops, {
+      step: 'fallback', from: trial.to, to: current, outcome: 'failed', reason: errorText(error),
+      ...(typeof markId === 'string' ? { mark: markId } : {}), ...askedBy(trial.by),
+    }));
     throw new ContractError(`${why}, and going back to ${current} and its data failed: ${errorText(error)}. Nothing starts, ` +
       `since ${current} would run on ${trial.to}'s data. Each start tries the fallback again.`);
   }
-  appendJournal(root, line(ops, { step: 'fallback', from: trial.to, to: current, outcome: 'ok', reason: why, mark: markId }));
+  appendJournal(root, line(ops, { step: 'fallback', from: trial.to, to: current, outcome: 'ok', reason: why, mark: markId, ...askedBy(trial.by) }));
   const kept = wasGoBack
     ? `inside each directory the update copies, in ${ITEM_UPDATE_DIR}/staging/${markId}, and its files under ` +
       `${join(setAsideDir(root, markId!), 'put-back', 'kept')}`
@@ -1097,12 +1113,16 @@ export function goBackLine(root: string, offer: { to: string; since: string }): 
     `back, restoring that copy and keeping what changed since aside, or with ${KEEP_DATA_FLAG} keeping the newer data.`;
 }
 
-export function shellWord(word: string): string {
-  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
+export async function goBackFromStart(root: string, args: string[], ops: LauncherOps): Promise<number> {
+  const back = await import('../web/update-text.js')
+    .then(({ cliWays }) => cliWays(typedCommand(root)).back)
+    .catch(() => null);
+  return back === null ? goBackFromShell(root, args, ops) : goBackFromShell(root, args, ops, undefined, back);
 }
 
 /**
- * `start.js --go-back [--keep-data]`, run from a shell: ask the next start to
+ * `start.js --go-back [--keep-data]`, or the install's `connectome update back
+ * keep|restore` when no host answers, run from a shell: ask the next start to
  * go back, for an operator whose host doesn't stay up to ask it, as when the
  * release it committed keeps exiting. Returns the exit status.
  *
@@ -1112,10 +1132,11 @@ export function shellWord(word: string): string {
  * that a Go back is offered, to `expected` when that's given, and that no
  * request is under way, writes the mark, and gives the lock up: the
  * service's next start goes back. A host that holds the lock the whole time
- * is up, so its own Go back, which
- * quiesces first, is the way.
+ * is up, so its own Go back, which quiesces first, is the way, and `back`
+ * names it to this caller's reader.
  */
-export function goBackFromShell(root: string, args: string[], ops: LauncherOps, expected?: string): number {
+export function goBackFromShell(root: string, args: string[], ops: LauncherOps, expected?: string,
+  back = '/update back'): number {
   const unknown = args.filter((arg) => arg !== KEEP_DATA_FLAG);
   if (unknown.length > 0) {
     ops.report(`[update] ${GO_BACK_FLAG} takes only ${KEEP_DATA_FLAG}, and was given ${unknown.join(' ')}. Nothing ` +
@@ -1135,7 +1156,7 @@ export function goBackFromShell(root: string, args: string[], ops: LauncherOps, 
       }
       if (ops.now().getTime() >= until) {
         ops.report(`[update] Nothing was asked for: this install's lock has been held for the last ` +
-          `${GO_BACK_LOCK_WAIT_MS / 1000} s. ${errorText(error)} A host that's up goes back with \`/update back\`, ` +
+          `${GO_BACK_LOCK_WAIT_MS / 1000} s. ${errorText(error)} A host that's up goes back with \`${back}\`, ` +
           'which lets its turns end first. Otherwise stop the service, run this again, and start the service.');
         return 1;
       }
@@ -1262,7 +1283,7 @@ export function machineOps(): LauncherOps {
 
 export async function launch(root: string, argv: string[]): Promise<never> {
   const ops = machineOps();
-  if (argv[0] === GO_BACK_FLAG) process.exit(goBackFromShell(root, argv.slice(1), ops));
+  if (argv[0] === GO_BACK_FLAG) process.exit(await goBackFromStart(root, argv.slice(1), ops));
   if (typeof process.execve !== 'function') {
     ops.report(`[update] Nothing started: this runtime has no process.execve, which the launcher needs to become the host (Bun ${process.versions.bun}).`);
     process.exit(1);

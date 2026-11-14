@@ -36,7 +36,9 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export async function installRelease(here: ReleaseHere, version: string, ops: InstallOps = machineInstallOps()): Promise<void> {
+export async function installRelease(
+  here: ReleaseHere, version: string, ops: InstallOps = machineInstallOps(), alsoNeeded: string[] = [],
+): Promise<void> {
   if (!EXACT_VERSION.test(version)) {
     throw new ContractError(`${JSON.stringify(version)} isn't an exact version of ${PACKAGE}, such as 0.12.0.`);
   }
@@ -53,7 +55,7 @@ export async function installRelease(here: ReleaseHere, version: string, ops: In
   try {
     const { releases } = installPaths(here.root);
     const release = releaseDir(here.root, version);
-    await prune(here, version, ops);
+    await prune(here, version, ops, alsoNeeded);
     if (exists(release)) {
       const problem = hostProblem(release, version);
       if (problem !== null) {
@@ -159,9 +161,9 @@ async function syncTree(dir: string): Promise<void> {
   }));
 }
 
-async function prune(here: ReleaseHere, version: string, ops: InstallOps): Promise<void> {
+async function prune(here: ReleaseHere, version: string, ops: InstallOps, alsoNeeded: string[]): Promise<void> {
   const paths = installPaths(here.root);
-  const keep = new Set([here.release, version]);
+  const keep = new Set([here.release, version, ...alsoNeeded]);
   let unknown: string | null;
   try {
     const current = readCurrent(here.root);
