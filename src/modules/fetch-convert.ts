@@ -131,7 +131,8 @@ export async function htmlToMarkdown(html: string, baseUrl: string | undefined, 
 /** The media type of a Content-Type header, lower-cased, without its parameters. */
 export function mediaType(contentType: string | undefined): string | undefined {
   const type = contentType?.split(';')[0]?.trim().toLowerCase();
-  return type === '' ? undefined : type;
+  // The header is the server's to write, and results repeat this, so only what has a media type's shape counts as one.
+  return type !== undefined && /^[a-z0-9!#$&^_.+-]{1,60}\/[a-z0-9!#$&^_.+-]{1,60}$/.test(type) ? type : undefined;
 }
 
 export function isHtmlType(type: string | undefined): boolean {
@@ -162,20 +163,21 @@ function declaredCharset(contentType: string | undefined): string | undefined {
  * own byte-order mark or the charset its Content-Type names.
  */
 export function looksBinary(bytes: Buffer, contentType?: string): boolean {
-  const utf16 = /^utf-16(?:le|be)?$/i;
-  if (utf16.test(markedEncoding(bytes) ?? '') || utf16.test(declaredCharset(contentType) ?? '')) return false;
-  return bytes.subarray(0, 8192).includes(0);
+  // The encoding decodeText will take: a mark's before the header's.
+  const encoding = markedEncoding(bytes) ?? declaredCharset(contentType) ?? '';
+  return !/^utf-16(?:le|be)?$/i.test(encoding) && bytes.subarray(0, 8192).includes(0);
 }
 
 /**
  * The encoding an HTML document's own `<meta>` declares: `<meta charset>`, or
  * the `content` of an http-equiv Content-Type. A charset= inside some other
- * tag's content, a description's say, declares nothing.
+ * tag's content, a description's say, declares nothing, nor does a tag inside
+ * a comment.
  */
 function metaCharset(head: string): string | undefined {
-  for (const [tag] of head.matchAll(/<meta\b[^>]*>/gi)) {
+  for (const [tag] of head.replace(/<!--[\s\S]*?-->/g, '').matchAll(/<meta\b[^>]*>/gi)) {
     const beside = tag.replace(/\bcontent\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/i, '');
-    const named = beside.match(/\bcharset\s*=\s*["']?\s*([\w.:-]+)/i)?.[1];
+    const named = beside.match(/(?<![\w-])charset\s*=\s*["']?\s*([\w.:-]+)/i)?.[1];
     if (named !== undefined) return named;
     if (/\bhttp-equiv\s*=\s*["']?content-type/i.test(tag)) {
       const inContent = tag.match(/\bcharset\s*=\s*["']?\s*([\w.:-]+)/i)?.[1];

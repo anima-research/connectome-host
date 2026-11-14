@@ -6,10 +6,12 @@
  * the agent's context. Either way the result says which part was read, because
  * a reader that doesn't know it saw a part reads what's missing as absent.
  *
- * It adds no authority over files: a local read is the workspace's own read
- * tool, called in process, so it shows a file as the workspace's tools do, a
- * write not yet on disk included, under its mounts, includes and symlink
- * policy. On the network it reaches only public addresses unless the recipe
+ * It reaches no file the workspace doesn't: a local read is the workspace's
+ * own read tool, called in process, so it shows a file as the workspace's
+ * tools do, a write not yet on disk included, under its mounts, includes and
+ * symlink policy. With `local` on it is a reader of those files in its own
+ * right, though: an agent allowed fetch--fetch reads them with it, whether or
+ * not workspace--read is on that agent's list. On the network it reaches only public addresses unless the recipe
  * says otherwise, and sends no credentials (fetch-http.ts).
  *
  * The module writes nothing to the store itself: what an agent's history
@@ -250,7 +252,7 @@ export class FetchModule implements Module {
     try {
       ({ document, copyAge, copyGone } = await this.load(source, asked, call));
     } catch (error) {
-      if (error instanceof FetchRefusal) return nothingFetched(error.message);
+      if (error instanceof FetchRefusal) return error.whole ? { success: false, isError: true, error: error.message } : nothingFetched(error.message);
       throw error;
     }
 
@@ -309,11 +311,11 @@ export class FetchModule implements Module {
       };
     }
 
+    // The address asked for is shown as it was parsed, on one line, not as it was typed.
+    const redirected = source.kind === 'web' && document.name !== source.url.href ? ` Redirected from ${shownAddress(source.url.href)}.` : '';
     const heading = document.kind === 'file'
-      ? `Read ${document.name} through the workspace.${document.note ? ` ${document.note}` : ''}`
-      : `Fetched ${shownAddress(document.name)} (${document.contentType ?? 'no content type given'}).` +
-        (document.name === new URL(named).href.split('#')[0] ? '' : ` Redirected from ${shownAddress(named)}.`) +
-        copyNote;
+      ? `Read ${shownAddress(document.name)} through the workspace.${document.note ? ` ${document.note}` : ''}`
+      : `Fetched ${shownAddress(document.name)} (${document.contentType ?? 'no content type given'}).${redirected}${copyNote}`;
     const direct = ({ part, end }: { part: string; end: number }): { data: string; end: number } => {
       const body = part.trim() !== '' ? `<document-${code}>\n${part}\n</document-${code}>`
         : document.text.trim() === '' && !document.cut ? `[The ${document.kind} has no text.]`
@@ -396,7 +398,7 @@ export class FetchModule implements Module {
     }
     // The workspace keeps a byte-order mark in what it reads; it isn't text.
     let decoded = page.content.replace(/^﻿/, '');
-    if (decoded.slice(0, 8192).includes('\u0000')) throw new FetchRefusal(`${path} is a binary file, and this tool reads only text.`);
+    if (decoded.slice(0, 8192).includes('\u0000')) throw new FetchRefusal(`${shownAddress(path)} is a binary file, and this tool reads only text.`);
     const bytes = Buffer.from(decoded, 'utf8');
     const cut = bytes.length > this.maxBytes;
     if (cut) decoded = decodeText(bytes.subarray(0, this.maxBytes), undefined, false, true);
@@ -437,9 +439,16 @@ export class FetchModule implements Module {
       const shown = html ? await htmlToMarkdown(decoded, got.url).catch(() => null) : decoded;
       const said = shown?.trim() ?? '';
       const excerpt = said.slice(0, ERROR_BODY_CHARS);
-      const opening = said.length > ERROR_BODY_CHARS ? ` It sent ${said.length} characters, which begin:` : ' It sent:';
-      const sent = shown === null ? " Its error page couldn't be converted." : excerpt ? `${opening}\n\n${excerpt}` : ' It sent nothing else.';
-      throw new FetchRefusal(`${shownAddress(got.url)} answered HTTP ${got.status}.${sent}`);
+      // What the server sent is its own text, so it goes between tags, as a page's does.
+      const code = randomBytes(6).toString('hex');
+      const opening = said.length > ERROR_BODY_CHARS || got.cut
+        ? ` It sent ${said.length}${got.cut ? ' or more' : ''} characters, which begin, between the tags:`
+        : ' It sent, between the tags:';
+      const sent = shown === null ? " Its error page couldn't be converted."
+        : excerpt ? `${opening}\n\n<document-${code}>\n${excerpt}\n</document-${code}>`
+        : ' It sent nothing else.';
+      // Whole: the server was reached and its answer read, so this isn't led with "Nothing was fetched".
+      throw new FetchRefusal(`${shownAddress(got.url)} answered HTTP ${got.status}, so there is no page to read.${sent}`, true);
     }
     const text = html ? await htmlToMarkdown(decoded, got.url) : decoded;
     return {

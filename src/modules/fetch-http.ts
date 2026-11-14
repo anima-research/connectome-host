@@ -107,18 +107,30 @@ export function isPublicAddress(address: string, interfaces: ReturnType<typeof n
   const bare = address.split('%')[0]!;
   const family = isIP(bare);
   if (family === 0) return false;
-  if (family === 6 && EMBEDS_IPV4.check(bare, 'ipv6')) return isPublicAddress(embeddedIpv4(bare), interfaces);
+  if (family === 6 && EMBEDS_IPV4.check(bare, 'ipv6')) return !isOwnAddress(bare, interfaces) && isPublicAddress(embeddedIpv4(bare), interfaces);
   return !NOT_PUBLIC.check(bare, family === 4 ? 'ipv4' : 'ipv6') && !isOwnAddress(bare, interfaces);
 }
 
-/** An address as it's shown in a result: an address can be as long as a redirect makes it. */
+/**
+ * An address or a path as it's shown in a result, on one line: an address can
+ * be as long as a redirect makes it, and a file's name can hold a line break,
+ * which would start what reads as a line of the tool's own.
+ */
 export function shownAddress(address: string): string {
-  return address.length <= 300 ? address : `${address.slice(0, 300)}…`;
+  const line = address.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ');
+  return line.length <= 300 ? line : `${line.slice(0, 300)}…`;
 }
 
-/** A refused or failed fetch. Its message completes "Nothing was fetched: ". */
+/**
+ * A refused or failed fetch. Its message completes "Nothing was fetched: ",
+ * unless it is `whole`: then something was read on the way, an error page say,
+ * and the message is all of what's said.
+ */
 export class FetchRefusal extends Error {
   override readonly name = 'FetchRefusal';
+  constructor(message: string, readonly whole = false) {
+    super(message);
+  }
 }
 
 const PRIVATE_ADDRESS = 'ERR_FETCH_ADDRESS_NOT_ALLOWED';
@@ -281,7 +293,9 @@ function requestOnce(url: URL, options: HttpGetOptions, allowed: (address: strin
       }
       const encoding = headerText(response.headers['content-encoding'])?.trim().toLowerCase();
       if (encoding !== undefined && encoding !== '' && encoding !== 'identity') {
-        finish(() => reject(new FetchRefusal(`the server sent it compressed (${encoding}), though it was asked not to, so it can't be read.`)));
+        // The header is the server's to write, so only what reads as an encoding's name is repeated.
+        const named = /^[a-z0-9_.-]{1,20}$/.test(encoding) ? ` (${encoding})` : '';
+        finish(() => reject(new FetchRefusal(`the server sent it compressed${named}, though it was asked not to, so it can't be read.`)));
         request.destroy();
         return;
       }

@@ -788,8 +788,8 @@ a workspace path too:
 
 Without a `prompt` the tool returns the text itself, 20,000 characters at a
 time, or fewer where the agent's inline result limit
-(`toolResultInlineMaxChars`) is lower, so the note that says how to read on
-always arrives. With one, a separate small model reads up to 100,000 characters
+(`toolResultInlineMaxChars`) is lower, so the result fits it and the note that
+says how to read on arrives with the text. With one, a separate small model reads up to 100,000 characters
 and answers, so a long document stays out of the agent's context. Every result
 says which part was read and gives the `offset` to read on from.
 
@@ -799,6 +799,10 @@ says which part was read and gives the `offset` to read on from.
 | `local` | `false` | Lets `source` be a workspace path. The file is read with the workspace's own `read`, so the agent gets the copy `workspace--read` shows, a write not yet on disk included, under the same mounts, includes, symlink policy and size limit. Needs `modules.workspace`. It makes fetch a reader of those files in its own right: an agent whose `allowedTools` lists `fetch--fetch` reads them with it, whether or not `workspace--read` is on that list |
 | `allowPrivateNetwork` | `false` | Lets web addresses reach private and local addresses, such as loopback, the LAN or a tailnet |
 | `maxBytes` | 5 MiB | Most bytes of one document to read, up to 64 MiB. Past it, the tool reads the start and says the rest is out of reach. A workspace file is read whole by the workspace, up to its mount's `maxFileSize`, and the tool keeps the first `maxBytes` of it |
+
+The module's tools are named `fetch--…`. A server in `mcpServers` named `fetch`
+doesn't clash with them, since its tools are `mcpl--fetch--…`, but one that sets
+`toolPrefix` to `fetch` does, and the host then stops at start saying so.
 
 On the network, the tool decides what it may reach by the address it would
 connect to, on every redirect, so a public name that resolves to a private

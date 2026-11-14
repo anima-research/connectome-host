@@ -37,7 +37,7 @@ const { html, baseUrl: documentUrl } = JSON.parse(await new Response(Bun.stdin.s
 
 /** What relative addresses resolve against: the document's `<base href>` where it has one, as in a browser, and otherwise its own address. */
 const baseUrl = ((): string | undefined => {
-  const href = html.slice(0, 65_536).match(/<base\b[^>]*?\bhref\s*=\s*["']?([^"'\s>]+)/i)?.[1];
+  const href = html.slice(0, 65_536).replace(/<!--[\s\S]*?-->/g, '').match(/<base\b[^>]*?\bhref\s*=\s*["']?([^"'\s>]+)/i)?.[1];
   if (href === undefined) return documentUrl;
   try {
     const base = documentUrl === undefined ? new URL(href) : new URL(href, documentUrl);
@@ -115,7 +115,12 @@ function isFirstRow(row: DomNode): boolean {
   if (table === null) return false;
   let first = FIRST_ROWS.get(table);
   if (first === undefined) {
-    first = Array.from(table.querySelectorAll?.('tr') ?? []).find((candidate) => !isHidden(candidate)) ?? null;
+    // Shown: neither it nor what holds it within the table, a thead say, is hidden.
+    const shown = (candidate: DomNode): boolean => {
+      for (let node: DomNode | null = candidate; node !== null && node !== table; node = node.parentNode) if (isHidden(node)) return false;
+      return true;
+    };
+    first = Array.from(table.querySelectorAll?.('tr') ?? []).find(shown) ?? null;
     FIRST_ROWS.set(table, first);
   }
   return first === row;

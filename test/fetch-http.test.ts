@@ -139,7 +139,13 @@ describe('the host\'s own addresses', () => {
     expect(isOwnAddress('not an address', interfaces)).toBe(false);
   });
 
-  test('every address this machine carries is refused, and a server on all interfaces is never reached at one', async () => {
+  test('an address this host carries under a translating prefix is its own too, whatever IPv4 address it embeds', () => {
+    const carrying = { eth0: [{ address: '64:ff9b::808:808', netmask: 'ffff:ffff:ffff:ffff::', family: 'IPv6', mac: '02:00:00:00:00:01', internal: false, cidr: '64:ff9b::808:808/96', scopeid: 0 }] } as ReturnType<typeof networkInterfaces>;
+    expect(isPublicAddress('64:ff9b::808:808', carrying)).toBe(false);
+    expect(isPublicAddress('64:ff9b::808:809', carrying)).toBe(true);
+  });
+
+  test('every address this machine carries is refused, and a server on every IPv4 interface is never reached at one', async () => {
     const carried = Object.values(networkInterfaces()).flatMap((entries) => entries ?? []);
     expect(carried.length).toBeGreaterThan(0);
     for (const { address } of carried) expect(isPublicAddress(address), address).toBe(false);
