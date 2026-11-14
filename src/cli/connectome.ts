@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { ENTRY_POINT, readCurrent } from '../update/contract.js';
 import { EXACT_VERSION } from '../update/install.js';
 import { KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRecord, shellWord } from '../update/launcher.js';
+import { serviceBun } from '../update/service-bun.js';
 import { CLI_WAYS, COMMAND_WAYS, statusLines, type UpdateStatus } from '../web/update-text.js';
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
@@ -463,7 +464,7 @@ function startHost(root: string, then: string): string {
 }
 
 function startCommand(root: string): string {
-  return `${shellWord(process.execPath)} ${shellWord(join(root, ENTRY_POINT))}`;
+  return `${shellWord(serviceBun(process.execPath, process.env.PATH ?? ''))} ${shellWord(join(root, ENTRY_POINT))}`;
 }
 
 function thisRelease(root: string): string {

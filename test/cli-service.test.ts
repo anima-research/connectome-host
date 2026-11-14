@@ -424,6 +424,8 @@ function fake(at: Install, options: {
   other?: number;
   silent?: boolean;
   owner?: number;
+  bun?: string;
+  files?: Record<string, string | null>;
 } = {}): Fake {
   const systemd = new FakeSystemd(at.home);
   const hostOf = (root: string) => (options.platform === 'darwin' ? 'com.animalabs.connectome.' : 'connectome-') +
@@ -445,10 +447,12 @@ function fake(at: Install, options: {
     home: at.home,
     cwd: options.cwd ?? at.work,
     env: options.env ?? { PATH: `${at.root}:/usr/bin:/bin` },
-    bun: '/opt/bun/bin/bun',
+    bun: options.bun ?? '/opt/bun/bin/bun',
     owner: () => options.owner ?? 1001,
     cgroup: () => options.cgroup ?? null,
-    which: (name) => (name === 'node' ? (options.node === undefined ? '/opt/node/bin/node' : options.node) : null),
+    which: (name, path) => path.split(':').map((entry) => join(entry, name)).find((file) => file in (options.files ?? {})) ??
+      (name === 'node' ? (options.node === undefined ? '/opt/node/bin/node' : options.node) : null),
+    realpath: (path) => (options.files !== undefined && path in options.files ? options.files[path]! : path),
     run: (command, args, env) => systemd.run(command, args, env),
     readRecipe: async (recipe) => {
       read.push(recipe);
@@ -515,6 +519,58 @@ test('the host unit runs start.js with the recipe from the working directory, wi
   expect(statSync(hostUnit(at)).mode & 0o777).toBe(0o600);
   expect(f.systemd.enabled.has(HOST)).toBe(true);
   expect(f.out).toContain(`Enabled ${HOST}, so systemd starts it at boot.`);
+});
+
+test('a bun on PATH that resolves to the bun install runs on, as Homebrew\'s link to its versioned file does, is the bun the units run and the first directory of their PATH', async () => {
+  const at = install();
+  const cellar = '/opt/homebrew/Cellar/bun/1.4.4/bin/bun';
+  const f = fake(at, { platform: 'darwin', linger: null, bun: cellar, env: { PATH: `/opt/homebrew/bin:${at.root}:/usr/bin:/bin` },
+    files: { '/opt/homebrew/bin/bun': cellar } });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const text = readFileSync(agentPlist(at), 'utf-8');
+  expect(text).toContain(`<key>ProgramArguments</key>\n  <array>\n    <string>/opt/homebrew/bin/bun</string>\n    <string>${at.root}/start.js</string>`);
+  expect(text).toContain('<key>PATH</key>\n    <string>/opt/homebrew/bin:/opt/node/bin:');
+  expect(text).not.toContain('Cellar');
+});
+
+test('a bun on PATH that doesn\'t resolve to the bun install runs on, such as a version manager\'s shim or another bun, or where neither resolves, leaves the units running the bun install runs on', async () => {
+  const cases: Array<[string, Record<string, string | null>]> = [
+    ['/home/resident/.asdf/shims', { '/home/resident/.asdf/shims/bun': '/home/resident/.asdf/shims/bun' }],
+    ['/usr/local/bin', { '/usr/local/bin/bun': '/usr/local/lib/bun/1.3.0/bin/bun' }],
+    ['/opt/homebrew/bin', { '/opt/homebrew/bin/bun': null, '/opt/bun/bin/bun': null }],
+  ];
+  for (const [first, files] of cases) {
+    const at = install();
+    const f = fake(at, { env: { PATH: `${first}:${at.root}:/usr/bin:/bin` }, files });
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+    const text = readFileSync(hostUnit(at), 'utf-8');
+    expect(text).toContain(`ExecStart="/opt/bun/bin/bun" "${at.root}/start.js" "${at.recipe}" "--headless"\n`);
+    expect(text).toContain('Environment="PATH=/opt/bun/bin:/opt/node/bin:');
+  }
+});
+
+test('a temporary directory first on PATH whose node is the bun install runs on, as bunx puts there, is no part of the units: they run that bun from where it lasts, and their PATH leaves the directory out', async () => {
+  const at = install();
+  const bun = '/home/resident/.bun/bin/bun';
+  const standIn = '/tmp/bun-node-1001-38afee6c8';
+  const f = fake(at, { bun, env: { PATH: `${standIn}:/home/resident/.bun/bin:${at.root}:/usr/bin:/bin` },
+    files: { [join(standIn, 'bun')]: bun, [join(standIn, 'node')]: bun, [bun]: bun } });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+  const text = readFileSync(hostUnit(at), 'utf-8');
+  expect(text).toContain(`ExecStart="${bun}" "${at.root}/start.js" "${at.recipe}" "--headless"\n`);
+  expect(text).toContain(`Environment="PATH=/home/resident/.bun/bin:/opt/node/bin:${at.root}:/usr/bin:/bin:`);
+  expect(text).not.toContain(standIn);
+});
+
+test('a shell whose only node on PATH is in that temporary directory, the bun install runs on, is refused as with no Node on PATH, before anything is written', async () => {
+  const at = install('My Resident', { shell: true });
+  const bun = '/home/resident/.bun/bin/bun';
+  const standIn = '/tmp/bun-node-1001-38afee6c8';
+  const f = fake(at, { bun, node: null, env: { PATH: `${standIn}:${at.root}:/usr/bin:/bin` },
+    files: { [join(standIn, 'bun')]: bun, [join(standIn, 'node')]: bun } });
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain('no node is on this PATH');
+  nothingWritten(at);
 });
 
 test('the host\'s unit, as install first writes it and in its supervised form, has systemd send its stop\'s SIGTERM to the host alone', async () => {
