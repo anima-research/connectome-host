@@ -33,6 +33,7 @@ import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
 import type { RecipeModules } from '../recipe.js';
 import { decodeText, htmlToMarkdown, isHtmlPath, isHtmlType, looksBinary, looksLikeScriptShell, mediaType } from './fetch-convert.js';
 import { FetchRefusal, httpGet, shownAddress } from './fetch-http.js';
+import { workspaceReadFields } from '../workspace-read-result.js';
 import { unknownToolResult } from './unknown-tool.js';
 
 export const DEFAULT_FETCH_MODEL = 'claude-haiku-4-5-20251001';
@@ -156,6 +157,8 @@ export class FetchModule implements Module {
 
   private ctx: ModuleContext | null = null;
   private readonly snapshots = new Map<string, Snapshot>();
+  /** Counts the module's stops, so a fetch that began before one keeps nothing after it, a restart or not. */
+  private stops = 0;
   private readonly model: string;
   private readonly maxBytes: number;
 
@@ -170,6 +173,7 @@ export class FetchModule implements Module {
 
   async stop(): Promise<void> {
     this.ctx = null;
+    this.stops++;
     this.snapshots.clear();
   }
 
@@ -253,10 +257,11 @@ export class FetchModule implements Module {
     const total = document.text.length;
     if (asked > 0 && asked >= total) {
       const prefix = document.cut ? ` That is as far as this tool reads it: the ${document.kind} goes on past the ${this.maxBytes} bytes it reads.` : '';
+      const fresh = copyGone ? ' No copy from an earlier read is kept, so this is the page as it is now, which may have changed since: start again from offset 0.' : '';
       return {
         success: false,
         isError: true,
-        error: `There is nothing to read there: offset ${asked} is past the end of ${shownAddress(document.name)}, whose text is ${total} characters long.${prefix}`,
+        error: `There is nothing to read there: offset ${asked} is past the end of ${shownAddress(document.name)}, whose text is ${total} characters long.${prefix}${fresh}`,
       };
     }
     // An offset between the halves of a pair starts at the pair, so no part begins with half a character.
@@ -295,9 +300,11 @@ export class FetchModule implements Module {
         coverageNote(document, from, end, this.maxBytes),
         'Leave out prompt to read the text itself.',
       ].join(' ');
+      // The note comes first: an answer has no length this tool sets, and a
+      // result past the call's limit is cut from its end.
       return {
         success: true,
-        data: [`<answer-${code}>\n${answer.text}\n</answer-${code}>`, ...(document.scriptShell ? [SCRIPT_SHELL_NOTE] : []), `[${note}]`].join('\n\n'),
+        data: [`[${note}]`, ...(document.scriptShell ? [SCRIPT_SHELL_NOTE] : []), `<answer-${code}>\n${answer.text}\n</answer-${code}>`].join('\n\n'),
         structured: { ...structuredFor(end), answeredBy: this.model },
       };
     }
@@ -320,10 +327,11 @@ export class FetchModule implements Module {
     };
     let read = direct(first);
     // Past this the framework spills the result to a file and cuts it, which
-    // would take the note saying how to read on, so the part gives way.
-    const over = call.resultMaxChars === undefined ? 0 : read.data.length - call.resultMaxChars;
-    if (over > 0 && first.part.length > 1) {
-      read = direct(partOf(document.text, from, Math.max(1, first.part.length - over - 32)));
+    // would take the note saying how to read on, so the part gives way, as
+    // often as it takes: a shorter part can have a longer note.
+    for (let length = first.part.length; call.resultMaxChars !== undefined && read.data.length > call.resultMaxChars && length > 1;) {
+      length = Math.max(1, length - (read.data.length - call.resultMaxChars) - 32);
+      read = direct(partOf(document.text, from, length));
     }
     return { success: true, data: read.data, structured: structuredFor(read.end) };
   }
@@ -357,8 +365,10 @@ export class FetchModule implements Module {
       const age = copy ? performance.now() - copy.at : undefined;
       if (copy && age! < SNAPSHOT_TTL_MS) return { document: copy.document, copyAge: age! };
     }
+    const stops = this.stops;
     const document = await this.loadPage(source.url);
-    this.keep(key, document);
+    // A fetch the module stopped under keeps nothing, for this run or a later start.
+    if (stops === this.stops) this.keep(key, document);
     return { document, copyGone: offset > 0 };
   }
 
@@ -377,8 +387,8 @@ export class FetchModule implements Module {
       input: { path, offsetChars: 0, limitChars: Number.MAX_SAFE_INTEGER },
       ...(call.callerAgentName === undefined ? {} : { callerAgentName: call.callerAgentName }),
     });
-    const page = read.structured as { content?: unknown; note?: unknown } | undefined;
-    if (!read.success || typeof page?.content !== 'string') {
+    const page = workspaceReadFields(read) as { content?: unknown; note?: unknown };
+    if (!read.success || typeof page.content !== 'string') {
       const said = read.error ?? 'it gave no text';
       const mounts = workspace.getMounts().map((mount) => mount.name);
       const hint = mounts.includes(path.split('/')[0]!) ? '' : ' A web address starts with http:// or https://.';
@@ -445,8 +455,7 @@ export class FetchModule implements Module {
 
   private keep(key: string, document: Document): void {
     this.snapshots.delete(key);
-    // A fetch still under way when the module stopped keeps nothing for a later start.
-    if (this.ctx === null || document.text.length > SNAPSHOT_MAX_CHARS) return;
+    if (document.text.length > SNAPSHOT_MAX_CHARS) return;
     const now = performance.now();
     this.snapshots.set(key, { document, at: now });
     let held = 0;

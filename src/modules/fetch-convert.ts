@@ -159,11 +159,30 @@ function declaredCharset(contentType: string | undefined): string | undefined {
 /**
  * Whether bytes hold binary data: a NUL early on, which text in the encodings
  * served here doesn't have. UTF-16 has them, and is told apart by its
- * byte-order mark or the charset its Content-Type names.
+ * own byte-order mark or the charset its Content-Type names.
  */
 export function looksBinary(bytes: Buffer, contentType?: string): boolean {
-  if (markedEncoding(bytes) !== undefined || /^utf-16/i.test(declaredCharset(contentType) ?? '')) return false;
+  const utf16 = /^utf-16(?:le|be)?$/i;
+  if (utf16.test(markedEncoding(bytes) ?? '') || utf16.test(declaredCharset(contentType) ?? '')) return false;
   return bytes.subarray(0, 8192).includes(0);
+}
+
+/**
+ * The encoding an HTML document's own `<meta>` declares: `<meta charset>`, or
+ * the `content` of an http-equiv Content-Type. A charset= inside some other
+ * tag's content, a description's say, declares nothing.
+ */
+function metaCharset(head: string): string | undefined {
+  for (const [tag] of head.matchAll(/<meta\b[^>]*>/gi)) {
+    const beside = tag.replace(/\bcontent\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/i, '');
+    const named = beside.match(/\bcharset\s*=\s*["']?\s*([\w.:-]+)/i)?.[1];
+    if (named !== undefined) return named;
+    if (/\bhttp-equiv\s*=\s*["']?content-type/i.test(tag)) {
+      const inContent = tag.match(/\bcharset\s*=\s*["']?\s*([\w.:-]+)/i)?.[1];
+      if (inContent !== undefined) return inContent;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -176,7 +195,7 @@ export function looksBinary(bytes: Buffer, contentType?: string): boolean {
  */
 export function decodeText(bytes: Buffer, contentType: string | undefined, html = false, cut = false): string {
   const declared = declaredCharset(contentType);
-  const inMeta = html ? bytes.subarray(0, 1024).toString('latin1').match(/<meta\b[^>]*?charset\s*=\s*["']?\s*([\w.:-]+)/i)?.[1] : undefined;
+  const inMeta = html ? metaCharset(bytes.subarray(0, 1024).toString('latin1')) : undefined;
   let decoder: TextDecoder;
   try {
     decoder = new TextDecoder(markedEncoding(bytes) ?? declared ?? inMeta ?? 'utf-8');

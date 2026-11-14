@@ -275,7 +275,10 @@ describe('redirects', () => {
       ? { ...OPTIONS, addressAllowed: (() => { let hop = 0; return () => hop++ === 0; })() }
       : options;
     const before = hits.filter((h) => h === '/secret').length;
+    const redirects = hits.filter((h) => h.startsWith('/to?')).length;
     expect(await refusal(httpGet(new URL(`http://127.0.0.1:${port}/to?${encodeURIComponent(target())}`), first))).toContain('private or local address');
+    // The first hop was served, so it's the redirect's target that was refused.
+    expect(hits.filter((h) => h.startsWith('/to?')).length).toBe(redirects + 1);
     expect(hits.filter((h) => h === '/secret').length).toBe(before);
   });
 

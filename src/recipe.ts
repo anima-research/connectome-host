@@ -1020,7 +1020,10 @@ export interface RecipeModules {
     /**
      * Let the tool read local files too. It reads them through the workspace,
      * so it reaches what the workspace's mounts allow and nothing more, and
-     * needs `modules.workspace`. Off by default.
+     * needs `modules.workspace`. Off by default. On, fetch is a reader of
+     * those files in its own right: an agent whose `allowedTools` holds
+     * fetch--fetch reads them with it, whether or not workspace--read is on
+     * that list.
      */
     local?: boolean;
     /**
@@ -2310,7 +2313,7 @@ export function unknownRecipeKeys(raw: unknown): string[] {
  * a wrong one would otherwise surface only on the agent's first call. Its
  * `local` reads through the workspace, so it can't stand with the workspace off.
  */
-function validateRecipeFetch(fetch: unknown, workspace: unknown, provider: unknown, servers: unknown): void {
+function validateRecipeFetch(fetch: unknown, workspace: unknown, provider: unknown): void {
   if (fetch === undefined || fetch === false) return;
   if (fetch !== true && (fetch === null || typeof fetch !== 'object' || Array.isArray(fetch))) {
     throw new Error(`Recipe modules.fetch is ${JSON.stringify(fetch)}; it must be a boolean or object.`);
@@ -2337,12 +2340,6 @@ function validateRecipeFetch(fetch: unknown, workspace: unknown, provider: unkno
     throw new Error(
       `Recipe turns modules.fetch on with agent.provider ${JSON.stringify(provider)} and no modules.fetch.model: `
       + 'the model that answers a fetch prompt defaults to a Claude id this provider doesn\'t take. Set modules.fetch.model to one it serves.',
-    );
-  }
-  if (servers !== null && typeof servers === 'object' && Object.hasOwn(servers, 'fetch')) {
-    throw new Error(
-      'Recipe turns modules.fetch on and names mcpServers.fetch: their tools would share the names fetch--…. '
-      + 'Rename the server\'s key in mcpServers to keep both, or turn modules.fetch off to keep only the server.',
     );
   }
 }
@@ -3353,7 +3350,6 @@ export function validateRecipe(raw: unknown): Recipe {
       mods.fetch,
       mods.workspace,
       (raw as { agent?: { provider?: unknown } }).agent?.provider,
-      (raw as { mcpServers?: unknown }).mcpServers,
     );
 
     const retrieval = mods.retrieval;

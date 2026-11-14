@@ -107,14 +107,25 @@ const inDataTable = (node: DomNode): boolean => {
   return table !== null && dataColumns(table) > 0;
 };
 
+const FIRST_ROWS = new WeakMap<DomNode, DomNode | null>();
+
+/** Whether a row is the first its table shows, which the header line follows: a hidden row before it writes nothing. */
 function isFirstRow(row: DomNode): boolean {
-  return tableOf(row)?.querySelector?.('tr') === row;
+  const table = tableOf(row);
+  if (table === null) return false;
+  let first = FIRST_ROWS.get(table);
+  if (first === undefined) {
+    first = Array.from(table.querySelectorAll?.('tr') ?? []).find((candidate) => !isHidden(candidate)) ?? null;
+    FIRST_ROWS.set(table, first);
+  }
+  return first === row;
 }
 
 /** Whether a style attribute ends with the element not displayed: comments aside, the last declaration of a property wins, unless an earlier one is !important. */
 function styleHides(style: string): boolean {
   const final = new Map<string, { value: string; important: boolean }>();
-  for (const declaration of style.replace(/\/\*[\s\S]*?\*\//g, '').split(';')) {
+  // Comments and quoted strings hold no declarations, and a semicolon inside one ends none.
+  for (const declaration of style.replace(/\/\*[\s\S]*?\*\/|"[^"]*"|'[^']*'/g, '').split(';')) {
     const colon = declaration.indexOf(':');
     if (colon === -1) continue;
     const property = declaration.slice(0, colon).trim().toLowerCase();
@@ -157,6 +168,9 @@ function followable(raw: string | null): string | null {
   }
 }
 
+/** An address as it goes between markdown's round brackets: its own are percent-encoded, so one of them can't end it early. encodeURIComponent leaves them be. */
+const inBrackets = (address: string): string => address.replace(/[()]/g, (bracket) => (bracket === '(' ? '%28' : '%29'));
+
 const service = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', emDelimiter: '*', bulletListMarker: '-' });
 
 // Turndown escapes markdown punctuation for a renderer, but a model reads this,
@@ -171,7 +185,7 @@ service.addRule('followable-link', {
     // A heading's permalink, a link whose whole text is a mark: it says nothing, once per heading.
     if (/^[¶#§🔗]$/u.test(text)) return '';
     if (href === null) return text;
-    return text === '' ? '' : `[${text}](${href.replace(/[()]/g, (c) => encodeURIComponent(c))})`;
+    return text === '' ? '' : `[${text}](${inBrackets(href)})`;
   },
 });
 
@@ -184,7 +198,7 @@ service.addRule('followable-image', {
     const src = followable(element.getAttribute?.('src') ?? null);
     // HTML's empty alt marks an image as decoration, and a text reader gets nothing from its address.
     if (src === null || alt === '') return alt;
-    return `![${alt}](${src})`;
+    return `![${alt}](${inBrackets(src)})`;
   },
 });
 

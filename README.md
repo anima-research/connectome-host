@@ -796,12 +796,9 @@ says which part was read and gives the `offset` to read on from.
 | Option | Default | What it does |
 |---|---|---|
 | `model` | `claude-haiku-4-5-20251001` | The model that answers `prompt`. A recipe whose `agent.provider` is neither `anthropic` nor `mock` must set it, and is refused at load without it |
-| `local` | `false` | Lets `source` be a workspace path. The file is read with the workspace's own `read`, so the agent gets the copy `workspace--read` shows, a write not yet on disk included, under the same mounts, includes, symlink policy and size limit. Needs `modules.workspace` |
+| `local` | `false` | Lets `source` be a workspace path. The file is read with the workspace's own `read`, so the agent gets the copy `workspace--read` shows, a write not yet on disk included, under the same mounts, includes, symlink policy and size limit. Needs `modules.workspace`. It makes fetch a reader of those files in its own right: an agent whose `allowedTools` lists `fetch--fetch` reads them with it, whether or not `workspace--read` is on that list |
 | `allowPrivateNetwork` | `false` | Lets web addresses reach private and local addresses, such as loopback, the LAN or a tailnet |
-| `maxBytes` | 5 MiB | Most bytes of one document to read, up to 64 MiB. Past it, the tool reads the start and says the rest is out of reach. A workspace file is also held to its mount's `maxFileSize` |
-
-A recipe that turns `modules.fetch` on can't also name a server `fetch` in
-`mcpServers`, since their tools would share the names `fetch--…`.
+| `maxBytes` | 5 MiB | Most bytes of one document to read, up to 64 MiB. Past it, the tool reads the start and says the rest is out of reach. A workspace file is read whole by the workspace, up to its mount's `maxFileSize`, and the tool keeps the first `maxBytes` of it |
 
 On the network, the tool decides what it may reach by the address it would
 connect to, on every redirect, so a public name that resolves to a private

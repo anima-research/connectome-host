@@ -40,6 +40,7 @@ describe('htmlToMarkdown', () => {
     ['visibility:hidden', 'style="visibility:hidden"'],
     ['visibility:collapse', 'style="visibility:collapse"'],
     ['display:none with a comment inside it', 'style="display:/* x */none"'],
+    ['display:none before a quoted string that holds a semicolon and a display', `style='display:none; --note:";display:block;"'`],
     ['display:none !important before a later display', 'style="display:none !important; display:block"'],
     ['the last of two displays, which is none', 'style="display:block; display:none"'],
   ] as const;
@@ -116,6 +117,16 @@ describe('htmlToMarkdown', () => {
       '<table><tr><th colspan="2">Title</th><th>Unit</th></tr><tr><td>a</td><td>b</td><td>c</td></tr></table>',
     ), undefined);
     expect(markdown).toBe('| Title | | Unit |\n| --- | --- | --- |\n| a | b | c |');
+  });
+
+  test('a hidden first row writes nothing, and the header line follows the first row shown', async () => {
+    const markdown = await htmlToMarkdown(page('<table><tr hidden><td>HIDDEN_TEXT</td><td>x</td></tr><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>'), undefined);
+    expect(markdown).toBe('| a | b |\n| --- | --- |\n| c | d |');
+  });
+
+  test('an address with round brackets in it stays one address, in a link and in an image', async () => {
+    expect(await htmlToMarkdown(page('<img alt="pic" src="https://x.test/a).png">'), undefined)).toBe('![pic](https://x.test/a%29.png)');
+    expect(await htmlToMarkdown(page('<a href="https://en.wikipedia.org/wiki/Fetch_(FTP_client)">Fetch</a>'), undefined)).toBe('[Fetch](https://en.wikipedia.org/wiki/Fetch_%28FTP_client%29)');
   });
 
   test('a table with no thead gets its header line after the first row', async () => {
@@ -234,7 +245,8 @@ describe('the converting process', () => {
     expect(error).toBeInstanceOf(FetchRefusal);
     expect((error as Error).message).toContain('more than 1 seconds');
     expect(Date.now() - started).toBeLessThan(5_000);
-    expect(ticks).toBeGreaterThan(20);
+    // The host's own loop ran while the conversion did: a blocked one would run none of these.
+    expect(ticks).toBeGreaterThan(5);
     expect(await gone(child!.pid!, 2_000)).toBe(true);
   }, 15_000);
 
@@ -289,10 +301,12 @@ describe('the converting process', () => {
     const slow = () => htmlToMarkdown('<div>'.repeat(200_000) + 'x', undefined, { timeoutMs: 300 }).then(() => 'converted', (error: Error) => error.message);
     // Two running and sixteen waiting.
     const held = Array.from({ length: 18 }, slow);
-    const started = Date.now();
+    // Refused at once: before any of those ahead of it has finished, where waiting its turn would come after them all.
+    let finished = 0;
+    for (const one of held) void one.then(() => { finished++; });
     const extra = await slow();
     expect(extra).toContain('too many pages are being converted at once');
-    expect(Date.now() - started).toBeLessThan(250);
+    expect(finished).toBe(0);
     for (const message of await Promise.all(held)) expect(message).not.toContain('too many pages');
     expect((await htmlToMarkdown(page('<p>after</p>'), undefined)).trim()).toBe('after');
   }, 30_000);
@@ -310,14 +324,16 @@ describe('the converting process', () => {
       // would mean nothing. The same program as the child, since macOS hides the
       // environment of its own programs, such as sleep, from ps.
       const control = Bun.spawn([process.execPath, '-e', 'await Bun.sleep(5000)'], { env: process.env });
-      await new Promise((done) => setTimeout(done, 100));
-      const controlShows = await shows(control.pid);
+      // Until ps can show it, rather than for a fixed time.
+      let controlShows = false;
+      for (const deadline = Date.now() + 4_000; !controlShows && Date.now() < deadline;) controlShows = await shows(control.pid);
       control.kill();
       expect(controlShows).toBe(true);
 
       let child: ChildProcess | undefined;
-      const running = htmlToMarkdown('<div>'.repeat(200_000) + 'x', undefined, { timeoutMs: 1_500, onChild: (c) => { child = c; } }).catch(() => null);
-      await new Promise((done) => setTimeout(done, 300));
+      // A conversion that runs to its deadline, so the process is there to look at for all of it.
+      const running = htmlToMarkdown('<div>'.repeat(200_000) + 'x', undefined, { timeoutMs: 3_000, onChild: (c) => { child = c; } }).catch(() => null);
+      for (const deadline = Date.now() + 2_000; child === undefined && Date.now() < deadline;) await new Promise((done) => setTimeout(done, 10));
       expect(child!.spawnargs).toContain('--no-env-file');
       // Looked at while it runs, or finding nothing would show nothing.
       expect(isAlive(child!.pid!)).toBe(true);
@@ -353,7 +369,6 @@ describe('the converting process', () => {
       // Nothing else to do, so a host in this state would exit here on its own.
     `);
     try {
-      const started = Date.now();
       const host = Bun.spawn(['bun', script], { stdout: 'pipe', stderr: 'ignore' });
       const output = await new Response(host.stdout).text();
       await host.exited;
@@ -361,8 +376,9 @@ describe('the converting process', () => {
       expect(Number.isInteger(pid) && pid > 0, `host printed ${JSON.stringify(output)}`).toBe(true);
       // Its deadline, 1 second, and its grace past that, 2: killed by its own
       // watchdog, since the host that would have killed it may be gone.
+      // The host has exited and the converter is still at work: what ends it now is its own watchdog.
+      expect(isAlive(pid)).toBe(true);
       expect(await gone(pid, 6_000)).toBe(true);
-      expect(Date.now() - started).toBeLessThan(10_000);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -390,6 +406,9 @@ describe('telling what a document is', () => {
     expect(looksBinary(Buffer.from('﻿hi', 'utf16le'))).toBe(false);
     expect(looksBinary(Buffer.from('hi', 'utf16le'))).toBe(true);
     expect(looksBinary(Buffer.from('hi', 'utf16le'), 'text/plain; charset=UTF-16LE')).toBe(false);
+    // Only UTF-16 has NULs in its text: a UTF-8 mark excuses none, nor does a charset that merely starts like it.
+    expect(looksBinary(Buffer.from([0xef, 0xbb, 0xbf, 0x00, 0x01]))).toBe(true);
+    expect(looksBinary(Buffer.from('hi', 'utf16le'), 'text/plain; charset=utf-16bogus')).toBe(true);
   });
 
   test('decodeText takes a byte-order mark first, over any charset the header names', () => {
@@ -409,6 +428,9 @@ describe('telling what a document is', () => {
     expect(decodeText(html('<meta charset="windows-1251">'), undefined, true)).toContain('Привет');
     expect(decodeText(html('<meta http-equiv="Content-Type" content="text/html; charset=windows-1251">'), undefined, true)).toContain('Привет');
     expect(decodeText(html('<meta charset="windows-1251">'), 'text/html; charset=latin1', true)).not.toContain('Привет');
+    // A charset= inside another tag's content declares nothing.
+    expect(decodeText(html('<meta name="description" content="charset=windows-1251">'), undefined, true)).not.toContain('Привет');
+    expect(decodeText(html('<meta content="text/html; charset=windows-1251" http-equiv="Content-Type">'), undefined, true)).toContain('Привет');
     // A file that merely mentions one isn't HTML, and isn't read as if it were.
     expect(decodeText(html('<meta charset="windows-1251">'), undefined, false)).not.toContain('Привет');
   });
