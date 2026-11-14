@@ -89,6 +89,15 @@ describe('htmlToMarkdown', () => {
     );
   });
 
+  test('a cell whose text already reads \\| stays apart from a bar the cell escaped, and other backslashes stay as they are', async () => {
+    const markdown = await htmlToMarkdown(page(
+      '<table><tr><td>k</td><td>v</td></tr><tr><td>a\\|b</td><td>C:\\Users\\ada</td></tr><tr><td>x\\\\|y</td><td>ends\\</td></tr></table>',
+    ), undefined);
+    expect(markdown).toBe(
+      '| k | v |\n| --- | --- |\n| a\\\\\\|b | C:\\Users\\ada |\n| x\\\\\\\\\\|y | ends\\ |',
+    );
+  });
+
   test('a table with no thead gets its header line after the first row', async () => {
     const markdown = await htmlToMarkdown(page('<p>before</p><table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table><p>after</p>'), undefined);
     expect(markdown).toBe('before\n\n| a | b |\n| --- | --- |\n| c | d |\n\nafter');

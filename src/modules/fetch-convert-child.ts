@@ -147,7 +147,11 @@ service.addRule('table-cell', {
   replacement: (content, node) => {
     const flat = content.replace(/\s*\n\s*/g, ' ').trim();
     if (!inDataTable(asDom(node))) return flat === '' ? '' : `${content.trim()}\n\n`;
-    return ` ${flat.replace(/\|/g, '\\|')} |`;
+    // A bar in a cell's text is written \|. Backslashes just before one are
+    // doubled, so text that already reads \| can't pass for a bar the cell
+    // escaped; backslashes anywhere else stay as the page has them.
+    const text = flat.replace(/\\*\|/g, (run) => `${'\\'.repeat((run.length - 1) * 2 + 1)}|`);
+    return ` ${text} |`;
   },
 });
 service.addRule('table-row', {
