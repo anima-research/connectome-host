@@ -1549,7 +1549,7 @@ describe('a key shorter than 8 characters', () => {
     const made = world(dir, { answers: [''], secrets: ['0', '0'] });
     expect(await runSetup(dir, ['discord'], made)).toBe(0);
     expect(hiddenAsked(made.seen)).toEqual([FIRST, AGAIN]);
-    expect(warnings(made.seen)).toEqual(['That key is 1 character long. Setup hides a stored secret wherever its text appears in what its agent sees, so one this short also hides parts of ids and of command output. If it was cut short, type the whole key. If https://gateway.example takes any key, type a longer made-up one: 8 or more random letters and digits, not a word. To keep this one, type it again.']);
+    expect(warnings(made.seen)).toEqual(['That key is 1 character long. Setup hides a stored secret in the output of the commands its agent runs and in the answers it reads from Discord and from model providers, so one this short also hides parts of ids and of command output. If it was cut short, type the whole key. If https://gateway.example takes any key, type a longer made-up one: 8 or more random letters and digits, not a word. To keep this one, type it again.']);
     expect(made.seen.checked.map((each) => each.key)).toEqual(['0']);
     expect(readEnvFile(join(dir, '.env')).get('ANTHROPIC_API_KEY')).toBe('0');
   });
@@ -1614,7 +1614,7 @@ describe('a key shorter than 8 characters', () => {
     const dir = gatewayDir();
     const made = world(dir, { answers: ['', ''] }, { env: { PATH: '/usr/bin', HOME: dir, ANTHROPIC_API_KEY: 'abc' } });
     expect(await runSetup(dir, ['discord'], made)).toBe(0);
-    expect(made.seen.asked.filter((each) => each.startsWith('An ANTHROPIC_API_KEY'))).toEqual([`An ANTHROPIC_API_KEY is exported in this shell. It is 3 characters long. Setup hides a stored secret wherever its text appears in what its agent sees, so one this short also hides parts of ids and of command output. Answer no to type another. Use it for setup's agent? Setup writes it to ${join(dir, '.env')}, readable by you alone. The resident uses it too, unless you change it. (yes/no) [yes] `]);
+    expect(made.seen.asked.filter((each) => each.startsWith('An ANTHROPIC_API_KEY'))).toEqual([`An ANTHROPIC_API_KEY is exported in this shell. It is 3 characters long. Setup hides a stored secret in the output of the commands its agent runs and in the answers it reads from Discord and from model providers, so one this short also hides parts of ids and of command output. Answer no to type another. Use it for setup's agent? Setup writes it to ${join(dir, '.env')}, readable by you alone. The resident uses it too, unless you change it. (yes/no) [yes] `]);
     expect(warnings(made.seen)).toEqual([]);
     expect(made.seen.checked.map((each) => each.key)).toEqual(['abc']);
   });

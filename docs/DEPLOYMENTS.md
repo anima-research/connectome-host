@@ -170,14 +170,41 @@ the working directory):
   `invalid_request` rejections of the history itself, a poison-history breaker
   sheds the newest complete exchange and retries, capped by
   `refusalHandling.maxRewinds` (default 3) per episode.
-- **`scripts/connectome-doctor [INSTALL_DIR] [UNIT]`** — one-shot "why isn't
-  the agent responding?" (python3; systemd-user boxes). Prints service state,
-  disk, journal staleness (and where the unit really logs), a last-seen ladder
-  per pipeline stage (discord event → chronicle ingest → `llm-calls` →
-  delivery), recent failures from the unit's log file and
-  `INSTALL_DIR/logs/failures.log`, and a live gate dump via `SIGUSR2`. It
-  assumes `INSTALL_DIR/data` and `INSTALL_DIR/logs`, i.e. the unit runs with
-  the install dir as its working directory.
+- **`scripts/connectome-doctor [--data-dir DIR] [INSTALL_DIR] [UNIT]`** —
+  one-shot "why isn't the agent responding?"
+  (python3; systemd-user boxes). Prints service state, disk, a last-seen
+  ladder per pipeline stage (discord event → chronicle ingest → `llm-calls` →
+  delivery), recent failures, and a live gate dump via `SIGUSR2`. It reads the
+  host's lines from the first `StandardOutput=` or `StandardError=` `file:` or
+  `append:` path in the unit file's text, a commented line included, else from
+  `INSTALL_DIR/logs/agent.log` unless that was last written before the unit
+  started, else from the unit's journal: its lines since the unit's latest
+  start that hold a delivery or a failure, which journalctl's `-g` picks
+  out, and the time of its last entry. A journalctl that refuses `-g` leaves
+  those stages unseen, saying so. An earlier start's inference failures are
+  in `INSTALL_DIR/logs/failures.log`. Recent failures also come from that
+  file: its records in its last 400 KB, of every kind but the subscription
+  GC's `subscription-gc-close`. It
+  shows the last five failures from each place it reads, and how many older
+  ones it leaves out. Chronicle ingest
+  comes from the active session's `records.log`, as `sessions.json` names it,
+  and the Discord stages from `DATA_DIR/discord-mcpl-debug.log`, which
+  discord-mcpl writes only when `DISCORD_MCPL_DEBUG_LOG` names it. The
+  inference stage is the newest turn's call in the newest `llm-calls` file,
+  which each start of the host opens: its newest streamed call. A subagent's
+  turn and a streamed inference an MCPL server asks for are streamed calls
+  too, so on a host with either, the stage's time and stop can be that
+  call's and not the resident's. Other calls, such as the start-up
+  thinking-binding probe and compression, are only counted, in "no turn's
+  model call since the host last started" when there's no turn's call.
+  A stage the ladder can't see reads "can't be seen here", with the reason. `SIGUSR2` goes
+  only to a host whose `/proc/PID/status` says it catches the signal: a host
+  that hasn't built its framework yet has no listener, and the signal's
+  default action ends it. It waits up to 5 s for the host's `[diagnostics]`
+  line. `--data-dir`
+  names the host's data directory, `INSTALL_DIR/data` when left out.
+  The ladder cuts a message's preview at 40 characters, a model call's error
+  at 80 and each failure line at 150, and hides nothing.
 
 ---
 

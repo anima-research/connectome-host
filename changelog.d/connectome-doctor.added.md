@@ -1,0 +1,7 @@
+- `connectome doctor` checks an install in five steps and prints one line for each: the service, the host, the recipe, the model calls and the Discord token. A line starts with ✓ where the check found no problem, ✗ where it found one, with a `Next:` line that gives one next step, and – where the check wasn't made, with why. It ends with how many problems it found, and with no problem on a systemd install, the command that runs `scripts/connectome-doctor`, which shows where an incoming message stops. It exits 1 with a problem. Run as root on an install another user owns, it prints one refusal and exits 1.
+  - The service: the units that `connectome service install` names, and their state as systemd or launchd gives it, the shell daemon's included.
+  - The host: whether a host answers on the install's socket, with its pid and recipe.
+  - The recipe: with a host, the one it loaded; with none, whether the recipe that the service's unit names loads, with `.env`'s values and doctor's own environment over them.
+  - The model calls: the host's counts of each agent's failed model calls in a row, and of its refusals, with the command that lists the failures in the host's log. It prints no failure's text, since it can quote the model provider.
+  - The Discord token: whether Discord accepts the `DISCORD_TOKEN` in `.env`, with the bot's name.
+- `connectome doctor` hides each secret that setup stored in every line it prints. Where it can't read those secrets, it says why and runs no check.

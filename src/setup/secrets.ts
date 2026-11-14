@@ -3,6 +3,7 @@ import { lstatSync, mkdirSync, readlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseEnv } from 'node:util';
 import { readWithoutWaiting, writeJsonAtomic, writeTextAtomic } from '../update/contract.js';
+import { shellWord } from '../update/launcher.js';
 
 export const PROVIDER_SECRETS = [
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'OPENAI_API_KEY',
@@ -40,8 +41,8 @@ export function shortLength(value: string): string {
   return `${count} character${count === 1 ? '' : 's'} long${ends}`;
 }
 
-export const SHORT_HIDES = 'Setup hides a stored secret wherever its text appears in what its agent sees, so one this ' +
-  'short also hides parts of ids and of command output.';
+export const SHORT_HIDES = 'Setup hides a stored secret in the output of the commands its agent runs and in the answers ' +
+  'it reads from Discord and from model providers, so one this short also hides parts of ids and of command output.';
 
 export function unwritableValue(value: string): string | null {
   if (value === '') return 'it is empty';
@@ -152,6 +153,14 @@ const READ_LIMIT_MS = 10_000;
 
 export class DotenvTimeoutError extends Error {}
 
+export class DotenvReadError extends Error {
+  constructor(readonly reason: string, readonly command: string) {
+    super(`${reason}, and its error isn't shown, since it can hold their values. \`${command}\`, run in that directory, ` +
+      'runs that Bun in that mode without BUN_OPTIONS and shows it, though the shell\'s other variables may differ from ' +
+      'the ones that read had');
+  }
+}
+
 export function dotenvValues(dir: string, env: Record<string, string | undefined>): Map<string, Set<string>> {
   const values = new Map<string, Set<string>>();
   const names = dotenvNames(dir).filter((name) => !Object.hasOwn(env, name) || env[name] === undefined);
@@ -184,9 +193,11 @@ export function dotenvValues(dir: string, env: Record<string, string | undefined
       throw new DotenvTimeoutError(`Bun didn't finish reading the dotenv files in ${dir} within ${READ_LIMIT_MS / 1000} s`);
     }
     if (ran.error || ran.status !== 0) {
-      const last = `${ran.stderr ?? ''}`.trim().split('\n').at(-1);
       const how = ran.error ? ran.error.message : ran.status === null ? `killed by ${ran.signal}` : `exit ${ran.status}`;
-      throw new Error(`Bun couldn't read the dotenv files in ${dir} (${how}${last ? `: ${last}` : ''})`);
+      const nodeEnv = mode === 'development' ? development.NODE_ENV : mode;
+      throw new DotenvReadError(`Bun couldn't read the dotenv files in ${dir} in its ${mode} mode (${how})`,
+        `env -u BUN_OPTIONS ${nodeEnv === undefined ? '-u NODE_ENV' : `NODE_ENV=${shellWord(nodeEnv)}`} ` +
+        `${shellWord(process.execPath)} --config=/dev/null -e 0`);
     }
     let read: Record<string, unknown> | null = null;
     try {
@@ -216,12 +227,15 @@ export function envForm(path: string): EnvFormError | null {
   return outside.length > 0 ? new EnvFormError(path, outside) : null;
 }
 
-export class EnvLinkError extends Error {}
+export class EnvLinkError extends Error {
+  constructor(readonly path: string, target: string) {
+    super(`${path} is a link to ${target}, and it's written only as a file of its own, not through a link or over one`);
+  }
+}
 
 export function envLink(path: string): EnvLinkError | null {
   if (!lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) return null;
-  return new EnvLinkError(`${path} is a link to ${readlinkSync(path)}, and it's written only as a file of its own, ` +
-    'not through a link or over one');
+  return new EnvLinkError(path, readlinkSync(path));
 }
 
 export function writeEnvValue(path: string, name: string, value: string): void {
@@ -423,6 +437,11 @@ export function redactWindow(
     at = to;
   }
   return { text, start, end: at };
+}
+
+export function storedSecrets(workingDir: string, env: Record<string, string | undefined>): Secret[] {
+  const envFile = join(workingDir, '.env');
+  return secretValues(secretNames(join(workingDir, '.setup'), envFile).names, envFile, env);
 }
 
 export function storedSecretsIn(setupDir: string, envFile: string, env: Record<string, string | undefined>): Secret[] {

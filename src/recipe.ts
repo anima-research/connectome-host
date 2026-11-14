@@ -1747,17 +1747,17 @@ export async function loadRecipeDetailed(source: string, options: { fetchSystemP
 
 
 export async function loadRecipeDocument(document: RecipeDocument, source: string,
-  options: { fetchSystemPrompt?: boolean } = {}): Promise<LoadedRecipe> {
+  options: { fetchSystemPrompt?: boolean; env?: Record<string, string | undefined> } = {}): Promise<LoadedRecipe> {
   let raw = document.raw;
   const sourceBase = document.sourceBase;
 
   const persistable = structuredClone(raw) as Record<string, unknown>;
 
-  raw = substituteEnvVars(raw, source);
+  raw = substituteEnvVars(raw, source, options.env);
   const recipe = validateRecipe(raw);
   resolveChildRecipePaths(recipe, sourceBase);
   resolveExtensionPaths(recipe, sourceBase);
-  const resolved = options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe));
+  const resolved = options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe), options.env);
   copyResolvedPathsIntoRaw(persistable, resolved);
   return { recipe: resolved, persistable };
 }
@@ -1843,8 +1843,8 @@ export function runningFit(recipe: Recipe, envModel: string | undefined): Recipe
   };
 }
 
-function refuseUnfit(recipe: Recipe): Recipe {
-  const fit = runningFit(recipe, process.env.MODEL || undefined);
+function refuseUnfit(recipe: Recipe, env: Record<string, string | undefined> = process.env): Recipe {
+  const fit = runningFit(recipe, env.MODEL || undefined);
   if (fit.checked && !fit.fits) throw new Error(fit.refusal);
   return recipe;
 }
