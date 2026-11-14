@@ -51,9 +51,14 @@ for (const [address, prefix] of [
   ['ff00::', 8], // multicast
 ] as const) NOT_PUBLIC.addSubnet(address, prefix, 'ipv6');
 
-/** NAT64's well-known prefix, whose addresses each stand for the IPv4 address in their last 32 bits. */
-const NAT64 = new BlockList();
-NAT64.addSubnet('64:ff9b::', 96, 'ipv6');
+/**
+ * Prefixes whose addresses each stand for the IPv4 address in their last 32
+ * bits, and reach it through a translator: NAT64's well-known prefix, and the
+ * IPv4-translated one (`::ffff:0:10.0.0.1`).
+ */
+const EMBEDS_IPV4 = new BlockList();
+EMBEDS_IPV4.addSubnet('64:ff9b::', 96, 'ipv6');
+EMBEDS_IPV4.addSubnet('::ffff:0:0:0', 96, 'ipv6');
 
 /** The IPv4 address an IPv6 address's last 32 bits spell. */
 function embeddedIpv4(address: string): string {
@@ -68,15 +73,15 @@ function embeddedIpv4(address: string): string {
 /**
  * Whether an address is on the public internet. An IPv4-mapped IPv6 address
  * (`::ffff:127.0.0.1`) answers as the IPv4 address it maps, and so does a
- * NAT64 one (`64:ff9b::808:808`), which is how an IPv6-only network reaches
- * every IPv4 site, public ones included. What isn't an address at all isn't
- * public.
+ * NAT64 or IPv4-translated one (`64:ff9b::808:808`), which is how an IPv6-only
+ * network reaches every IPv4 site, public ones included. What isn't an address
+ * at all isn't public.
  */
 export function isPublicAddress(address: string): boolean {
   const bare = address.split('%')[0]!;
   const family = isIP(bare);
   if (family === 0) return false;
-  if (family === 6 && NAT64.check(bare, 'ipv6')) return isPublicAddress(embeddedIpv4(bare));
+  if (family === 6 && EMBEDS_IPV4.check(bare, 'ipv6')) return isPublicAddress(embeddedIpv4(bare));
   return !NOT_PUBLIC.check(bare, family === 4 ? 'ipv4' : 'ipv6');
 }
 

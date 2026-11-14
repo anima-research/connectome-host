@@ -98,6 +98,8 @@ describe('isPublicAddress', () => {
     ['64:ff9b::7f00:1'], ['64:ff9b:1::1'], ['2002:7f00:1::'], ['2001:db8::1'], ['::ffff:0:0'],
     // NAT64 addresses whose IPv4 address is private: 10.0.0.1, 127.0.0.1, the metadata service, 0.0.0.0
     ['64:ff9b::a00:1'], ['64:ff9b::127.0.0.1'], ['64:ff9b::a9fe:a9fe'], ['64:ff9b::'], ['64:ff9b::1'], ['64:ff9b:0:0:0:0:c0a8:101'],
+    // IPv4-translated addresses, likewise
+    ['::ffff:0:10.0.0.1'], ['::ffff:0:7f00:1'], ['::ffff:0:a9fe:a9fe'],
     ['not an address'], [''],
   ])('%s is not public', (address) => {
     expect(isPublicAddress(address)).toBe(false);
@@ -107,7 +109,7 @@ describe('isPublicAddress', () => {
     ['8.8.8.8'], ['1.1.1.1'], ['172.32.0.1'], ['172.15.255.255'], ['100.63.255.255'], ['100.128.0.1'], ['192.169.0.1'],
     ['2606:4700:4700::1111'], ['2a00:1450:4001::1'], ['::ffff:8.8.8.8'],
     // NAT64 addresses of public sites, as a DNS64 network gives for an IPv4-only one
-    ['64:ff9b::808:808'], ['64:ff9b::8.8.8.8'], ['64:ff9b:0:0:0:0:101:101'],
+    ['64:ff9b::808:808'], ['64:ff9b::8.8.8.8'], ['64:ff9b:0:0:0:0:101:101'], ['::ffff:0:8.8.8.8'],
   ])('%s is public', (address) => {
     expect(isPublicAddress(address)).toBe(true);
   });

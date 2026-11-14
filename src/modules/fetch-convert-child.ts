@@ -56,6 +56,12 @@ function cellsOf(row: DomNode): DomNode[] {
   return Array.from(row.childNodes).filter((node) => CELL_NAMES.has(node.nodeName));
 }
 
+/** How many columns a cell takes: its colspan, held to a most a real table has. A rowspan isn't followed. */
+function spanOf(cell: DomNode): number {
+  const span = Number.parseInt(cell.getAttribute?.('colspan') ?? '', 10);
+  return span > 1 ? Math.min(span, 100) : 1;
+}
+
 const COLUMNS = new WeakMap<DomNode, number>();
 
 /**
@@ -68,7 +74,9 @@ function dataColumns(table: DomNode): number {
   if (known !== undefined) return known;
   let columns = 0;
   if (!table.querySelector?.('table')) {
-    for (const row of Array.from(table.querySelectorAll?.('tr') ?? [])) columns = Math.max(columns, cellsOf(row).length);
+    for (const row of Array.from(table.querySelectorAll?.('tr') ?? [])) {
+      columns = Math.max(columns, cellsOf(row).reduce((sum, cell) => sum + spanOf(cell), 0));
+    }
     if (columns < 2) columns = 0;
   }
   COLUMNS.set(table, columns);
@@ -103,13 +111,14 @@ function styleHides(style: string): boolean {
     if (final.get(property)?.important && !important) continue;
     final.set(property, { value: written.replace(/\s*!\s*important$/, ''), important });
   }
-  return final.get('display')?.value === 'none' || final.get('visibility')?.value === 'hidden';
+  const visibility = final.get('visibility')?.value;
+  return final.get('display')?.value === 'none' || visibility === 'hidden' || visibility === 'collapse';
 }
 
 /**
  * An element marked as not shown, on the element itself: the `hidden`
  * attribute, aria-hidden, or a style attribute's display: none or visibility:
- * hidden. That's a reduction, not a guarantee: a stylesheet's rules are out of
+ * hidden or collapse. That's a reduction, not a guarantee: a stylesheet's rules are out of
  * reach, and text can be kept from the eye in ways no list covers (opacity,
  * size, colour, position). Those are left in, opacity: 0 among them, since
  * pages that fade their content in start it that way.
@@ -176,7 +185,8 @@ service.addRule('table-cell', {
     // doubled, so text that already reads \| can't pass for a bar the cell
     // escaped; backslashes anywhere else stay as the page has them.
     const text = flat.replace(/\\*\|/g, (run) => `${'\\'.repeat((run.length - 1) * 2 + 1)}|`);
-    return ` ${text} |`;
+    // A cell across several columns is followed by empty ones, so the cells after it stay under their headings.
+    return ` ${text} |${' |'.repeat(spanOf(asDom(node)) - 1)}`;
   },
 });
 service.addRule('table-row', {

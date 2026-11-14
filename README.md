@@ -810,14 +810,15 @@ run JavaScript. HTML is converted in a separate process that holds none of the
 host's environment and is killed once it passes 15 seconds or 1 GiB, which
 refuses the page; two convert at once and sixteen more may wait. A first read
 is always fresh. Only reads with an `offset` use a copy of the page, kept for
-up to 15 minutes, so the parts of one reading fit together; where no copy is
+the agent that fetched it for up to 15 minutes, so the parts of one reading fit
+together; where no copy is
 kept any more, the part comes from a fresh fetch and its result says the parts
 may not line up. The tool reads text only, and reports a binary document's type
 instead.
 
 Text an element marks as not shown is left out of the markdown: the `hidden`
 attribute, `aria-hidden="true"`, and a `style` attribute's `display: none` or
-`visibility: hidden`. That removes the commonest hiding place for instructions
+`visibility: hidden` or `collapse`. That removes the commonest hiding place for instructions
 aimed at a model, and no more: a stylesheet's rules aren't read, and text kept
 from the eye another way (opacity, size, colour, position) comes through. The
 model that answers a `prompt` is told to treat the document as data and to

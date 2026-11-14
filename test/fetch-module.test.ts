@@ -119,7 +119,7 @@ describe('the tool as an agent sees it', () => {
   });
 
   test.each([
-    [{ source: '' }, 'source must be'],
+    [{ source: '' }, 'source must be an address.'],
     [{ source: 5 }, 'source must be'],
     [{ source: at('/page'), prompt: '  ' }, 'prompt must be'],
     [{ source: at('/page'), prompt: 7 }, 'prompt must be'],
@@ -239,6 +239,28 @@ describe('reading without a prompt', () => {
     expect(textOf(await call({ source: at('/vendor-json') }))).toContain('[This is the whole page, 11 characters.]');
   });
 
+  test('a copy belongs to the agent that fetched it, so another agent\'s read can\'t swap it', async () => {
+    const { mod } = await started();
+    const as = (callerAgentName: string, input: Record<string, unknown>) => mod.handleToolCall({ id: 'c', name: 'fetch', input, callerAgentName } as never);
+    changing = 'one';
+    await as('first', { source: at('/changing') });
+    changing = 'a second, longer version';
+    expect(textOf(await as('second', { source: at('/changing') }))).toContain('a second, longer version');
+    const later = await as('first', { source: at('/changing'), offset: 10 });
+    expect(textOf(later)).toContain('so the parts fit together');
+    expect((later.structured as { totalChars: number }).totalChars).toBe('one '.length + 30_000);
+    // And the second agent has no claim on the first one's copy: its own is the one it reads on from.
+    expect(((await as('second', { source: at('/changing'), offset: 10 })).structured as { totalChars: number }).totalChars).toBe('a second, longer version '.length + 30_000);
+  });
+
+  test('an offset between the halves of a pair starts at the pair', async () => {
+    const { call } = await started();
+    const result = await call({ source: at('/emoji-first'), offset: 1 });
+    expect(result.structured).toMatchObject({ offset: 0 });
+    expect(textOf(result)).toContain('😀abc');
+    expect(textOf(result)).not.toContain('\ufffd');
+  });
+
   test('a part never cuts a surrogate pair in two', async () => {
     const { call } = await started();
     const first = await call({ source: at('/emoji') });
@@ -278,6 +300,10 @@ describe('reading without a prompt', () => {
     expect(result.error).toContain('50000 characters long');
     // The page was fetched to find that out, so the error doesn't say nothing was.
     expect(result.error).not.toContain('Nothing was fetched');
+    expect(result.error).not.toContain('goes on past');
+    // Where the byte limit cut the page, its end here is not the page's end, and the error says so.
+    const { call: capped } = await started({ maxBytes: 1_000 });
+    expect((await capped({ source: at('/long'), offset: 1_000 })).error).toContain('the page goes on past the 1000 bytes it reads');
   });
 
   test('a redirect is reported, and a fragment is not mistaken for one', async () => {
@@ -363,7 +389,10 @@ describe('what is not text, or not there', () => {
 
   test('an error body is held to an excerpt, and an empty one says so', async () => {
     const { call } = await started();
-    expect((await call({ source: at('/huge-error') })).error!.length).toBeLessThan(2_200);
+    const huge = (await call({ source: at('/huge-error') })).error!;
+    expect(huge.length).toBeLessThan(2_200);
+    expect(huge).toContain('It sent 50000 characters, which begin:');
+    expect((await call({ source: at('/api-error') })).error).toContain('It sent:\n\n{"error"');
     expect((await call({ source: at('/empty-error') })).error).toContain('sent nothing else');
   });
 
@@ -666,6 +695,11 @@ describe('local files', () => {
     const { call } = await withLocal();
     expect(textOf(await call({ source: 'notes/spaced.txt ' }))).toContain('a name that ends in a space');
     expect((await call({ source: 'notes/hello.txt ' })).isError).toBe(true);
+  });
+
+  test('with local on, a missing source is told it can be a path too', async () => {
+    const { call } = await withLocal();
+    expect((await call({ source: ' ' })).error).toContain('source must be an address or a workspace path.');
   });
 
   test('a host with no workspace says so', async () => {

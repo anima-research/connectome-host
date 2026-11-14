@@ -1026,7 +1026,9 @@ export interface RecipeModules {
     /**
      * Let web addresses reach private and local addresses: loopback, the LAN,
      * a tailnet, cloud metadata services. Off by default, so a page or a
-     * redirect can't point the tool at anything inside the network.
+     * redirect can't point the tool at one of those. It tells addresses apart
+     * by their range alone: an internal service on a publicly routable address
+     * reads as the internet does.
      */
     allowPrivateNetwork?: boolean;
     /** Most bytes of one document to read. Defaults to 5 MiB, at most 64 MiB. */

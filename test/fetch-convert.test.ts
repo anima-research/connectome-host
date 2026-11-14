@@ -38,6 +38,7 @@ describe('htmlToMarkdown', () => {
     ['display:none', 'style="display:none"'],
     ['display : none among other styles', 'style="color:red; display : none"'],
     ['visibility:hidden', 'style="visibility:hidden"'],
+    ['visibility:collapse', 'style="visibility:collapse"'],
     ['display:none with a comment inside it', 'style="display:/* x */none"'],
     ['display:none !important before a later display', 'style="display:none !important; display:block"'],
     ['the last of two displays, which is none', 'style="display:block; display:none"'],
@@ -110,6 +111,13 @@ describe('htmlToMarkdown', () => {
     );
   });
 
+  test('a cell across two columns is followed by an empty one, so the cells under it keep their columns', async () => {
+    const markdown = await htmlToMarkdown(page(
+      '<table><tr><th colspan="2">Title</th><th>Unit</th></tr><tr><td>a</td><td>b</td><td>c</td></tr></table>',
+    ), undefined);
+    expect(markdown).toBe('| Title | | Unit |\n| --- | --- | --- |\n| a | b | c |');
+  });
+
   test('a table with no thead gets its header line after the first row', async () => {
     const markdown = await htmlToMarkdown(page('<p>before</p><table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table><p>after</p>'), undefined);
     expect(markdown).toBe('before\n\n| a | b |\n| --- | --- |\n| c | d |\n\nafter');
@@ -129,7 +137,7 @@ describe('htmlToMarkdown', () => {
 
   test('a table whose first row spans the columns gets a header line as wide as the table', async () => {
     const markdown = await htmlToMarkdown(page('<table><tr><th colspan="2">Title</th></tr><tr><td>k</td><td>v</td></tr></table>'), undefined);
-    expect(markdown).toBe('| Title |\n| --- | --- |\n| k | v |');
+    expect(markdown).toBe('| Title | |\n| --- | --- |\n| k | v |');
   });
 
   test('a decorative image, marked by its empty alt, leaves nothing, nor does a link around it', async () => {

@@ -12,9 +12,10 @@
  * policy. On the network it reaches only public addresses unless the recipe
  * says otherwise, and sends no credentials (fetch-http.ts).
  *
- * The module writes nothing to the store itself, so an agent's history holds
- * only the tool calls. A local read is the workspace's, which takes in a file
- * it doesn't hold yet as any read of it does.
+ * The module writes nothing to the store itself: what an agent's history
+ * holds of a fetch is its tool call and that call's result, the text read
+ * included. A local read is the workspace's, which takes in a file it doesn't
+ * hold yet as any read of it does.
  */
 import { randomBytes } from 'node:crypto';
 import type {
@@ -101,6 +102,7 @@ interface Document {
 
 interface Snapshot {
   document: Document;
+  /** When it was fetched, on performance.now()'s clock, which a change to the wall clock doesn't move. */
   at: number;
 }
 
@@ -206,7 +208,8 @@ export class FetchModule implements Module {
           },
           limit: {
             type: 'integer',
-            description: `How many characters to read. The default is also the most: ${READ_CHARS}, or ${PROMPT_CHARS} with prompt.`,
+            description: `How many characters to read. The default is also the most: ${READ_CHARS}, or ${PROMPT_CHARS} with prompt. ` +
+              'Positions and lengths count as JavaScript counts a string, so an emoji is two.',
           },
         },
         required: ['source'],
@@ -219,12 +222,12 @@ export class FetchModule implements Module {
     const { source: rawSource, prompt, offset, limit } = call.input as {
       source: unknown; prompt?: unknown; offset?: unknown; limit?: unknown;
     };
-    const problem = typeof rawSource !== 'string' || rawSource.trim() === '' ? 'source must be an address.'
+    const problem = typeof rawSource !== 'string' || rawSource.trim() === '' ? `source must be an address${this.config.local ? ' or a workspace path' : ''}.`
       : prompt !== undefined && (typeof prompt !== 'string' || prompt.trim() === '') ? 'prompt must be a question or request, or left out.'
       : integerArg(offset, 'offset', 0) ?? integerArg(limit, 'limit', 1);
     if (problem !== null) return nothingFetched(problem);
 
-    const from = (offset as number | undefined) ?? 0;
+    const asked = (offset as number | undefined) ?? 0;
     const asking = prompt as string | undefined;
     const most = asking === undefined ? READ_CHARS : PROMPT_CHARS;
     const size = Math.min((limit as number | undefined) ?? most, most);
@@ -238,20 +241,25 @@ export class FetchModule implements Module {
     let copyAge: number | undefined;
     let copyGone: boolean | undefined;
     try {
-      ({ document, copyAge, copyGone } = await this.load(source, from, call));
+      ({ document, copyAge, copyGone } = await this.load(source, asked, call));
     } catch (error) {
       if (error instanceof FetchRefusal) return nothingFetched(error.message);
       throw error;
     }
 
     const total = document.text.length;
-    if (from > 0 && from >= total) {
+    if (asked > 0 && asked >= total) {
+      const prefix = document.cut ? ` That is as far as this tool reads it: the ${document.kind} goes on past the ${this.maxBytes} bytes it reads.` : '';
       return {
         success: false,
         isError: true,
-        error: `There is nothing to read there: offset ${from} is past the end of ${shownAddress(document.name)}, whose text is ${total} characters long.`,
+        error: `There is nothing to read there: offset ${asked} is past the end of ${shownAddress(document.name)}, whose text is ${total} characters long.${prefix}`,
       };
     }
+    // An offset between the halves of a pair starts at the pair, so no part begins with half a character.
+    const low = document.text.charCodeAt(asked);
+    const high = document.text.charCodeAt(asked - 1);
+    const from = low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff ? asked - 1 : asked;
     const copyNote = copyAge !== undefined ? ` This part is from the copy fetched ${Math.round(copyAge / 1000)} seconds ago, so the parts fit together.`
       : copyGone ? ' No copy from an earlier read is kept, so this part is from a fresh fetch: if the page changed since an earlier part was read, the parts may not line up.'
       : '';
@@ -268,9 +276,9 @@ export class FetchModule implements Module {
       cut: document.cut,
     });
 
-    const asked = partOf(document.text, from, size);
-    if (asking !== undefined && asked.part.trim() !== '') {
-      const { part, end } = asked;
+    const first = partOf(document.text, from, size);
+    if (asking !== undefined && first.part.trim() !== '') {
+      const { part, end } = first;
       const answer = await this.answer(document, part, from, end, asking);
       if (!answer.ok) return { success: false, isError: true, error: answer.error };
       const note = [
@@ -303,12 +311,12 @@ export class FetchModule implements Module {
         end,
       };
     };
-    let read = direct(asked);
+    let read = direct(first);
     // Past this the framework spills the result to a file and cuts it, which
     // would take the note saying how to read on, so the part gives way.
     const over = call.resultMaxChars === undefined ? 0 : read.data.length - call.resultMaxChars;
-    if (over > 0 && asked.part.length > 1) {
-      read = direct(partOf(document.text, from, Math.max(1, asked.part.length - over - 32)));
+    if (over > 0 && first.part.length > 1) {
+      read = direct(partOf(document.text, from, Math.max(1, first.part.length - over - 32)));
     }
     return { success: true, data: read.data, structured: structuredFor(read.end) };
   }
@@ -332,12 +340,15 @@ export class FetchModule implements Module {
   private async load(source: Source, offset: number, call: ToolCall): Promise<{ document: Document; copyAge?: number; copyGone?: boolean }> {
     if (source.kind === 'file') return { document: await this.loadFile(source.path, call) };
     source.url.hash = '';
-    const key = source.url.href;
+    // A copy belongs to the agent that fetched it, so another agent's first
+    // read of the same page can't swap the copy a reader's later parts come from.
+    const key = `${call.callerAgentName ?? ''}\n${source.url.href}`;
     // Only a later part reads the copy: a first read is always fresh, so a page
     // being watched for changes can't look unchanged.
     if (offset > 0) {
       const copy = this.snapshots.get(key);
-      if (copy && Date.now() - copy.at < SNAPSHOT_TTL_MS) return { document: copy.document, copyAge: Date.now() - copy.at };
+      const age = copy ? performance.now() - copy.at : undefined;
+      if (copy && age! < SNAPSHOT_TTL_MS) return { document: copy.document, copyAge: age! };
     }
     const document = await this.loadPage(source.url);
     this.keep(key, document);
@@ -407,8 +418,10 @@ export class FetchModule implements Module {
       // A server's error page often says what's wrong, as an API's always
       // does. One that can't be converted isn't shown raw, hidden text and all.
       const shown = html ? await htmlToMarkdown(decoded, got.url).catch(() => null) : decoded;
-      const excerpt = shown?.trim().slice(0, ERROR_BODY_CHARS);
-      const sent = shown === null ? " Its error page couldn't be converted." : excerpt ? ` It sent:\n\n${excerpt}` : ' It sent nothing else.';
+      const said = shown?.trim() ?? '';
+      const excerpt = said.slice(0, ERROR_BODY_CHARS);
+      const opening = said.length > ERROR_BODY_CHARS ? ` It sent ${said.length} characters, which begin:` : ' It sent:';
+      const sent = shown === null ? " Its error page couldn't be converted." : excerpt ? `${opening}\n\n${excerpt}` : ' It sent nothing else.';
       throw new FetchRefusal(`${shownAddress(got.url)} answered HTTP ${got.status}.${sent}`);
     }
     const text = html ? await htmlToMarkdown(decoded, got.url) : decoded;
@@ -427,7 +440,7 @@ export class FetchModule implements Module {
     this.snapshots.delete(key);
     // A fetch still under way when the module stopped keeps nothing for a later start.
     if (this.ctx === null || document.text.length > SNAPSHOT_MAX_CHARS) return;
-    const now = Date.now();
+    const now = performance.now();
     this.snapshots.set(key, { document, at: now });
     let held = 0;
     for (const [address, { document: kept, at }] of this.snapshots) {
