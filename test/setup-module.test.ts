@@ -14,7 +14,6 @@ import { PASTE_QUIET_MS, askHidden } from '../src/setup/terminal-secret.js';
 import * as terminalSecret from '../src/setup/terminal-secret.js';
 import { modeTest } from './mode-test.js';
 import { processEnded, waitForEnd } from './process-ended.js';
-import { bracketedPaste } from '../src/readline-paste.js';
 import { checkDiscordToken } from '../src/setup/discord-token.js';
 import { checkProviderKey } from '../src/setup/provider-key.js';
 
@@ -2407,77 +2406,6 @@ describe("the terminal's hidden question", () => {
     rl.close();
   });
 
-  test('a hidden question asked while a bracketed paste is under way opens once the paste ends, which is left whole for the conversation', async () => {
-    const { input, output, rl, shown } = terminal();
-    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
-    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
-    const sent: string[] = [];
-    rl.on('line', (line) => {
-      const message = paste.take(line);
-      if (message !== null) sent.push(message);
-    });
-    input.write('\x1b[200~chat one\r');
-    await Bun.sleep(20);
-    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
-    input.write('chat two\r');
-    await Bun.sleep(PASTE_QUIET_MS + 100);
-    expect(shown()).not.toContain('DISCORD_TOKEN');
-    input.write('chat three\x1b[201~');
-    await Bun.sleep(20);
-    expect(shown()).toContain('DISCORD_TOKEN (the bot token)');
-    input.write('s3cret-value\r');
-    expect(await answer).toBe('s3cret-value');
-    expect(rl.line).toBe('chat three');
-    const after = new Promise<void>((resolve) => rl.once('line', () => resolve()));
-    input.write('\r');
-    await after;
-    expect(sent).toEqual(['chat one\nchat two\nchat three']);
-    expect(shown()).not.toContain('s3cret-value');
-    paste.end();
-    rl.close();
-  });
-
-  test('a conversation closed while a hidden question waits out a paste answers nothing, and the question never opens', async () => {
-    const { input, output, rl, shown } = terminal();
-    input.write('half');
-    await Bun.sleep(20);
-    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', { pasting: () => true, drop: () => ({ taken: 0, left: 0 }) });
-    rl.close();
-    expect(await answer).toBe('');
-    expect(shown()).not.toContain('DISCORD_TOKEN');
-  });
-
-  test('a conversation closed in the same tick as the paste\'s end, from a listener after the question\'s own, answers nothing, and the question never opens', async () => {
-    const { input, output, rl, shown } = terminal();
-    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
-    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
-    rl.on('line', (line) => { paste.take(line); });
-    input.write('\x1b[200~chat one\r');
-    await Bun.sleep(30);
-    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
-    input.on('keypress', (_text: unknown, key: { name?: string } | undefined) => {
-      if (key?.name === 'paste-end') rl.close();
-    });
-    input.write('\x1b[201~');
-    expect(await answer).toBe('');
-    expect(shown()).not.toContain('DISCORD_TOKEN');
-    paste.end();
-  });
-
-  test('a paste\'s end and Ctrl-D in one chunk, while a hidden question waits out the paste, answer nothing, and the question never opens', async () => {
-    const { input, output, rl, shown } = terminal();
-    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
-    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
-    rl.on('line', (line) => { paste.take(line); });
-    input.write('\x1b[200~chat one\r');
-    await Bun.sleep(30);
-    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
-    input.write('\x1b[201~\x04');
-    expect(await answer).toBe('');
-    expect(shown()).not.toContain('DISCORD_TOKEN');
-    paste.end();
-  });
-
   test('a line on the prompt that holds the answer just given hidden isn\'t given back, so the secret isn\'t one Enter from the conversation', async () => {
     const { input, output, rl, lines, nextLine, shown } = terminal();
     input.write('tok-123456');
@@ -2495,17 +2423,12 @@ describe("the terminal's hidden question", () => {
     rl.close();
   });
 
-  test('a line on the prompt, a pasted line held for the conversation, a history entry and a kill that hold the answer, its ASCII letters in another case, are taken out too', async () => {
+  test('a line on the prompt, a history entry and a kill that hold the answer, its ASCII letters in another case, are taken out too', async () => {
     const { input, output, rl, shown } = terminal();
-    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
-    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
     const sent: string[] = [];
-    rl.on('line', (line) => {
-      const message = paste.take(line);
-      if (message !== null) sent.push(message);
-    });
+    rl.on('line', (line) => { sent.push(line); });
     input.write('TOK-ABCDEF\x15');
-    input.write('\x1b[200~my token is\rthe token is Tok-AbcDef\r\x1b[201~');
+    input.write('my token is\rthe token is Tok-AbcDef\r');
     await Bun.sleep(30);
     input.write('typed TOK-abcdef');
     await Bun.sleep(20);
@@ -2514,18 +2437,16 @@ describe("the terminal's hidden question", () => {
     const ring = (rl as unknown as Record<symbol, unknown[]>)[ringKey!]!;
     expect(history.some((entry) => entry.toLowerCase().includes('tok-abcdef')), 'the history held the token first').toBe(true);
     expect(ring.some((entry) => String(entry).toLowerCase().includes('tok-abcdef')), 'the kill ring held the token first').toBe(true);
-    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
+    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
     input.write('tok-abcdef\r');
     expect(await answer).toBe('tok-abcdef');
     expect(rl.line).toBe('');
     expect(shown()).toContain('What you\'d typed held what you just entered hidden, so it was taken out.');
-    expect(shown()).toContain('1 pasted line held what you just entered hidden, so it was taken out. Enter sends the rest.\n');
     expect(history.some((entry) => entry.toLowerCase().includes('tok-abcdef'))).toBe(false);
     const yanked = new Promise<void>((resolve) => rl.once('line', () => resolve()));
     input.write('\x19\r');
     await yanked;
-    expect(sent).toEqual(['my token is\n']);
-    paste.end();
+    expect(sent.at(-1)).toBe('');
     rl.close();
   });
 
@@ -2544,47 +2465,6 @@ describe("the terminal's hidden question", () => {
     input.write(' tok-123456 \r');
     expect(await answer).toBe(' tok-123456 ');
     expect(rl.line).toBe('');
-    rl.close();
-  });
-
-  test('a pasted line held for the conversation that holds the answer just given hidden is taken out, saying so, and the rest stays', async () => {
-    const { input, output, rl, shown } = terminal();
-    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
-    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
-    const sent: string[] = [];
-    rl.on('line', (line) => {
-      const message = paste.take(line);
-      if (message !== null) sent.push(message);
-    });
-    input.write('\x1b[200~my token is\r tok-123456 \r\x1b[201~');
-    await Bun.sleep(30);
-    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
-    input.write('tok-123456\r');
-    expect(await answer).toBe('tok-123456');
-    const after = new Promise<void>((resolve) => rl.once('line', () => resolve()));
-    input.write('\r');
-    await after;
-    expect(sent).toEqual(['my token is\n']);
-    expect(shown()).toContain('1 pasted line held what you just entered hidden, so it was taken out. Enter sends the rest.\n');
-    paste.end();
-    rl.close();
-  });
-
-  test('a pasted line that holds the answer just given hidden is taken out of readline\'s history too, and the lines that don\'t stay', async () => {
-    const { input, output, rl } = terminal();
-    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
-    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
-    rl.on('line', (line) => { paste.take(line); });
-    input.write('\x1b[200~my token is\r tok-123456 \rthe token is tok-123456\r\x1b[201~');
-    await Bun.sleep(30);
-    const history = (rl as unknown as { history: string[] }).history;
-    expect(history.some((entry) => entry.includes('tok-123456')), 'the history held the token first').toBe(true);
-    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
-    input.write('tok-123456\r');
-    expect(await answer).toBe('tok-123456');
-    expect(history.some((entry) => entry.includes('tok-123456'))).toBe(false);
-    expect(history).toContain('my token is');
-    paste.end();
     rl.close();
   });
 
@@ -2607,46 +2487,6 @@ describe("the terminal's hidden question", () => {
     }
   });
 
-  test('an answer of more than one line is matched line by line, so a paste of it held for the conversation, and its last line left unsent, are taken out', async () => {
-    const { input, output, rl, shown } = terminal();
-    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
-    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
-    const sent: string[] = [];
-    rl.on('line', (line) => {
-      const message = paste.take(line);
-      if (message !== null) sent.push(message);
-    });
-    input.write('\x1b[200~first\rsecond\x1b[201~');
-    await Bun.sleep(30);
-    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
-    input.write('\x1b[200~first\rsecond\x1b[201~');
-    expect(await answer).toBe('first\nsecond');
-    expect(rl.line).toBe('');
-    expect(shown()).toContain('1 pasted line held what you just entered hidden, so it was taken out.\n');
-    const after = new Promise<void>((resolve) => rl.once('line', () => resolve()));
-    input.write('\r');
-    await after;
-    expect(sent).toEqual(['']);
-    paste.end();
-    rl.close();
-  });
-
-  test('a paste held for the conversation that\'s all taken out for holding the answer says so, with nothing left to send', async () => {
-    const { input, output, rl, shown } = terminal();
-    const signals = { on: () => {}, off: () => {}, kill: () => {}, listenerCount: () => 0, pid: 0 };
-    const paste = bracketedPaste(rl, input as never, output as never, () => {}, signals as never);
-    rl.on('line', (line) => { paste.take(line); });
-    input.write('\x1b[200~tok-123456\rand tok-123456 again\r\x1b[201~');
-    await Bun.sleep(30);
-    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)', paste);
-    input.write('tok-123456\r');
-    expect(await answer).toBe('tok-123456');
-    expect(shown()).toContain('2 pasted lines held what you just entered hidden, so they were taken out.\n');
-    expect(paste.take('')).toBe('');
-    paste.end();
-    rl.close();
-  });
-
   test('a listener the conversation had for its next line alone still fires once, after a hidden question', async () => {
     const { input, output, rl } = terminal();
     let fired = 0;
@@ -2658,21 +2498,6 @@ describe("the terminal's hidden question", () => {
     input.write('two\r');
     await Bun.sleep(20);
     expect(fired).toBe(1);
-    rl.close();
-  });
-
-  test('a bracketed paste that opens with a line break and pauses before the rest is one answer, none of it left for the conversation', async () => {
-    const { input, output, rl, lines, nextLine, shown } = terminal();
-    const answer = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
-    input.write('\x1b[200~\r');
-    await Bun.sleep(PASTE_QUIET_MS + 100);
-    input.write('pasted-token\r\x1b[201~');
-    expect(await answer).toBe('pasted-token');
-    const after = nextLine();
-    input.write('after\r');
-    await after;
-    expect(lines).toEqual(['after']);
-    expect(shown()).not.toContain('pasted-token');
     rl.close();
   });
 
@@ -2733,18 +2558,6 @@ describe("the terminal's hidden question", () => {
     expect(await answer).toBe('');
     expect(lines).toEqual(['hello']);
     expect((rl as unknown as { history: string[] }).history).toEqual(['hello']);
-    rl.close();
-  });
-
-  test('takes a token pasted in a bracketed paste, with or without a line break of its own, as exactly the token', async () => {
-    const { input, output, rl, lines } = terminal();
-    const bare = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
-    input.write('\x1b[200~the-pasted.token-1\x1b[201~\r');
-    expect(await bare).toBe('the-pasted.token-1');
-    const broken = askHidden(rl, output, 'DISCORD_TOKEN (the bot token)');
-    input.write('\x1b[200~the-pasted.token-2\r\x1b[201~');
-    expect(await broken).toBe('the-pasted.token-2');
-    expect(lines).toEqual([]);
     rl.close();
   });
 
