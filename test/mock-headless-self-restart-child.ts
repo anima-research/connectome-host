@@ -9,7 +9,7 @@ import { join } from 'node:path';
 const MODES = ['self-restart', 'sigterm-first', 'exit-when-idle', 'held', 'cancel-in-wait', 'arm-after-idle', 'late-arm-gap', 'unseen-turn',
   'quiet-exit', 'quiet-idle', 'text-exit'];
 const HOLDS = ['turn', 'gated', 'parked', 'script', 'late-script', 'script-until-released', 'queue', 'subagent-active', 'subagent-queued', 'subagent-streaming', 'wake-gap',
-  'command', 'credential', 'shell-check', 'count-check'];
+  'command', 'credential'];
 const TURN_WORK = ['turn', 'gated', 'parked', 'queue', 'wake-gap'];
 const mode = process.argv[2];
 if (!MODES.includes(mode)) throw new Error('Unknown self-restart fixture mode');
@@ -25,10 +25,6 @@ const hold = mode === 'cancel-in-wait' ? 'turn' : quiet && (process.argv[3] === 
   ? undefined : process.argv[3];
 if ((mode === 'held' || (quiet && hold !== undefined)) && !HOLDS.includes(hold!)) throw new Error('Unknown self-restart fixture hold');
 const dataDir = process.env.DATA_DIR!;
-if (hold === 'count-check') {
-  process.env.COUNT_TOKENS_MODEL = 'claude-fixture-count';
-  process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:9';
-}
 const holdEntered = (): void => {
   if (!existsSync(join(dataDir, 'hold-entered'))) writeFileSync(join(dataDir, 'hold-entered'), String(Date.now()));
 };
@@ -254,19 +250,6 @@ const framework = (agents: Array<{ name: string; state: { status: string } }> = 
       };
     },
     getQueueDepth: () => (holding('queue') ? 1 : 0),
-    listMcplServers: () => hold === 'shell-check'
-      ? [{ id: 'shell', connected: true, closedTab: false, refused: null, retrying: false,
-          toolClasses: [{ serverTool: 'listSessions', tool: 'shell--listSessions' }] }]
-      : [],
-    executeToolCall: async () => {
-      await operatorWorkSettles();
-      return { success: true, data: 'no sessions' };
-    },
-    getAgent: (name: string) => agents.find((a) => a.name === name),
-    previewActivation: async () => {
-      await operatorWorkSettles();
-      return { system: 'fixture', tools: [], messages: [] };
-    },
     pushEvent,
     getAllModules: () => hold?.startsWith('subagent') || hold === 'wake-gap'
       ? [{

@@ -59,8 +59,8 @@ def parse_iso(s):
         return None
 
 
-def warn(msg, counts=True):
-    WARNINGS.append((msg, counts))
+def warn(msg):
+    WARNINGS.append(msg)
 
 
 def run(cmd, timeout=15, no_match=None, cut_is_end=False):
@@ -96,13 +96,10 @@ def read_text(path, last=None, start=0):
 
 args = []
 data_dir = None
-findings_json = False
 argv = iter(sys.argv[1:])
 for a in argv:
     if a == "--data-dir":
         data_dir = next(argv, None)
-    elif a == "--findings-json":
-        findings_json = True
     else:
         args.append(a)
 install_dir = os.path.expanduser(args[0] if len(args) > 0 else "~/mythos-cm")
@@ -134,12 +131,11 @@ if props.get("ExecMainStartTimestamp"):
     start_ts = float(t) if t else None
 
 col = C_GRN if active == "running" or active == "active" else C_RED
-if not findings_json:
-    print(f"service    : {col}{active}/{props.get('SubState','?')}{C_OFF}  pid={pid}  "
-          f"started {age(start_ts)}  restarts={props.get('NRestarts','?')}")
-if active not in ("active", "running") and not findings_json:
+print(f"service    : {col}{active}/{props.get('SubState','?')}{C_OFF}  pid={pid}  "
+      f"started {age(start_ts)}  restarts={props.get('NRestarts','?')}")
+if active not in ("active", "running"):
     warn(f"service is {active} — start it: systemctl --user start {unit}")
-if start_ts and NOW - start_ts < 300 and not findings_json:
+if start_ts and NOW - start_ts < 300:
     warn(f"service started only {age(start_ts)} — recent restart/crash?")
 
 df = sh("df -h / | tail -1").split()
@@ -186,7 +182,7 @@ if frag and os.path.exists(frag):
     frag_text, frag_why = read_text(frag)
     if frag_text is None:
         warn(f"{unit}'s unit file, {frag}, can't be read ({frag_why}), so whether it sends the host's output to a file "
-             "isn't known", counts=False)
+             "isn't known")
     m = re.search(r"Standard(?:Output|Error)=(?:append|file):(\S+)", frag_text or "")
     if m:
         log_redirect = m.group(1)
@@ -205,11 +201,10 @@ else:
           + (f"  {C_RED}its search by pattern failed: {search_error}{C_OFF}"
              if journal_log and search_error is not None and start_ts is not None else ""))
     if not journal_log and (jts is None or (start_ts and jts < start_ts)):
-        warn(f"journalctl is STALE for this unit (unit logs to a file) — real logs: {agent_log}", counts=False)
+        warn(f"journalctl is STALE for this unit (unit logs to a file) — real logs: {agent_log}")
 if journal_log and journal_error is not None:
     warn(f"{unit}'s journal {journal_unread} ({journal_error}), so its failures"
-         + (", deliveries and gate dump" if last_error is not None else " and deliveries") + " aren't shown",
-         counts=False)
+         + (", deliveries and gate dump" if last_error is not None else " and deliveries") + " aren't shown")
 
 stages = []
 
@@ -245,7 +240,7 @@ else:
         enter_ts = parse_iso(ln.split(" ", 1)[0])
         mm = re.search(r'"channelName":"?([^",]*)"?.*?"contentPreview":"((?:[^"\\]|\\.)*)', ln)
         if mm:
-            enter_detail = f"#{mm.group(1)}" if findings_json else f"#{mm.group(1)}: {mm.group(2)[:40]}…"
+            enter_detail = f"#{mm.group(1)}: {mm.group(2)[:40]}…"
     ln = last_in_dbg(r'gateway:message-create-drop (?!.*"reason":"self-authored")')
     if ln:
         dts = parse_iso(ln.split(" ", 1)[0])
@@ -390,8 +385,7 @@ except OSError as e:
     data_dir_why = f"the data directory at {data_dir} can't be looked at ({e.strerror or e})"
 if data_dir_why is not None:
     warn(f"{data_dir_why}, so the discord, mcpl, chronicle and inference stages read nothing"
-         + ("" if findings_json else "; if the host keeps it elsewhere, run this script with --data-dir DIR"),
-         counts=False)
+         + "; if the host keeps it elsewhere, run this script with --data-dir DIR")
 try:
     llm_files = sorted(
         (f for f in (os.listdir(data_dir) if data_dir_why is None else []) if f.startswith("llm-calls.")),
@@ -459,10 +453,7 @@ if llm_files:
         err = resp.get("error") or call.get("error")
         stop = "" if sr is None else f"stop={sr}  "
         if call.get("type") == "error" or err:
-            said = ("ended in an error. Its text can be a model provider's own words, so doctor leaves it out. "
-                    f"It is in {newest}" if findings_json
-                    else f"err={err_text(err)[:80] or '(no text)'}")
-            llm_detail = f"{stop}{C_RED}{said}{C_OFF}"
+            llm_detail = f"{stop}{C_RED}err={err_text(err)[:80] or '(no text)'}{C_OFF}"
         else:
             llm_detail = stop.strip() or "answered"
         if sr == "refusal":
@@ -542,7 +533,7 @@ elif last is not None:
     elif re.search(UNCONFIRMED, last):
         unsure.add(DELIVERY)
         del_detail = f"{C_YEL}delivery NOT confirmed{C_OFF}"
-        warn(f"the last reply's delivery wasn't confirmed, so it may or may not be in its channel: {line}", counts=False)
+        warn(f"the last reply's delivery wasn't confirmed, so it may or may not be in its channel: {line}")
     else:
         failed.add(DELIVERY)
         del_detail = f"{C_RED}NOT delivered{C_OFF}"
@@ -550,34 +541,11 @@ elif last is not None:
 stages.append((DELIVERY, del_ts, del_detail))
 
 
-def file_failures(path, is_failure, show):
+def file_failures(path, is_failure):
     text, why = read_text(path, last=400_000)
     if text is None:
-        return path, None, f"it can't be read ({why})", f"{path} can't be read ({why}), so its failures aren't shown", [], show
-    found = [ln for ln in text.split("\n") if ln.strip() and is_failure(ln)]
-    return path, found, None, None, [line_time(ln) for ln in found], show
-
-
-def line_time(ln):
-    try:
-        record = json.loads(ln)
-    except ValueError:
-        return parse_iso(ln.split(" ", 1)[0])
-    if not isinstance(record, dict):
-        return None
-    stamp = record.get("at", record.get("timestamp"))
-    return parse_iso(stamp) if isinstance(stamp, str) else None
-
-
-def failure_tag(ln):
-    try:
-        record = json.loads(ln)
-    except ValueError:
-        record = None
-    if isinstance(record, dict) and isinstance(record.get("kind"), str):
-        return record["kind"]
-    m = re.search(FAILURE, ln)
-    return m.group(0) if m else "a line of another form"
+        return path, None, f"it can't be read ({why})", f"{path} can't be read ({why}), so its failures aren't shown"
+    return path, [ln for ln in text.split("\n") if ln.strip() and is_failure(ln)], None, None
 
 
 def record_of(ln, kind):
@@ -588,22 +556,17 @@ def record_of(ln, kind):
     return record if isinstance(record, dict) and record.get("kind") == kind else None
 
 
-GC_CLOSE = '"kind":"subscription-gc-close"'
-
-
 def exhausted(ln):
     return record_of(ln, "inference-exhausted")
 
 
 sources = []
 if journal_log:
-    failing = [(ts, msg) for ts, msg in journal if re.search(FAILURE, msg)]
-    sources.append((f"{unit}'s journal", None if journal_error is not None else [msg for _, msg in failing],
-                    f"it {journal_unread} ({journal_error})", None, [ts for ts, _ in failing],
-                    f"journalctl --user -u {unit_q} --since @{int(start_ts or 0)} -g {shlex.quote(FAILURE)}"))
+    sources.append((f"{unit}'s journal", None if journal_error is not None
+                    else [msg for _, msg in journal if re.search(FAILURE, msg)],
+                    f"it {journal_unread} ({journal_error})", None))
 else:
-    sources.append(file_failures(agent_log, lambda ln: re.search(FAILURE, ln),
-                                 f"grep -E -- {shlex.quote(FAILURE)} {shlex.quote(agent_log)}"))
+    sources.append(file_failures(agent_log, lambda ln: re.search(FAILURE, ln)))
 failures_log = os.path.join(logs_dir, "failures.log")
 try:
     os.lstat(failures_log)
@@ -613,11 +576,10 @@ except (FileNotFoundError, NotADirectoryError):
 except OSError:
     failures_there = True
 if failures_there:
-    sources.append(file_failures(failures_log, lambda ln: record_of(ln, "subscription-gc-close") is None,
-                                 f"grep -v -F -- {shlex.quote(GC_CLOSE)} {shlex.quote(failures_log)}"))
+    sources.append(file_failures(failures_log, lambda ln: record_of(ln, "subscription-gc-close") is None))
 times = [ts for ts, msg in journal if "inference-failed" in msg] if journal_log else []
 untimed = False
-for index, (_, found, _, _, _, _) in enumerate(sources):
+for index, (_, found, _, _) in enumerate(sources):
     for ln in found or []:
         record = exhausted(ln)
         if record is not None:
@@ -665,21 +627,11 @@ if globals().get("_last_ingest_triggered") and rec_ts and no_turn_after and not 
          "budget failures / [diagnostics] dump below)")
 
 print()
-for where, found, why, unread, found_at, show in sources:
+for where, found, why, unread in sources:
     if unread is not None:
-        warn(unread, counts=False)
+        warn(unread)
     if found is None:
         print(f"recent failures in {where}: {C_YEL}not known: {why}{C_OFF}")
-    elif found and findings_json:
-        print(f"recent failures in {where}, their text left out, since it can quote a model provider or a person:")
-        kinds = {}
-        for ln, ts in zip(found, found_at):
-            count, newest = kinds.get(failure_tag(ln), (0, None))
-            kinds[failure_tag(ln)] = (count + 1, ts if newest is None or (ts is not None and ts > newest) else newest)
-        for tag, (count, newest) in sorted(kinds.items(), key=lambda kind: -(kind[1][1] or 0)):
-            when = f"at {hhmm(newest)}" if newest is not None else "at a time not known"
-            print(f"  {C_RED}{tag}{C_OFF}: {count}, the newest {when}")
-        print(f"  to see them: {show}")
     elif found:
         print(f"recent failures in {where}:")
         for ln in found[-5:]:
@@ -695,7 +647,7 @@ if times or untimed:
         warn(f"last inference failure{timed} {age(failed_at)}: a later call, at {hhmm(turn_ts)}, succeeded; the call log "
              "doesn't say whose, so whether the agent that failed has recovered isn't known" + (
                  "; newer rows of the call log can't be read, so whether a call after it failed isn't known"
-                 if newer_unread else ""), counts=False)
+                 if newer_unread else ""))
     elif failed_at is not None and (INFERENCE in unknown or newer_unread or (
             turn_ts is None and window_from is not None and window_from > failed_at)):
         why = (unseen_why if INFERENCE in unknown
@@ -703,14 +655,13 @@ if times or untimed:
                else "rows of the call log can't be read" if newer_unread
                else f"the call log read here starts at {hhmm(window_from)}, after it")
         warn(f"inference failures, the last{timed} {age(failed_at)}; whether a turn has succeeded since isn't known, "
-             f"since {why}", counts=False)
+             f"since {why}")
     elif failed_at is not None:
         warn(f"inference failures, the last{timed} {age(failed_at)}, with no successful turn found since — if the reason "
              "repeats identically, the agent is hard-down until config changes (e.g. budget)")
     else:
         warn("inference failures present, and when the last was isn't known here, so neither is whether a turn has "
-             "succeeded since — if the reason repeats identically, the agent is hard-down until config changes (e.g. budget)",
-             counts=False)
+             "succeeded since — if the reason repeats identically, the agent is hard-down until config changes (e.g. budget)")
 
 
 def usr2_listener(pid):
@@ -736,19 +687,17 @@ if active in ("active", "running"):
         print(f"live gate dump: {C_DIM}not asked: the unit has no main process now{C_OFF}")
     elif pid == "":
         print(f"live gate dump: {C_DIM}not asked: the unit's main process id can't be read{C_OFF}")
-        warn("the gate dump wasn't asked for, since the unit's main process id can't be read, so the gate dump isn't known",
-             counts=False)
+        warn("the gate dump wasn't asked for, since the unit's main process id can't be read, so the gate dump isn't known")
     elif listening is None:
         print(f"live gate dump: {C_DIM}not asked: /proc/{pid}/status can't be read, so whether SIGUSR2 would end "
               f"the host isn't known{C_OFF}")
-        warn(f"the gate dump wasn't asked for, since /proc/{pid}/status can't be read, so the gate dump isn't known",
-             counts=False)
+        warn(f"the gate dump wasn't asked for, since /proc/{pid}/status can't be read, so the gate dump isn't known")
     elif not listening:
         print(f"live gate dump: {C_DIM}not asked: the host (pid {pid}) has no SIGUSR2 listener, and the signal "
               f"would end it. A host still starting installs one once its framework is built, so run this check "
               f"again in a minute; one whose agent-framework predates the dump never does{C_OFF}")
         warn(f"the gate dump wasn't asked for, since the host (pid {pid}) has no SIGUSR2 listener, so the gate dump "
-             "isn't known", counts=False)
+             "isn't known")
     else:
         before = os.path.getsize(agent_log) if os.path.exists(agent_log) else 0
         signalled = int(time.time())
@@ -776,16 +725,15 @@ if active in ("active", "running"):
                     time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
         if refused is not None:
             print(f"live gate dump: {C_RED}SIGUSR2 couldn't be sent ({refused}){C_OFF}")
-            warn(f"SIGUSR2 couldn't be sent ({refused}), so the gate dump isn't known", counts=False)
+            warn(f"SIGUSR2 couldn't be sent ({refused}), so the gate dump isn't known")
         elif why is not None:
             print(f"live gate dump: {C_RED}SIGUSR2 sent, but {where} can't be read ({why}), so whether a "
                   f"[diagnostics] line came isn't known{C_OFF}")
-            warn(f"SIGUSR2 was sent, but {where} can't be read ({why}), so the gate dump isn't known", counts=False)
+            warn(f"SIGUSR2 was sent, but {where} can't be read ({why}), so the gate dump isn't known")
         elif not finished:
             print(f"live gate dump: {C_RED}SIGUSR2 sent, but no read of {where} finished within {DUMP_WAIT} s, so whether "
                   f"a [diagnostics] line came isn't known{C_OFF}")
-            warn(f"SIGUSR2 was sent, but no read of {where} finished within {DUMP_WAIT} s, so the gate dump isn't known",
-                 counts=False)
+            warn(f"SIGUSR2 was sent, but no read of {where} finished within {DUMP_WAIT} s, so the gate dump isn't known")
         elif dump:
             print(f"live gate dump (SIGUSR2): {dump.split('[diagnostics] ',1)[-1]}")
             try:
@@ -794,29 +742,25 @@ if active in ("active", "running"):
                 if g.get("inferring") and g.get("bufferedEvents", 0) > 0:
                     warn("WAKE-WEDGE signature: agent stuck in `inferring` with events buffering")
                 if g.get("sleepUntil", 0) > NOW * 1000:
-                    warn(f"agent is ASLEEP until {hhmm(g['sleepUntil']/1000)}", counts=False)
+                    warn(f"agent is ASLEEP until {hhmm(g['sleepUntil']/1000)}")
                 if d.get("activeStreams"):
-                    WARNINGS[:] = [w for w in WARNINGS if NO_TURN not in w[0]]
+                    WARNINGS[:] = [w for w in WARNINGS if NO_TURN not in w]
                     print(f"  {C_GRN}turn in-flight for: {', '.join(d['activeStreams'])}{C_OFF}")
             except Exception:
                 pass
         else:
             print(f"live gate dump: {C_DIM}no [diagnostics] line was seen within {DUMP_WAIT} s of SIGUSR2, which the host "
                   f"catches and answers by writing that line{C_OFF}")
-            warn(f"no [diagnostics] line was seen within {DUMP_WAIT} s of SIGUSR2, so the gate dump isn't known",
-                 counts=False)
+            warn(f"no [diagnostics] line was seen within {DUMP_WAIT} s of SIGUSR2, so the gate dump isn't known")
 elif "ActiveState" not in props:
     print()
     print(f"live gate dump: {C_DIM}not asked: the unit's state can't be read{C_OFF}")
-    warn("the gate dump wasn't asked for, since the unit's state can't be read, so the gate dump isn't known", counts=False)
+    warn("the gate dump wasn't asked for, since the unit's state can't be read, so the gate dump isn't known")
 
-if findings_json:
-    print("connectome-doctor findings: " + json.dumps([{"text": w, "counts": counts} for w, counts in WARNINGS]))
-    sys.exit(0)
 print()
 if WARNINGS:
     print(f"{C_YEL}=== findings ==={C_OFF}")
-    for w, _ in WARNINGS:
+    for w in WARNINGS:
         print(f"  {C_YEL}*{C_OFF} {w}")
     sys.exit(1)
 else:

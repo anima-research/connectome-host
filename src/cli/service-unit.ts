@@ -127,11 +127,6 @@ export interface UnitRead {
   workingDirectory: string;
 }
 
-export function systemdWorkingDirectory(text: string): string | null {
-  const set = [...text.matchAll(/^WorkingDirectory=(.*)$/gm)].at(-1)?.[1]?.replace(/^-/, '').replace(/%%/g, '%');
-  return set === undefined || set === '' ? null : set;
-}
-
 export function readUnit(manager: Manager, text: string): UnitRead | { why: string } {
   return manager === 'systemd-user' ? readSystemdUnit(text) : readPlist(text);
 }

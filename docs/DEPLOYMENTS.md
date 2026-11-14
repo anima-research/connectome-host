@@ -170,8 +170,8 @@ the working directory):
   `invalid_request` rejections of the history itself, a poison-history breaker
   sheds the newest complete exchange and retries, capped by
   `refusalHandling.maxRewinds` (default 3) per episode.
-- **`scripts/connectome-doctor [--data-dir DIR] [--findings-json] [INSTALL_DIR]
-  [UNIT]`** — one-shot "why isn't the agent responding?"
+- **`scripts/connectome-doctor [--data-dir DIR] [INSTALL_DIR] [UNIT]`** —
+  one-shot "why isn't the agent responding?"
   (python3; systemd-user boxes). Prints service state, disk, a last-seen
   ladder per pipeline stage (discord event → chronicle ingest → `llm-calls` →
   delivery), recent failures, and a live gate dump via `SIGUSR2`. It reads the
@@ -184,7 +184,7 @@ the working directory):
   those stages unseen, saying so. An earlier start's inference failures are
   in `INSTALL_DIR/logs/failures.log`. Recent failures also come from that
   file: its records in its last 400 KB, of every kind but the subscription
-  GC's `subscription-gc-close`, which `connectome doctor` names apart. It
+  GC's `subscription-gc-close`. It
   shows the last five failures from each place it reads, and how many older
   ones it leaves out. Chronicle ingest
   comes from the active session's `records.log`, as `sessions.json` names it,
@@ -204,24 +204,7 @@ the working directory):
   line. `--data-dir`
   names the host's data directory, `INSTALL_DIR/data` when left out.
   The ladder cuts a message's preview at 40 characters, a model call's error
-  at 80 and each failure line at 150, and hides nothing. `--findings-json`
-  prints none of those three. Its inference stage says the call ended in an
-  error and names the call log file. Each source of recent failures gives
-  each kind's tag, how many, the newest one's time, and the command that
-  shows the lines. The inference stage and each source's heading say that
-  the text is left out, since it can quote a model provider or a person. Its
-  Discord stage names the channel. `connectome doctor`,
-  which passes it, replaces each stored value in every line of the ladder's
-  it shows, then cuts each line but the gate dump's at 300 characters. With
-  `--findings-json` the ladder also prints the findings, once it finishes,
-  as its last line,
-  `connectome-doctor findings: ` and a JSON list of `{"text", "counts"}`, with
-  no findings block or closing line, leaves the service's own state (its row,
-  a unit that isn't active, or a recent start) to its caller, and exits 0.
-  `counts` is false for a finding about what the ladder can't see, and for the
-  resident's own sleep. `connectome doctor` runs the ladder with `--data-dir`
-  and `--findings-json` for a service `connectome service install` set up
-  under systemd.
+  at 80 and each failure line at 150, and hides nothing.
 
 ---
 

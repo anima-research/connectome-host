@@ -82,7 +82,8 @@ function readNumbers(recipe: Recipe): Numbers | string {
   }
   if (unreadable) return `agent.contextBudgetTokens is ${show(recipe.agent.contextBudgetTokens)}, ${notA(recipe.agent.contextBudgetTokens)} of tokens.`;
   const strategy = recipe.agent.strategy;
-  const raw = keepsRawWindows(recipe);
+  const type = strategy?.type ?? 'autobiographical';
+  const raw = type === 'autobiographical' || type === 'frontdesk';
   const head: unknown = headWindowTokens(recipe);
   const tail: unknown = strategy?.recentWindowTokens ?? undefined;
   const grace: unknown = strategy?.overBudgetGraceRatio;
@@ -118,24 +119,14 @@ function tailOf(x: Numbers, budget: number): number {
     : tail;
 }
 
-function keepsRawWindows(recipe: Recipe): boolean {
-  const type = recipe.agent.strategy?.type ?? 'autobiographical';
-  return type === 'autobiographical' || type === 'frontdesk';
-}
-
-export function startingTailTokens(recipe: Recipe, model: string): number | undefined {
-  if (!keepsRawWindows(recipe)) return undefined;
-  return recipe.agent.strategy?.recentWindowTokens ?? defaultRecentWindowTokens(recipe, model);
-}
-
-function defaultRecentWindowTokens(recipe: Recipe, model: string): number {
+export function defaultRecentWindowTokens(recipe: Recipe, model: string): number {
   const budget = effectiveContextBudgetTokens(recipe, model);
   const x = readNumbers(recipe);
   if (typeof x === 'string') return Math.round(budget * DEFAULT_RECENT_WINDOW_RATIO);
   return tailOf({ ...x, tail: undefined }, budget);
 }
 
-type Fit = Numbers & { window: number; maxOutput: number; system: number; beside?: number };
+type Fit = Numbers & { window: number; maxOutput: number; system: number };
 
 type Problem = 'output' | 'system' | 'room' | 'window';
 
@@ -148,13 +139,11 @@ function roomHolds(f: Fit, budget: number): boolean {
   return room > 0 && windowsOf(f, budget) <= limitOf(f, room);
 }
 
-const sentBeside = (f: Fit) => f.beside ?? f.system;
-
-const promptOf = (f: Fit, budget: number) => Math.max(budget - f.reply, windowsOf(f, budget)) + sentBeside(f);
+const promptOf = (f: Fit, budget: number) => Math.max(budget - f.reply, windowsOf(f, budget)) + f.system;
 
 function problemOf(f: Fit): Problem | undefined {
   if (f.reply > f.maxOutput) return 'output';
-  if (sentBeside(f) >= f.window) return 'system';
+  if (f.system >= f.window) return 'system';
   const budget = budgetOf(f);
   if (!roomHolds(f, budget)) return 'room';
   if (promptOf(f, budget) > f.window) return 'window';
@@ -212,17 +201,9 @@ const lowered = ([lo, hi]: [number, number]) =>
 
 const LESS_TOOLS = 'less the size of the tools the host sends beside the prompt';
 
-const SENT = 'the system prompt and tools the host sends';
-
-const COUNTED_FIT = `so ${SENT} still fit`;
-
 const AT_AN_END = 'At an end of a named range, the compile can have no room left for older history, or the prompt can ' +
   'fill the window, leaving none for the tool definitions the host sends beside it; a recipe there loads and then ' +
   'fails once its conversation fills the compile.';
-
-const AT_AN_END_COUNTED = 'At an end of a named range, the compile can have no room left for older history, or the prompt, ' +
-  'with the system prompt and tools as counted, can fill the window, leaving nothing for the reply or for what modules add at ' +
-  'each turn.';
 
 function full(f: Fit): boolean {
   const budget = budgetOf(f);
@@ -233,7 +214,7 @@ function full(f: Fit): boolean {
 
 export type RecipeFit =
   | { checked: false; line: string }
-  | { checked: true; fits: true; spare?: number }
+  | { checked: true; fits: true }
   | { checked: true; fits: false; refusal: string };
 
 const n = (value: number) => value.toLocaleString('en-US');
@@ -251,19 +232,18 @@ function waysOut(f: Fit, problem: Problem): { floor: string; ways: string[]; atA
   };
   let floor = '';
   const top = Math.floor(f.reply) + f.window;
-  const keep = f.budget === undefined && f.beside === undefined ? TOOLS_ROOM_TOKENS : 0;
+  const keep = f.budget === undefined ? TOOLS_ROOM_TOKENS : 0;
   const lo = least(Math.floor(f.reply) + 1, top, (budget) => roomHolds(f, budget));
   const most = greatest(Math.floor(f.reply) + 1, top, (budget) => promptOf(f, budget) + keep <= f.window);
   if (lo !== undefined && most !== undefined && lo <= most && fits({ ...f, budget: lo }) && fits({ ...f, budget: most })) {
-    const tools = f.beside !== undefined ? COUNTED_FIT
-      : f.budget === undefined ? `which leaves ${n(TOOLS_ROOM_TOKENS)} of the window for the tools`
+    const tools = f.budget === undefined
+      ? `which leaves ${n(TOOLS_ROOM_TOKENS)} of the window for the tools`
       : LESS_TOOLS;
     const theTail = f.tail === undefined ? 'the verbatim tail that budget gets' : 'the verbatim tail';
     const verb = f.budget === undefined ? 'set agent.contextBudgetTokens' : problem === 'window' ? 'lower the budget' : 'raise the budget';
     if (lo === most) {
       ways.push(`${f.budget === undefined ? verb : 'set the budget'} to ${n(lo)}, ` +
-        (f.beside !== undefined ? `the one whole budget that fits, ${COUNTED_FIT}`
-          : f.budget === undefined
+        (f.budget === undefined
           ? `the one whole budget that loads and leaves ${n(TOOLS_ROOM_TOKENS)} of the window for the tools`
           : 'the one whole budget this check accepts, counting no tools') +
         (windowsOf(f, lo) > 0 ? `, where the head and ${theTail} fill the compile and leave older history no room` : ''));
@@ -298,17 +278,7 @@ function waysOut(f: Fit, problem: Problem): { floor: string; ways: string[]; atA
       ways.push(`lower strategy.headWindowTokens ${lowered(range)}`);
     }
   }
-  const sent = f.beside === undefined ? undefined : nearestRange(f.beside, (value) => ({ ...f, beside: value }));
-  if (sent) {
-    ends(sent, (value) => ({ ...f, beside: value }));
-    const [from, to] = sent;
-    const budgetMoves = f.budget === undefined && f.window - f.system - TOOLS_ROOM_TOKENS < DEFAULT_CONTEXT_BUDGET_TOKENS;
-    ways.push(`bring ${SENT} to ${from === to ? `about ${n(to)} tokens`
-      : from > 0 ? `between about ${n(from)} and ${n(to)} tokens` : `about ${n(to)} tokens or fewer`}, with ` +
-      (budgetMoves ? 'fewer tools, or a shorter system prompt only where it counts more than the estimate the budget is worked out from'
-        : 'a shorter system prompt or fewer tools'));
-  }
-  const system = f.beside !== undefined ? undefined : nearestRange(f.system, (value) => ({ ...f, system: value }));
+  const system = nearestRange(f.system, (value) => ({ ...f, system: value }));
   if (system) {
     ends(system, (value) => ({ ...f, system: value }));
     const [from, to] = system;
@@ -336,7 +306,7 @@ function capOutput(recipe: Recipe, most: number): string {
   return ` Set it to ${least === most ? n(most) : `between ${n(least)} and ${n(most)}`}.`;
 }
 
-export function recipeFit(recipe: Recipe, model: string, beside?: number): RecipeFit {
+export function recipeFit(recipe: Recipe, model: string): RecipeFit {
   const notChecked = (reason: string): RecipeFit => ({
     checked: false,
     line: `[fit] Not checked: whether agent.contextBudgetTokens and agent.maxTokens fit ${String(model)}'s window. ` +
@@ -373,13 +343,9 @@ export function recipeFit(recipe: Recipe, model: string, beside?: number): Recip
   }
   const f: Fit = {
     ...numbers, window: window.maxContextTokens, maxOutput: window.maxOutputTokens, system: systemPromptTokens(recipe),
-    ...(beside === undefined ? {} : { beside }),
   };
   const problem = problemOf(f);
-  if (problem === undefined) {
-    return beside === undefined ? { checked: true, fits: true }
-      : { checked: true, fits: true, spare: f.window - promptOf(f, budgetOf(f)) };
-  }
+  if (problem === undefined) return { checked: true, fits: true };
   const budget = budgetOf(f);
   const room = budget - f.reply;
   const tail = tailOf(f, budget);
@@ -389,9 +355,7 @@ export function recipeFit(recipe: Recipe, model: string, beside?: number): Recip
   if (problem === 'output') {
     facts = overOutput(f.reply);
   } else if (problem === 'system') {
-    facts = f.beside !== undefined
-      ? `${SENT.charAt(0).toUpperCase()}${SENT.slice(1)} count ${n(f.beside)} tokens, which by themselves fill ${W}.`
-      : `Recipe agent.systemPrompt is about ${n(f.system)} tokens, which by itself fills ${W}.`;
+    facts = `Recipe agent.systemPrompt is about ${n(f.system)} tokens, which by itself fills ${W}.`;
   } else if (problem === 'room' && f.budget === undefined) {
     facts = `Recipe agent.systemPrompt is about ${n(f.system)} tokens, which leaves the conversation ` +
       (room > 0 ? `${n(room)} tokens, fewer than ${windows} need, so every reply fails once the conversation fills them,`
@@ -409,8 +373,7 @@ export function recipeFit(recipe: Recipe, model: string, beside?: number): Recip
       `tokens, over ${W}, and Anthropic's API refuses every prompt over the window. The host compiles the ` +
       `conversation up to the budget less agent.maxTokens (${n(f.reply)})` +
       (f.raw && f.head + tail > room ? `, or to ${windows} where they come to more` : '') +
-      (f.beside !== undefined ? `, and ${SENT}, counted at ${n(f.beside)}, come on top.`
-        : `, and the system prompt (about ${n(f.system)}) comes on top.`);
+      `, and the system prompt (about ${n(f.system)}) comes on top.`;
   }
   const { floor, ways, atAnEnd } = waysOut(f, problem);
   const lower = ['agent.maxTokens',
@@ -421,7 +384,7 @@ export function recipeFit(recipe: Recipe, model: string, beside?: number): Recip
     checked: true,
     fits: false,
     refusal: `${facts} ${floor}` + (ways.length
-      ? sentence(ways) + (atAnEnd ? ` ${f.beside === undefined ? AT_AN_END : AT_AN_END_COUNTED}` : '')
+      ? sentence(ways) + (atAnEnd ? ` ${AT_AN_END}` : '')
       : `No budget, no lower ${lowerList}, and no shorter system prompt fits it alone.`),
   };
 }
