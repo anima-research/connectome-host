@@ -805,10 +805,24 @@ A recipe that turns `modules.fetch` on can't also name a server `fetch` in
 
 On the network, the tool decides what it may reach by the address it would
 connect to, on every redirect, so a public name that resolves to a private
-address is refused like the address itself. It sends no credentials and doesn't
-run JavaScript. HTML is converted in a separate process that holds none of the
-host's environment and is killed once it passes 15 seconds or 1 GiB, which
-refuses the page; two convert at once and sixteen more may wait. A first read
+address is refused like the address itself. What it refuses is private and
+local address ranges, the host's own addresses, and cloud platforms' metadata
+addresses. It can't tell an internal service on a publicly routable address,
+or a NAT router's public address, from the internet, so keep such services
+behind their own authentication. It sends no credentials and doesn't run
+JavaScript.
+
+HTML is converted in a separate process, which is killed once it passes 15
+seconds or 1 GiB, refusing the page; two convert at once and sixteen more may
+wait. The separate process is there for those limits. It starts with an empty
+environment, so code in it that reads its own environment finds no
+credentials, but it runs as the host's user and isn't a sandbox.
+
+In a result, the document's text, or the small model's answer, comes between
+tags that carry a code new to each call (`<document-…>`, `<answer-…>`), so text
+a page wrote can't pass for one of the tool's own lines.
+
+A first read
 is always fresh. Only reads with an `offset` use a copy of the page, kept for
 the agent that fetched it for up to 15 minutes, so the parts of one reading fit
 together; where no copy is

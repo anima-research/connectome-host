@@ -47,8 +47,12 @@ function convertInChild(html: string, baseUrl: string | undefined, options: Conv
   const timeoutMs = options.timeoutMs ?? CONVERT_TIMEOUT_MS;
   const memoryLimitBytes = options.memoryLimitBytes ?? CONVERT_MEMORY_BYTES;
   return new Promise<string>((resolve, reject) => {
-    // Nothing of the host's environment goes with it, its credentials above
-    // all, and --no-env-file keeps Bun from reading any .env file back in.
+    // It starts with an empty environment, and --no-env-file keeps Bun from
+    // reading a .env file back in, so code there that reads its own
+    // environment finds no credentials. That isn't a sandbox: the process
+    // runs as the host's user, and one a page had taken over could still read
+    // the host's files, its environment through /proc included. What the
+    // separate process gives is the time and memory limits.
     const child = spawn(
       process.execPath,
       ['--no-env-file', CHILD_PATH, JSON.stringify({ memoryLimitBytes, deadlineMs: timeoutMs + CHILD_GRACE_MS })],

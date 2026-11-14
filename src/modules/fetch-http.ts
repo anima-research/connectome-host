@@ -2,6 +2,10 @@
  * The fetch tool's one way onto the network: a GET that decides what it may
  * reach by the address it would connect to, not by the name it was given.
  *
+ * What it refuses is ranges of addresses, private and local ones, and this
+ * host's own addresses. It can't tell an internal service that sits on a
+ * publicly routable address, or a NAT router's public one, from the internet.
+ *
  * A name check can't hold: 127.0.0.1, 2130706433, the IPv6 literal ::ffff:7f00:1,
  * and any public name whose DNS answer is a private address all pass one. So every
  * hop is checked twice over, at the only two points an address is known: an IP
@@ -20,6 +24,7 @@ import dns from 'node:dns';
 import http from 'node:http';
 import https from 'node:https';
 import { BlockList, isIP, type LookupFunction } from 'node:net';
+import { networkInterfaces } from 'node:os';
 
 const NOT_PUBLIC = new BlockList();
 for (const [address, prefix] of [
@@ -27,6 +32,7 @@ for (const [address, prefix] of [
   ['10.0.0.0', 8], // private
   ['100.64.0.0', 10], // shared address space, which Tailscale uses
   ['127.0.0.0', 8], // loopback
+  ['168.63.129.16', 32], // Azure's platform address, public in form, which reaches the host's own platform services
   ['169.254.0.0', 16], // link-local, and cloud metadata services
   ['172.16.0.0', 12], // private
   ['192.0.0.0', 24], // protocol assignments
@@ -71,18 +77,38 @@ function embeddedIpv4(address: string): string {
 }
 
 /**
- * Whether an address is on the public internet. An IPv4-mapped IPv6 address
- * (`::ffff:127.0.0.1`) answers as the IPv4 address it maps, and so does a
- * NAT64 or IPv4-translated one (`64:ff9b::808:808`), which is how an IPv6-only
- * network reaches every IPv4 site, public ones included. What isn't an address
- * at all isn't public.
+ * Whether an address is one this host's own interfaces carry. A public one
+ * among them reaches the host itself, as loopback does, and a firewall in
+ * front of the host doesn't stand between the two.
  */
-export function isPublicAddress(address: string): boolean {
+export function isOwnAddress(address: string, interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces()): boolean {
   const bare = address.split('%')[0]!;
   const family = isIP(bare);
   if (family === 0) return false;
-  if (family === 6 && EMBEDS_IPV4.check(bare, 'ipv6')) return isPublicAddress(embeddedIpv4(bare));
-  return !NOT_PUBLIC.check(bare, family === 4 ? 'ipv4' : 'ipv6');
+  const own = new BlockList();
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries ?? []) {
+      const carried = entry.address.split('%')[0]!;
+      if (isIP(carried) !== 0) own.addAddress(carried, isIP(carried) === 4 ? 'ipv4' : 'ipv6');
+    }
+  }
+  return own.check(bare, family === 4 ? 'ipv4' : 'ipv6');
+}
+
+/**
+ * Whether an address is on the public internet. An IPv4-mapped IPv6 address
+ * (`::ffff:127.0.0.1`) answers as the IPv4 address it maps, and so does a
+ * NAT64 or IPv4-translated one (`64:ff9b::808:808`), which is how an IPv6-only
+ * network reaches every IPv4 site, public ones included. One of this host's
+ * own addresses isn't public, whatever its range, and what isn't an address at
+ * all isn't either.
+ */
+export function isPublicAddress(address: string, interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces()): boolean {
+  const bare = address.split('%')[0]!;
+  const family = isIP(bare);
+  if (family === 0) return false;
+  if (family === 6 && EMBEDS_IPV4.check(bare, 'ipv6')) return isPublicAddress(embeddedIpv4(bare), interfaces);
+  return !NOT_PUBLIC.check(bare, family === 4 ? 'ipv4' : 'ipv6') && !isOwnAddress(bare, interfaces);
 }
 
 /** An address as it's shown in a result: an address can be as long as a redirect makes it. */
@@ -296,7 +322,7 @@ function requestOnce(url: URL, options: HttpGetOptions, allowed: (address: strin
  * failure, refusal or not, is thrown as a FetchRefusal.
  */
 export async function httpGet(start: URL, options: HttpGetOptions): Promise<HttpGetResult> {
-  const allowed = options.addressAllowed ?? isPublicAddress;
+  const allowed = options.addressAllowed ?? ((address: string) => isPublicAddress(address));
   const deadline = performance.now() + options.timeoutMs;
   let url = new URL(start);
   for (let hop = 0; ; hop++) {

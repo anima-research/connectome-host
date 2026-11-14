@@ -168,6 +168,19 @@ describe('htmlToMarkdown', () => {
     expect(markdown).not.toContain('data:');
   });
 
+  test('relative addresses resolve against the page\'s <base href>, as a browser resolves them', async () => {
+    const html = '<html><head><base href="https://other.example/dir/"></head><body><a href="x.html">link</a> <img alt="pic" src="p.png"></body></html>';
+    expect(await htmlToMarkdown(html, 'https://page.example/a/b.html')).toBe('[link](https://other.example/dir/x.html) ![pic](https://other.example/dir/p.png)');
+    // A relative base is itself relative to the page, and one that isn't a web address is passed over.
+    expect(await htmlToMarkdown(page('<base href="/docs/"><a href="x.html">link</a>'), 'https://page.example/a/b.html')).toBe('[link](https://page.example/docs/x.html)');
+    expect(await htmlToMarkdown(page('<base href="javascript:alert(1)"><a href="x.html">link</a>'), 'https://page.example/a/b.html')).toBe('[link](https://page.example/a/x.html)');
+  });
+
+  test('a heading\'s permalink mark is left out, and a link that says something stays', async () => {
+    const markdown = await htmlToMarkdown(page('<h2>Tasks<a href="#tasks">¶</a></h2><p><a href="/more">more</a> <a href="#x">#</a></p>'), 'https://x.test/');
+    expect(markdown).toBe('## Tasks\n\n[more](https://x.test/more)');
+  });
+
   test('an image embedded as data keeps its alt text and not its megabytes', async () => {
     const markdown = await htmlToMarkdown(page(`<img alt="chart" src="data:image/png;base64,${'A'.repeat(200_000)}">`), 'https://x.test/');
     expect(markdown).toBe('chart');
@@ -289,7 +302,7 @@ describe('the converting process', () => {
     expect((await htmlToMarkdown(page('<p>next</p>'), undefined)).trim()).toBe('next');
   }, 15_000);
 
-  test('holds none of the host\'s environment, and reads no .env file', async () => {
+  test('starts with an empty environment, and reads no .env file', async () => {
     process.env.FETCH_CANARY_SECRET = 'do-not-inherit';
     const shows = async (pid: number) => new TextDecoder().decode(Bun.spawnSync(['ps', 'eww', '-o', 'command=', '-p', String(pid)]).stdout).includes('FETCH_CANARY_SECRET');
     try {

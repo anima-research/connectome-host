@@ -6,7 +6,7 @@
   mounts don't allow. It reaches only public addresses unless
   `allowPrivateNetwork` is set, checked by the address connected to on every
   redirect, and untrusted HTML is converted in a separate process with time and
-  memory limits and none of the host's environment. A recipe on a provider other
+  memory limits. A recipe on a provider other
   than `anthropic` or `mock` sets `modules.fetch.model`, and one that turns the
   module on can't also name a server `fetch` in `mcpServers`.
   Recipes that don't set `modules.fetch` are unchanged. New dependency: `turndown`.

@@ -33,7 +33,19 @@ const WATCHDOG = `
 `;
 new Worker(WATCHDOG, { eval: true, workerData: { memoryLimitBytes, deadlineMs } }).unref();
 
-const { html, baseUrl } = JSON.parse(await new Response(Bun.stdin.stream()).text()) as { html: string; baseUrl?: string };
+const { html, baseUrl: documentUrl } = JSON.parse(await new Response(Bun.stdin.stream()).text()) as { html: string; baseUrl?: string };
+
+/** What relative addresses resolve against: the document's `<base href>` where it has one, as in a browser, and otherwise its own address. */
+const baseUrl = ((): string | undefined => {
+  const href = html.slice(0, 65_536).match(/<base\b[^>]*?\bhref\s*=\s*["']?([^"'\s>]+)/i)?.[1];
+  if (href === undefined) return documentUrl;
+  try {
+    const base = documentUrl === undefined ? new URL(href) : new URL(href, documentUrl);
+    return base.protocol === 'http:' || base.protocol === 'https:' ? base.href : documentUrl;
+  } catch {
+    return documentUrl;
+  }
+})();
 
 /** An address this long says nothing to a reader, and a long base address multiplies with every relative link. */
 const LONGEST_ADDRESS = 2_000;
@@ -156,6 +168,8 @@ service.addRule('followable-link', {
   replacement: (content, node) => {
     const href = followable(asDom(node).getAttribute?.('href') ?? null);
     const text = content.trim();
+    // A heading's permalink, a link whose whole text is a mark: it says nothing, once per heading.
+    if (/^[¶#§🔗]$/u.test(text)) return '';
     if (href === null) return text;
     return text === '' ? '' : `[${text}](${href.replace(/[()]/g, (c) => encodeURIComponent(c))})`;
   },

@@ -3,9 +3,9 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import type { AddressInfo } from 'node:net';
-import { tmpdir } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FetchRefusal, guardedLookup, httpGet, isPublicAddress, type HttpGetOptions } from '../src/modules/fetch-http.js';
+import { FetchRefusal, guardedLookup, httpGet, isOwnAddress, isPublicAddress, type HttpGetOptions } from '../src/modules/fetch-http.js';
 
 const hits: string[] = [];
 let closedEarly = 0;
@@ -112,6 +112,56 @@ describe('isPublicAddress', () => {
     ['64:ff9b::808:808'], ['64:ff9b::8.8.8.8'], ['64:ff9b:0:0:0:0:101:101'], ['::ffff:0:8.8.8.8'],
   ])('%s is public', (address) => {
     expect(isPublicAddress(address)).toBe(true);
+  });
+});
+
+describe('the host\'s own addresses', () => {
+  // A host with public addresses on its interface, as a cloud machine has.
+  const interfaces = {
+    lo: [{ address: '127.0.0.1', netmask: '255.0.0.0', family: 'IPv4', mac: '00:00:00:00:00:00', internal: true, cidr: '127.0.0.1/8' }],
+    eth0: [
+      { address: '203.0.114.7', netmask: '255.255.255.0', family: 'IPv4', mac: '02:00:00:00:00:01', internal: false, cidr: '203.0.114.7/24' },
+      { address: '2a01:4f8:c0c:1234::1', netmask: 'ffff:ffff:ffff:ffff::', family: 'IPv6', mac: '02:00:00:00:00:01', internal: false, cidr: '2a01:4f8:c0c:1234::1/64', scopeid: 0 },
+      { address: 'fe80::1%eth0', netmask: 'ffff:ffff:ffff:ffff::', family: 'IPv6', mac: '02:00:00:00:00:01', internal: false, cidr: 'fe80::1/64', scopeid: 2 },
+    ],
+  } as ReturnType<typeof networkInterfaces>;
+
+  test.each([
+    ['203.0.114.7'], ['2a01:4f8:c0c:1234::1'], ['2a01:4f8:c0c:1234:0:0:0:1'], ['::ffff:203.0.114.7'], ['64:ff9b::203.0.114.7'],
+  ])('%s, a public address this host carries, is not public to the tool', (address) => {
+    expect(isPublicAddress(address, interfaces)).toBe(false);
+  });
+
+  test('its neighbours are public still', () => {
+    expect(isPublicAddress('203.0.114.8', interfaces)).toBe(true);
+    expect(isPublicAddress('2a01:4f8:c0c:1234::2', interfaces)).toBe(true);
+    expect(isOwnAddress('203.0.114.8', interfaces)).toBe(false);
+    expect(isOwnAddress('not an address', interfaces)).toBe(false);
+  });
+
+  test('every address this machine carries is refused, and a server on all interfaces is never reached at one', async () => {
+    const carried = Object.values(networkInterfaces()).flatMap((entries) => entries ?? []);
+    expect(carried.length).toBeGreaterThan(0);
+    for (const { address } of carried) expect(isPublicAddress(address), address).toBe(false);
+    const open = http.createServer((_request, response) => response.end('reached'));
+    await new Promise<void>((resolve) => open.listen(0, '0.0.0.0', resolve));
+    try {
+      let served = 0;
+      open.on('request', () => { served++; });
+      for (const { address } of carried.filter((entry) => entry.family === 'IPv4')) {
+        const message = await refusal(httpGet(new URL(`http://${address}:${(open.address() as AddressInfo).port}/`), OPTIONS));
+        expect(message, address).toContain('private or local address');
+      }
+      expect(served).toBe(0);
+    } finally {
+      open.closeAllConnections();
+      open.close();
+    }
+  });
+
+  test('Azure\'s platform address is refused, though its range is public', () => {
+    expect(isPublicAddress('168.63.129.16')).toBe(false);
+    expect(isPublicAddress('168.63.129.17')).toBe(true);
   });
 });
 
