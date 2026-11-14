@@ -259,7 +259,9 @@ export class FetchModule implements Module {
     const total = document.text.length;
     if (asked > 0 && asked >= total) {
       const prefix = document.cut ? ` That is as far as this tool reads it: the ${document.kind} goes on past the ${this.maxBytes} bytes it reads.` : '';
-      const fresh = copyGone ? ' No copy from an earlier read is kept, so this is the page as it is now, which may have changed since: start again from offset 0.' : '';
+      const fresh = copyGone ? ' No copy from an earlier read is kept, so this is the page as it is now, which may have changed since: start again from offset 0.'
+        : copyAge !== undefined ? ` That is its length in the copy fetched ${Math.round(copyAge / 1000)} seconds ago: read from offset 0 for the page as it is now.`
+        : '';
       return {
         success: false,
         isError: true,
@@ -270,7 +272,7 @@ export class FetchModule implements Module {
     const low = document.text.charCodeAt(asked);
     const high = document.text.charCodeAt(asked - 1);
     const from = low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff ? asked - 1 : asked;
-    const copyNote = copyAge !== undefined ? ` This part is from the copy fetched ${Math.round(copyAge / 1000)} seconds ago, so the parts fit together.`
+    const copyNote = copyAge !== undefined ? ` This part is from the copy fetched ${Math.round(copyAge / 1000)} seconds ago, so the parts read from it fit together.`
       : copyGone ? ' No copy from an earlier read is kept, so this part is from a fresh fetch: if the page changed since an earlier part was read, the parts may not line up.'
       : '';
     const structuredFor = (end: number) => ({
@@ -369,8 +371,8 @@ export class FetchModule implements Module {
     }
     const stops = this.stops;
     const document = await this.loadPage(source.url);
-    // A fetch the module stopped under keeps nothing, for this run or a later start.
-    if (stops === this.stops) this.keep(key, document);
+    // A fetch the module stopped under, or one made while it is stopped, keeps nothing for a later start.
+    if (this.ctx !== null && stops === this.stops) this.keep(key, document);
     return { document, copyGone: offset > 0 };
   }
 
@@ -446,6 +448,7 @@ export class FetchModule implements Module {
         : ' It sent, between the tags:';
       const sent = shown === null ? " Its error page couldn't be converted."
         : excerpt ? `${opening}\n\n<document-${code}>\n${excerpt}\n</document-${code}>`
+        : got.cut ? ' What it sent begins blank, and goes on past the bytes this tool reads.'
         : ' It sent nothing else.';
       // Whole: the server was reached and its answer read, so this isn't led with "Nothing was fetched".
       throw new FetchRefusal(`${shownAddress(got.url)} answered HTTP ${got.status}, so there is no page to read.${sent}`, true);

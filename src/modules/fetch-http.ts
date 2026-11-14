@@ -70,9 +70,12 @@ EMBEDS_IPV4.addSubnet('::ffff:0:0:0', 96, 'ipv6');
 function embeddedIpv4(address: string): string {
   const dotted = address.match(/(\d+\.\d+\.\d+\.\d+)$/)?.[1];
   if (dotted !== undefined) return dotted;
-  const [head, tail] = address.split('::');
-  const last = tail === undefined ? head!.split(':') : tail === '' ? [] : tail.split(':');
-  const [high, low] = ['0', '0', ...last].slice(-2).map((group) => parseInt(group, 16)) as [number, number];
+  // All eight groups, the run that :: stands for written out, wherever it falls.
+  const [head, tail] = address.split('::') as [string, string | undefined];
+  const before = head === '' ? [] : head.split(':');
+  const after = tail === undefined || tail === '' ? [] : tail.split(':');
+  const groups = tail === undefined ? before : [...before, ...Array<string>(8 - before.length - after.length).fill('0'), ...after];
+  const [high, low] = groups.slice(-2).map((group) => parseInt(group, 16)) as [number, number];
   return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
 }
 
@@ -191,7 +194,7 @@ function checkTarget(url: URL, allowed: (address: string) => boolean): void {
   // has already normalized the other ways to write one (2130706433, 0x7f.1).
   const literal = url.hostname.replace(/^\[|\]$/g, '');
   if (isIP(literal) !== 0 && !allowed(literal)) {
-    throw new FetchRefusal(`${url.hostname} is a private or local address. ${PRIVATE_REMEDY}`);
+    throw new FetchRefusal(`${url.hostname} is a private or local address, or one this host carries itself. ${PRIVATE_REMEDY}`);
   }
 }
 
@@ -215,7 +218,7 @@ export function guardedLookup(allowed: (address: string) => boolean, resolve: Re
       const refused = addresses.find((entry) => !allowed(entry.address));
       if (refused) {
         // Not naming the address, or this would map out internal names for whoever asks.
-        const blocked = new Error(`${hostname} resolves to a private or local address. ${PRIVATE_REMEDY}`) as NodeJS.ErrnoException;
+        const blocked = new Error(`${hostname} resolves to a private or local address, or one this host carries itself. ${PRIVATE_REMEDY}`) as NodeJS.ErrnoException;
         blocked.code = PRIVATE_ADDRESS;
         callback(blocked, '', 0);
         return;
@@ -270,7 +273,8 @@ function requestOnce(url: URL, options: HttpGetOptions, allowed: (address: strin
     request.on('error', (error: NodeJS.ErrnoException) => {
       finish(() => reject(error.code === PRIVATE_ADDRESS
         ? new FetchRefusal(error.message)
-        : new FetchRefusal(`the request failed: ${error.message}`)));
+        // The runtime's words, on one line and cut: a certificate's names, which its server chose, can be among them.
+        : new FetchRefusal(`the request failed: ${shownAddress(error.message)}`)));
     });
 
     request.on('response', (response) => {
@@ -318,7 +322,7 @@ function requestOnce(url: URL, options: HttpGetOptions, allowed: (address: strin
         finish(() => resolve({ ...answer, body: Buffer.concat(chunks), cut: false, binary: false }));
       });
       response.on('error', (error) => {
-        finish(() => reject(new FetchRefusal(`the connection failed partway through: ${error.message}`)));
+        finish(() => reject(new FetchRefusal(`the connection failed partway through: ${shownAddress(error.message)}`)));
       });
       response.on('close', () => {
         // Closed without its end, as a server that drops the connection does.

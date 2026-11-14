@@ -81,6 +81,14 @@ describe('htmlToMarkdown', () => {
     expect(markdown).toContain('KEPT_TEXT');
   });
 
+  test('hidden text inside a code block is dropped, and the block keeps its language and the rest', async () => {
+    expect(await htmlToMarkdown(page('<p>shown</p><pre><code hidden>HIDDEN_TEXT</code></pre>'), undefined)).not.toContain('HIDDEN');
+    const markdown = await htmlToMarkdown(page('<pre><code class="language-js">let a = 1;\n<span hidden>HIDDEN_TEXT</span><span style="display:none">ALSO_HIDDEN</span>let b = 2;\n</code></pre>'), undefined);
+    expect(markdown).toBe('```js\nlet a = 1;\nlet b = 2;\n```');
+    // A line of backticks in the code gets a longer fence, as before.
+    expect(await htmlToMarkdown(page('<pre><code>```\nfenced\n```</code></pre>'), undefined)).toBe('````\n```\nfenced\n```\n````');
+  });
+
   test('an element that only mentions display:none in a value is kept', async () => {
     const markdown = await htmlToMarkdown(page('<div style="background:url(display:none.png)">SHOWN</div>'), undefined);
     expect(markdown).toContain('SHOWN');

@@ -98,6 +98,7 @@ describe('isPublicAddress', () => {
     ['64:ff9b::7f00:1'], ['64:ff9b:1::1'], ['2002:7f00:1::'], ['2001:db8::1'], ['::ffff:0:0'],
     // NAT64 addresses whose IPv4 address is private: 10.0.0.1, 127.0.0.1, the metadata service, 0.0.0.0
     ['64:ff9b::a00:1'], ['64:ff9b::127.0.0.1'], ['64:ff9b::a9fe:a9fe'], ['64:ff9b::'], ['64:ff9b::1'], ['64:ff9b:0:0:0:0:c0a8:101'],
+    ['64:ff9b:0:0:0:0:a00::'], ['64:ff9b:0:0:0:0:7f00::'], // 10.0.0.0 and 127.0.0.0, likewise
     // IPv4-translated addresses, likewise
     ['::ffff:0:10.0.0.1'], ['::ffff:0:7f00:1'], ['::ffff:0:a9fe:a9fe'],
     ['not an address'], [''],
@@ -110,6 +111,7 @@ describe('isPublicAddress', () => {
     ['2606:4700:4700::1111'], ['2a00:1450:4001::1'], ['::ffff:8.8.8.8'],
     // NAT64 addresses of public sites, as a DNS64 network gives for an IPv4-only one
     ['64:ff9b::808:808'], ['64:ff9b::8.8.8.8'], ['64:ff9b:0:0:0:0:101:101'], ['::ffff:0:8.8.8.8'],
+    ['64:ff9b:0:0:0:0:808::'], // 8.8.0.0, with the run of zeros at the end
   ])('%s is public', (address) => {
     expect(isPublicAddress(address)).toBe(true);
   });
@@ -172,7 +174,7 @@ describe('the host\'s own addresses', () => {
 });
 
 describe('the guard reaches nothing private, and never connects trying', () => {
-  // Every way to write loopback, with the default guard: the test's server is
+  // Many ways to write loopback, with the default guard: the test's server is
   // listening at each one that can reach it, so a connection would be a hit.
   test.each([
     ['an IPv4 literal', () => `http://127.0.0.1:${port}/guarded`],

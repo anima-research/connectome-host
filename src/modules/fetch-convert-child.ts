@@ -56,6 +56,8 @@ const LONGEST_ADDRESS = 2_000;
 /** What this file reads of the DOM nodes Turndown hands it. */
 interface DomNode {
   nodeName: string;
+  nodeType?: number;
+  nodeValue?: string | null;
   parentNode: DomNode | null;
   childNodes: ArrayLike<DomNode>;
   querySelector?(selector: string): DomNode | null;
@@ -252,6 +254,30 @@ service.addRule('table', {
 // heading would match the rule for its kind and be kept. An SVG element's
 // nodeName keeps its lower case, so names compare in lower case.
 const NOT_TEXT = new Set(['script', 'style', 'template', 'iframe', 'object', 'embed', 'svg', 'canvas', 'math', 'link', 'meta']);
+
+/** An element's text as its text nodes hold it, without what a hidden element inside it holds. */
+function shownText(node: DomNode): string {
+  if (node.nodeType === 3) return node.nodeValue ?? '';
+  if (isHidden(node) || NOT_TEXT.has(node.nodeName.toLowerCase())) return '';
+  return Array.from(node.childNodes, shownText).join('');
+}
+
+// Turndown's rule for a fenced block takes the code element's whole text
+// without visiting what's inside it, hidden elements and all, so this one
+// stands in for it, the same but for the text it takes.
+service.addRule('fenced-code-shown', {
+  filter: (node) => node.nodeName === 'PRE' && asDom(node).childNodes[0]?.nodeName === 'CODE',
+  replacement: (_content, node) => {
+    const code = asDom(node).childNodes[0]!;
+    const language = (code.getAttribute?.('class') ?? '').match(/language-(\S+)/)?.[1] ?? '';
+    const text = shownText(code).replace(/\n$/, '');
+    // A fence longer than any run of backticks that starts a line of the code.
+    const longest = Math.max(2, ...Array.from(text.matchAll(/^`{3,}/gm), (run) => run[0].length));
+    const fence = '`'.repeat(longest + 1);
+    return `\n\n${fence}${language}\n${text}\n${fence}\n\n`;
+  },
+});
+
 service.addRule('not-for-a-reader', {
   filter: (node) => NOT_TEXT.has(node.nodeName.toLowerCase()) || isHidden(asDom(node)),
   replacement: () => '',

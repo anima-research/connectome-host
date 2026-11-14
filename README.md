@@ -788,8 +788,9 @@ a workspace path too:
 
 Without a `prompt` the tool returns the text itself, 20,000 characters at a
 time, or fewer where the agent's inline result limit
-(`toolResultInlineMaxChars`) is lower, so the result fits it and the note that
-says how to read on arrives with the text. With one, a separate small model reads up to 100,000 characters
+(`toolResultInlineMaxChars`) is lower: the part is shortened, down to one
+character, so that the result fits and the note that says how to read on
+arrives with the text. With one, a separate small model reads up to 100,000 characters
 and answers, so a long document stays out of the agent's context. Every result
 says which part was read and gives the `offset` to read on from.
 
@@ -825,11 +826,12 @@ a page wrote can't pass for one of the tool's own lines.
 
 A first read
 is always fresh. Only reads with an `offset` use a copy of the page, kept for
-the agent that fetched it for up to 15 minutes, so the parts of one reading fit
-together; where no copy is
+the agent that fetched it for up to 15 minutes, so the parts read from one copy
+fit together; where no copy is
 kept any more, the part comes from a fresh fetch and its result says the parts
-may not line up. The tool reads text only, and reports a binary document's type
-instead.
+may not line up. A workspace file is read as the workspace has it on each
+call, with no copy kept. The tool reads text only, and reports a binary
+document's type instead.
 
 Text an element marks as not shown is left out of the markdown: the `hidden`
 attribute, `aria-hidden="true"`, and a `style` attribute's `display: none` or
