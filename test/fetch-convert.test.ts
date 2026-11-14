@@ -190,6 +190,8 @@ describe('htmlToMarkdown', () => {
   test('a <base> inside a comment is not the page\'s base', async () => {
     const html = page('<!-- <base href="https://wrong.example/"> --><base href="https://right.example/"><a href="x.html">link</a>');
     expect(await htmlToMarkdown(html, 'https://page.example/')).toBe('[link](https://right.example/x.html)');
+    // A comment that never closes holds everything after it, a base among it.
+    expect(await htmlToMarkdown(`<a href="x.html">link</a><!-- <base href="https://wrong.example/">`, 'https://page.example/')).toBe('[link](https://page.example/x.html)');
   });
 
   test('a first row hidden by its thead writes nothing, and the header line follows the first row shown', async () => {
@@ -449,6 +451,8 @@ describe('telling what a document is', () => {
     expect(decodeText(html('<meta charset="windows-1251">'), 'text/html; charset=latin1', true)).not.toContain('Привет');
     // Nor does a tag inside a comment, or an attribute whose name merely ends in charset.
     expect(decodeText(html('<!-- <meta charset="windows-1251"> -->'), undefined, true)).not.toContain('Привет');
+    expect(decodeText(html('<!-- never closed <meta charset="windows-1251">'), undefined, true)).not.toContain('Привет');
+    expect(decodeText(html('<!-- a --><meta charset="windows-1251"><!-- b -->'), undefined, true)).toContain('Привет');
     expect(decodeText(html('<meta data-charset="windows-1251">'), undefined, true)).not.toContain('Привет');
     // A charset= inside another tag's content declares nothing.
     expect(decodeText(html('<meta name="description" content="charset=windows-1251">'), undefined, true)).not.toContain('Привет');

@@ -37,7 +37,10 @@ const { html, baseUrl: documentUrl } = JSON.parse(await new Response(Bun.stdin.s
 
 /** What relative addresses resolve against: the document's `<base href>` where it has one, as in a browser, and otherwise its own address. */
 const baseUrl = ((): string | undefined => {
-  const href = html.slice(0, 65_536).replace(/<!--[\s\S]*?-->/g, '').match(/<base\b[^>]*?\bhref\s*=\s*["']?([^"'\s>]+)/i)?.[1];
+  // The first <base> that isn't inside a comment: a comment is matched whole, to its end or the text's, and passed over.
+  const tags = html.slice(0, 65_536).matchAll(/<!--[\s\S]*?(?:-->|$)|<base\b[^>]*>/gi);
+  const tag = Array.from(tags, (found) => found[0]).find((found) => !found.startsWith('<!--'));
+  const href = tag?.match(/\bhref\s*=\s*["']?([^"'\s>]+)/i)?.[1];
   if (href === undefined) return documentUrl;
   try {
     const base = documentUrl === undefined ? new URL(href) : new URL(href, documentUrl);

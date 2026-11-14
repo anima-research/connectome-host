@@ -175,7 +175,9 @@ export function looksBinary(bytes: Buffer, contentType?: string): boolean {
  * a comment.
  */
 function metaCharset(head: string): string | undefined {
-  for (const [tag] of head.replace(/<!--[\s\S]*?-->/g, '').matchAll(/<meta\b[^>]*>/gi)) {
+  // A comment is matched whole, to its end or the text's, and passed over, so a tag inside one isn't read.
+  for (const [tag] of head.matchAll(/<!--[\s\S]*?(?:-->|$)|<meta\b[^>]*>/gi)) {
+    if (tag.startsWith('<!--')) continue;
     const beside = tag.replace(/\bcontent\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/i, '');
     const named = beside.match(/(?<![\w-])charset\s*=\s*["']?\s*([\w.:-]+)/i)?.[1];
     if (named !== undefined) return named;
