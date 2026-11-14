@@ -57,6 +57,8 @@ export const ENTRY_POINT = 'start.js';
  *  show do (systemd's Restart=on-failure, launchd's KeepAlive). */
 export const RESTART_EXIT_CODE = 75;
 
+export const SUPERVISED_ENV = 'CONNECTOME_SUPERVISED';
+
 /** The install's root, or null when the host wasn't started through the
  *  entry point, in which case it writes none of this contract's files. */
 export function installRootFromEnv(env: Record<string, string | undefined> = process.env): string | null {

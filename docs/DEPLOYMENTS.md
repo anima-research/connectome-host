@@ -88,7 +88,19 @@ module. Keep it on **loopback** and reach it via SSH tunnel. See
 
 Labels/units follow `cc.<agent>.agent` (launchd) / `<agent>-agent.service`
 (systemd). (launchd: a plain `kill`/`stop` respawns via KeepAlive — use `bootout`
-to stop, `kickstart -k` to restart.)
+to stop, `kickstart -k` to restart.) A service `connectome service install`
+writes is named after the install's working directory instead:
+`com.animalabs.connectome.<name>` / `connectome-<name>.service`, and for its
+shell daemon `com.animalabs.connectome.<name>.shell` /
+`connectome-<name>.shell.service`, with `<name>` the directory's name in lower
+case, each run of characters other than `a` to `z` and `0` to `9` made one `-` and
+none at either end. `connectome` alone shows its own stop and
+start commands, and how to follow its log. A stop that runs past the
+platform's timeout is ended by SIGKILL, and what was still in flight is cut
+off: on macOS that timeout is the exit timeout `launchctl print
+gui/$(id -u)/<label>` shows, 5 s for these agents on macOS 26, and under
+systemd it's the unit's `TimeoutStopSec`, 90 s by default. The host's own stop
+has no time limit.
 
 A restart can make auxiliary model calls before any user message: agent-framework
 immediately drains restored Context Manager compression/merge debt. This happens only

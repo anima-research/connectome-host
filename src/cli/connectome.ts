@@ -1,14 +1,18 @@
 #!/usr/bin/env bun
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { ENTRY_POINT, readCurrent } from '../update/contract.js';
 import { EXACT_VERSION } from '../update/install.js';
 import { KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRecord, shellWord } from '../update/launcher.js';
+import { serviceBun } from '../update/service-bun.js';
 import { CLI_WAYS, COMMAND_WAYS, statusLines, type UpdateStatus } from '../web/update-text.js';
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import { serviceCommand, serviceCommands, serviceLines, unitElsewhere } from './service.js';
+import { serviceUnits } from './service-unit.js';
 import { ROOT_IN_WORKDIR, SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, packageCommand, setup, setupDirectory } from './setup.js';
 import { shellCommand } from './shell.js';
 import { shownToPerson } from './shown.js';
@@ -77,6 +81,7 @@ export const COMMANDS: CliCommand[] = [
     ],
     run: update,
   },
+  serviceCommand,
 ];
 
 const io = {
@@ -180,16 +185,21 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
     release = readCurrent(root);
   } catch (error) {
     ctx.err(`connectome: ${root}'s current release can't be read: ${errorText(error)}`);
+    service(ctx);
     return 1;
   }
   ctx.out(`Release: ${release ?? `none is current: run setup again in ${dirname(root)}, which says how to put it right`}`);
   const status = release === null ? 1 : 0;
   const host = await reach(ctx);
-  if (host === null) return 1;
+  if (host === null) {
+    service(ctx);
+    return 1;
+  }
   if ('reason' in host) {
     ctx.out(`Its host doesn't answer: ${host.reason}.`);
     if (host.down) ctx.out(startHost(root, 'ask again'));
     ctx.out('Its update state isn\'t known while no host answers.');
+    service(ctx);
     return status;
   }
   ctx.out(`Its host is running: pid ${host.ready.pid}, recipe ${host.ready.recipe}.`);
@@ -212,7 +222,25 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
     const ways = host.ready.turnWork === undefined ? COMMAND_WAYS : CLI_WAYS;
     for (const line of statusLines(update, ways)) ctx.out(`  ${line}`);
   }
+  service(ctx);
   return status;
+}
+
+function service(ctx: CliContext): void {
+  const lines = serviceLines(ctx.root!);
+  if (lines === null) ctx.out(noService(ctx.root!));
+  for (const line of lines ?? []) ctx.out(line);
+}
+
+function noService(root: string): string {
+  if (serviceUnits(root, process.platform, homedir()) === null) return '`service install` hasn\'t set up a service for it here.';
+  const taken = unitElsewhere(root);
+  if (taken !== null) {
+    return '`service install` hasn\'t set up a service for it here, and a name it would give one is taken: ' +
+      `${taken.unit.file}, the file of ${taken.unit.name}, names ` +
+      `${taken.runsIn === null ? 'no working directory' : `${taken.runsIn} as its working directory`}.`;
+  }
+  return `\`service install\` hasn't set up a service for it here: \`${typedCommand(root)} service install <recipe>\` sets one up.`;
 }
 
 export const SEND_QUIET_LIMIT_MS = 15 * 60_000;
@@ -420,12 +448,15 @@ function noHost(ctx: CliContext, host: NoHost): number {
 }
 
 function startHost(root: string, then: string): string {
-  return `If no host is running, have its service start it with \`${startCommand(root)}\`, ` +
-    `followed by the arguments it gives the host now, then ${then}.`;
+  const start = serviceCommands(root)?.start;
+  return start !== undefined
+    ? `If no host is running, start its service with \`${start}\`, then ${then}.`
+    : `If no host is running, have its service start it with \`${startCommand(root)}\`, followed by the arguments it ` +
+      `gives the host now, then ${then}.`;
 }
 
 function startCommand(root: string): string {
-  return `${shellWord(process.execPath)} ${shellWord(join(root, ENTRY_POINT))}`;
+  return `${shellWord(serviceBun(process.execPath, process.env.PATH ?? ''))} ${shellWord(join(root, ENTRY_POINT))}`;
 }
 
 function thisRelease(root: string): string {
