@@ -109,7 +109,8 @@ Both routes require password-derived operator authentication, including on a
 loopback bind. Web UI Basic Auth must be configured; the routes accept either
 direct valid Basic Auth or a full session created by password sign-in. A
 loopback-only Web UI without configured credentials returns `401` for these two
-routes, while other Web UI routes retain their historical loopback behavior.
+routes under a loopback name, while other Web UI routes retain their historical
+loopback behavior; under any other name, every route answers `403`.
 Read-only observer cookies are rejected even when they carry the `debug` scope.
 
 Exact recent conversation and stage inputs are omitted by default because they

@@ -18,7 +18,7 @@ export async function startFramework(
         await auditBeforeCommit(trial.dataDir, trial.activeStore, current, trial.places, framework.notifyOps.bind(framework), trial.extensions);
       }
       moved = commitRelease(here, {
-        unconnectedServers: () => framework.listMcplServers().filter((server) => !server.connected).map((server) => server.id),
+        unconnectedServers: () => framework.listMcplServers().filter((server) => !server.connected && !server.closedTab).map((server) => server.id),
       });
     } catch (error) {
       await framework.stop().catch((stopping: unknown) => {

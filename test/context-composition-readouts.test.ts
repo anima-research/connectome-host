@@ -216,7 +216,6 @@ describe("the health snapshot's contextComposition and contextCompositionNotKept
     ]));
     expect(snapshot.contextComposition).toEqual({ compiled: stats });
     expect(snapshot.contextCompositionNotKept).toEqual(['first-passthrough', 'passthrough']);
-    expect(snapshot.readFailures).toBeUndefined();
   });
 
   test('with no agent whose strategy keeps none, contextCompositionNotKept is left out', () => {

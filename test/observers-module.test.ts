@@ -533,10 +533,13 @@ describe('what grant and revoke say', () => {
     expect(readFileSync(path, 'utf-8')).toBe(GOOD);
   });
 
-  test('a call naming a tool the module doesn\'t have lists the ones it has, on either surface', async () => {
-    const asTools = await new ObserversModule({ path }).handleToolCall(call('kill', {}));
-    expect(asTools.error).toBe('There\'s no tool "observers--kill", so nothing ran. The observers tools are observers--get, observers--grant and observers--revoke.');
-    const asUtils = await new ObserversModule({ path, surface: 'utilities' }).handleToolCall(call('kill', {}));
-    expect(asUtils.error).toStartWith('There\'s no tool "observers--kill", so nothing ran. The observers utilities are observers--get, observers--grant and observers--revoke,');
+  test('a call naming a tool the module doesn\'t have lists the ones it has, in the built-in settings toolset', async () => {
+    const r = await new ObserversModule({ path }).handleToolCall(call('kill', {}));
+    expect(r.error).toBe(
+      'There\'s no tool "observers--kill", so nothing ran. The observers tools placed in the built-in "settings" toolset are ' +
+      'observers--get, observers--grant and observers--revoke: reach one with toolsets--open {"toolset": "settings"}, ' +
+      'then toolsets--act {"tool": "observers--get", "args": {...}}; if your tool list lacks toolsets--open or toolsets--act, ' +
+      'call it by its name instead.',
+    );
   });
 });

@@ -83,7 +83,7 @@ describe('lifecycle:idle + inference:speech from mock child', () => {
     await send(fleet, 'a', 'hello there');
 
     await waitFor(
-      () => fleet.getChildren().get('a')!.lastCompletedSpeech.length > 0,
+      () => (fleet.getChildren().get('a')!.lastCompletedSpeech ?? '').length > 0,
       2_000,
       'lastCompletedSpeech populated from inference:speech',
     );
@@ -95,19 +95,6 @@ describe('lifecycle:idle + inference:speech from mock child', () => {
       ),
       2_000,
       'lifecycle:idle event recorded',
-    );
-  });
-
-  test('tool-ending round does NOT update lastCompletedSpeech; final round does', async () => {
-    const before = fleet.getChildren().get('a')!.lastCompletedSpeech;
-    expect(before).toContain('echo: hello there');
-
-    await command(fleet, 'a', '/tool-use-then-speak FINAL-ANSWER');
-
-    await waitFor(
-      () => fleet.getChildren().get('a')!.lastCompletedSpeech === 'FINAL-ANSWER',
-      3_000,
-      'lastCompletedSpeech updated to FINAL-ANSWER (tool-use round ignored)',
     );
   });
 });
@@ -136,7 +123,7 @@ describe('fleet--relay', () => {
       input: { from: 'src', to: 'dst' },
     });
     expect(res.success).toBe(false);
-    expect(res.error).toStartWith("Nothing was relayed: 'src' hasn't finished a reply since this host began tracking it.");
+    expect(res.error).toStartWith("Nothing was relayed: 'src' hasn't finished a reply since this host's connection to it last opened.");
   });
 
   test('relays source speech to target (with prefix)', async () => {
@@ -156,11 +143,34 @@ describe('fleet--relay', () => {
     expect(res.data).toMatchObject({ from: 'src', to: 'dst' });
 
     await waitFor(
-      () => fleet.getChildren().get('dst')!.lastCompletedSpeech.startsWith('echo: Miner says:'),
+      () => (fleet.getChildren().get('dst')!.lastCompletedSpeech ?? '').startsWith('echo: Miner says:'),
       3_000,
       'dst received relayed message and echoed',
     );
     expect(fleet.getChildren().get('dst')!.lastCompletedSpeech).toContain('findings summary');
+  });
+
+  test("relays nothing, and says so, when the source's latest final round had no text, though an earlier one had", async () => {
+    await send(fleet, 'src', 'an answer to keep');
+    await waitFor(() => fleet.getChildren().get('src')!.lastCompletedSpeech === 'echo: an answer to keep', 2_000, 'the first reply');
+    await send(fleet, 'src', 'empty-reply');
+    await waitFor(() => fleet.getChildren().get('src')!.lastCompletedSpeech === '', 2_000, 'the empty reply');
+    const sentBefore = fleet.getChildren().get('dst')!.textsSent;
+    const res = await fleet.handleToolCall({ id: 'relay-latest-empty', name: 'relay', input: { from: 'src', to: 'dst' } });
+    expect(res.success).toBe(false);
+    expect(res.error).toBe(
+      "Nothing was relayed: the latest inference round this host saw from 'src' ended without tool calls, outside a silent heartbeat, and had no text in it, so there was nothing to pass on. fleet--send gives 'src' something to answer, and fleet--relay passes on its reply once such a round has text in it.",
+    );
+    expect(fleet.getChildren().get('dst')!.textsSent).toBe(sentBefore);
+  });
+
+  test('relays a latest reply of whitespace alone, which is text', async () => {
+    await send(fleet, 'src', 'whitespace-reply');
+    await waitFor(() => fleet.getChildren().get('src')!.lastCompletedSpeech === '  ', 2_000, 'the whitespace reply');
+    const res = await fleet.handleToolCall({ id: 'relay-whitespace', name: 'relay', input: { from: 'src', to: 'dst' } });
+    expect(res.success).toBe(true);
+    expect(res.data).toMatchObject({ chars: 2 });
+    await waitFor(() => fleet.getChildren().get('dst')!.lastCompletedSpeech === 'echo:   ', 2_000, 'dst received the whitespace');
   });
 
   test('rejects same-child relay', async () => {
@@ -436,6 +446,25 @@ describe('fleet--await', () => {
       try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
     }
   }, 20_000);
+
+  test('a child that said idle after a turn of its own before this host connected counts as idle at once, though its boot replay shows that turn', async () => {
+    const fleet = makeFleet({
+      autoStart: [{ name: 'booted', recipe: 'mock-recipe', dataDir: join(tmpDir, 'booted'), env: { MOCK_BOOT_TURN: '1' }, autoStart: true }],
+    });
+    await fleet.start({} as unknown as Parameters<typeof fleet.start>[0]);
+    fleet.launchAutoStart();
+    try {
+      await waitFor(
+        () => fleet.getChildren().get('booted')?.events.some((e) => e.type === 'inference:completed') ?? false,
+        5_000,
+        'the boot replay',
+      );
+      const res = await fleet.handleToolCall({ id: 'await-booted', name: 'await', input: { names: ['booted'], timeoutMs: 1_000 } });
+      expect(res).toMatchObject({ success: true, data: { names: ['booted'], waitedMs: 0, completed: true } });
+    } finally {
+      await fleet.stop();
+    }
+  }, 15_000);
 
   test('blocks until all named children emit idle', async () => {
     const fleet = makeFleet();

@@ -512,14 +512,18 @@ describe('the mode', () => {
     expect(runtimeMode(['bun', 'src/index.ts'], true)).toBe('tui');
   });
 
-  test('headless reads headless.log; readline and batch have no error log', () => {
+  test('headless reads headless.log and readline readline-error.log; batch has no error log', () => {
     const dir = canaryDataDir();
     try {
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'headless.log'), '\n--- session 2026-10-11T23:30:00.000Z ---\n[mcpl] x\n');
+      writeFileSync(join(dir, 'readline-error.log'), '[mcpl] earlier\n\n--- session 2026-10-11T23:30:00.000Z ---\n[mcpl] y\n[mcpl] z\n');
       const headless = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
       expect(headless.hostErrors?.log).toBe('headless.log');
       expect(headless.hostErrors?.tags).toEqual([['mcpl', 1]]);
+      const readline = gatherBugReportFacts({ now: NOW, mode: 'readline', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
+      expect(readline.hostErrors?.log).toBe('readline-error.log');
+      expect(readline.hostErrors?.tags).toEqual([['mcpl', 2]]);
       const batch = gatherBugReportFacts({ now: NOW, mode: 'batch', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
       expect(batch.hostErrors).toBe(null);
     } finally {
@@ -636,7 +640,7 @@ describe('what the report says about itself', () => {
     }
   });
 
-  test("a servers file or overlay that couldn't be read is named, without its path", () => {
+  test("a note that the servers file or overlay couldn't be read is printed in the report", () => {
     const facts = { ...canaryFactsless(), configNotes: ["the servers file couldn't be read"] };
     expect(formatBugReport('x', facts).report).toContain("(the servers file couldn't be read)");
   });
@@ -800,6 +804,12 @@ describe('the running setup and the saved file', () => {
     expect(facts).toMatchObject({ model: 'claude-sonnet-4-5', maxTokens: 2000, thinking: false, modules: ['wake', 'lessons', 'subscription-gc', 'workspace'], customModules: 1 });
     expectNoCanary(JSON.stringify(facts), 'the setup');
     expect(setupFacts(recipe)).toMatchObject({ model: 'claude-opus-4-6', maxTokens: 1000, thinking: true, modules: ['lessons'] });
+  });
+
+  test('the fetch module is named as one of the host\'s own, from the recipe and from the running setup', () => {
+    const recipe = { agent: { provider: 'anthropic', model: 'claude-opus-4-6' }, modules: { fetch: { local: true } } };
+    expect(setupFacts(recipe)).toMatchObject({ modules: ['fetch'], customModules: 0 });
+    expect(setupFacts(recipe, { agent: {}, modules: ['fetch', 'workspace'], wake: false })).toMatchObject({ modules: ['fetch', 'workspace'], customModules: 0 });
   });
 
   test("when the file can't be saved, the output says so and promises nothing of it", () => {

@@ -7,11 +7,15 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
-  ContractError, appendJournal, installPaths, moveCurrent, readCurrent, readRecord, releaseDir, writeJsonAtomic,
+  ContractError, appendJournal, installPaths, keptOutsideLines, moveCurrent, readCurrent, readRecord, releaseDir,
+  writeJsonAtomic,
   type InstallRecord,
 } from '../src/update/contract.js';
-import { HOST_ENTRY, LAUNCHER } from '../src/update/launcher.js';
-import { ENTRY_POINT, parseArgs, passwdHome, setup, systemdUnits, type ServiceUnits, type SetupOptions } from '../src/update/setup.js';
+import { HOST_ENTRY, LAUNCHER, readInstall, type LauncherOps } from '../src/update/launcher.js';
+import {
+  ENTRY_POINT, entryPointText, parseArgs, passwdHome, setup, systemdUnits, type ServiceUnits, type SetupOptions,
+} from '../src/update/setup.js';
+import { INSTALL_COMMAND } from '../src/cli/install-command.js';
 
 let dir: string;
 let install: string;
@@ -32,6 +36,35 @@ const options = (over: Partial<SetupOptions> = {}): SetupOptions => ({
 });
 
 const record = () => readRecord<InstallRecord>(installPaths(root).install, 'install record');
+/** The whole message of the refusal `run` throws. */
+const refusal = (run: () => void): string => {
+  try {
+    run();
+  } catch (error) {
+    return (error as Error).message;
+  }
+  throw new Error('no refusal');
+};
+/** Everything under `at`: each file's bytes, each link's target, each directory as such. */
+const tree = (at: string): Record<string, string> => {
+  const out: Record<string, string> = {};
+  const walk = (path: string, rel: string): void => {
+    for (const name of fs.readdirSync(path).sort()) {
+      const here = join(path, name);
+      const key = rel === '' ? name : `${rel}/${name}`;
+      const stat = fs.lstatSync(here);
+      if (stat.isSymbolicLink()) out[key] = `-> ${fs.readlinkSync(here)}`;
+      else if (stat.isDirectory()) {
+        out[key] = 'directory';
+        walk(here, key);
+      } else out[key] = readFileSync(here, 'base64');
+    }
+  };
+  walk(at, '');
+  return out;
+};
+/** What a refusal must leave as it was: everything under the root and under the data directory. */
+const untouched = (): unknown => ({ root: tree(root), data: tree(data) });
 
 function laterRelease(version: string, out: string): void {
   const host = join(releaseDir(root, version), 'node_modules', '@animalabs', 'connectome-host');
@@ -61,6 +94,29 @@ beforeEach(() => {
 });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
+const RECORD_AGAIN = 'To put it right, write the record again as\n' +
+  '  {"v": 1, "dataDir": "<data directory>", "extraState": [<places>]}\n' +
+  'where <data directory> is the absolute path of the data directory its host was started with: the DATA_DIR its ' +
+  'service gives it, or else the one Bun reads from the .env files in the service\'s working directory, or else ' +
+  './data, resolved from that working directory. If it isn\'t the one its service starts the host with, the ' +
+  'host\'s next start through start.js refuses, naming both.\n' +
+  'And <places> are the places of state kept outside the data directory that each update copies, such as an MCPL ' +
+  'server\'s state, each a JSON string, or none. Only setup writes that list, and each setup run that finished ' +
+  'printed it, after "State kept outside the data directory". If the install has updated, copy/copy.json beside ' +
+  'the record shows under "items" and "absent" what the last update copied or found missing: the data directory, ' +
+  'its fleet children\'s data directories and the files every update copies (mcpl-servers.json and the agent ' +
+  'overlay, mcpl-servers.agent.json or the file MCPL_AGENT_OVERLAY_FILE names, each resolved from the service\'s ' +
+  'working directory), which stay out of the list, and among the rest, those places as that update found them: ' +
+  'each through any link to where it led, and one inside another shown only as the outer one. ' +
+  'An update copies only the places the ' +
+  'record lists, beside those, so a place that isn\'t one of them or inside one isn\'t in an update\'s copy, and a Go ' +
+  'back from that update doesn\'t put it back.\n' +
+  'Then run setup again as before, with no --extra-state, so it keeps the list as written, since a run given any ' +
+  'records only those: it writes the record, start.js and connectome again, or says what else stops it first, such ' +
+  'as a current that names no release. Its service can keep running ' +
+  'meanwhile, since a running host doesn\'t read the record, but don\'t restart or update it until setup has run ' +
+  'again: its next start runs start.js, whose launcher reads the record.';
+
 const NEEDED = "by Restart=always, by Restart=on-failure while it isn't in SuccessExitStatus=, or by RestartForceExitStatus=, and neither in RestartPreventExitStatus=";
 
 describe('setup', () => {
@@ -76,6 +132,42 @@ describe('setup', () => {
     expect(existsSync(join(root, ENTRY_POINT))).toBe(true);
     expect(said[0]).toBe(`Set up ${root} as the install of 0.10.2 that serves ${data}.`);
     expect(said.some((l) => l.includes('connectome.service restarts the host when it exits with 75 or 1 (Restart=on-failure)'))).toBe(true);
+  });
+
+  test("writes the install's own command beside the entry point, running current's CLI, and says it with how to put it on PATH; a later run writes it again where it's gone", () => {
+    const host = join(install, 'node_modules', '@animalabs', 'connectome-host');
+    mkdirSync(join(host, 'src', 'cli'), { recursive: true });
+    writeFileSync(join(host, 'src', 'cli', 'connectome.ts'),
+      'export async function main(root, argv) { console.log(JSON.stringify({ root, argv })); return 0; }\n');
+    const command = join(root, 'connectome');
+    const runs = () => {
+      const ran = Bun.spawnSync([command, 'send', 'hi'], {
+        cwd: install, env: { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ''}` },
+      });
+      expect(ran.exitCode).toBe(0);
+      expect(JSON.parse(ran.stdout.toString())).toEqual({ root, argv: ['send', 'hi'] });
+    };
+    setup(options());
+    runs();
+    expect(said).toContain(`This install's own command is ${command}.`);
+    expect(said).toContain('To type it as `connectome` from anywhere, put its directory on your PATH, and in ~/.bashrc ' +
+      '(or your shell\'s own file) to keep it there:');
+    expect(said).toContain(`  export PATH=${root}:"$PATH"`);
+    rmSync(command);
+    said = [];
+    setup(options());
+    runs();
+    expect(said).toContain(`This install's own command is ${command}.`);
+    const before = process.env.PATH;
+    process.env.PATH = `${root}:${before ?? ''}`;
+    try {
+      said = [];
+      setup(options());
+    } finally {
+      process.env.PATH = before;
+    }
+    expect(said).toContain(`This install's own command is ${command}.`);
+    expect(said.some((line) => line.includes('export PATH=') || line.includes('on your PATH'))).toBe(false);
   });
 
   test("says when the service wouldn't restart the host, and when it couldn't check", () => {
@@ -104,15 +196,55 @@ describe('setup', () => {
     const other = join(install, 'other-state.json');
     mkdirSync(state);
     writeFileSync(other, '{}');
-    setup(options({ extraState: [state] }));
-    expect(record()!.extraState).toEqual([state]);
+    const command = `cd ${install} && DATA_DIR=${data} bun --no-env-file ` +
+      `node_modules/@animalabs/connectome-host/src/update/setup.ts --root ${root}`;
+    const block = (places: string[]): string[] => [
+      `State kept outside the data directory: an update copies the data directory, ${data}, and outside it only the ` +
+        'places listed here, beside those it finds itself (mcpl-servers.json, the agent overlay and its fleet ' +
+        'children\'s data directories):',
+      ...(places.length > 0 ? places : ['none']).map((place) => `  ${place}`),
+      'To list another place, such as an MCPL server\'s state, run setup again with every place, the ones listed here ' +
+        `too: \`${command}${places.map((place) => ` --extra-state ${place}`).join('')} --extra-state <another place>\`, ` +
+        'one --extra-state for each. It can run while the service runs: it leaves the running host as it is, and the ' +
+        'next update copies the places it records.',
+    ];
     setup(options());
-    expect(record()!.extraState).toEqual([state]);
+    expect(record()!.extraState).toEqual([]);
+    expect(keptOutsideLines(said.join('\n'))).toEqual(block([]));
+    said = [];
+    setup(options({ extraState: [state, other] }));
+    expect(record()!.extraState).toEqual([state, other]);
+    expect(said.slice(1, 5)).toEqual(block([state, other]));
+    expect(keptOutsideLines(said.join('\n'))).toEqual(block([state, other]));
+    said = [];
+    setup(options());
+    expect(record()!.extraState).toEqual([state, other]);
+    expect(said.slice(1, 5)).toEqual(block([state, other]));
     said = [];
     setup(options({ extraState: [other] }));
     expect(record()!.extraState).toEqual([other]);
     expect(said[0]).toBe(`The install at ${root} serves ${data} and runs 0.10.2, as before.`);
-    expect(said[1]).toBe(`State kept outside the data directory, which each update copies with it: ${other}.`);
+    expect(said.slice(1, 4)).toEqual(block([other]));
+    expect(keptOutsideLines(said.join('\n'))).toEqual(block([other]));
+  });
+
+  test('the command that lists another place, run by a shell, calls bun in the install with DATA_DIR the data directory, ' +
+    '--no-env-file, setup\'s path, the root and each place as they are', () => {
+    const moved = join(dir, "the resident's service");
+    renameSync(install, moved);
+    install = moved;
+    data = join(install, "its 'data'");
+    renameSync(join(install, 'data'), data);
+    root = join(dir, "the host's root");
+    const state = join(install, "mcpl 'state'");
+    mkdirSync(state);
+    setup(options({ extraState: [state] }));
+    const line = keptOutsideLines(said.join('\n'))[2];
+    const command = line.slice(line.indexOf('`') + 1, line.lastIndexOf('`')).replace(' --extra-state <another place>', '');
+    const shell = Bun.spawnSync(['bash', '-c', `bun() { printf '%s\\0' "$PWD" "$DATA_DIR" "$@"; }; ${command}`]);
+    expect(shell.exitCode).toBe(0);
+    expect(shell.stdout.toString().split('\0').slice(0, -1)).toEqual([install, data, '--no-env-file',
+      'node_modules/@animalabs/connectome-host/src/update/setup.ts', '--root', root, '--extra-state', state]);
   });
 
   test('a later run leaves the release current names as it is, however the install has moved on', () => {
@@ -129,24 +261,31 @@ describe('setup', () => {
   test('a run cut off finishes on the next: after its release copy, after current, and after its record', () => {
     setup(options());
     const entry = join(root, ENTRY_POINT);
+    const command = join(root, INSTALL_COMMAND);
     rmSync(installPaths(root).install);
     unlinkSync(installPaths(root).current);
     rmSync(entry);
+    rmSync(command);
     setup(options());
     expect(readCurrent(root)).toBe('0.10.2');
     expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
     expect(existsSync(entry)).toBe(true);
+    expect(existsSync(command)).toBe(true);
     laterRelease('0.11.0', join(dir, 'ran'));
     moveCurrent(root, '0.11.0');
     rmSync(installPaths(root).install);
     rmSync(entry);
+    rmSync(command);
     setup(options());
     expect(readCurrent(root)).toBe('0.11.0');
     expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
     expect(existsSync(entry)).toBe(true);
+    expect(existsSync(command)).toBe(true);
     rmSync(entry);
+    rmSync(command);
     setup(options());
     expect(existsSync(entry)).toBe(true);
+    expect(existsSync(command)).toBe(true);
     expect(readCurrent(root)).toBe('0.11.0');
   });
 
@@ -173,6 +312,8 @@ describe('setup', () => {
     expect(() => setup(options())).toThrow(/install\.json\.tmp/);
     expect(readCurrent(root)).toBe('0.10.2');
     expect(record()).toBeNull();
+    expect(existsSync(join(root, ENTRY_POINT))).toBe(false);
+    expect(existsSync(join(root, INSTALL_COMMAND))).toBe(false);
     rmSync(join(root, 'install.json.tmp'), { recursive: true });
     setup(options());
     expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
@@ -183,6 +324,7 @@ describe('setup', () => {
     rmSync(installPaths(root).install);
     unlinkSync(installPaths(root).current);
     rmSync(join(root, ENTRY_POINT));
+    rmSync(join(root, INSTALL_COMMAND));
     const paths = new Map<number, string>();
     const synced: string[] = [];
     const realOpen = fs.openSync;
@@ -259,6 +401,7 @@ describe('setup', () => {
     setup(options());
     rmSync(installPaths(root).install);
     rmSync(join(root, ENTRY_POINT));
+    rmSync(join(root, INSTALL_COMMAND));
     const paths = new Map<number, string>();
     const events: string[] = [];
     const realOpen = fs.openSync;
@@ -345,7 +488,7 @@ describe('setup', () => {
     rmSync(installPaths(root).install);
     rmSync(join(root, ENTRY_POINT));
     writeFileSync(installPaths(root).journal, '');
-    expect(() => setup(options())).toThrow(/has a journal and no record at /);
+    expect(() => setup(options())).toThrow(/has journal\.jsonl, its update journal, and no record at /);
   });
 
   test("a record the system won't read is to be made readable, and one of another version is left to the release that reads it", () => {
@@ -369,7 +512,413 @@ describe('setup', () => {
   test("an entry point with no record, and no journal, is an install whose record is gone too", () => {
     setup(options());
     rmSync(installPaths(root).install);
-    expect(() => setup(options())).toThrow(/has its entry point and no record at .*, so its record is gone/);
+    expect(() => setup(options())).toThrow(/has start\.js, which setup writes only after the record, and no record at .*, so its record is gone/);
+  });
+
+  test('the remedy\'s rerun says it writes again or says what else stops it first, which a current whose release has lost its host does', () => {
+    setup(options());
+    rmSync(installPaths(root).install);
+    expect(refusal(() => setup(options()))).toContain('Then run setup again as before, with no --extra-state, so it ' +
+      'keeps the list as written, since a run given any records only those: it writes the record, start.js and ' +
+      'connectome again, or says what else stops it first, such as a current that names no release.');
+    writeFileSync(installPaths(root).install, JSON.stringify({ v: 1, dataDir: data, extraState: [] }));
+    rmSync(join(releaseDir(root, '0.10.2'), HOST_ENTRY));
+    expect(refusal(() => setup(options()))).toContain(`names 0.10.2, and there's no host at ` +
+      `${join(releaseDir(root, '0.10.2'), HOST_ENTRY)}, so the entry point would start nothing.`);
+  });
+
+  describe("a root with setup's later names but neither a record nor releases", () => {
+    const seen = (what = 'start.js, which setup writes only after the record,'): string => `${root} has ${what} but no record at ` +
+      `${installPaths(root).install} and no ${installPaths(root).releases}, so setup can't tell whether it made it, ` +
+      'and it can\'t put an install back in place without its releases. Setup has changed nothing, and the data ' +
+      `directory it was given, ${data}, is outside it.`;
+    const setupThere = (): string => `cd ${install} && DATA_DIR=${data} bun --no-env-file ` +
+      `node_modules/@animalabs/connectome-host/src/update/setup.ts --root ${root}`;
+    const wayOn = (): string => `stop its service, move ${root} aside, keeping it until the new install runs, and run ` +
+      `\`${setupThere()}\`, with DATA_DIR the data directory its host was started with if that isn't ${data}, and ` +
+      '--extra-state PATH added for each place of state kept outside the data directory that\'s there now: setup then ' +
+      'makes the install afresh there, serving that data directory, with no journal or copy, so with no Go back, and ' +
+      'starting the service again starts the new install, since its path is the same. Those places: a setup run that ' +
+      'finished printed them after "State kept outside the data directory", and the moved root\'s copy/copy.json, if it ' +
+      'has updated, shows under "items" and "absent" what the last ' +
+      'update copied or found missing: the data directory, its fleet children\'s data directories and the files every ' +
+      'update copies (mcpl-servers.json and the agent overlay, mcpl-servers.agent.json or the file ' +
+      'MCPL_AGENT_OVERLAY_FILE names, each resolved from the service\'s working directory), which aren\'t given, and ' +
+      'among the rest, those places as that update found them: each through any link to where it led, and one inside ' +
+      'another shown only as the outer one. If setup didn\'t make it, choose another --root.';
+    const unrecorded = (): string => 'It has no journal: an install has none until an update or a Go back is ' +
+      'first asked of it, and a journal can be lost with the record, so its absence doesn\'t show whether one ran on ' +
+      'that data. If one did, don\'t start any ' +
+      `release on that data, and don't move ${root} aside and run setup again, until you know that its current names ` +
+      'the release that last committed on it and that none stopped part-way. If setup made it, and none ran or you ' +
+      'know that';
+    const lost = (): string[] => {
+      setup(options());
+      rmSync(installPaths(root).install);
+      rmSync(installPaths(root).releases, { recursive: true });
+      return fs.readdirSync(root).sort();
+    };
+
+    test('whose current names the release setup installs is told how to start afresh', () => {
+      const before = lost();
+      const all = untouched();
+      expect(refusal(() => setup(options()))).toBe(`${seen()} ${unrecorded()}, its current names 0.10.2, the release ` +
+        `that last committed on its data and the one setup here installs: ${wayOn()}`);
+      expect(untouched()).toEqual(all);
+      writeFileSync(join(data, 'resident.txt'), 'kept');
+      renameSync(root, `${root}.old`);
+      setup(options());
+      expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
+      expect(readFileSync(join(data, 'resident.txt'), 'utf-8')).toBe('kept');
+      expect(fs.readdirSync(`${root}.old`).sort()).toEqual(before);
+      expect(readCurrent(root)).toBe('0.10.2');
+      expect(existsSync(installPaths(root).journal)).toBe(false);
+      expect(existsSync(installPaths(root).copy)).toBe(false);
+    });
+
+    test('whose current names the release its journal\'s last commit names is told how to start afresh', () => {
+      lost();
+      appendJournal(root, { v: 1, at: 'T1', step: 'commit', from: '0.9.0', to: '0.10.2', outcome: 'ok' });
+      const before = untouched();
+      expect(refusal(() => setup(options()))).toBe(`${seen('journal.jsonl, its update journal,')} If setup made it, ` +
+        `its current names 0.10.2, the release that last committed on its data and the one setup here installs: ${wayOn()}`);
+      expect(untouched()).toEqual(before);
+    });
+
+    test('run from a host outside a node_modules is told so, in main\'s words for such a host', () => {
+      lost();
+      const clone = join(dir, 'clone');
+      mkdirSync(join(clone, 'src'), { recursive: true });
+      writeFileSync(join(clone, 'package.json'), JSON.stringify({ version: '0.10.2' }));
+      const before = untouched();
+      expect(refusal(() => setup(options({ hostRoot: clone })))).toBe(`${seen()} This connectome-host (${clone}) isn't ` +
+        'installed in a node_modules. Setup makes an npm install update itself; a clone keeps the hand procedure in ' +
+        'docs/DEPLOYMENTS.md. If setup didn\'t make it, choose another --root.');
+      expect(untouched()).toEqual(before);
+    });
+
+    for (const other of ['9.9.9', '0.0.1']) {
+      test(`whose current names another release, ${other}, is told to install exactly that one first`, () => {
+        lost();
+        rmSync(installPaths(root).current);
+        symlinkSync(join('releases', other), installPaths(root).current);
+        const before = untouched();
+        expect(refusal(() => setup(options()))).toBe(`${seen()} ${unrecorded()}, its current names ${other}, the release ` +
+          `that last committed on its data, and setup here installs 0.10.2: install exactly ${other} in ${install} ` +
+          `first, with \`cd ${install} && npm install @animalabs/connectome-host@${other}\` or \`cd ${install} && bun ` +
+          `--no-env-file add @animalabs/connectome-host@${other}\`, ` +
+          `as docs/DEPLOYMENTS.md does, so that the setup below is ${other}'s own, since any other release would ` +
+          `start on that data with no copy of it behind; then ${wayOn()}`);
+        expect(untouched()).toEqual(before);
+      });
+    }
+
+    const holdStop = (): string => 'Until you know which release did, and that no update or Go back stopped ' +
+      `part-way on it, don't start any release on that data, and don't move ${root} aside and run setup again.`;
+    const hold = (ln: string, known = ''): string => `${holdStop()} If setup made it and you know${known}, ${ln} and ` +
+      'run setup again as before: it then says how to make the install afresh from exactly that release.';
+    const unknown = (ln: string): string => 'It has no current that names a release. Nothing setup can read names the ' +
+      `release its data last committed on. ${hold(ln, ' which')} If setup didn't make it, choose another --root.`;
+    const placeholder = (): string => `'releases/<that release>' ${installPaths(root).current}`;
+    const states: Array<[string, () => void, () => string]> = [
+      ['no current', () => {}, () => `point current at it with \`ln -s ${placeholder()}\``],
+      ['a current that links outside releases', () => symlinkSync(join('elsewhere', '1.0.0'), installPaths(root).current),
+        () => `point current at it with \`ln -sfn ${placeholder()}\``],
+      ['a current that isn\'t a link', () => writeFileSync(installPaths(root).current, 'releases/0.10.2'),
+        () => `move ${installPaths(root).current} aside, and point current at it with \`ln -s ${placeholder()}\``],
+    ];
+    for (const [what, make, ln] of states) {
+      test(`with ${what} and no journal is told nothing setup can read names the release, and not to start one`, () => {
+        lost();
+        rmSync(installPaths(root).current);
+        make();
+        const before = untouched();
+        expect(refusal(() => setup(options()))).toBe(`${seen()} ${unknown(ln())}`);
+        expect(untouched()).toEqual(before);
+      });
+    }
+
+    test('with no current and a journal that ends in an ok commit is told how to start afresh from the release it names', () => {
+      const before = lost();
+      rmSync(installPaths(root).current);
+      appendJournal(root, { v: 1, at: 'T1', step: 'commit', from: '0.9.0', to: '0.10.2', outcome: 'ok' });
+      const all = untouched();
+      expect(refusal(() => setup(options()))).toBe(`${seen('journal.jsonl, its update journal,')} It has no current ` +
+        'that names a release. If setup made it, its journal\'s last line, an ok commit, names 0.10.2, the release that ' +
+        `last committed on its data and the one setup here installs: ${wayOn()}`);
+      expect(untouched()).toEqual(all);
+      writeFileSync(join(data, 'resident.txt'), 'kept');
+      renameSync(root, `${root}.old`);
+      setup(options());
+      expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
+      expect(readFileSync(join(data, 'resident.txt'), 'utf-8')).toBe('kept');
+      expect(fs.readdirSync(`${root}.old`).sort())
+        .toEqual([...before.filter((name) => name !== 'current'), 'journal.jsonl'].sort());
+      expect(readCurrent(root)).toBe('0.10.2');
+      expect(existsSync(installPaths(root).journal)).toBe(false);
+      expect(existsSync(installPaths(root).copy)).toBe(false);
+    });
+
+    test('run from a host outside a node_modules with no current and a journal ending in an ok commit is told so, in main\'s words for such a host', () => {
+      lost();
+      rmSync(installPaths(root).current);
+      appendJournal(root, { v: 1, at: 'T1', step: 'commit', from: '0.9.0', to: '0.10.2', outcome: 'ok' });
+      const clone = join(dir, 'clone');
+      mkdirSync(join(clone, 'src'), { recursive: true });
+      writeFileSync(join(clone, 'package.json'), JSON.stringify({ version: '0.10.2' }));
+      const before = untouched();
+      expect(refusal(() => setup(options({ hostRoot: clone })))).toBe(`${seen('journal.jsonl, its update journal,')} This ` +
+        `connectome-host (${clone}) isn't installed in a node_modules. Setup makes an npm install update itself; a clone ` +
+        'keeps the hand procedure in docs/DEPLOYMENTS.md. If setup didn\'t make it, choose another --root.');
+      expect(untouched()).toEqual(before);
+    });
+
+    test('with no current and a journal whose ok commit names another release is told to install exactly that one first', () => {
+      lost();
+      rmSync(installPaths(root).current);
+      appendJournal(root, { v: 1, at: 'T1', step: 'commit', from: '0.10.2', to: '0.11.0', outcome: 'ok' });
+      const before = untouched();
+      expect(refusal(() => setup(options()))).toBe(`${seen('journal.jsonl, its update journal,')} It has no current ` +
+        'that names a release. If setup made it, its journal\'s last line, an ok commit, names 0.11.0, the release that ' +
+        `last committed on its data, and setup here installs 0.10.2: install exactly 0.11.0 in ${install} first, with ` +
+        `\`cd ${install} && npm install @animalabs/connectome-host@0.11.0\` or \`cd ${install} && bun --no-env-file add ` +
+        '@animalabs/connectome-host@0.11.0`, as docs/DEPLOYMENTS.md does, so that the setup below is 0.11.0\'s own, ' +
+        `since any other release would start on that data with no copy of it behind; then ${wayOn()}`);
+      expect(untouched()).toEqual(before);
+    });
+
+    const backUp = (): string => 'and a fresh install starts with no journal to finish one from. Don\'t start any ' +
+      `release on that data, and don't move ${root} aside and run setup again. If you have ` +
+      `${installPaths(root).releases} in a backup, put it back: setup then takes the root for an install whose record ` +
+      'is gone, and says how to write the record back.';
+    const notACommit = (line: string): string => `Its journal's last line, a ${line}, isn't an ok commit, so setup ` +
+      `can't tell from it whether an update or a Go back stopped part-way, ${backUp()}`;
+    const kept = (): void => {
+      setup(options());
+      rmSync(installPaths(root).install);
+      renameSync(installPaths(root).releases, join(dir, 'releases-kept'));
+    };
+    const putBack = (): void => {
+      renameSync(join(dir, 'releases-kept'), installPaths(root).releases);
+      expect(refusal(() => setup(options()))).toContain('has journal.jsonl, its update journal, and no record at ' +
+        `${installPaths(root).install}, so its record is gone.`);
+    };
+    for (const [what, line] of [
+      ['trial-start (ok)', { v: 1, at: 'T2', step: 'trial-start', from: '0.11.0', to: '0.12.0', outcome: 'ok', mark: 'm1' }],
+      ['go-back (ok)', { v: 1, at: 'T2', step: 'go-back', from: '0.11.0', to: '0.10.2', outcome: 'ok', mark: 'm2', keptData: true }],
+      ['fallback (ok)', { v: 1, at: 'T2', step: 'fallback', from: '0.12.0', to: '0.11.0', outcome: 'ok', mark: 'm1' }],
+      ['trial-start (refused)', { v: 1, at: 'T2', step: 'trial-start', from: '0.11.0', to: '0.10.2', outcome: 'refused', mark: 'm2' }],
+    ] as const) {
+      test(`with no current and a journal that ends in a ${what} says not to start any release`, () => {
+        kept();
+        rmSync(installPaths(root).current);
+        appendJournal(root, { v: 1, at: 'T1', step: 'commit', from: '0.10.2', to: '0.11.0', outcome: 'ok' });
+        appendJournal(root, line);
+        const before = untouched();
+        expect(refusal(() => setup(options()))).toBe(`${seen('journal.jsonl, its update journal,')} It has no current ` +
+          `that names a release. ${notACommit(what)} If setup didn't make it, choose another --root.`);
+        expect(untouched()).toEqual(before);
+        putBack();
+      });
+    }
+
+    test('whose current names a release and whose journal ends part-way through a Go back says not to start any release', () => {
+      kept();
+      rmSync(installPaths(root).current);
+      symlinkSync(join('releases', '0.11.0'), installPaths(root).current);
+      appendJournal(root, { v: 1, at: 'T1', step: 'commit', from: '0.10.2', to: '0.11.0', outcome: 'ok' });
+      appendJournal(root, { v: 1, at: 'T2', step: 'go-back', from: '0.11.0', to: '0.10.2', outcome: 'ok', mark: 'm2', keptData: false });
+      const before = untouched();
+      expect(refusal(() => setup(options()))).toBe(`${seen('journal.jsonl, its update journal,')} Its current names ` +
+        `0.11.0. ${notACommit('go-back (ok)')} If setup didn't make it, choose another --root.`);
+      expect(untouched()).toEqual(before);
+      putBack();
+    });
+
+    test('run from a host outside a node_modules on a journal that ends part-way still says not to start a release', () => {
+      kept();
+      appendJournal(root, { v: 1, at: 'T1', step: 'trial-start', from: '0.10.2', to: '0.11.0', outcome: 'ok', mark: 'm1' });
+      const clone = join(dir, 'clone');
+      mkdirSync(join(clone, 'src'), { recursive: true });
+      writeFileSync(join(clone, 'package.json'), JSON.stringify({ version: '0.10.2' }));
+      const before = untouched();
+      expect(refusal(() => setup(options({ hostRoot: clone })))).toBe(`${seen('journal.jsonl, its update journal,')} ` +
+        `Its current names 0.10.2. ${notACommit('trial-start (ok)')} If setup didn't make it, choose another --root.`);
+      expect(untouched()).toEqual(before);
+    });
+
+    test('whose current and journal name different releases is told to point current at the release the journal names', () => {
+      lost();
+      appendJournal(root, { v: 1, at: 'T1', step: 'commit', from: '0.10.2', to: '0.11.0', outcome: 'ok' });
+      const before = untouched();
+      expect(refusal(() => setup(options()))).toBe(`${seen('journal.jsonl, its update journal,')} Its current names ` +
+        '0.10.2, and its journal\'s last line, an ok commit, names 0.11.0, so setup can\'t tell which release its data ' +
+        `last committed on. ${hold(`point current at it with \`ln -sfn releases/0.11.0 ${installPaths(root).current}\``,
+          ' it\'s 0.11.0')} If setup didn't make it, choose another --root.`);
+      expect(untouched()).toEqual(before);
+      rmSync(installPaths(root).current);
+      symlinkSync(join('releases', '0.11.0'), installPaths(root).current);
+      expect(refusal(() => setup(options()))).toContain('If setup made it, its current names 0.11.0, the release that ' +
+        'last committed on its data, and setup here installs 0.10.2: install exactly 0.11.0 in ');
+    });
+
+    test('run from a host outside a node_modules on a current and journal that name different releases holds, with the clone\'s words for the way on', () => {
+      lost();
+      appendJournal(root, { v: 1, at: 'T1', step: 'commit', from: '0.10.2', to: '0.11.0', outcome: 'ok' });
+      const clone = join(dir, 'clone');
+      mkdirSync(join(clone, 'src'), { recursive: true });
+      writeFileSync(join(clone, 'package.json'), JSON.stringify({ version: '0.10.2' }));
+      const before = untouched();
+      expect(refusal(() => setup(options({ hostRoot: clone })))).toBe(`${seen('journal.jsonl, its update journal,')} ` +
+        'Its current names 0.10.2, and its journal\'s last line, an ok commit, names 0.11.0, so setup can\'t tell which ' +
+        `release its data last committed on. ${holdStop()} This connectome-host (${clone}) isn't installed in a ` +
+        'node_modules. Setup makes an npm install update itself; a clone keeps the hand procedure in docs/DEPLOYMENTS.md. ' +
+        'If setup didn\'t make it, choose another --root.');
+      expect(untouched()).toEqual(before);
+    });
+
+    for (const [what, make] of [
+      ['an empty journal', () => writeFileSync(installPaths(root).journal, '')],
+      ['a journal that links to nothing', () => symlinkSync(join(dir, 'no-such-journal'), installPaths(root).journal)],
+      ['a journal whose one line was torn before its newline',
+        () => writeFileSync(installPaths(root).journal, '{"v":1,"at":"T1","step":"copy","from":"0.10.2"')],
+    ] as const) test(`with ${what} says setup reads no whole line in it, and not to start any release`, () => {
+      lost();
+      make();
+      const before = untouched();
+      expect(refusal(() => setup(options()))).toBe(`${seen('journal.jsonl, its update journal,')} Its current names ` +
+        '0.10.2. Setup reads no whole line in its journal, so it can\'t tell from it whether an update or a Go back ' +
+        `stopped part-way, ${backUp()} If setup didn't make it, choose another --root.`);
+      expect(untouched()).toEqual(before);
+    });
+
+    test('run from a host outside a node_modules on a journal it can\'t read, with current naming a release, still stops', () => {
+      lost();
+      writeFileSync(installPaths(root).journal, '{\n');
+      const clone = join(dir, 'clone');
+      mkdirSync(join(clone, 'src'), { recursive: true });
+      writeFileSync(join(clone, 'package.json'), JSON.stringify({ version: '0.10.2' }));
+      const before = untouched();
+      expect(refusal(() => setup(options({ hostRoot: clone })))).toBe(`${seen('journal.jsonl, its update journal,')} ` +
+        `Its current names 0.10.2. Its journal can't be read (Line 1 of the journal at ${installPaths(root).journal} ` +
+        'isn\'t JSON, so this release can\'t read it), so setup can\'t tell from it whether an update or a Go back ' +
+        `stopped part-way, ${backUp()} If setup didn't make it, choose another --root.`);
+      expect(untouched()).toEqual(before);
+    });
+
+    test('run from a host outside a node_modules with nothing naming a release holds, with the clone\'s words for the way on', () => {
+      lost();
+      rmSync(installPaths(root).current);
+      const clone = join(dir, 'clone');
+      mkdirSync(join(clone, 'src'), { recursive: true });
+      writeFileSync(join(clone, 'package.json'), JSON.stringify({ version: '0.10.2' }));
+      const before = untouched();
+      expect(refusal(() => setup(options({ hostRoot: clone })))).toBe(`${seen()} It has no current that names a ` +
+        `release. Nothing setup can read names the release its data last committed on. ${holdStop()} This ` +
+        `connectome-host (${clone}) isn't installed in a node_modules. Setup makes an npm install update itself; a ` +
+        'clone keeps the hand procedure in docs/DEPLOYMENTS.md. If setup didn\'t make it, choose another --root.');
+      expect(untouched()).toEqual(before);
+    });
+
+    test('with no current and a journal it can\'t read says so, and not to start one', () => {
+      kept();
+      rmSync(installPaths(root).current);
+      writeFileSync(installPaths(root).journal, '{\n');
+      const before = untouched();
+      expect(refusal(() => setup(options()))).toBe(`${seen('journal.jsonl, its update journal,')} It has no current ` +
+        `that names a release. Its journal can't be read (Line 1 of the journal at ${installPaths(root).journal} isn't ` +
+        'JSON, so this release can\'t read it), so setup can\'t tell from it whether an update or a Go back stopped ' +
+        `part-way, ${backUp()} If setup didn't make it, choose another --root.`);
+      expect(untouched()).toEqual(before);
+      putBack();
+    });
+  });
+
+  test('a record naming another data directory than the start would serve is refused at the start, naming both', () => {
+    setup(options());
+    const other = join(dir, 'other-data');
+    mkdirSync(other);
+    writeFileSync(installPaths(root).install, JSON.stringify({ v: 1, dataDir: other, extraState: [] }));
+    expect(() => readInstall(root, { dataDir: () => data } as unknown as LauncherOps)).toThrow(
+      `This install serves the data directory ${other}, and this start would serve ${data}.`);
+  });
+
+  test("the install's own command with no record, and no journal or entry point, is an install whose record is gone too", () => {
+    setup(options());
+    rmSync(installPaths(root).install);
+    rmSync(join(root, ENTRY_POINT));
+    expect(() => setup(options())).toThrow(/has connectome, which setup writes only after the record, and no record at .*, so its record is gone\. The record is what's gone: it named the data directory the install serves and the places of state kept outside it that each update copies, and setup hasn't touched those\. Setup has changed nothing\. /);
+    expect(() => setup(options())).toThrow(`Setup has changed nothing. It was given the data directory ${data}, which ` +
+      'belongs in the record only if its host was started with it. To put it right, write the record again as\n');
+    const before = untouched();
+    expect(() => setup(options())).toThrow(RECORD_AGAIN);
+    expect(untouched()).toEqual(before);
+    expect(existsSync(installPaths(root).install)).toBe(false);
+    expect(existsSync(join(root, INSTALL_COMMAND))).toBe(true);
+    writeFileSync(installPaths(root).install, JSON.stringify({ v: 1, dataDir: data, extraState: [] }));
+    setup(options());
+    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
+    expect(readFileSync(join(root, ENTRY_POINT), 'utf-8')).toBe(entryPointText());
+    expect(existsSync(join(root, INSTALL_COMMAND))).toBe(true);
+  });
+
+  test("a start.js.tmp or connectome.tmp with no record, which setup writes only after the record, is an install whose record is gone too", () => {
+    setup(options());
+    rmSync(installPaths(root).install);
+    rmSync(join(root, ENTRY_POINT));
+    rmSync(join(root, INSTALL_COMMAND));
+    for (const name of [`${ENTRY_POINT}.tmp`, `${INSTALL_COMMAND}.tmp`]) {
+      writeFileSync(join(root, name), '');
+      expect(() => setup(options())).toThrow(`has ${name}, which setup writes only after the record, and no record at `);
+      expect(() => setup(options())).toThrow(RECORD_AGAIN);
+      expect(existsSync(installPaths(root).install)).toBe(false);
+      expect(existsSync(join(root, name))).toBe(true);
+      rmSync(join(root, name));
+    }
+  });
+
+  test("a journal, entry point, own command or either's temporary name left as a link to nothing, with no record, is an install whose record is gone too", () => {
+    setup(options());
+    rmSync(installPaths(root).install);
+    rmSync(join(root, ENTRY_POINT));
+    rmSync(join(root, INSTALL_COMMAND));
+    rmSync(installPaths(root).journal, { force: true });
+    const names: [string, string][] = [
+      [installPaths(root).journal, 'journal.jsonl, its update journal,'],
+      ...[ENTRY_POINT, INSTALL_COMMAND, `${ENTRY_POINT}.tmp`, `${INSTALL_COMMAND}.tmp`].map((name): [string, string] =>
+        [join(root, name), `${name}, which setup writes only after the record,`]),
+    ];
+    for (const [path, words] of names) {
+      symlinkSync(join(dir, 'nothing-here'), path);
+      const before = untouched();
+      expect(() => setup(options())).toThrow(`has ${words} and no record at `);
+      expect(untouched()).toEqual(before);
+      expect(fs.lstatSync(path).isSymbolicLink()).toBe(true);
+      rmSync(path);
+    }
+  });
+
+  test('a link left at a temporary name setup writes through is replaced, never written through', () => {
+    setup(options());
+    const outside = join(dir, 'outside.txt');
+    writeFileSync(outside, 'keep');
+    for (const name of ['install.json.tmp', `${ENTRY_POINT}.tmp`, `${INSTALL_COMMAND}.tmp`]) symlinkSync(outside, join(root, name));
+    setup(options());
+    expect(readFileSync(outside, 'utf-8')).toBe('keep');
+    expect(readFileSync(join(root, ENTRY_POINT), 'utf-8')).toBe(entryPointText());
+    expect(record()).toEqual({ v: 1, dataDir: data, extraState: [] });
+    for (const name of ['install.json.tmp', `${ENTRY_POINT}.tmp`, `${INSTALL_COMMAND}.tmp`]) {
+      expect(fs.lstatSync(join(root, name), { throwIfNoEntry: false })).toBeUndefined();
+    }
+  });
+
+  test("a releases directory left as a link to nothing still lets a lost record show", () => {
+    setup(options());
+    rmSync(installPaths(root).install);
+    rmSync(installPaths(root).releases, { recursive: true });
+    symlinkSync(join(dir, 'nothing-here'), installPaths(root).releases);
+    expect(() => setup(options())).toThrow('has start.js, which setup writes only after the record, and no record at ');
+    expect(existsSync(installPaths(root).install)).toBe(false);
   });
 
   test("with no current and no journal line, a releases/ that can't be listed, or holds none, gets its own advice", () => {
@@ -516,20 +1065,29 @@ describe('setup', () => {
   test("a record with no version is refused with how to write it again", () => {
     setup(options());
     writeFileSync(installPaths(root).install, JSON.stringify({ dataDir: data, extraState: [] }));
-    expect(() => setup(options())).toThrow(/has version undefined, and this release reads only version 1\. Write it again as /);
+    const before = untouched();
+    expect(() => setup(options())).toThrow(/has version undefined, and this release reads only version 1\. Setup has changed nothing\. It was given the data directory .*, which belongs in the record only if its host was started with it\. To put it right, write the record again as\n/);
+    expect(() => setup(options())).toThrow(RECORD_AGAIN);
+    expect(untouched()).toEqual(before);
   });
 
   test("a record that isn't JSON is refused with how to write it again", () => {
     setup(options());
     writeFileSync(installPaths(root).install, '{');
-    expect(() => setup(options())).toThrow(/install record at .* isn't JSON, so this release can't read it\. Write it again as \{"v": 1, "dataDir": .*listing in extraState the paths it listed, where they can still be read/);
+    const before = untouched();
+    expect(() => setup(options())).toThrow(/install record at .* isn't JSON, so this release can't read it\. Setup has changed nothing\. It was given the data directory .*, which belongs in the record only if its host was started with it\. To put it right, write the record again as\n/);
+    expect(() => setup(options())).toThrow(RECORD_AGAIN);
+    expect(untouched()).toEqual(before);
   });
 
   test("a journal with lines and no record is an install whose record is gone, refused with how to write it again", () => {
     setup(options());
     appendJournal(root, { v: 1, at: 'T1', step: 'commit', from: '0.10.2', to: '0.11.0', outcome: 'ok' });
     rmSync(installPaths(root).install);
-    expect(() => setup(options())).toThrow(/has a journal and no record at .*, so its record is gone, and with it the extra state it listed\. Write it again as /);
+    const before = untouched();
+    expect(() => setup(options())).toThrow(/has journal\.jsonl, its update journal, and no record at .*, so its record is gone\. The record is what's gone: .* Setup has changed nothing\. It was given the data directory .*, which belongs in the record only if its host was started with it\. To put it right, write the record again as\n/);
+    expect(() => setup(options())).toThrow(RECORD_AGAIN);
+    expect(untouched()).toEqual(before);
   });
 
   test("refuses a record it can't read the extra state of, unless --extra-state says what to record", () => {
@@ -542,8 +1100,13 @@ describe('setup', () => {
     writeFileSync(state, '{}');
     setup(options({ extraState: [state] }));
     expect(record()).toEqual({ v: 1, dataDir: data, extraState: [state] });
-    writeJsonAtomic(installPaths(root).install, { v: 1, extraState: [] });
-    expect(() => setup(options())).toThrow(/names no data directory this release can read/);
+    for (const named of [{}, { dataDir: '' }]) {
+      writeJsonAtomic(installPaths(root).install, { v: 1, ...named, extraState: [] });
+      const before = untouched();
+      expect(() => setup(options())).toThrow(/names no data directory this release can read\. Setup has changed nothing\. It was given the data directory .*, which belongs in the record only if its host was started with it\. To put it right, write the record again as\n/);
+      expect(() => setup(options())).toThrow(RECORD_AGAIN);
+      expect(untouched()).toEqual(before);
+    }
   });
 
   test('says the service command with each path quoted that needs it', () => {
@@ -606,12 +1169,12 @@ describe('setup', () => {
       mkdirSync(root);
       writeFileSync(join(root, 'notes.txt'), 'mine');
       return {};
-    }, /isn't empty/],
+    }, /isn't empty, and holds no install record, so setup doesn't take it for an install it made\. Choose another --root\.$/],
     ['a root that holds only names setup writes, with no releases directory setup makes first', () => {
       mkdirSync(root);
       writeFileSync(join(root, ENTRY_POINT), '// the operator\'s own\n');
       return {};
-    }, /isn't empty/],
+    }, /has start\.js, which setup writes only after the record, but no record at .* and no .*releases, so setup can't tell whether it made it, .* It has no current that names a release\. Nothing setup can read names the release its data last committed on\. Until you know which release did, and that no update or Go back stopped part-way on it, don't start any release on that data, .* If setup didn't make it, choose another --root\.$/],
     ["a host in this directory's node_modules that leads through a link into another install's", () => {
       const other = join(dir, 'other');
       const host = join(install, 'node_modules', '@animalabs', 'connectome-host');

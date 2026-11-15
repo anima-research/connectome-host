@@ -46,6 +46,7 @@ export const DEFAULT_TIERS: Readonly<Record<string, NoticeTier>> = Object.freeze
   'mcpl-down': 'status',
   'quota-unreadable': 'status',
   'auth-expiring': 'status',
+  'credential-unsaved': 'status',
   'refusal-offpath': 'status',
   'context-maintenance-failed': 'status',
   'compression-quarantine': 'status',
@@ -203,6 +204,8 @@ export class NoticesModule implements Module {
   readonly name = 'notices';
 
   private framework: AgentFramework | null = null;
+  /** The context the framework started this module with, which the markers are written through. */
+  private ctx: ModuleContext | null = null;
   private readonly now: () => number;
   private readonly timers: NonNullable<NoticesModuleConfig['timers']>;
   private readonly statusChannels: string[];
@@ -241,7 +244,8 @@ export class NoticesModule implements Module {
     this.wakerWindowMs = config.wakerWindowMs ?? DEFAULT_WAKER_WINDOW_MS;
   }
 
-  async start(_ctx: ModuleContext): Promise<void> {
+  async start(ctx: ModuleContext): Promise<void> {
+    this.ctx = ctx;
     this.warnUnknownServers(this.config.knownServers);
   }
 
@@ -250,6 +254,7 @@ export class NoticesModule implements Module {
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.framework = null;
+    this.ctx = null;
   }
 
   setFramework(framework: AgentFramework): void {
@@ -494,7 +499,7 @@ export class NoticesModule implements Module {
       ep.quietDue = undefined;
       if (this.episodes.get(ep.id) !== ep) return;
       this.scheduleStatus(ep);
-    }, next - now);
+    }, Math.min(next - now, 2_147_483_647));
   }
 
   private statusDue(ep: Episode, channelId: string, k: ActiveKind): number {
@@ -554,6 +559,7 @@ export class NoticesModule implements Module {
     if (heard.has(kind) || (process ? posting.has(kind) : posting.get(kind) === k.seq)) return;
     posting.set(kind, k.seq);
     const subject = ep.key || this.config.agentName || 'the agent';
+    const epoch = this.reconnectEpoch;
     const r = await this.post(channelId, statusNoticeText(subject, { kind, message: k.message, ...(k.until !== undefined ? { until: k.until } : {}) }), ep, { track: true, kind });
     if (posting.get(kind) === k.seq) posting.delete(kind);
     if (process && r.ok) this.processLastSuccess.set(channelId, this.now());
@@ -564,7 +570,11 @@ export class NoticesModule implements Module {
       if (!r.ok) {
         // Retain even non-parked failures for the next real alert or reconnect;
         // do not start an automatic retry loop.
-        if (live) ep.pending.add(channelId);
+        if (live) {
+          ep.pending.add(channelId);
+          // A replacement may have flushed before this unknown result arrived.
+          if (!r.reflush && this.reconnectEpoch !== epoch) this.reflush(ep, channelId);
+        }
         return;
       }
       if (live) { heard.add(kind); this.consumeProcessRefusal(ep); }
@@ -710,6 +720,13 @@ export class NoticesModule implements Module {
     return this.tierFor(kind) === 'reply' || CLOSES_ON_SUCCESS.has(kind) ? 'unanswered' : 'status';
   }
 
+  /** The marker is written through this module's context for the agent
+   *  (`forAgent`), so it is stamped for that agent alone and enters its
+   *  window as any row for it does (agent-framework #291): at once while no
+   *  turn of it is alive, and otherwise at a point of its turn that can carry
+   *  it, never between rounds a request didn't carry. A row stored straight
+   *  into the agent's context manager would be stamped for no one and shown
+   *  only at the agent's next presentation point, to every resident. */
   private writeMarker(ep: Episode, channelId: string, text: string, kind: string, form: MarkerForm): void {
     if (!this.config.agentName) return;
     const marker = form === 'unanswered'
@@ -717,14 +734,16 @@ export class NoticesModule implements Module {
       : `[host-notice] The host posted this status notice in ${channelId} about ${kind}, for whoever runs ` +
         `it; nothing in it needs you to act: "${text}"`;
     try {
-      const agent = this.framework?.getAgent(this.config.agentName);
-      agent?.getContextManager().addMessage(
+      // An agent that isn't registered, as during a session switch, gets none.
+      if (!this.ctx || !this.framework?.getAgent(this.config.agentName)) return;
+      this.ctx.addMessage(
         'user',
         [{
           type: 'text',
           text: marker,
         }],
         { system: true, kind: 'host-notice', alertKind: kind, channelId } as unknown as Record<string, unknown>,
+        { forAgent: this.config.agentName },
       );
     } catch (err) {
       console.error('[notices] could not record the host-notice marker:', err instanceof Error ? err.message : err);

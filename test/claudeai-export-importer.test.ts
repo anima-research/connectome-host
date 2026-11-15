@@ -173,21 +173,25 @@ describe('transformContent', () => {
 });
 
 describe('transformContent — null tool IDs', () => {
-  test('synthesizes a stable id for null-id tool_use blocks', () => {
-    const msg = mkMsg({
+  test('synthesizes a stable id for null-id tool_use blocks, unlike another message\'s at the same position', () => {
+    const msgOpts = {
       uuid: 'msg-A',
-      sender: 'assistant',
+      sender: 'assistant' as const,
       content: [
         { type: 'text', text: 'thinking out loud' },
         { type: 'tool_use', id: null, name: 'web_search', input: { q: 'hi' } },
       ],
-    });
+    };
+    const msg = mkMsg(msgOpts);
     const out = transformContent(msg);
     const tu = out.find((b) => b.type === 'tool_use') as Extract<ContentBlock, { type: 'tool_use' }>;
     expect(tu).toBeDefined();
     expect(typeof tu.id).toBe('string');
     expect(tu.id.length).toBeGreaterThan(0);
-    expect(tu.id).toContain('msg-A');
+    const again = transformContent(msg).find((b) => b.type === 'tool_use') as Extract<ContentBlock, { type: 'tool_use' }>;
+    expect(again.id).toBe(tu.id);
+    const other = transformContent(mkMsg({ ...msgOpts, uuid: 'msg-A2' })).find((b) => b.type === 'tool_use') as Extract<ContentBlock, { type: 'tool_use' }>;
+    expect(other.id).not.toBe(tu.id);
   });
 
   test('pairs null tool_use id with null tool_result.tool_use_id by FIFO', () => {
@@ -203,7 +207,6 @@ describe('transformContent — null tool IDs', () => {
     const tu = out.find((b) => b.type === 'tool_use') as Extract<ContentBlock, { type: 'tool_use' }>;
     const tr = out.find((b) => b.type === 'tool_result') as Extract<ContentBlock, { type: 'tool_result' }>;
     expect(tu.id).toBe(tr.toolUseId);
-    expect(tu.id).toContain('msg-B');
   });
 
   test('handles multiple bundled cycles in one message (FIFO pairing)', () => {
@@ -252,7 +255,6 @@ describe('transformContent — null tool IDs', () => {
     const out = transformContent(msg);
     const tr = out.find((b) => b.type === 'tool_result') as Extract<ContentBlock, { type: 'tool_result' }>;
     expect(tr.toolUseId).toBeTruthy();
-    expect(tr.toolUseId).toContain('orphan');
   });
 });
 

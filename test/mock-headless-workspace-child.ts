@@ -11,6 +11,8 @@ await runHeadless({
   agentName: 'fixture',
   framework: {
     getAllAgents: () => [{ name: 'fixture', state: { status: 'idle' } }],
+    getHostModeStatus: () => ({ drained: true, activeTurnAgents: [], parkedAdmissions: 0, gatedRequests: 0, backgroundScripts: 0 }),
+    getQueueDepth: () => 0,
     getAllModules: () => [{ name: 'workspace', handleToolCall: async () => result }],
     onTrace: () => {},
     stop: async () => {},

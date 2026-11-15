@@ -12,7 +12,6 @@ describe('witnessed / live identity reminders', () => {
       witnessedInstruction: 'W-INSTR {targetTokens}',
       witnessedIdentityReminder: 'W-REMINDER',
       identityReminder: 'LIVE-REMINDER',
-      identityReminderSilent: true,
       summaryParticipant: 'Sol',
     };
     const built = config(buildFrameworkStrategy(
@@ -30,6 +29,5 @@ describe('witnessed / live identity reminders', () => {
       'm', 'UTC',
     ));
     expect(built.witnessedIdentityReminder).toBeUndefined();
-    expect(built.identityReminderSilent).toBeUndefined();
   });
 });

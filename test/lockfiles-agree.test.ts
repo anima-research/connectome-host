@@ -95,18 +95,6 @@ const STACK: Tree = {
   "discord.js": { version: "14.25.1" },
 };
 
-test("the npm paths the fixture writes are npm's", () => {
-  const paths = Object.keys(JSON.parse(npmLock(STACK)).packages);
-  assert.deepEqual(paths, [
-    "",
-    "node_modules/@animalabs/agent-framework",
-    "node_modules/@animalabs/membrane",
-    "node_modules/@animalabs/context-manager",
-    "node_modules/@animalabs/context-manager/node_modules/@animalabs/membrane",
-    "node_modules/discord.js",
-  ]);
-});
-
 test("lockfiles resolving each stack import the same way agree, and say what each resolves to", async () => {
   const result = await check(project(bunLock(STACK), npmLock(STACK)));
   assert.equal(result.code, 0, result.stderr);

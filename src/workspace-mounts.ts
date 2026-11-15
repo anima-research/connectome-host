@@ -23,14 +23,16 @@ export function buildWorkspaceMounts(
     ];
   }
 
-  // Undo and redo rewind this mount through agent-framework's
-  // materializeMount, which does nothing for a direct mount, so its backend is
-  // said rather than left to the framework's default. The gate keeps the
-  // recipe it last applied in gate.recipe.json beside gate.json and reads it
-  // at each start, so a rewind takes it back with gate.json. The include keeps
-  // editors' and recovery files out (anima-research/connectome-host#278); each
-  // name covers that name in any directory beneath as well, since
-  // agent-framework's include has no form for the root alone.
+  // A branch switch or a rollback rewinds this mount through
+  // agent-framework's materializeMount, which does nothing for a direct
+  // mount, so its backend is said rather than left to the framework's
+  // default. An undo moves no branch (agent-framework #291), so it leaves the
+  // mount as it is. The gate keeps the recipe it last applied in
+  // gate.recipe.json beside gate.json and reads it at each start, so a rewind
+  // takes it back with gate.json. The include keeps editors' and recovery
+  // files out (anima-research/connectome-host#278); each name covers that
+  // name in any directory beneath as well, since agent-framework's include
+  // has no form for the root alone.
   const wantConfigMount = typeof workspace === 'object' && workspace.configMount;
   if (wantConfigMount) {
     mounts.push({

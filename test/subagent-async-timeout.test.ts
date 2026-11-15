@@ -7,7 +7,7 @@ import type { Module, ToolCall } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { SubagentModule } from '../src/modules/subagent-module.js';
 
-async function makeHarness(opts: { maxExecutionMs: number; subagentRunMs: number }) {
+async function makeHarness(opts: { maxExecutionMs: number }) {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sub-timeout-'));
   const adapter = new MockAdapter({ defaultResponse: 'ok' });
   const membrane = new Membrane(adapter, { formatter: new NativeFormatter() });
@@ -38,16 +38,20 @@ async function makeHarness(opts: { maxExecutionMs: number; subagentRunMs: number
     ) => Promise<{ speech: string; toolCallsCount: number }>;
     agents: Map<string, unknown>;
   };
+  const held: Array<() => void> = [];
+  let released = false;
   fw.runEphemeralToCompletion = (agent: unknown) => {
     // agent-framework's runEphemeralToCompletion registers the agent in its
     // agents map while it runs.
     const a = agent as { name: string };
     fw.agents.set(a.name, agent);
     return new Promise((resolve) => {
-      setTimeout(() => {
+      const end = () => {
         fw.agents.delete(a.name);
         resolve({ speech: 'ok', toolCallsCount: 0 });
-      }, opts.subagentRunMs);
+      };
+      if (released) end();
+      else held.push(end);
     });
   };
 
@@ -57,6 +61,7 @@ async function makeHarness(opts: { maxExecutionMs: number; subagentRunMs: number
   return {
     framework,
     subagent,
+    release: () => { released = true; for (const end of held.splice(0)) end(); },
     cleanup: async () => {
       try { await framework.stop(); } catch { }
       try { rmSync(tmpDir, { recursive: true, force: true }); } catch { }
@@ -144,12 +149,9 @@ async function makeBudgetHarness(opts: {
 
 describe('SubagentModule timeout behaviour (async vs sync default)', () => {
   test('ASYNC spawn, no explicit timeoutMs, subagent runs longer than maxExecutionMs', async () => {
-    const MAX_EXEC = 1_000;
-    const SUBAGENT_WORK = 3_000;
-    const { subagent, cleanup } = await makeHarness({
-      maxExecutionMs: MAX_EXEC,
-      subagentRunMs: SUBAGENT_WORK,
-    });
+    const MAX_EXEC = 200;
+    const RELEASE_AT = 1_000;
+    const { subagent, release, cleanup } = await makeHarness({ maxExecutionMs: MAX_EXEC });
     try {
       const t0 = Date.now();
       const ack = await subagent.handleToolCall(makeToolCall('spawn', {
@@ -166,7 +168,12 @@ describe('SubagentModule timeout behaviour (async vs sync default)', () => {
       const handles = (subagent as unknown as InternalSubagent).asyncHandles;
       const handle = handles.get('async-slowpoke');
       expect(handle).toBeDefined();
+      let settledBeforeRelease = false;
+      handle!.promise.then(() => { settledBeforeRelease = true; }, () => { settledBeforeRelease = true; });
 
+      await Bun.sleep(RELEASE_AT - (Date.now() - t0));
+      expect(settledBeforeRelease).toBe(false);
+      release();
       const settled = await handle!.promise.then(
         r => ({ ok: true as const, r }),
         e => ({ ok: false as const, e: e as Error }),
@@ -179,19 +186,14 @@ describe('SubagentModule timeout behaviour (async vs sync default)', () => {
       );
 
       expect(settled.ok).toBe(true);
-      expect(elapsed).toBeGreaterThanOrEqual(SUBAGENT_WORK - 200);
     } finally {
       await cleanup();
     }
   }, 15_000);
 
   test('SYNC spawn, no explicit timeoutMs: moves to the background at maxExecutionMs, and the run goes on', async () => {
-    const MAX_EXEC = 1_000;
-    const SUBAGENT_WORK = 3_000;
-    const { subagent, cleanup } = await makeHarness({
-      maxExecutionMs: MAX_EXEC,
-      subagentRunMs: SUBAGENT_WORK,
-    });
+    const MAX_EXEC = 200;
+    const { subagent, release, cleanup } = await makeHarness({ maxExecutionMs: MAX_EXEC });
     try {
       const t0 = Date.now();
       const res = await subagent.handleToolCall(makeToolCall('spawn', {
@@ -209,9 +211,11 @@ describe('SubagentModule timeout behaviour (async vs sync default)', () => {
 
       expect(res.success).toBe(true);
       expect(String(res.data)).toContain('moved to background');
-      expect(elapsed).toBeLessThan(SUBAGENT_WORK);
+      expect(elapsed).toBeGreaterThanOrEqual(MAX_EXEC - 2);
+      expect(elapsed).toBeLessThan(MAX_EXEC + 2_000);
       const handle = (subagent as unknown as { asyncHandles: Map<string, { promise: Promise<{ summary: string }> }> })
         .asyncHandles.get('sync-slowpoke')!;
+      release();
       expect((await handle.promise).summary).toBe('ok');
     } finally {
       await cleanup();
@@ -219,10 +223,7 @@ describe('SubagentModule timeout behaviour (async vs sync default)', () => {
   }, 10_000);
 
   test('SYNC spawn WITH explicit timeoutMs shorter than work: moves to the background, and the run goes on', async () => {
-    const { subagent, cleanup } = await makeHarness({
-      maxExecutionMs: 60_000,
-      subagentRunMs: 3_000,
-    });
+    const { subagent, release, cleanup } = await makeHarness({ maxExecutionMs: 60_000 });
     try {
       const t0 = Date.now();
       const res = await subagent.handleToolCall(makeToolCall('spawn', {
@@ -240,9 +241,11 @@ describe('SubagentModule timeout behaviour (async vs sync default)', () => {
       );
       expect(res.success).toBe(true);
       expect(String(res.data)).toContain('moved to background');
+      expect(elapsed).toBeGreaterThanOrEqual(500 - 2);
       expect(elapsed).toBeLessThan(2_500);
       const handle = (subagent as unknown as { asyncHandles: Map<string, { promise: Promise<{ summary: string }> }> })
         .asyncHandles.get('sync-explicit')!;
+      release();
       expect((await handle.promise).summary).toBe('ok');
     } finally {
       await cleanup();

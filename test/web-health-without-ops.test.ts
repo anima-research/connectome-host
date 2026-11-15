@@ -17,6 +17,7 @@ const TEXT = {
   quota: 'the usage endpoint answered 500',
   credential: 'anthropic rejected the credential (invalid x-api-key)',
   action: 'refresh failed: the token endpoint answered 400',
+  unsaved: "anthropic credential couldn't be written to /x/creds.json (EACCES: permission denied)",
 };
 
 const sent = <T>(value: T, kept: KeptStrings | null): T =>
@@ -107,15 +108,16 @@ describe('the health panel, with health and without ops', () => {
     expect(quotaTitle({ ...kept, error: undefined })).toBe('Subscription quota (anthropic)\n5h: 10% used');
   });
 
-  test("the credential still shows its kind, its login and how its last action ended, without what either said", () => {
+  test("the credential still shows its kind, its login and how its last action ended, without what any of them said", () => {
     const credential = {
       subscription: true, kind: 'auth-rejected', provider: 'anthropic', message: TEXT.credential, since: 1, rotatable: true,
       actions: [{ id: 'refresh', label: 'Refresh' }], login: { verificationUrl: 'https://example.invalid/device', userCode: 'ABCD-1234' },
-      lastAction: { id: 'refresh', at: 2, ok: false, message: TEXT.action },
+      lastAction: { id: 'refresh', at: 2, ok: false, message: TEXT.action }, unsaved: TEXT.unsaved,
     };
     const bare = sent(credential, CREDENTIAL_STRINGS);
     expect(JSON.stringify(bare)).not.toContain(TEXT.credential);
     expect(JSON.stringify(bare)).not.toContain(TEXT.action);
+    expect(JSON.stringify(bare)).not.toContain(TEXT.unsaved);
     expect(bare).toMatchObject({ kind: 'auth-rejected', login: credential.login, actions: credential.actions });
     expect(credentialNote(credential)).toBe(TEXT.credential);
     expect(credentialNote(bare)).toBeUndefined();

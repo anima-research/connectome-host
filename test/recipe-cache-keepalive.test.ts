@@ -13,7 +13,7 @@ function recipeWith(cacheKeepalive?: unknown, cacheTtl?: unknown) {
 }
 
 describe('recipe agent.cacheKeepalive validation', () => {
-  test('omitting it is valid — keepalive is on by default', () => {
+  test('omitting it is valid, and leaves it unset', () => {
     expect(validateRecipe(recipeWith()).agent.cacheKeepalive).toBeUndefined();
   });
 
@@ -41,6 +41,7 @@ describe('recipe agent.cacheKeepalive validation', () => {
   test('rejects non-positive and non-numeric values', () => {
     expect(() => validateRecipe(recipeWith({ refreshAfterMinutes: 0 }))).toThrow(/positive number/);
     expect(() => validateRecipe(recipeWith({ refreshAfterMinutes: '45' }))).toThrow(/positive number/);
+    expect(() => validateRecipe(recipeWith({ refreshAfterMinutes: JSON.parse('-1e309') }))).toThrow('refreshAfterMinutes must be a positive number, got -Infinity.');
     expect(() => validateRecipe(recipeWith({ maxIdleHours: -1 }))).toThrow(/positive number/);
     expect(() => validateRecipe(recipeWith({ maxIdleHours: 'lots' }))).toThrow(/positive number/);
   });

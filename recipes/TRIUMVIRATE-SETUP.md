@@ -48,12 +48,12 @@ You should see a TUI with a generic assistant. Type `/quit` to exit. If this did
 
 ## Step 2: Install the Zulip MCP server
 
-Two of the three specialists (miner, clerk) talk to Zulip. They do that through a small adapter called `zulip_mcp`. The MCPL-addendum work has merged into upstream `main` ([PR #3](https://github.com/antra-tess/zulip_mcp/pull/3)) so the install is just clone + build:
+Two of the three specialists (miner, clerk) talk to Zulip. They do that through a small adapter called `zulip_mcp`. The MCPL-addendum work has merged into upstream `main` ([PR #3](https://github.com/anima-research/zulip_mcp/pull/3)) so the install is just clone + build:
 
 ```bash
 # From inside the connectome-host directory:
 cd ..
-git clone https://github.com/antra-tess/zulip_mcp.git
+git clone https://github.com/anima-research/zulip_mcp.git
 cd zulip_mcp
 npm install
 npm run build
@@ -276,7 +276,7 @@ and set `GEMINI_API_KEY=...` in `.env`.
 
 You can also edit the recipe files if you want to:
 
-- **Rename the clerk's channel** — change `ZULIP_CHANNEL` in `.env`. `recipes/clerk.json` uses it everywhere the channel appears: `ZULIP_SUBSCRIBE`, the `channelSubscription` allow-list, the typing-indicator channel and the `tracker-channel` wake policy. An existing clerk session keeps the `tracker-channel` policy it was first seeded with (restarts only add policies that are missing by name), so ask the clerk (`@clerk …`) to update that policy with its `wake_add_rule` tool.
+- **Rename the clerk's channel** — change `ZULIP_CHANNEL` in `.env`. `recipes/clerk.json` uses it everywhere the channel appears: `ZULIP_SUBSCRIBE`, the `channelSubscription` allow-list, the typing-indicator channel and the `tracker-channel` wake policy. An existing clerk session keeps the `tracker-channel` policy it was first seeded with (restarts only add policies that are missing by name), so ask the clerk (`@clerk …`) to update that policy with `wake_add_rule`, in its built-in `settings` toolset (or its tool list, if its `allowedTools` doesn't permit both `toolsets--open` and `toolsets--act`).
 - **Swap a model** — the conductor and clerk pin `"model": "claude-opus-4-6"`, the reviewer `claude-sonnet-4-6`; change the field in the relevant recipe. `recipes/knowledge-miner.json` has no `model` field, so the miner runs `claude-opus-4-6` until you add one. Setting `MODEL` in `.env` overrides the model of every agent — the children inherit the conductor's environment.
 - **Adjust autoStart** — in `recipes/triumvirate.json`, set `"autoStart": false` on any child if you want to leave them inactive until you (or the conductor) explicitly launch them.
 

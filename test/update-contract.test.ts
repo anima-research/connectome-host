@@ -11,7 +11,7 @@ import {
   ContractError, INSTALL_ROOT_ENV, JOURNAL_STEPS, PLACE_KINDS, RESTART_EXIT_CODE, SWITCH_QUIESCE_PREFIX, appendJournal, childrenFilePath,
   copyItemName, copyLabelPath, goBackListPath, installPaths, installRootFromEnv, itemSetAsideDir, lastCopy, markSpent,
   moveCurrent, pendingGoBack, readCurrent, realOrResolved, readGoBackList, readJournal, readMark, readRecord, releaseDir, setAsideDir,
-  trialPlaces, unfinishedTrial, unsyncedText, writeJsonAtomic, writeMark, type CopyLabel, type GoBackList, type JournalLine, type Mark,
+  trialPlaces, unfinishedTrial, unsyncedText, writeJsonAtomic, writeMark, writeTextAtomic, type CopyLabel, type GoBackList, type JournalLine, type Mark,
 } from '../src/update/contract.js';
 
 const NAME_MAX = 255;
@@ -155,9 +155,55 @@ describe('the update contract', () => {
     expect(run.exitCode).toBe(0);
     expect(JSON.parse(run.stdout.toString())).toEqual({ record: 'EFBIG', journal: 'EFBIG' });
     expect(readRecord<Mark>(paths.mark, 'mark')).toEqual(mark);
+    expect(existsSync(`${paths.mark}.tmp`)).toBe(false);
     expect(readJournal(root).map((l) => l.step)).toEqual(['lock']);
     appendJournal(root, { at: '2026-10-19T16:01:00Z', step: 'lock', from: '0.10.2', to: '0.12.0', outcome: 'ok' });
     expect(readJournal(root).map((l) => l.at)).toEqual(['2026-10-19T16:00:00Z', '2026-10-19T16:01:00Z']);
+  });
+
+  test('a write whose rename fails once the whole text is written takes its temporary file away, and fails with the rename\'s error', () => {
+    const target = join(root, 'record.json');
+    mkdirSync(target);
+    writeFileSync(join(target, 'kept'), '');
+    expect(() => writeJsonAtomic(target, mark)).toThrow(expect.objectContaining({ code: 'EISDIR' }));
+    expect(existsSync(`${target}.tmp`)).toBe(false);
+    expect(readdirSync(target)).toEqual(['kept']);
+  });
+
+  test('a temporary file a crash left is made anew, so a reader holding it open never sees the new text', () => {
+    const target = join(root, '.env');
+    writeFileSync(`${target}.tmp`, 'OLD=left\n', { mode: 0o644 });
+    const held = fs.openSync(`${target}.tmp`, 'r');
+    try {
+      writeTextAtomic(target, 'KEY=new-secret\n', 0o600);
+      const buffer = Buffer.alloc(64);
+      const read = fs.readSync(held, buffer, 0, 64, 0);
+      expect(buffer.subarray(0, read).toString()).toBe('OLD=left\n');
+      expect(fs.fstatSync(held).ino).not.toBe(fs.statSync(target).ino);
+    } finally {
+      fs.closeSync(held);
+    }
+    expect(fs.readFileSync(target, 'utf-8')).toBe('KEY=new-secret\n');
+    expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+  });
+
+  test('a temporary path that\'s a link is taken away, not written through, so the file it leads to stays as it was', () => {
+    const target = join(root, '.env');
+    const other = join(root, 'other-file');
+    writeFileSync(other, 'OTHER=kept\n', { mode: 0o644 });
+    symlinkSync(other, `${target}.tmp`);
+    writeTextAtomic(target, 'KEY=new-secret\n', 0o600);
+    expect(fs.readFileSync(other, 'utf-8')).toBe('OTHER=kept\n');
+    expect(fs.readFileSync(target, 'utf-8')).toBe('KEY=new-secret\n');
+    expect(fs.lstatSync(`${target}.tmp`, { throwIfNoEntry: false })).toBeUndefined();
+  });
+
+  test('a write that fails where its temporary file can\'t be taken away fails with its own error, not the removal\'s', () => {
+    const target = join(root, 'record.json');
+    mkdirSync(`${target}.tmp`);
+    expect(() => writeJsonAtomic(target, mark)).toThrow(expect.objectContaining({ code: 'EISDIR', syscall: 'open' }));
+    expect(existsSync(target)).toBe(false);
+    expect(fs.statSync(`${target}.tmp`).isDirectory()).toBe(true);
   });
 
   test('a write that comes back short is finished from where it stopped', () => {

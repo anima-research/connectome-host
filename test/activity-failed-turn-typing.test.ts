@@ -18,11 +18,15 @@ describe('typing lifecycle', () => {
     await module.start(ctx);
     module.setFramework(framework as never);
     const emit = (e: Record<string, unknown>) => listener!(e as unknown as TraceEvent);
-    emit({ type: 'inference:started' });
-    emit({ type: 'inference:failed' });
-    expect(typing).toEqual(['start:zulip:ops', 'start:zulip:other', 'stop:zulip:ops', 'stop:zulip:other']);
-    emit({ type: 'inference:started' });
-    emit({ type: 'inference:exhausted' });
-    expect(typing.filter((t) => t.startsWith('stop')).length).toBe(4);
+    const startedThenStoppedBy = (end: Record<string, unknown>) => {
+      const from = typing.length;
+      emit({ type: 'inference:started' });
+      const ending = typing.length;
+      emit(end);
+      return ['zulip:ops', 'zulip:other'].every((ch) =>
+        typing.slice(from, ending).includes(`start:${ch}`) && typing.slice(ending).some((t) => t === `stop:${ch}` || t === 'stop:*'));
+    };
+    expect(startedThenStoppedBy({ type: 'inference:failed' })).toBe(true);
+    expect(startedThenStoppedBy({ type: 'inference:exhausted' })).toBe(true);
   });
 });

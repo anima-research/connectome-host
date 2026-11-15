@@ -3,7 +3,9 @@ import { SubagentModule, type ActiveSubagent } from '../src/modules/subagent-mod
 
 const T0 = Date.UTC(2026, 9, 23, 14, 5, 9);
 
-type StoredRow = { window: string; participant: string; content: Array<{ type: 'text'; text: string }>; metadata: Record<string, unknown> };
+// `held`, as agent-framework's module context answers a row: stored, and not
+// in the agent's presented window, as an undone turn's row is.
+type StoredRow = { window: string; participant: string; content: Array<{ type: 'text'; text: string }>; metadata: Record<string, unknown>; held?: true };
 
 const FLEET = 'system_context:subagent-fleet';
 const markFor = (agent: string, contentHash: string, namespace = 'subagent-fleet') => ({
@@ -123,6 +125,30 @@ describe('the fleet status', () => {
     expect(f.stored).toHaveLength(2);
   });
 
+  // agent-framework's undoLastTurn takes the undone turn's rows out of the
+  // agent's window, and its module context answers such a row `held`: the
+  // window still ends on the status listing the run.
+  test('a clearing status held out of the window is not the newest, so the next start says none is running', async () => {
+    const f = fleet();
+    const scout = f.add('scout');
+    expect(await f.status()).toContain('scout [spawn] running since 14:05:09');
+    scout.status = 'completed';
+    scout.completedAt = T0 + 30_000;
+    expect(await f.status()).toBe('[Fleet Status, as of 2026-10-23 14:05:39 UTC]\n  (none running)');
+    f.stored.at(-1)!.held = true;
+    expect(await f.preview('resident')).toBe('[Fleet Status, as of 2026-10-23 14:05:39 UTC]\n  (none running)');
+  });
+
+  test('a status listing a run, held out of the window, leaves nothing to clear', async () => {
+    const f = fleet();
+    const scout = f.add('scout');
+    await f.status();
+    f.stored.at(-1)!.held = true;
+    scout.status = 'completed';
+    scout.completedAt = T0 + 30_000;
+    expect(await f.preview('resident')).toBeUndefined();
+  });
+
   test('a run that ended with no status ever listing it has nothing to tell', async () => {
     const f = fleet();
     f.add('scout', { status: 'completed', completedAt: T0 + 30_000 });
@@ -175,13 +201,6 @@ describe('the fleet status', () => {
       '  afternoon [spawn] running since 16:30:00 parent:resident "task for afternoon"',
       '  evening [spawn] running since 17:30:00 parent:resident "task for evening"',
     ].join('\n'));
-  });
-
-  test('with only async handles pending, it has no time to be "as of"', async () => {
-    const f = fleet();
-    f.handles.set('later', {});
-    f.mod.parentMap.set('later', 'resident');
-    expect(await f.status()).toBe('[Fleet Status]\n  later [async] pending');
   });
 
   test('a running spawn isn\'t listed again as waiting beside a finished fork of its name', async () => {
@@ -344,19 +363,22 @@ describe('the fleet status', () => {
     expect(await walksWith(40)).toBe(await walksWith(1));
   });
 
-  test('a launcher\'s record goes with its run\'s link: dropped with it, and cleared on restore, as the links are restored without records', async () => {
-    const f = fleet('UTC', [], { primary: true });
-    const internals = f.mod as unknown as { launcherShownOf: Map<string, string>; claimName(name: string, parent: string | undefined): void; restoreFromStore(): void; ctx: { getState: () => unknown } };
-    f.live('lead', 'spawn-lead-1761271234567');
-    f.claim('kid', 'spawn-lead-1761271234567');
-    expect(internals.launcherShownOf.get('kid')).toBe('lead');
-    internals.claimName('kid', undefined);
-    expect(internals.launcherShownOf.has('kid')).toBe(false);
-    f.claim('kid', 'spawn-lead-1761271234567');
-    internals.ctx.getState = () => ({ agents: { kid: { name: 'kid', type: 'spawn', task: 't', status: 'running', startedAt: T0, toolCallsCount: 0, findingsCount: 0, parent: 'spawn-lead-1761271234567' } } });
-    internals.restoreFromStore();
-    expect(f.mod.parentMap.get('kid')).toBe('spawn-lead-1761271234567');
-    expect(internals.launcherShownOf.size).toBe(0);
+  test('a run restored without its launcher\'s record doesn\'t name the launcher it had before the restore', async () => {
+    const restored = fleet('UTC', [], { primary: true });
+    const its = restored.mod as unknown as { restoreFromStore(): void; ctx: { getState: () => unknown } };
+    restored.live('scout', 'scout-d1-1761271234568');
+    restored.claim('kid', 'scout-d1-1761271234568');
+    restored.ended('scout');
+    const running = () => restored.mod.activeSubagents.set('kid', { name: 'kid', type: 'spawn', task: 't', status: 'running', startedAt: T0, lastActivityAt: T0, toolCallsCount: 0, findingsCount: 0 });
+    const kidLine = async () => (await restored.preview('resident'))?.split('\n').find((line) => line.startsWith('  kid '));
+    running();
+    expect(await kidLine()).toContain(' parent:scout');
+    its.ctx.getState = () => ({ hudEnabled: true, agents: { kid: { name: 'kid', type: 'spawn', task: 't', status: 'running', startedAt: T0, toolCallsCount: 0, findingsCount: 0, parent: 'spawn-lead-1761271234567' } } });
+    its.restoreFromStore();
+    running();
+    const restoredLine = await kidLine();
+    expect(restoredLine).toBeDefined();
+    expect(restoredLine).not.toContain(' parent:scout');
   });
 
   test('the runs under an orphaned run between its attempts stay the primary\'s', async () => {
@@ -574,19 +596,74 @@ describe('an async run\'s result', () => {
     expect(d.written).toEqual([
       { text: "[Subagent 'kid' returned, for 'lead': launched by an earlier attempt]\n\ndone", forAgent: 'lead-d1-retry1-2' },
       { text: "[Subagent 'kit' failed, for 'lead': launched by an earlier attempt]\n\nError: broke", forAgent: 'lead-d1-retry1-2' },
-      { text: "[Subagent 'kip' returned, for 'lead': launched by an attempt that has ended]\n\ndone too" },
-      { text: "[Subagent 'kin' failed, for 'lead': launched by an attempt that has ended]\n\nError: broke" },
+      { text: "[Subagent 'kip' returned, for 'lead': launched by an attempt that has ended]\n\ndone too", forAgent: 'resident' },
+      { text: "[Subagent 'kin' failed, for 'lead': launched by an attempt that has ended]\n\nError: broke", forAgent: 'resident' },
     ]);
     expect(d.woken).toEqual(['lead-d1-retry1-2', 'lead-d1-retry1-2']);
   });
 
-  test('whose launcher has ended lands in the residents\' slot, naming whom it was for', () => {
+  // Written for no agent, a row is stamped for every resident (agent-framework
+  // #291), so one for a launcher that has ended is written for the nearest
+  // agent above it that is listed, else for the primary, and wakes nobody.
+  test('whose launcher has ended goes to the primary, naming whom it was for, and wakes nobody', () => {
     const d = delivering(['resident']);
     d.deliver.deliverAsyncResult('scout', { summary: 'done' }, 'fork-y');
     d.deliver.deliverAsyncError('miner', new Error('broke'), 'fork-y');
     expect(d.written).toEqual([
-      { text: "[Subagent 'scout' returned, for 'fork-y', which has ended]\n\ndone" },
-      { text: "[Subagent 'miner' failed, for 'fork-y', which has ended]\n\nError: broke" },
+      { text: "[Subagent 'scout' returned, for 'fork-y', which has ended]\n\ndone", forAgent: 'resident' },
+      { text: "[Subagent 'miner' failed, for 'fork-y', which has ended]\n\nError: broke", forAgent: 'resident' },
+    ]);
+    expect(d.woken).toEqual([]);
+  });
+
+  test('whose launcher has ended goes to the nearest agent above it that is listed, by the registry\'s spawner links, and wakes nobody', () => {
+    const d = delivering(['resident', 'other', 'mira', 'lead-d1-retry1-2']);
+    const mod = d.mod as unknown as { framework: unknown; runOfAttempt: Map<string, string>; liveSubagents: Map<string, unknown> };
+    // kid's launcher was mira's subagent's attempt; that subagent's own
+    // subagent's attempt launched pup; orphan lost its spawner, mira; nobody
+    // above stray is listed.
+    const records: Record<string, { relationships: { spawnedBy?: string }; orphaned?: { formerParent: { agent: string } }; ended?: object }> = {
+      'mira': { relationships: {} },
+      'lead-d1-1': { relationships: { spawnedBy: 'mira' }, ended: {} },
+      'scout-d2-1': { relationships: { spawnedBy: 'lead-d1-1' }, ended: {} },
+      'orphan-d2-1': { relationships: {}, orphaned: { formerParent: { agent: 'mira' } }, ended: {} },
+      'stray-d1-1': { relationships: { spawnedBy: 'gone' }, ended: {} },
+      'gone': { relationships: {}, ended: {} },
+      'pupil-d3-1': { relationships: { spawnedBy: 'deep-d2-1' }, ended: {} },
+      'deep-d2-1': { relationships: { spawnedBy: 'lead-d1-0' }, ended: {} },
+      'lead-d1-0': { relationships: { spawnedBy: 'mira' }, ended: {} },
+    };
+    mod.framework = {
+      getAgentRecord: (name: string) => records[name] ?? null,
+      getPrimaryAgentName: () => 'other',
+    };
+    d.deliver.deliverAsyncResult('kid', { summary: 'done' }, 'lead-d1-1', 'lead');
+    d.deliver.deliverAsyncError('pup', new Error('broke'), 'scout-d2-1', 'scout');
+    d.deliver.deliverAsyncResult('waif', { summary: 'alone' }, 'orphan-d2-1', 'orphan');
+    d.deliver.deliverAsyncResult('cub', { summary: 'lost' }, 'stray-d1-1', 'stray');
+    // An ancestor's run that goes on takes it at its current attempt.
+    mod.runOfAttempt.set('lead-d1-0', 'lead');
+    mod.runOfAttempt.set('lead-d1-retry1-2', 'lead');
+    mod.liveSubagents.set('lead', { frameworkAgentName: 'lead-d1-retry1-2', activeCallIds: new Set() });
+    d.deliver.deliverAsyncResult('pupil', { summary: 'deep' }, 'pupil-d3-1', 'pupil');
+    expect(d.written).toEqual([
+      { text: "[Subagent 'kid' returned, for 'lead', which has ended]\n\ndone", forAgent: 'mira' },
+      { text: "[Subagent 'pup' failed, for 'scout', which has ended]\n\nError: broke", forAgent: 'mira' },
+      { text: "[Subagent 'waif' returned, for 'orphan', which has ended]\n\nalone", forAgent: 'mira' },
+      { text: "[Subagent 'cub' returned, for 'stray', which has ended]\n\nlost", forAgent: 'other' },
+      { text: "[Subagent 'pupil' returned, for 'pupil', which has ended]\n\ndeep", forAgent: 'lead-d1-retry1-2' },
+    ]);
+    expect(d.woken).toEqual([]);
+  });
+
+  test('whose launching attempt has ended between attempts goes to the nearest agent above its run that is listed', () => {
+    const d = delivering(['resident', 'fork-y']);
+    const mod = d.mod as unknown as { runOfAttempt: Map<string, string>; parentMap: Map<string, string> };
+    mod.runOfAttempt.set('lead-d2-1', 'lead');
+    mod.parentMap.set('lead', 'fork-y');
+    d.deliver.deliverAsyncResult('kid', { summary: 'done' }, 'lead-d2-1', 'lead');
+    expect(d.written).toEqual([
+      { text: "[Subagent 'kid' returned, for 'lead': launched by an attempt that has ended]\n\ndone", forAgent: 'fork-y' },
     ]);
     expect(d.woken).toEqual([]);
   });

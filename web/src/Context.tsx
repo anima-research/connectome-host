@@ -1,5 +1,6 @@
 import { createEffect, createSignal, on, onCleanup, onMount, For, Show } from 'solid-js';
 import { contextPageView } from './composition-text';
+import { LatestRead, READ_TIMEOUT_MS, readFigure } from './latest-read';
 
 interface Seg { messages: number; tokens: number }
 interface Stats {
@@ -59,6 +60,7 @@ interface Coverage {
   queue: {
     inFlight: boolean;
     pending: string | null;
+    waiting: string | null;
     l1: number[];
     merges: Array<{ targetLevel: number; sourceCount: number; firstSource: string | null; lastSource: string | null }>;
   };
@@ -81,7 +83,12 @@ function rowsOf(s: Stats): Row[] {
   ].filter((r) => r.tokens > 0 || r.messages > 0);
 }
 
-export function ContextPanel(props: { scope?: string }) {
+export function ContextPanel(props: {
+  scope?: string;
+  /** Changes when the agent's window does without a new compile (an undo or
+   *  a redo on it, DQ-4): the makeup and the coverage read again. */
+  refreshKey?: number;
+}) {
   const [data, setData] = createSignal<Makeup | null>(null);
   const [coverage, setCoverage] = createSignal<Coverage | null>(null);
   const [loading, setLoading] = createSignal(false);
@@ -93,46 +100,50 @@ export function ContextPanel(props: { scope?: string }) {
     ? `?scope=${encodeURIComponent(props.scope)}`
     : '';
 
+  // Each read counts itself; a response that comes back after a newer read
+  // started (a scope change, an undo's refresh, the coverage poll) is dropped,
+  // so an older figure never replaces a newer one. The poll starts none while
+  // a coverage read is pending, so a slow read still lands, and a coverage
+  // read fails once it has gone READ_TIMEOUT_MS unanswered.
+  const makeupReads = new LatestRead();
   const load = async () => {
-    const scopeAtStart = props.scope;
+    const thisLoad = makeupReads.begin();
+    const superseded = () => makeupReads.superseded(thisLoad);
     setLoading(true);
     setErr(null);
     try {
-      const res = await fetch(`/debug/context/makeup${query()}`, { credentials: 'same-origin' });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
-      }
-      const j = (await res.json()) as Makeup;
+      const j = await readFigure<Makeup>(`/debug/context/makeup${query()}`);
+      if (superseded()) return;
       if (j.error) throw new Error(j.error);
-      if (props.scope !== scopeAtStart) return;
       setData(j);
     } catch (e) {
-      if (props.scope !== scopeAtStart) return;
+      if (superseded()) return;
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      makeupReads.settled(thisLoad);
+      if (!superseded()) setLoading(false);
     }
   };
 
-  const loadCoverage = async () => {
-    const scopeAtStart = props.scope;
+  const coverageReads = new LatestRead();
+  const loadCoverage = async (polled = false) => {
+    const thisLoad = polled ? coverageReads.poll() : coverageReads.begin();
+    if (thisLoad === null) return;
+    const superseded = () => coverageReads.superseded(thisLoad);
     setCoverageLoading(true);
     setCoverageErr(null);
     try {
-      const res = await fetch(`/debug/context/coverage${query()}`, { credentials: 'same-origin' });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? `HTTP ${res.status}`);
-      }
-      const cov = (await res.json()) as Coverage;
-      if (props.scope !== scopeAtStart) return;
+      // A read that never answers fails at the timeout, so the poll's
+      // next tick starts one.
+      const cov = await readFigure<Coverage>(`/debug/context/coverage${query()}`, READ_TIMEOUT_MS);
+      if (superseded()) return;
       setCoverage(cov);
     } catch (e) {
-      if (props.scope !== scopeAtStart) return;
+      if (superseded()) return;
       setCoverageErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setCoverageLoading(false);
+      coverageReads.settled(thisLoad);
+      if (!superseded()) setCoverageLoading(false);
     }
   };
 
@@ -149,8 +160,11 @@ export function ContextPanel(props: { scope?: string }) {
     refreshAll();
   }));
 
+  // An undo or a redo moves the window the figures are built from.
+  createEffect(on(() => props.refreshKey, () => refreshAll(), { defer: true }));
+
   onMount(() => {
-    const timer = window.setInterval(() => void loadCoverage(), 5_000);
+    const timer = window.setInterval(() => void loadCoverage(true), 5_000);
     onCleanup(() => window.clearInterval(timer));
   });
 
@@ -219,9 +233,11 @@ export function ContextPanel(props: { scope?: string }) {
           <div class="flex items-center justify-between">
             <span class="text-neutral-300">Summary coverage</span>
             <span class="text-neutral-600">
-              {coverage()!.queue.inFlight || coverage()!.queue.l1.length > 0 || coverage()!.queue.merges.length > 0
-                ? 'active'
-                : 'idle'}
+              {!coverage()!.queue.inFlight && coverage()!.queue.pending === null && coverage()!.queue.waiting
+                ? 'waiting'
+                : coverage()!.queue.inFlight || coverage()!.queue.l1.length > 0 || coverage()!.queue.merges.length > 0
+                  ? 'active'
+                  : 'idle'}
             </span>
           </div>
 
@@ -287,6 +303,9 @@ export function ContextPanel(props: { scope?: string }) {
             </div>
             <Show when={coverage()!.queue.pending}>
               <div class="text-amber-200 truncate" title={coverage()!.queue.pending ?? ''}>{coverage()!.queue.pending}</div>
+            </Show>
+            <Show when={coverage()!.queue.waiting}>
+              <div class="text-amber-200 truncate" title={coverage()!.queue.waiting ?? ''}>{coverage()!.queue.waiting}</div>
             </Show>
             <For each={coverage()!.queue.l1}>
               {(index) => <div class="text-neutral-400">L1 · chunk {index}</div>}

@@ -92,7 +92,8 @@ three, and in practice is how headless residents are operated.
    the module list,
    merge MCP servers, build the memory strategy and agent config, then
    `AgentFramework.create()` with the gate, provider hold, code execution,
-   conversations and subconscious configuration. Post-create hooks bind the
+   conversations and subconscious configuration, and the recipe's
+   maintenance interval. Post-create hooks bind the
    history module, wire the compression-quarantine alarm to ops alerts, and
    hand the framework to modules that need it.
 8. **Start** the framework, the session auto-namer, per-server MCPL stderr
@@ -148,7 +149,7 @@ decorator, so every call lands in `llm-calls.<iso>.jsonl`.
 | `bedrock` | `LoggingBedrockAdapter` | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (`AWS_REGION`), `BEDROCK_BASE_URL` for a gateway. Prompt caching gated per model. Used to keep models alive after they leave the first-party API. |
 | `openai-codex` | `CodexSubscriptionAdapter` | ChatGPT subscription via the Codex CLI's login (`CODEX_BINARY`, `CODEX_HOME`, `CODEX_BASE_URL`). `/fast` toggle; quota meter. |
 | `openai-responses` | membrane `OpenAIResponsesAPIAdapter` | `OPENAI_API_KEY`, `OPENAI_BASE_URL`. |
-| `openrouter` | membrane `OpenRouterAdapter` | `OPENROUTER_API_KEY`. |
+| `openrouter` | membrane `OpenRouterAdapter` | `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL` for a gateway. |
 | `openai-compatible` | membrane `OpenAICompatibleAdapter` | `agent.baseUrl` (required), `OPENAI_COMPATIBLE_API_KEY` (optional; deliberately no fallback to `OPENAI_API_KEY`). |
 | `mock` | membrane `MockAdapter` | none — echoes or returns a scripted reply; for zero-cost smoke runs. |
 
@@ -182,9 +183,9 @@ conditions are required so the headers can never reach a vendor endpoint.
   L1…L8 memory — just enough to fit the context budget, by a solver that
   weighs budget fit, cache cost and continuity. Memories are written by the agent's own model
   (`compressionModel` defaults to `agent.model`) in the agent's own voice
-  (`summaryParticipant` defaults to the agent's name), each introduced as standing
-  in for earlier conversation whose exact text isn't shown
-  (`summaryContextLabel`). Host defaults:
+  (`summaryParticipant` defaults to the agent's name; the label before each
+  summary is context-manager's default unless a recipe sets
+  `summaryContextLabel`). Host defaults:
   `contextBudgetTokens` 300000, or, on a model the host knows a window for (on
   Anthropic's API) with a `maxTokens` that is unset or a positive number, the
   smaller of 300000 and the window less the system prompt and 32000 for the tools,
@@ -241,11 +242,13 @@ Built in `createFramework()`. Tools are exposed as `<module>--<tool>`.
 | `LifecycleModule` | `selfRestart` | off | `lifecycle--restart`: the agent restarts its own host once its turn ends; headless only, exit code 75 for the supervisor, cooldown between restarts (`src/self-restart.ts`). |
 | `IdentityModule` | `identity` | off | The agent's own archipelago identity key; exchanges key-proofs for access tokens so credentials never enter the agent's context. |
 | `WebUiModule` + `ObserversModule` | `webui` | off | Browser console (below); `observers--get/grant/revoke` let the agent manage who may watch. |
-| `TtsRelayModule` | `ttsRelay` | off | Streams live generation to a TTS relay; trims posted messages when a voice client is interrupted. |
+| `TtsRelayModule` | `ttsRelay` | off | Sends each message the agent's prose publishes on the server `editServerId` names (Discord by default) to a TTS relay as one block; trims posted messages when a voice client is interrupted. |
 
 Framework features configured by top-level recipe keys rather than modules:
 `conversations` (per-channel conversation forks from a dormant trunk agent),
-`subconscious` (a secondary agent with `tune_out`), `codeExecution`.
+`subconscious` (a secondary agent with `tune_out`), `codeExecution`,
+`maintenanceIntervalMs` (how often the context maintenance pass runs; 0 turns
+it off).
 
 ## MCPL servers
 
@@ -290,7 +293,9 @@ All three surfaces share two layers, so they cannot drift apart:
 makeup/coverage/curve/preview, MCPL status, media — run in-process by the
 WebUI and inside a child on a fleet `panel-request`). The agent tree shown by
 both UIs is folded from trace events by `src/state/agent-tree-reducer.ts`,
-one reducer per process.
+one reducer per process. `src/state/agent-phases.ts` keeps each agent's phase on
+the server, in the tree's words, for observers holding `health`, who see it
+without the traces it comes from.
 
 - **TUI** — chat with streaming, thinking and tool lines (Ctrl+V for
   verbose); a fleet tree of local subagents, fleet children and their agents
@@ -324,23 +329,65 @@ schema and tool list are in [`docs/fleet-protocol.md`](docs/fleet-protocol.md).
 
 ## Reversibility
 
-- **Host commands** — `/undo`, `/redo`, `/checkpoint`, `/restore`,
-  `/branches`, `/checkout`, `/branchto`, `/newtopic` move the head over
-  Chronicle branches. They are refused while a turn is in flight. Checkpoints
-  are held in memory for the session.
+- **Host commands** — `/restore`, `/checkout` and `/branchto` move the head
+  over Chronicle branches, through the framework's `switchBranch` and
+  `rollbackToMessage`, which reserve the store for every agent sharing it and
+  take every agent's context to the branch they move to; `/checkpoint` saves
+  a point for `/restore`, and `/branches` lists the branches and
+  checkpoints. On a
+  presented window a rollback cuts at the write that showed its message, and
+  the command says which rows after it stay (`returnedToArrivals`,
+  `keptInWindowAfterTarget`). `/undo` and `/redo` are the framework's
+  `undoLastTurn` and `redo`, on the agent's window: no branch moves
+  (agent-framework #291); the transcripts mark the undone rows, which the
+  record keeps, on the `window:undone` trace. `/newtopic` resets the agent's
+  head window at a transition row of its own, stored only while the agent has
+  no turn alive: it is refused while a continuation or a retry of the agent's
+  turn is on its way. A bare `/newtopic` stores nothing if the branch or the
+  strategy changes while it writes its summary: context-manager then refuses
+  the summary, and the answer says why. It also stores nothing if a turn of
+  the agent starts, rows enter the agent's window (a whole turn, or another
+  `/newtopic`'s transition), or the session is switched or the host stops,
+  while the summary is written, and then the answer gives the summary back.
+  They are
+  refused while a turn is in flight. Checkpoints are held in memory for the
+  session.
 - **Framework surgery** (WebUI) — roll back to a message or suppress messages
   by forking and switching branches; quiesce/resume the host. Every action is
   appended to `sessions/<id>/operator-actions.jsonl`.
 
-The two mechanisms coexist: the host's `/undo` predates the framework's
-surgery and still uses its own branch stacks.
+Both go through the framework, so each move of the branch is in the
+operator log (`checkout`, `rollback`, `suppress`) and is refused
+(`agent-busy`) unless every agent sharing the store is idle; nothing is
+queued.
 
 ## Failure handling and observability
 
 - **Wire logs** — `llm-calls.<iso>.jsonl` per process (request summaries,
-  usage, timing, errors; raw requests on errors and refusals, or always with
-  `LLM_CALLS_FULL_PAYLOADS=1`, which alone keeps a cache-keepalive poke's,
-  each within the 16 MiB a line may take).
+  usage, timing, errors; raw requests on refusals, on anomalous responses
+  (a client `tool_use` under a stop reason other than `tool_use`), and on
+  the first failure of each kind of error (its type, or for an untyped error
+  its name, with its HTTP status when it has one) whose copy the budget below
+  has room for and the line bound leaves whole, in a run of failures on a
+  cache lineage, which begins at its first failure and which a call's
+  success on that lineage, or more than an hour with no failed call on it, ends
+  (keepalive pokes, cancelled calls, and failed calls whose request is
+  missing or can't be serialized count for neither), for the latest 256
+  lineages, runs that have ended dropped first, and
+  within a budget per log of 64 MiB of such copies, refilled at 64 MiB a
+  day, that an anomalous response's copy isn't charged to; a cancelled
+  call's never; or always with `LLM_CALLS_FULL_PAYLOADS=1`, which alone
+  keeps a cache-keepalive poke's, each within the 16 MiB a line may take).
+  That rule is the Anthropic writer's: the run's other failures carry the
+  request's `requestSha256`, its size under `rawRequestOmitted`, and, once
+  the run's copy of that kind is written, its hash as
+  `rawRequestOmitted.copySha256`. A request at or over the 16 MiB line bound
+  by itself carries its size the same way at every failure. One just under
+  the bound whose record still passes it is cut to fit, carries `truncated`
+  instead of `rawRequestOmitted`, and is tried whole again at the run's next
+  failure of that kind. The first failing
+  request the budget has no room for, since the last one written, prints
+  one stderr line.
 - **Ops alerts** (agent-framework) — compression quarantine, refusal streaks,
   inference exhaustion, context refusals, GC closes: an `ops:alert` trace
   (shown as banners in both UIs), a record in `logs/failures.log`, and a
@@ -368,6 +415,7 @@ Under `$DATA_DIR` (default `./data`):
 | `ipc.sock`, `headless.log`, `headless.pid` | Headless mode. |
 | `mcpl-servers.agent.child.json` | A fleet child's own agent overlay, named to it by `MCPL_AGENT_OVERLAY_FILE`. |
 | `tui-error.log` | TUI-mode stderr. |
+| `readline-error.log` | Readline-mode stderr, on a terminal. |
 
 Relative to the CWD: `mcpl-servers.json`, `mcpl-servers.agent.json`,
 `sleep-privileged.json`, `logs/failures.log`, the default workspace mounts

@@ -43,7 +43,8 @@ function readHostVersion(): string | undefined {
 const TOOL_DESCRIPTION =
   'Restart your own host process. Use it to pick up something that only takes effect at start: ' +
   'an edited recipe or config, rebuilt host code, or to recover from a state you cannot get out of otherwise. ' +
-  'For one MCPL server, mcpl_restart (if you have it) is the lighter option and keeps you running. ' +
+  'For one MCPL server, mcpl-admin--mcpl_restart (if you have it, in the built-in "settings" toolset, or in your ' +
+  'tool list if that lacks toolsets--open or toolsets--act) is the lighter option and keeps you running. ' +
   'The restart does not interrupt you: it happens once this turn has ended and nothing is in flight ' +
   '(no turn, subagent run or background script still going). ' +
   'The host then exits with code 75 for whatever supervises it (launchd, systemd, a fleet parent) to start it again, ' +

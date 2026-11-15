@@ -54,7 +54,8 @@ describe('the welcome', () => {
         getAllModules: () => [fleet],
         onTrace: () => {},
       },
-      sessionManager: { getActiveSession: () => ({ id: 's', name: 's', manuallyNamed: true }) },
+      frameworkSessionId: 's',
+      sessionManager: { findSession: (id: string) => (id === 's' ? { id: 's', name: 's', manuallyNamed: true } : null) },
       recipe: { name: 'recipe', agent: {} },
     } as never);
     const ts = Date.now();
@@ -106,7 +107,8 @@ describe('the welcome', () => {
         }],
         onTrace: () => {},
       },
-      sessionManager: { getActiveSession: () => ({ id: 's', name: 's', manuallyNamed: true }) },
+      frameworkSessionId: 's',
+      sessionManager: { findSession: (id: string) => (id === 's' ? { id: 's', name: 's', manuallyNamed: true } : null) },
       recipe: { name: 'recipe', agent: {} },
     } as never);
     return { asked: () => asked };

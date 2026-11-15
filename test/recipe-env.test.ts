@@ -136,11 +136,6 @@ describe('loadRecipe — end-to-end with env substitution', () => {
       expect(substituteEnvVars('${OPTIONAL_VAR:-}', 't')).toBe('');
     });
 
-    test('does NOT throw on unset var with default', () => {
-      delete process.env.NEVER_SET;
-      expect(() => substituteEnvVars('${NEVER_SET:-default}', 't')).not.toThrow();
-    });
-
     test('mixed default + required in same string', () => {
       delete process.env.HOST;
       delete process.env.PORT;

@@ -75,6 +75,8 @@ for (const [hold, what] of [
   ['subagent-active', 'a subagent run holding a slot'],
   ['subagent-queued', 'a queued subagent run'],
   ['wake-gap', "a subagent's end, with its wake a loop pass behind,"],
+  ['command', "an operator's command still at work, as /update check reading the registry,"],
+  ['credential', 'a credential action still at work, as a refresh asked of the credential monitor,'],
 ] as const) {
   test.concurrent(`${what} holds the restart back, though every agent reads idle`, async () => {
     const { dir, result, output } = await runFixture('held', hold);

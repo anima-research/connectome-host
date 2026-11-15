@@ -12,7 +12,7 @@ import { LessonsPanel, type LessonRow } from './Lessons';
 import { McplPanel, type McplServerRow, type McplLiveRow, type ToolClassRow } from './Mcpl';
 import { SettingsPanel, type SettingsState } from './Settings';
 import { DryContext, type DryContextData } from './DryContext';
-import { PinsPanel, type PinsState, type PinCandidate } from './Pins';
+import { PinsPanel, type PinsState } from './Pins';
 import { FilesPanel, FileViewerModal, type Mount, type FlatEntry, type FileViewer } from './Files';
 import { ContextPanel } from './Context';
 import { ContextDocument } from './ContextDocument';
@@ -26,15 +26,19 @@ import { UpdateBanner, UpdateDialog } from './Update';
 import { commandFor, dialogStill, keptDismissal, type UpdateStatus, type UpdateWay } from '@conhost/web/update-text';
 import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone, quotaUnreadable } from './quota';
 import { planHealthAlerts } from './health-alerts';
+import { applyUndoneMarksTo } from './undone-marks';
+import { withLoadedText } from './pin-candidates';
 import { HealthReads, passedGrant } from './health-reads';
 import { healthReadError } from '@conhost/web/health-lookup';
 import {
   AGENT_TREE_SCOPES,
   WEB_PROTOCOL_VERSION,
+  isChildScope,
   type WebUiServerMessage,
   type WelcomeMessage,
   type WelcomeMessageEntry,
   type HistoryPageMessage,
+  type UndoneMarksMessage,
   type MessageBlock,
   type TokenUsage,
   type QuotaSnapshotData,
@@ -46,7 +50,8 @@ import {
   type OperatorLogEntryWire,
 } from '@conhost/web/protocol';
 import {
-  applyStreamEnded, applyTrace, conversationAgentOf, streamEventFor, toolCallState, treesShownFor,
+  applyStreamEnded, applyTrace, conversationAgentOf, streamEventFor, toolCallState, treesShownFor, WindowFrames,
+  type ShownPanels,
 } from '@conhost/web/agent-streams';
 import {
   Lightbox,
@@ -81,6 +86,14 @@ interface Message {
   timestamp?: number;
   lines?: Array<{ text: string; style?: 'user' | 'agent' | 'tool' | 'system' }>;
   streaming?: boolean;
+  /** The row is out of the conversation agent's window as an undone turn's
+   *  (agent-framework #291): an undo (which /redo can reverse until the
+   *  agent's next turn, a branch move or a restart, as agent-framework keeps
+   *  the redo in memory only) or a shed after a refusal or failed inference
+   *  (which it can't). The record keeps it,
+   *  its next request is built without it. From the welcome, a history page
+   *  or an undone-marks frame. */
+  undone?: boolean;
   trigger?: {
     origin: string;
     source: string;
@@ -105,6 +118,7 @@ function entryToMessage(e: WelcomeMessageEntry): Message {
     blocks: (e.blocks ?? []) as UiBlock[],
     index: e.index,
     timestamp: e.timestamp,
+    ...(e.undone ? { undone: true } : {}),
   };
 }
 
@@ -123,7 +137,7 @@ export function App() {
   const [protoMismatch, setProtoMismatch] = createSignal<number | null>(null);
   let knownIds = new Set<string>();
   let welcomeKey: string | null = null;
-  let welcomeSessionId: string | null = null;
+  const [shownSession, setShownSession] = createSignal<string | null>(null);
   let atBottom = true;
   let historyCorrSeq = 0;
   let pendingHistoryCorr: string | null = null;
@@ -357,6 +371,7 @@ export function App() {
   const [surgeryPending, setSurgeryPending] = createSignal(false);
   const [surgeryResult, setSurgeryResult] = createSignal<SurgeryResultMessage | null>(null);
   let retryAfterQuiesce: { note: string } | null = null;
+  let pendingSurgeryCorrId: string | null = null;
   const [selecting, setSelecting] = createSignal(false);
   const [selected, setSelected] = createSignal<Set<string>>(new Set());
   const [opLog, setOpLog] = createSignal<OperatorLogEntryWire[]>([]);
@@ -369,13 +384,14 @@ export function App() {
     return `${who}: ${body.slice(0, 90)}${body.length > 90 ? '…' : ''}`;
   };
 
-  const beginRollback = (storeId: string, preview?: string): void => {
-    if (!canRollback()) return;
+  const beginRollback = (storeId: string, preview?: string, chosenIn: string | null = shownSession()): void => {
+    if (!canRollback() || chosenIn === null) return;
     const idx = messages.findIndex((m) => m.storeId === storeId);
     const after = idx >= 0 ? messages.slice(idx + 1).filter((m) => m.storeId) : [];
     setSurgeryResult(null);
     setSurgery({
       op: 'rollback',
+      sessionId: chosenIn,
       messageIds: [storeId],
       previews: [
         `new tail → ${idx >= 0 ? previewOf(messages[idx]) : (preview ?? storeId)}`,
@@ -401,11 +417,13 @@ export function App() {
   };
   const beginSuppressSelected = (): void => {
     const ids = [...selected()];
-    if (ids.length === 0) return;
+    const chosenIn = shownSession();
+    if (ids.length === 0 || chosenIn === null) return;
     const byId = new Map(messages.filter((m) => m.storeId).map((m) => [m.storeId!, m]));
     setSurgeryResult(null);
     setSurgery({
       op: 'suppress',
+      sessionId: chosenIn,
       messageIds: ids,
       previews: ids.map((id) => { const m = byId.get(id); return m ? previewOf(m) : id; }),
     });
@@ -414,10 +432,11 @@ export function App() {
   const sendSurgery = (req: SurgeryRequest, note: string): void => {
     setSurgeryPending(true);
     const corrId = `srg-${Date.now()}`;
+    pendingSurgeryCorrId = corrId;
     if (req.op === 'rollback') {
-      wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), corrId });
+      wire.send({ type: 'rollback', messageId: req.messageIds[0], sessionId: req.sessionId, ...(note ? { note } : {}), corrId });
     } else {
-      wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), corrId });
+      wire.send({ type: 'suppress', messageIds: req.messageIds, sessionId: req.sessionId, ...(note ? { note } : {}), corrId });
     }
   };
   const confirmSurgery = (note: string): void => {
@@ -454,6 +473,8 @@ export function App() {
     }
   };
   const onSurgeryResult = (r: SurgeryResultMessage): void => {
+    if (r.corrId !== pendingSurgeryCorrId) return;
+    pendingSurgeryCorrId = null;
     setSurgeryPending(false);
     setSurgeryResult(r);
     if (r.ok) clearSelection();
@@ -464,6 +485,30 @@ export function App() {
     retryAfterQuiesce = null;
     setSurgery(null);
     setSurgeryResult(null);
+  };
+  const stampFor = (scope: string, chosenIn: string | undefined): { sessionId?: string } =>
+    isChildScope(scope) ? {} : { sessionId: chosenIn ?? '' };
+  const panelKey = (): string =>
+    isChildScope(panelScope()) ? `child|${panelScope()}` : `local|${shownSession() ?? ''}`;
+  const dropWhatWasPrepared = (): void => {
+    retryAfterQuiesce = null;
+    pendingSurgeryCorrId = null;
+    setSurgery(null);
+    setSurgeryResult(null);
+    setSurgeryPending(false);
+    clearSelection();
+    pendingHistoryCorr = null;
+    setHistoryLoading(false);
+    setBulkRemaining(0);
+    setBranches([]);
+    setBranchesCurrentId(null);
+    if (isChildScope(panelScope())) return;
+    setSettingsLoaded(false);
+    setSettingsState(null);
+    setPinsLoaded(false);
+    setPinsState(null);
+    if (sidebarTab() === 'settings') refreshSettings();
+    if (sidebarTab() === 'pins') refreshPins();
   };
   const refreshOpLog = (): void => {
     if (!features().has('operator-log')) return;
@@ -522,9 +567,43 @@ export function App() {
 
   const [pinsState, setPinsState] = createSignal<PinsState | null>(null);
   const [pinsLoaded, setPinsLoaded] = createSignal(false);
+  /** The pin picker's candidates: the host's, each with its loaded row's
+   *  whole text locally, where the transcript is the same session's (a
+   *  local pins answer for another session is dropped). */
+  const pinCandidates = () => {
+    const listed = pinsState()?.candidates ?? [];
+    return panelScope() === 'local' ? withLoadedText(listed, messages) : listed;
+  };
   const refreshPins = (): void => {
     setPinsLoaded(false);
     wire.send({ type: 'request-pins', scope: panelScope() });
+  };
+
+  /** Bumped at each undo, redo or shed on the window of the agent the
+   *  panels show (WindowFrames, DQ-4): the panels built from what that
+   *  window holds (Context's makeup and coverage, the compiled context)
+   *  read again when it moves, and so do the pins, whose candidates leave
+   *  an undone row out. */
+  const [windowEpoch, setWindowEpoch] = createSignal(0);
+  const readWindowPanels = (): void => {
+    setWindowEpoch((n) => n + 1);
+    if (sidebarTab() === 'pins') refreshPins();
+  };
+  /** The panels' scope and the agent they answer for: they ask by scope
+   *  alone, so locally the conversation agent, and for a fleet child the
+   *  agent its pins or settings answer named. Another of the child's agents
+   *  moving its window asks again (WindowFrames), and an answer naming
+   *  another agent reads the panels again. */
+  const shownPanels = () => ({
+    scope: panelScope(),
+    agent: isChildScope(panelScope())
+      ? pinsState()?.agent ?? settingsState()?.agent
+      : conversationAgentOf(welcome()),
+  });
+  /** Mark the transcript's rows from `fromIndex` on as the server says an
+   *  undo left them: in the conversation agent's window, or out of it. */
+  const applyUndoneMarks = (marks: UndoneMarksMessage): void => {
+    setMessages(produce((arr) => applyUndoneMarksTo(arr, marks)));
   };
 
   const [mounts, setMounts] = createSignal<Mount[]>([]);
@@ -720,12 +799,13 @@ export function App() {
     if (panelScope() !== 'local' && !msg.childTrees.some((c) => c.name === panelScope())) {
       changePanelScope('local');
     }
-    if (welcomeSessionId !== null && msg.session.id !== welcomeSessionId) {
+    if (shownSession() !== null && msg.session.id !== shownSession()) {
       clearMcpl();
       if (sidebarTab() === 'mcp') refreshMcpl();
       closePanel();
     }
-    welcomeSessionId = msg.session.id;
+    if (msg.session.id !== shownSession()) dropWhatWasPrepared();
+    setShownSession(msg.session.id);
     const key = `${msg.session.id}/${msg.branch.id}`;
     const entries = msg.messages.map(entryToMessage);
 
@@ -829,6 +909,10 @@ export function App() {
     pendingHistoryCorr = null;
     window.clearTimeout(pendingHistoryTimer);
     setHistoryLoading(false);
+    if (msg.sessionId !== shownSession()) {
+      setBulkRemaining(0);
+      return;
+    }
     const fresh = msg.entries.filter((e) => !(e.id && knownIds.has(e.id)));
     for (const e of fresh) if (e.id) knownIds.add(e.id);
     const prevScrollHeight = scrollPane?.scrollHeight ?? 0;
@@ -988,7 +1072,7 @@ export function App() {
   };
 
   const cancelSubagent = (name: string, childName?: string): void => {
-    wire.send({ type: 'cancel-subagent', name, ...(childName ? { childName } : {}) });
+    wire.send({ type: 'cancel-subagent', name, ...(childName ? { childName } : { sessionId: shownSession() ?? '' }) });
   };
 
   const fleetStop = (name: string): void => {
@@ -1037,6 +1121,10 @@ export function App() {
     for (const r of roots) visit(r);
   };
 
+  // The frames a closed socket missed can have moved the window the panels
+  // show: the next socket's welcome reads them again (WindowFrames).
+  createEffect(() => { if (wire.status() === 'reconnecting') windowFrames.disconnected(); });
+
   onMount(() => {
     const detach = wire.onMessage((msg) => {
       if (treesShown()) treeStore.ingest(msg);
@@ -1074,12 +1162,18 @@ export function App() {
           setMcplToolClasses(toolClasses);
         },
         setSettings: (state) => {
+          if (!isChildScope(panelScope()) && state.sessionId !== shownSession()) return;
+          const before = shownPanels();
           setSettingsLoaded(true);
           setSettingsState(state);
+          windowFrames.named(before, shownPanels(), { readPanels: readWindowPanels });
         },
         setPins: (state) => {
+          if (!isChildScope(panelScope()) && state.sessionId !== shownSession()) return;
+          const before = shownPanels();
           setPinsLoaded(true);
           setPinsState(state);
+          windowFrames.named(before, shownPanels(), { readPanels: readWindowPanels });
         },
         setMounts: (loaded, moduleLoaded, list) => {
           setMountsLoaded(loaded);
@@ -1118,6 +1212,10 @@ export function App() {
         setOperatorLog: (entries, path) => { setOpLog(entries); setOpLogPath(path); setOpLogLoading(false); },
         onOperatorAction: () => { if (panelMode() === 'branches') refreshOpLog(); },
         onCommandAnswer: refreshLocalUpdate,
+        shownPanels,
+        readPanels: readWindowPanels,
+        askPanelsAgent: () => { refreshPins(); refreshSettings(); },
+        applyUndoneMarks,
       });
     });
     onCleanup(() => {
@@ -1362,6 +1460,7 @@ export function App() {
             <For each={messages}>{(m) => (
               <MessageRow
                 storeId={m.storeId}
+                undone={!!m.undone}
                 canRollback={canRollback() && !!m.storeId}
                 canSuppress={canSuppress() && !!m.storeId}
                 selecting={selecting()}
@@ -1378,8 +1477,10 @@ export function App() {
             </Show>}>
               <ContextDocument
                 scope={panelScope()}
+                session={shownSession()}
+                refreshKey={windowEpoch()}
                 canRollback={canRollback() && panelScope() === 'local'}
-                onRollback={(id, preview) => beginRollback(id, preview)}
+                onRollback={(id, preview, chosenIn) => beginRollback(id, preview, chosenIn)}
               />
             </Show>
           </div>
@@ -1519,35 +1620,41 @@ export function App() {
                 onSetEnv={(id, env) => wire.send({ type: 'mcpl-set-env', id, env })}
               />
             </Show>
-            <Show when={sidebarTab() === 'settings'}>
-              <SettingsPanel
-                loaded={settingsLoaded()}
-                state={settingsState()}
-                scope={panelScope()}
-                onRefresh={refreshSettings}
-                onApply={(patch) => wire.send({ type: 'settings-update', scope: panelScope(), ...patch })}
-                onReset={(keys, persist) =>
-                  wire.send({ type: 'settings-reset', scope: panelScope(), ...(keys ? { keys } : {}), persist })}
-                onCancelTransition={() => wire.send({ type: 'settings-cancel-transition', scope: panelScope() })}
-                onDryContext={(ctx) => { setDryContext(ctx as DryContextData); setMainView('dry'); }}
-              />
+            <Show when={sidebarTab() === 'settings' ? panelKey() : null} keyed>
+              {(_shown) => (
+                <SettingsPanel
+                  loaded={settingsLoaded()}
+                  state={settingsState()}
+                  scope={panelScope()}
+                  onRefresh={refreshSettings}
+                  onApply={(patch) => wire.send({ type: 'settings-update', scope: panelScope(), ...stampFor(panelScope(), settingsState()?.sessionId), ...patch })}
+                  onReset={(keys, persist) =>
+                    wire.send({ type: 'settings-reset', scope: panelScope(), ...stampFor(panelScope(), settingsState()?.sessionId), ...(keys ? { keys } : {}), persist })}
+                  onCancelTransition={() => wire.send({ type: 'settings-cancel-transition', scope: panelScope(), ...stampFor(panelScope(), settingsState()?.sessionId) })}
+                  onDryContext={(ctx) => { setDryContext(ctx as DryContextData); setMainView('dry'); }}
+                />
+              )}
             </Show>
-            <Show when={sidebarTab() === 'pins'}>
-              <PinsPanel
-                loaded={pinsLoaded()}
-                state={pinsState()}
-                agent={pinsState()?.agent}
-                candidates={panelScope() === 'local'
-                  ? messages
-                      .filter((m) => m.index !== undefined && m.id)
-                      .map<PinCandidate>((m) => ({
-                        id: m.id, index: m.index!, participant: m.participant, text: m.text ?? '',
-                      }))
-                  : pinsState()?.candidates ?? []}
-                onRefresh={refreshPins}
-                onAdd={(input) => wire.send({ type: 'pin-add', scope: panelScope(), ...input })}
-                onRemove={(pinId) => wire.send({ type: 'pin-remove', scope: panelScope(), pinId })}
-              />
+            <Show when={sidebarTab() === 'pins' ? panelKey() : null} keyed>
+              {(_shown) => (
+                <PinsPanel
+                  loaded={pinsLoaded()}
+                  state={pinsState()}
+                  agent={pinsState()?.agent}
+                  // The server's list for every scope: it leaves out the rows
+                  // a pin on would hold nothing (an undone row, another
+                  // resident's; on a legacy window, which reads no stamp, the
+                  // rows the resident's view leaves out instead: held
+                  // traffic, suppressed rows, another agent's stored
+                  // injections), which the transcript doesn't tell apart.
+                  // Locally, a row the transcript has loaded is filtered on
+                  // its whole text (withLoadedText).
+                  candidates={pinCandidates()}
+                  onRefresh={refreshPins}
+                  onAdd={(input) => wire.send({ type: 'pin-add', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), ...input })}
+                  onRemove={(pinId) => wire.send({ type: 'pin-remove', scope: panelScope(), ...stampFor(panelScope(), pinsState()?.sessionId), pinId })}
+                />
+              )}
             </Show>
             <Show when={sidebarTab() === 'files'}>
               <FilesPanel
@@ -1563,7 +1670,7 @@ export function App() {
               />
             </Show>
             <Show when={sidebarTab() === 'context'}>
-              <ContextPanel scope={panelScope()} />
+              <ContextPanel scope={panelScope()} refreshKey={windowEpoch()} />
             </Show>
             <Show when={sidebarTab() === 'health'}>
               <HealthPanel
@@ -1621,6 +1728,7 @@ interface HandlerHooks {
   setOpenFile: (file: FileViewer) => void;
   onOpsAlert: (event: { [k: string]: unknown }) => void;
   setBranchesList: (branches: BranchRow[], currentId: string) => void;
+  /** React to a server-side branch switch (checkout, restore, branchto, a rollback). */
   onBranchChanged: (branch: { id: string; name: string }) => void;
   setHostMode: (hostMode: HostModeSnapshot | null) => void;
   requestHostMode: () => void;
@@ -1630,17 +1738,28 @@ interface HandlerHooks {
   setOperatorLog: (entries: OperatorLogEntryWire[], path?: string) => void;
   onOperatorAction: () => void;
   onCommandAnswer: () => void;
+  /** The panels' scope and the agent they answer for (WindowFrames). */
+  shownPanels: () => ShownPanels;
+  /** An undo, a redo or a shed on the shown agent's window: the panels built from it read again. */
+  readPanels: () => void;
+  /** A fleet child's other agent moved its window: ask which agent its panels answer for. */
+  askPanelsAgent: () => void;
+  /** Apply an undone-marks frame to the transcript. */
+  applyUndoneMarks: (marks: UndoneMarksMessage) => void;
 }
 
 function staleScope(msgScope: string | undefined, current: string): boolean {
   return msgScope !== undefined && msgScope !== current;
 }
 
+const windowFrames = new WindowFrames();
+
 function handleServerMessage(
   msg: WebUiServerMessage,
   _wire: WireClient,
   hooks: HandlerHooks,
 ): void {
+  windowFrames.take(msg as unknown as { type: string; [k: string]: unknown }, hooks.shownPanels(), hooks);
   switch (msg.type) {
     case 'welcome': {
       hooks.applyWelcome(msg);
@@ -1691,6 +1810,9 @@ function handleServerMessage(
     }
     case 'branch-changed':
       hooks.onBranchChanged(msg.branch);
+      return;
+    case 'undone-marks':
+      // windowFrames took it, above.
       return;
     case 'branches-list':
       hooks.setBranchesList(msg.branches, msg.currentId);
@@ -1856,6 +1978,8 @@ type ToolResultInfo = { text: string; isError?: boolean; truncated?: boolean };
 
 function MessageRow(props: {
   storeId?: string;
+  /** The row is out of the conversation agent's window as an undone turn's: dimmed and labelled. */
+  undone?: boolean;
   canRollback: boolean;
   canSuppress: boolean;
   selecting: boolean;
@@ -1866,14 +1990,20 @@ function MessageRow(props: {
 }) {
   const actionable = (): boolean => !!props.storeId && (props.canRollback || props.canSuppress);
   return (
-    <div class={`group relative ${actionable() ? 'pr-2' : ''} ${props.selected ? 'ring-1 ring-rose-800/70 rounded bg-rose-950/10' : ''}`}>
+    <div class={`group relative ${actionable() ? 'pr-2' : ''} ${props.selected ? 'ring-1 ring-rose-800/70 rounded bg-rose-950/10' : ''} ${props.undone ? 'opacity-50' : ''}`}>
+      <Show when={props.undone}>
+        <div
+          class="text-[10px] font-mono text-amber-300/80 mb-0.5"
+          title="Out of the agent's context as an undone turn's: an undo (which /redo can reverse until the agent's next turn, a branch move or a restart, as agent-framework keeps the redo in memory only) or a shed after a refusal or failed inference (which it can't). Its next request is built without it; the record keeps it."
+        >undone · not in the agent's context</div>
+      </Show>
       <Show when={actionable()}>
         <div class={`absolute right-0 top-0 z-10 flex gap-1 ${props.selecting ? '' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'} transition-opacity`}>
           <Show when={props.canRollback && !props.selecting}>
             <button
               type="button"
               class="px-1.5 py-0.5 rounded border bg-neutral-900/95 border-neutral-700 text-neutral-400 hover:border-amber-700 hover:text-amber-200 text-[10px] font-mono leading-tight shadow"
-              title="roll back: fork the chronicle here and make this message the tail of the live branch (the current branch keeps everything after it)"
+              title="roll back: fork the chronicle at this message, or, on a presented window, at the write that showed it to the agent, and make the fork the live branch (the current branch keeps everything after it; rows shown to the agent in the same write as this message stay in its context, and rows stored before it was shown re-enter it at its next turn — the result says how many; a row another resident stored before that write stays on the fork too, in neither count)"
               onClick={props.onRollback}
             >⏪ roll back</button>
           </Show>
@@ -2290,10 +2420,10 @@ const COMMANDS: CommandHint[] = [
   { name: '/budget', blurb: 'show or set stream token budget' },
   { name: '/branches', blurb: 'list Chronicle branches' },
   { name: '/checkout', blurb: 'switch to named branch' },
-  { name: '/checkpoint', blurb: 'save current state as named checkpoint' },
-  { name: '/restore', blurb: 'switch to checkpoint' },
-  { name: '/undo', blurb: 'revert before last agent turn' },
-  { name: '/redo', blurb: 're-apply last undone action' },
+  { name: '/checkpoint', blurb: "save the record's position (its last row, an undone one included)" },
+  { name: '/restore', blurb: 'roll back to checkpoint, or to its branch head' },
+  { name: '/undo', blurb: "take the agent's last turn out of its window" },
+  { name: '/redo', blurb: 'put the undone turn back in its window' },
   { name: '/nudge', blurb: 'run inference on current context, no new events' },
   { name: '/history', blurb: 'recent messages' },
   { name: '/lessons', blurb: 'list active lessons' },

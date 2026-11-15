@@ -33,7 +33,8 @@ export interface CredentialState {
   until?: number;
   /** Spent window labels (`weekly`, `5h`, …) for `quota-spent`. */
   windows?: string[];
-  /** The source can rotate the credential without operator input. */
+  /** The source can rotate the credential without operator input, which it
+   *  can't while a login is pending. */
   rotatable: boolean;
   /** Epoch ms of the credential's own expiry, when the source knows it. */
   expiresAt?: number;
@@ -43,6 +44,9 @@ export interface CredentialState {
   login?: { verificationUrl: string; userCode: string };
   /** Outcome of the last operator action, for the panel. */
   lastAction?: { id: CredentialActionId; at: number; ok: boolean; message: string };
+  /** While the last write of the credential to its file failed: what the
+   *  `credential-unsaved` alert said. */
+  unsaved?: string;
 }
 
 export interface CredentialSource {
@@ -57,7 +61,7 @@ export interface CredentialSource {
    *  429 on the usage endpoint. */
   probe?(): Promise<void>;
   currentToken?(): string | undefined;
-  persistWarning?(): string | undefined;
+  writeBack?(): void;
 }
 
 export interface CredentialMonitorOptions {
@@ -107,8 +111,10 @@ export class CredentialMonitor {
   private unsubMeter: (() => void) | null = null;
   private expiryTimer: ReturnType<typeof setTimeout> | null = null;
   private actionChain: Promise<void> = Promise.resolve();
+  private actionsRunning = 0;
   private loginInFlight = false;
   private disposed = false;
+  private unsaved: string | undefined;
 
   constructor(options: CredentialMonitorOptions) {
     this.source = options.source;
@@ -132,7 +138,21 @@ export class CredentialMonitor {
   }
 
   snapshot(): CredentialState {
-    return { ...this.state, actions: [...this.state.actions] };
+    return {
+      ...this.current(),
+      actions: [...this.state.actions],
+      ...(this.unsaved !== undefined ? { unsaved: this.unsaved } : {}),
+    };
+  }
+
+  private current(): CredentialState {
+    const { expiresAt: _entered, ...state } = this.state;
+    const expiresAt = this.expiry();
+    return {
+      ...state,
+      ...(state.kind === 'auth-login-required' ? {} : { rotatable: this.source.canRefresh() }),
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
+    };
   }
 
   bearer(): string | undefined {
@@ -210,6 +230,23 @@ export class CredentialMonitor {
         { id: 'login', label: 'Restart login', hint: 'Starts a new device-code login and shows a fresh code.' },
         { id: 'recheck', label: 'Re-check' },
       ],
+    });
+  }
+
+  observeWriteBack(file: string, error?: string): void {
+    if (this.disposed) return;
+    const provider = this.source.provider;
+    if (error === undefined) {
+      if (this.unsaved === undefined) return;
+      this.unsaved = undefined;
+      this.emit('credential-unsaved-clear', `${provider} credential written to ${file}`, { provider });
+      return;
+    }
+    const why = error.trim() ? ` (${trim(error)})` : '';
+    this.unsaved = `${provider} credential couldn't be written to ${file}${why} — the credential in use may not be in that file, which is what a restart reads`;
+    this.emit('credential-unsaved', this.unsaved, {
+      provider,
+      actions: [{ id: 'recheck', label: 'Re-check', hint: 'Writes the credential to its file again, then re-checks it.' }],
     });
   }
 
@@ -320,8 +357,16 @@ export class CredentialMonitor {
       }
     }
     const run = this.actionChain.then(() => this.performAction(id, queued));
-    this.actionChain = run.then(() => undefined, () => undefined);
+    const settled = run.then(() => undefined, () => undefined);
+    this.actionChain = settled;
+    this.actionsRunning++;
+    void settled.then(() => { this.actionsRunning--; });
     return run;
+  }
+
+  /** Whether an action asked for here, from any entry, hasn't settled yet. */
+  actionInFlight(): boolean {
+    return this.actionsRunning > 0;
   }
 
   private async performAction(id: CredentialActionId, params: { token?: string; restart?: boolean }): Promise<CredentialState> {
@@ -358,6 +403,7 @@ export class CredentialMonitor {
           return done(...(await this.settle('token replaced', id)));
         }
         case 'recheck': {
+          if (this.unsaved !== undefined) this.source.writeBack?.();
           await this.meter?.refresh();
           return done(...(await this.settle('re-checked', id)));
         }
@@ -372,19 +418,17 @@ export class CredentialMonitor {
 
   private async settle(what: string, id: CredentialActionId): Promise<[boolean, string]> {
     this.armExpiryTimer();
-    const persistWarning = this.source.persistWarning?.();
-    const warn = persistWarning ? `; WARNING: ${persistWarning}` : '';
     if (!this.source.probe) {
       if (id === 'recheck') {
         return [true, `${what}; nothing to verify for ${this.source.provider} (no probe) — state unchanged`];
       }
       if (this.state.kind.startsWith('auth-')) this.settleAfterAuth();
-      return [true, `${what}; not verified (no probe for ${this.source.provider}) — the next call will tell${warn}`];
+      return [true, `${what}; not verified (no probe for ${this.source.provider}) — the next call will tell`];
     }
     try {
       await this.source.probe();
       if (this.state.kind.startsWith('auth-')) this.settleAfterAuth();
-      return [true, `${what}; credential verified${warn}`];
+      return [true, `${what}; credential verified`];
     } catch (err) {
       if (isAuthFailure(err)) {
         const reason = err instanceof Error ? err.message : String(err);
@@ -397,7 +441,7 @@ export class CredentialMonitor {
         return [false, `${what}, but the provider still rejects the credential`];
       }
       const reason = err instanceof Error ? err.message : String(err);
-      return [true, `${what}; verification inconclusive (${trim(reason)})${warn}`];
+      return [true, `${what}; verification inconclusive (${trim(reason)})`];
     }
   }
 
