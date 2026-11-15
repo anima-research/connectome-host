@@ -53,10 +53,16 @@ export interface RetrievalModuleConfig {
   membrane: Membrane;
   retrievalModel?: string;
   retrievalReasoning?: RetrievalReasoningConfig;
-  /** Whether the calls set `temperature: 0`, as they always did on the Claude
-   *  Haiku default: false where the model is one that takes only its default
-   *  temperature (every `gpt-5`+ model), which refuses the parameter. */
+  /** Whether the calls set `temperature: 0`, as they always did: true for
+   *  the module's Haiku default and for a model the recipe named under
+   *  `modules.retrieval.model`; false for a model the host steered the calls
+   *  to (the resident's, or the recipe's `auxiliaryModel`), which may be one
+   *  that takes only its default temperature (every `gpt-5`+ model). */
   deterministic?: boolean;
+  /** The cap on each call's answer: 500 unless the host steered the calls to
+   *  a model that may reason before it answers, which gets the room the
+   *  host's other small calls get (auxiliaryRequest). */
+  maxTokens?: number;
   maxInjectedLessons?: number;
   maxMessageTokens?: number;
   minConfidence?: number;
@@ -73,7 +79,7 @@ export const RETRIEVAL_MAX_TOKENS = 500;
  * effort as `providerParams` where one is set. Pure, so a test can read what
  * goes on the wire per route.
  */
-export function retrievalRequestFields(config: Pick<RetrievalModuleConfig, 'retrievalModel' | 'retrievalReasoning' | 'deterministic'>): {
+export function retrievalRequestFields(config: Pick<RetrievalModuleConfig, 'retrievalModel' | 'retrievalReasoning' | 'deterministic' | 'maxTokens'>): {
   config: { model: string; maxTokens: number; temperature?: number };
   providerParams?: Record<string, unknown>;
 } {
@@ -81,7 +87,7 @@ export function retrievalRequestFields(config: Pick<RetrievalModuleConfig, 'retr
   return {
     config: {
       model: config.retrievalModel ?? RETRIEVAL_DEFAULT_MODEL,
-      maxTokens: RETRIEVAL_MAX_TOKENS,
+      maxTokens: config.maxTokens ?? RETRIEVAL_MAX_TOKENS,
       ...(config.deterministic === false ? {} : { temperature: 0 }),
     },
     ...(reasoning ? { providerParams: { reasoning: { effort: reasoning.effort } } } : {}),

@@ -4,3 +4,5 @@
   second failed inside the naming call, unseen). A saved recipe with one of
   these is refused at the next start: fix the recipe and start with it as the
   argument once.
+  Unchanged: a recipe that omits `sessionNaming`, or gives
+  `{ "examples": [...] }` with strings, loads as before.

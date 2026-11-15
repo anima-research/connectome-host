@@ -1,5 +1,6 @@
 import type { Recipe } from './recipe.js';
 import { recipeModel, resolveProvider } from './recipe.js';
+import { modelAcceptsEffort } from './logging-adapter.js';
 
 /** The small Anthropic model the host's auxiliary calls went to, on every provider, before #649. */
 export const ANTHROPIC_AUXILIARY_MODEL = 'claude-haiku-4-5-20251001';
@@ -53,7 +54,11 @@ export function auxiliaryModel(recipe: Recipe): string {
  */
 export function auxiliarySteering(recipe: Recipe): { model: string; anthropicEffort: boolean } | undefined {
   const model = auxiliaryModelOverride(recipe);
-  return model === undefined ? undefined : { model, anthropicEffort: servesAnthropicIds(recipe) };
+  if (model === undefined) return undefined;
+  // The route takes `output_config`, and the model named takes an effort
+  // (the host's own table: Haiku 4.5 and Sonnet 4.5 refuse it with a 400);
+  // otherwise `effort: 'none'`, the model's default. (R3-2)
+  return { model, anthropicEffort: servesAnthropicIds(recipe) && modelAcceptsEffort(model, 'low') };
 }
 
 /** Whether the host chose the model itself (the resident's), as against the recipe naming one. */
@@ -61,9 +66,6 @@ function hostChoseModel(recipe: Recipe): boolean {
   return !recipe.auxiliaryModel && !servesAnthropicIds(recipe);
 }
 
-/** Claude Fable and Mythos think on every call, asked or not (membrane's
- *  `isAlwaysThinkingModel`), so a 30-token cap is spent before the answer. */
-const alwaysThinking = (model: string): boolean => /fable|mythos/i.test(model);
 
 /**
  * The request fields of one of the host's own short calls (a session name,
@@ -89,10 +91,12 @@ export function auxiliaryRequest(recipe: Recipe, maxTokens: number): {
   const provider = resolveProvider(recipe);
   const responsesFamily = provider === 'openai-responses' || provider === 'openai-codex';
   const model = auxiliaryModel(recipe);
-  // Anthropic's models think only when asked to, and these requests don't
-  // ask, except the always-thinking ids, which get the room a reasoning
-  // model gets.
-  const roomNeeded = !servesAnthropicIds(recipe) || alwaysThinking(model);
+  // The caller's cap is for the Haiku 4.5 default alone. Any other Claude
+  // id may think before it answers: Fable and Mythos on every call, and the
+  // 4.6+ models whenever the host's adapter adds adaptive thinking to these
+  // calls (LoggingAnthropicAdapter.complete, with the reasoning setting on).
+  // Only generated tokens are billed, so the room costs nothing unused. (R3-4)
+  const roomNeeded = !servesAnthropicIds(recipe) || model !== ANTHROPIC_AUXILIARY_MODEL;
   return {
     config: {
       model,

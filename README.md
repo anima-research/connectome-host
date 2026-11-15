@@ -101,7 +101,7 @@ retrieval (`modules.retrieval.model`), the reply judge
 keeps its Claude Haiku default on the `anthropic` and `bedrock` routes, which
 serve it, and goes to the resident's own model on every other provider, at
 that model's price; a recipe that wants them cheaper names a smaller model its
-provider serves (`"auxiliaryModel": "anthropic/claude-haiku-4-5"` on
+provider serves (`"auxiliaryModel": "anthropic/claude-haiku-4.5"` on
 OpenRouter, say). On the `anthropic` route the key is for a Claude id only.
 
 Every string value may reference the environment as `${VAR}` or

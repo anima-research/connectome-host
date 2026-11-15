@@ -13,10 +13,15 @@
   lessons. Off `anthropic` and `bedrock` the requests now carry what the route
   takes: no `temperature` (current Claude and `gpt-5`+ models refuse one), no
   Anthropic `output_config` for the judge and the review (`effort: 'none'`
-  unless the recipe sets one), a low reasoning effort on the Responses-family
+  unless the recipe sets one; they run at the model's default effort, since
+  agent-framework's options carry no reasoning setting), a low reasoning
+  effort for naming, the summaries and retrieval on the Responses-family
   routes where the host chose the model, and, where membrane sends a cap at
   all (Codex in subscription mode sends none), room for a model that reasons
-  before it answers. These calls therefore now cost what the resident's model
+  before it answers, retrieval included. On the `anthropic` and `bedrock`
+  routes a recipe-named `auxiliaryModel` gets the same: the room, no
+  `temperature`, and an effort only where the host's own table says the
+  model takes one. These calls therefore now cost what the resident's model
   costs on such a host, where they cost nothing because they failed; the
   judge reads up to `modules.wake.judge.maxInputTokens` (90,000) per batch,
   retrieval runs up to twice a turn, and the fleet view's summaries run while

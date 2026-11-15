@@ -3,7 +3,8 @@ import type { Recipe, RecipeAgent, RecipeModules } from './recipe.js';
 import type { RetrievalModuleConfig } from './modules/retrieval-module.js';
 import { SUBAGENT_MESSAGE_CAP } from './modules/subagent-module.js';
 import { strategyMessageCap } from './framework-strategy.js';
-import { auxiliaryModelOverride, auxiliaryRequest, servesAnthropicIds } from './auxiliary-model.js';
+import { auxiliaryModelOverride, auxiliaryRequest } from './auxiliary-model.js';
+import { RETRIEVAL_MAX_TOKENS } from './modules/retrieval-module.js';
 
 type RetrievalRecipeConfig = Exclude<RecipeModules['retrieval'], boolean | undefined>;
 
@@ -50,14 +51,20 @@ export function retrievalModuleConfig(membrane: Membrane, recipe: Recipe): Retri
   // Responses family gets a low effort, as the resident's own turns set one
   // (and would otherwise run at the server's default); off anthropic and
   // Bedrock the calls send no temperature, which `gpt-5`+ models refuse.
+  // Shaped by who chose the model, not by the route (R3-1, R3-3): a model
+  // the host steered the calls to gets the room and the parameters the
+  // host's other small calls get; the module's Haiku default and a model the
+  // recipe named under modules.retrieval.model keep temperature 0 and the
+  // 500-token cap they always had.
   const hostChose = config.retrievalModel === undefined ? auxiliaryModelOverride(recipe) : undefined;
-  const shaped = hostChose !== undefined ? auxiliaryRequest(recipe, 0) : undefined;
+  const shaped = hostChose !== undefined ? auxiliaryRequest(recipe, RETRIEVAL_MAX_TOKENS) : undefined;
   return {
     ...config,
     retrievalModel: config.retrievalModel ?? hostChose,
     retrievalReasoning: config.retrievalReasoning
       ?? (shaped?.providerParams ? { effort: 'low' as const } : undefined),
-    deterministic: servesAnthropicIds(recipe),
+    deterministic: hostChose === undefined,
+    ...(shaped ? { maxTokens: shaped.config.maxTokens } : {}),
     maxMessageTokens: retrievalMessageCap(recipe),
   };
 }
