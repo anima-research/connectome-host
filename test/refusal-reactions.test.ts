@@ -18,18 +18,20 @@ function harness(config = zulipConfig()) {
   let handler!: (r: Refusal) => Promise<void>;
   let owner = false;
   let current = true;
-  let binding = 'binding';
-  let epoch = 'epoch';
+  let binding: string | undefined = 'binding';
+  let epoch: string | undefined = 'epoch';
   let suppression: unknown = { source: 'baseline-default', status: 'active', protectionActive: true };
   let onCall: ((call: ToolCall) => Promise<ToolResult>) | undefined;
   const calls: ToolCall[] = [];
   const diagnostics: string[] = [];
+  const alerts: unknown[][] = [];
   const tools: any[] = config.servers[0]!.kind === 'discord' ? [
     { name: 'p--add_reaction', inputSchema: { type: 'object', properties: { channelId: { type: 'string' }, messageId: { type: ['string', 'null'] }, emoji: { type: 'string' } }, required: ['channelId', 'emoji'] } },
     { name: 'p--filters_get', inputSchema: { type: 'object', properties: {} } },
   ] : [{ name: 'p--add_reaction', inputSchema: { type: 'object', properties: { message_id: { type: config.servers[0]!.kind === 'zulip' && config.servers[0]!.idMode === 'legacy' ? 'number' : ['string'] }, emoji_name: { type: 'string' } }, required: ['message_id', 'emoji_name'] } }];
   const serverRows = [{ id: 's', connected: true, transport: 'stdio', family: 'legacy', refused: null, toolPrefix: 'p' }];
   const framework = {
+    notifyOps: (...args: unknown[]) => { alerts.push(args); },
     getMainRefusalBridge: () => ({ version: 1, isCurrent: () => current, serverBinding: () => binding, serverEpoch: () => epoch,
       takeOwnership: (fn: typeof handler) => { if (owner) throw Error('already owned'); owner = true; handler = fn; return () => { owner = false; }; } }),
     listMcplServers: () => serverRows,
@@ -42,8 +44,8 @@ function harness(config = zulipConfig()) {
   };
   const prepared = prepareRefusalReactions(config, servers(config));
   const install = () => installRefusalReactions(framework as unknown as Pick<AgentFramework, 'executeToolCall' | 'getAllTools' | 'listMcplServers'>, config, prepared, d => diagnostics.push(d));
-  return { config, framework, prepared, tools, serverRows, calls, diagnostics, install, emit: (r: Refusal) => handler(r),
-    setCurrent: (v: boolean) => { current = v; }, setBinding: (v: string) => { binding = v; }, setEpoch: (v: string) => { epoch = v; },
+  return { config, framework, prepared, tools, serverRows, calls, diagnostics, alerts, install, emit: (r: Refusal) => handler(r),
+    setCurrent: (v: boolean) => { current = v; }, setBinding: (v: string | undefined) => { binding = v; }, setEpoch: (v: string | undefined) => { epoch = v; },
     setSuppression: (v: unknown) => { suppression = v; }, setCall: (fn: typeof onCall) => { onCall = fn; } };
 }
 
@@ -65,14 +67,18 @@ test('explicit whole-framework ownership and known configured stdio/pin are requ
   expect(() => prepareRefusalReactions(c, servers(c))).toThrow('source contract');
 });
 
-test('Zulip injects names, preserves existing baseline, never writes operator files; Discord requires an explicit matching Unicode seed', () => {
+test('Zulip injects names, preserves existing baseline, never writes operator files; Discord preserves the AF default and checks only explicit seeds', () => {
   const c = zulipConfig(); const input = servers(c); input[0]!.env!.ZULIP_SUPPRESSED_REACTIONS_BASELINE = 'operator_extra';
   const prepared = prepareRefusalReactions(c, input);
   expect(prepared[0]!.env!.ZULIP_SUPPRESSED_REACTIONS_BASELINE).toBe('operator_extra,biohazard,stop_sign');
   expect(input[0]!.env!.ZULIP_SUPPRESSED_REACTIONS_BASELINE).toBe('operator_extra');
   expect(Object.isFrozen(prepared[0]!.env)).toBe(true);
   const d = discordConfig(); const ds = servers(d); ds[0]!.env = {};
-  expect(() => prepareRefusalReactions(d, ds)).toThrow('seed');
+  expect(prepareRefusalReactions(d, ds)[0]!.env).toEqual({});
+  ds[0]!.env = { DISCORD_SUPPRESSED_REACTIONS_BASELINE: '' };
+  expect(() => prepareRefusalReactions(d, ds)).toThrow('s: Discord refusal suppression seed');
+  ds[0]!.env.DISCORD_SUPPRESSED_REACTIONS_BASELINE = Object.values(DISCORD_REFUSAL_MARKERS).join(',') + ',custom:123';
+  expect(prepareRefusalReactions(d, ds)[0]!.env).toEqual(ds[0]!.env);
   const z = zulipConfig(); if (z.servers[0]!.kind === 'zulip') z.servers[0]!.availableEmojiNames = [];
   expect(() => prepareRefusalReactions(z, servers(z))).toThrow('preflight');
   const wrongEnv = servers(c); wrongEnv[0]!.env!.ZULIP_REALM_TAG = 'wrong';
@@ -96,7 +102,7 @@ for (const mode of ['strict', 'compat', 'legacy'] as const) {
 test('ADD only, per-turn dedup, unknown ack has no automatic retry and a new turn is independent', async () => {
   const h = harness(); h.setCall(async () => { throw Error('ack lost'); }); h.install();
   await h.emit(signal()); await h.emit(signal());
-  expect(h.calls.length).toBe(1); expect(h.diagnostics).toContain('add-or-preflight-ack-unknown: no retry');
+  expect(h.calls.length).toBe(1); expect(h.diagnostics[0]).toStartWith('add-or-preflight-ack-unknown: no retry');
   await h.emit(signal('realm:009', 2)); expect(h.calls.length).toBe(2);
   expect(h.calls.every(c => c.name === 'p--add_reaction')).toBe(true);
 });
@@ -173,7 +179,7 @@ test('in-flight effects are bounded without an inference/action loop', async () 
   const h = harness(); const finishes: Array<(r: ToolResult) => void> = [];
   h.setCall(() => new Promise(resolve => { finishes.push(resolve); })); h.install();
   const work = Array.from({ length: 10 }, (_, n) => h.emit(signal('realm:9', n)));
-  expect(h.calls.length).toBe(8); expect(h.diagnostics.filter(d => d === 'effect-capacity-exhausted').length).toBe(2);
+  expect(h.calls.length).toBe(8); expect(h.diagnostics.filter(d => d.startsWith('effect-capacity-exhausted')).length).toBe(2);
   finishes.forEach(f => f({ success: false })); await Promise.all(work);
 });
 
@@ -184,4 +190,41 @@ test('disposing ownership during preflight prevents an unissued ADD', async () =
   const dispose = h.install(); const pending = h.emit(discordSignal()); dispose();
   finish({ success: true, data: { reactionSuppression: { source: 'baseline-default', status: 'active', protectionActive: true } } });
   await pending; expect(h.calls.length).toBe(1);
+});
+
+// R1-4: startup failures must not acquire ownership and disable legacy markers.
+for (const state of ['closed-tab', 'failed-connect', 'binding', 'epoch'] as const) {
+  test(`selected server ${state} fails before handover`, () => {
+    const h = harness(discordConfig());
+    if (state === 'closed-tab') h.serverRows.splice(0);
+    if (state === 'failed-connect') h.serverRows[0]!.connected = false;
+    if (state === 'binding') h.setBinding(undefined);
+    if (state === 'epoch') h.setEpoch(undefined);
+    let acquired = false;
+    const bridge = h.framework.getMainRefusalBridge();
+    h.framework.getMainRefusalBridge = () => ({ ...bridge, takeOwnership: () => { acquired = true; return () => {}; } });
+    expect(h.install).toThrow('Refusal server s: must be connected');
+    expect(acquired).toBe(false);
+  });
+}
+
+test('explicit closed-tab config is rejected before connect', () => {
+  const c = discordConfig();
+  expect(() => prepareRefusalReactions(c, [{ ...servers(c)[0]!, presentation: 'closed-tab' }])).toThrow('s: closed-tab');
+});
+
+test('unchanged epoch survives recovery; replacement alerts once with actionable context', async () => {
+  const h = harness(discordConfig()); h.install();
+  h.serverRows[0]!.connected = false;
+  h.serverRows[0]!.connected = true; // AF determines whether a restart preserves its epoch.
+  await h.emit(discordSignal());
+  expect(h.calls.length).toBe(2);
+  h.setEpoch('deployed-config');
+  await h.emit({ ...discordSignal(), turnId: 2 });
+  await h.emit({ ...discordSignal(), turnId: 3 });
+  expect(h.calls.length).toBe(2);
+  expect(h.alerts.length).toBe(1);
+  expect(h.alerts[0]![3]).toEqual({ serverId: 's', agentName: 'agent', turnId: 2, category: 'bio', status: 'stale-or-unsupported-server' });
+  expect(h.diagnostics[1]).toContain('"serverId":"s"');
+  expect(h.diagnostics[1]).toContain('"turnId":2');
 });

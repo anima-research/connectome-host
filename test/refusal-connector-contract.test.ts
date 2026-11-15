@@ -71,5 +71,22 @@ describe.skipIf(!root)('reviewed connector sources, not a deployed qualification
     const add = toolDefinitions.find((t: any) => t.name === 'add_reaction');
     expect(add.inputSchema.properties.channelId.type).toBe('string');
     expect(add.inputSchema.properties.messageId.type).toContain('string');
+    const config: RefusalReactionConfig = { ownership: 'whole-framework', servers: [{ serverId: 's', kind: 'discord', sourceRevision: DISCORD_SOURCE }] };
+    const prepared = prepareRefusalReactions(config, [{ id: 's', command: 'node', env: {} }]);
+    const tools = toolDefinitions.map((t: any) => ({ ...t, name: `p--${t.name}` }));
+    const calls: any[] = [];
+    let handler!: (r: any) => Promise<void>;
+    installRefusalReactions({
+      getMainRefusalBridge: () => ({ version: 1, takeOwnership: (h: any) => { handler = h; return () => {}; }, isCurrent: () => true, serverBinding: () => 'binding', serverEpoch: () => 'epoch' }),
+      listMcplServers: () => [{ id: 's', connected: true, transport: 'stdio', refused: null, toolPrefix: 'p' }],
+      getAllTools: () => tools,
+      executeToolCall: async (call: any) => {
+        calls.push(call);
+        return { success: true, data: { reactionSuppression: { source: 'baseline-default', status: 'active', protectionActive: true } } };
+      },
+    } as any, config, prepared, () => {});
+    await handler({ agentName: 'agent', agentInstanceId: 'instance', turnId: 1, category: 'bio', rewind: 'unhandled', origin: { serverId: 's', binding: 'binding', channelId: canonical, messageRef: '34567890123456789' } });
+    expect(calls.map(c => c.name)).toEqual(['p--filters_get', 'p--add_reaction']);
+    expect(calls[1].input).toEqual({ channelId: canonical, messageId: '34567890123456789', emoji: DISCORD_REFUSAL_MARKERS.bio });
   });
 });

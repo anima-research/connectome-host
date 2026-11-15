@@ -27,7 +27,7 @@
 
 // First, so its warning about an old Bun prints before the modules below run.
 import './bun-floor-check.js';
-import { assertRefusalBridgeAvailable, prepareRefusalReactions, installRefusalReactions } from './refusal-reactions.js';
+import { assertRefusalBridgeAvailable, prepareRefusalReactions, installRefusalReactions, validateRefusalReactionConfig } from './refusal-reactions.js';
 import { hostMembraneRetry } from './membrane-retry.js';
 import { frameworkErrorPolicy } from './framework-error-policy.js';
 import {
@@ -510,6 +510,7 @@ async function createFramework(
   const reactionServers = heartbeatOptions ? withoutHeartbeatMcpl(finalServers, (line) => console.warn(line)) : finalServers;
 
   // Fail before connecting anything when stock AF lacks this optional feature.
+  validateRefusalReactionConfig(recipe.mainRefusalReactions);
   if (recipe.mainRefusalReactions !== undefined) assertRefusalBridgeAvailable(AgentFramework.prototype);
   const mcplServers = prepareRefusalReactions(recipe.mainRefusalReactions, reactionServers);
 

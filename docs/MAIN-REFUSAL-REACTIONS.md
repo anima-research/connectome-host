@@ -1,147 +1,129 @@
-# Local main-final-refusal reactions (unreleased prototype)
+# Main-final-refusal reactions (experimental)
 
-This companion requires the optional AF version-1 main-refusal facet in the local
-source candidate. **Stock host lock AF 0.33.0 does not support it.** With the option
-omitted, stock recipes load and legacy Discord behavior is unchanged. With the
-option selected on old AF, startup refuses before connecting servers. No released
-AF dependency, package version or lockfile has been changed.
+`mainRefusalReactions` replaces the framework's built-in refusal reactions with
+host-selected connector drivers. **It requires the version-1 main-refusal bridge
+from agent-framework#1018, which is not yet released.** The locked AF dependency
+does not support this option. Omit it to retain normal built-in Discord behavior.
+There is no supported released installation recipe for enabling it yet.
 
-## Explicit ownership
+## Configuration and ownership
 
-`mainRefusalReactions` is an optional root recipe field:
+The optional root recipe field has this shape:
 
 ```json
 {
   "mainRefusalReactions": {
     "ownership": "whole-framework",
     "servers": [{
-      "serverId": "zulip",
-      "kind": "zulip",
-      "sourceRevision": "61298a12396c27e7cebc004f31cf67c958e35930",
-      "realmTag": "myrealm",
-      "idMode": "strict",
-      "emojis": { "bio": "biohazard", "unknown": "stop_sign" },
-      "availableEmojiNames": ["biohazard", "stop_sign"]
+      "serverId": "discord",
+      "kind": "discord",
+      "sourceRevision": "dc80b2fba48308fdfe13a9920ff744ead0118c01"
     }]
   }
 }
 ```
 
-This is **whole-framework** replacement of all built-in refusal reactions, not a
-partial server selection. Every Discord server that should still receive refusal
-markers must be explicitly included with a supported/preflighted driver.
-Unselected servers get a local unsupported-driver diagnostic, **not** legacy
-fallback. A Zulip server elsewhere in a recipe does not disable anything. An
-unknown-origin first refusal is **log only**, not an invented home fallback; the
-existing streak-two home/ops policy and CM summary-purpose classification stay
-unchanged. No change to the separate home-notice work is included.
+Ownership replaces **all** built-in refusal reactions, including those on
+unselected Discord servers. Include every server that needs markers. Unselected
+servers produce diagnostics, not legacy fallback. Unknown origins are log-only;
+the host does not invent a home destination. The separate streak-two home/ops
+policy remains unchanged.
 
-## Known stdio contracts and operator preflight
+Each selected server must be a unique configured stdio child with an explicit
+child environment (`inheritEnv: true` and network transports are unsupported).
+It must be connected, non-refused, and have a defined bridge binding and epoch
+at install. Closed-tab selection and failed first connects fail startup rather
+than silently taking ownership without a working server. This includes tabs
+restored closed from saved state. Recipe shapes are validated at load, then
+connector/environment checks run again during preparation and installation.
 
-Only one explicit stdio config per server id is supported; `inheritEnv: true` and
-network transports are unsupported. `sourceRevision` is the operator's explicit
-choice of a reviewed public connector contract, **not runtime attestation** that a
-configured executable actually contains that revision. Before later live use an
-operator must verify the installed artifact, environment, realm, emoji
-availability and connector contract. Nothing here was live-verified. The public
-Discord source is not a claim about the deployed Discord pin.
+Bridge availability and child configuration are checked **before**
+`AgentFramework.create`. Installation runs **after** create has connected startup
+servers. An installation failure stops that framework and its children; it is
+not a pre-handshake check.
 
-- **Zulip:** reviewed public fork `theaspirational/zulip_mcp` at the revision above.
-  Explicit child `ZULIP_ID_MODE` and `ZULIP_REALM_TAG` must match. Strict/compat
-  driver calls preserve the original scoped token, including leading zeroes.
-  Compat also accepts a positive safe bare decimal *string* if advertised.
-  Wrong-realm tags, whitespace, invalid/unsafe IDs are refused. Numeric-only
-  **legacy mode is honestly unsupported**: no `Number(id)`, namespace stripping,
-  or schema guessing. An operator must preflight every configured emoji NAME for
-  the realm. The in-memory child config unions those names into
-  `ZULIP_SUPPRESSED_REACTIONS_BASELINE`, preserving existing baseline entries.
-  The reviewed fork unions that baseline with operator lists on every start.
-- **Discord:** reviewed public `anima-research/discord-mcpl` at
-  `dc80b2fba48308fdfe13a9920ff744ead0118c01`. Configure that `sourceRevision`,
-  `kind: "discord"`, and `serverId`. The **explicit child environment** must
-  already supply a `DISCORD_SUPPRESSED_REACTIONS_BASELINE` containing all six
-  emitted Unicode markers: `☣️,🧪,☢️,💻,🧠,🛑`. Preserve the deployment's awareness
-  markers and any additional baseline entries too (AF's
-  `getPlacedReactionBaseline()` is the complete deployment baseline). This
-  prototype does not replace that complete default with a refusal-only seed.
-  The driver uses the documented canonical
-  `discord:<guild-snowflake|dm>:<channel-snowflake>` and numeric message-reference
-  strings; it passes the canonical channel intact, never blind-splits it.
-  Before ADD, public `filters_get` must report effective suppression source
-  `baseline-default`, status active and protection active. An opaque file or
-  legacy-env override is unsupported even if counts/digests look convincing.
-  It is never read or changed to make the driver pass.
+## Discord
 
-The host validates the actual effective advertised ADD schema and server/prefix
-binding; it fails closed for unknown schema constraints/required fields or absent
-capabilities. Calls use existing `executeToolCall` with the captured agent, so
-ordinary tool authorization still applies. There is no second manager, private
-field access, general executor, grant change, filter-list change, autojoin,
-subscription, DM policy, or permission change. Selected in-memory child configs
-are frozen.
+The supported source contract is `anima-research/discord-mcpl` at the revision in
+the example. `sourceRevision` is an operator assertion, not runtime proof of the
+installed executable. Verify the connector artifact before use.
 
-## V1 lifetime: object replacement requires a full Host process restart
+Prefer omitting `DISCORD_SUPPRESSED_REACTIONS_BASELINE` from the child environment.
+AF then supplies its per-spawn protective default, including refusal markers,
+configured awareness markers and retained outbox markers. An explicitly declared
+value replaces that complete dynamic default: the host checks that it contains
+all AF refusal markers, but cannot guarantee coverage of future awareness
+markers. Do not add a static refusal-only override to enable this feature.
 
-The AF facet's `serverEpoch` name means process-local **config object plus
-connection object identity**, not `transportEpoch`, child PID, reconnect
-detection, or security/realm/executable attestation. An automatic **in-place
-crash/reconnect** keeps the objects and identity, even with a fresh child PID and
-changed transport epoch. It does not by itself invalidate V1; the usual
-per-signal binding/schema/suppression checks still apply.
+The driver preserves canonical `discord:<guild-snowflake|dm>:<channel-snowflake>`
+channel IDs and numeric message-reference strings. Before each ADD,
+`filters_get` must report suppression source `baseline-default`, status `active`,
+and `protectionActive: true`. Operator file/legacy-env overrides are unsupported
+and are never read or modified to make a check pass. Refusal emoji values come
+from AF's exported category map and fallback.
 
-By contrast, native `restartMcplServer(selected)` creates a new connection object,
-including the Host admin deploy/restart paths. Config replacement or
-disconnect+connect also invalidates the install-time snapshot. All subsequent
-reactions on that selected server fail closed with a local status only
-(`stale-or-unsupported-server`); whole-framework ownership remains held and
-**there is no legacy fallback**. An already issued ADD cannot be undone.
+## Zulip: pending connector contract decision
 
-A **fresh full HOST PROCESS restart with normal config prepare/install is
-necessary after selected connector object replacement/restart/deploy**. The Host
-startup wiring discards the install disposer; no operator runtime reinstall or
-rearm API is provided, and another install while ownership is held throws.
-Re-preparing config alone does not recover the running process. This is the
-existing conservative V1 behavior, **not a liveness fix**; replacement/newConfig
-must not be silently trusted or accepted without the normal startup preflight.
+The retained experimental driver targets `theaspirational/zulip_mcp` at
+`61298a12396c27e7cebc004f31cf67c958e35930`, **not upstream Zulip MCP**. Its ID
+contract is fork-only and has no supported upstream release. Do not assume that
+setting environment variables makes an upstream connector compatible.
 
-## Effects and diagnostics
+Its server entry requires `kind: "zulip"`, that `sourceRevision`, `realmTag`,
+`idMode`, `emojis` (a category-to-name map with a required `unknown` fallback),
+and `availableEmojiNames` (operator-preflighted names). Explicit child
+`ZULIP_ID_MODE` and `ZULIP_REALM_TAG` must match. Strict/compat modes preserve
+scoped string IDs; compat also accepts positive safe decimal strings. Legacy
+mode currently passes preparation but cannot emit a reaction. No numeric
+coercion or realm stripping is performed.
 
-Only MAIN final refusals after provider retries and the rewind decision are
-eligible; handled rewinds and ephemeral/subagent runs have no effect. The origin
-is request-processing status, **not cause attribution** or proof that somebody
-read the marker. Unknown, heartbeat, context-only, ambiguous or unsupported
-origins get no effect. Deferred materialization/restored wakes without a trusted
-AF snapshot may remain unknown. Category defaults are the legacy Unicode map for
-Discord; Zulip uses an explicit name map and required `unknown` fallback.
+The driver unions configured names into `ZULIP_SUPPRESSED_REACTIONS_BASELINE`,
+preserving entries in **that variable only**. The connector prefers it over
+`DISCORD_SUPPRESSED_REACTIONS_BASELINE`, so AF's injected Discord-named baseline
+is hidden. These limitations remain pending the Zulip contract decision.
 
-V1 is ADD only, no removal or clearing another caller's reactions. It remembers
-1024 turn/instance keys (oldest evicted) and allows at most 8 effects in flight.
-An attempt consumes its key before I/O. Failure/unknown acknowledgement never
-automatically retries, requests inference, or starts a new action loop; a fresh
-turn is independent. Disposing prevents not-yet-issued calls, but cannot undo an
-issued call. No exactly-once, durable restart, or cross-host guarantee is made.
-There are no invented message/checkpoint provenance links.
+## Lifecycle and diagnostics
 
-## Offline checks / temporary profile
+The host snapshots the bridge's opaque binding and epoch at installation. It
+never silently trusts a replacement configuration. If either changes, markers
+fail closed and ownership remains held: **there is no legacy fallback or runtime
+rearm**. Restart the whole host through normal preparation and installation to
+recover. An issued ADD cannot be undone.
 
-`bun test test/refusal-reactions.test.ts` uses fake public facets only.
-`REFUSAL_CONNECTOR_SOURCE_DIR=<cache-parent> bun test test/refusal-connector-contract.test.ts`
-checks exact source revisions in `discord-source/` and `zulip-source/`, imports
-only their pure schema/ID/filter modules, and tests fake reaction echoes.
-`LOCAL_AF_SOURCE_ROOT=<AF-candidate> bun test test/refusal-framework-integration.test.ts`
-requires a **coherent temporary local dependency profile**, described in the
-worker evidence report. It uses only a fresh offline stdio fixture, no platform
-SDK/API or bot, and tests omission/explicit handover without doubles, plus real
-connection-object replacement, fail-closed effects and rejected reinstall.
-AF's existing offline reconnect fixture checks the distinct in-place identity
-contract. These are regression/counterprobe checks of existing behavior, not
-liveness recovery tests. Public Host `createFramework` wiring (pre-connect
-assert/prepare/install and stop on install failure) is source-reviewed, not
-behavior-tested by these manually wired integration tests. Auxiliary completion
-exclusion is likewise source-reviewed, not behavior-proven by a mock call. Those
-optional tests skip without the profile/cache. The normal global
-`HOST_LOG_TAGS` catalog regression also covers the new `refusal-reaction` prefix.
+The unreleased AF candidate originally changes epochs on connection replacement,
+including routine `mcpl_restart`. Config-only epochs (which would let a restart
+with the same config survive) are pending in AF#1018. Until that contract is
+available and tested, do not rely on restart preserving reactions. Deploying a
+new config requires a full host restart regardless.
 
-The evidence profile is **NOT stock qualification** and not a release recipe.
-Separate later PRs, independent review, owner publication approval and live
-preflight are still required.
+Diagnostics include server ID (null for unknown origin), agent name, turn ID and
+category. When a current refusal cannot produce a marker, the first failure per
+server also sends a `refusal-reaction-unavailable` ops alert. Alerts are bounded
+per installation, not a background health monitor: stale state is detected when
+a refusal arrives. Check the status, connector availability, advertised schema,
+capabilities and suppression policy; restart the host after correcting config.
+
+## Effect guarantees
+
+Only unhandled MAIN final refusals after provider retries and rewind decisions
+are eligible. Handled rewinds and ephemeral/subagent runs have no effect. A
+marker identifies the request's origin, not cause attribution or proof of human
+receipt. Tool calls use the captured agent's normal authorization and effective
+advertised schemas; unsupported constraints or capabilities fail closed.
+
+Effects are ADD-only, with no deletion or automatic retry after an unknown
+acknowledgement. The host retains 1024 turn/instance keys and allows eight effects
+in flight. A fresh turn is independent. Disposing prevents unissued calls but
+cannot undo calls already issued. No durable exactly-once or cross-host guarantee
+is provided. No grants, subscriptions, operator filter files or DM policies change.
+
+## Tests
+
+`bun test test/refusal-reactions.test.ts test/refusal-recipe.test.ts` exercises
+host behavior with public-surface doubles. Source-backed connector tests require
+`REFUSAL_CONNECTOR_SOURCE_DIR` containing `discord-source/` and `zulip-source/`
+checkouts at the revisions above. AF integration tests require
+`LOCAL_AF_SOURCE_ROOT` and a compatible installed AF source dependency; they do
+not qualify the stock released dependency. Published-AF integration coverage
+remains blocked on the bridge release. No live bot or realm qualification is
+claimed by these offline tests.

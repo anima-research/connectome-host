@@ -14,6 +14,7 @@
 import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type ForkReaderConfig, type FrameworkConfig, type MountConfig, type PersistentReaderConfig } from '@animalabs/agent-framework';
+import { validateRefusalReactionConfig, type RefusalReactionConfig } from './refusal-reactions.js';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { parseHandWrittenJson } from './hand-written-json.js';
 import { noteRecipeWarning } from './recipe-warnings.js';
@@ -1630,8 +1631,6 @@ export function deprecatedConversationsNotices(conversations: RecipeConversation
 }
 
 export interface Recipe {
-  /** Local optional prototype; requires an AF main-refusal bridge, no dependency bump. */
-  mainRefusalReactions?: import('./refusal-reactions.js').RefusalReactionConfig;
   name: string;
   description?: string;
   version?: string;
@@ -1699,6 +1698,8 @@ export interface Recipe {
    * agent-framework's types.
    */
   toolResultInlineMaxChars?: number;
+  /** Optional whole-framework refusal owner; requires AF's main-refusal bridge. */
+  mainRefusalReactions?: RefusalReactionConfig;
 }
 
 export type RecipeProvider = NonNullable<RecipeAgent['provider']>;
@@ -2050,10 +2051,9 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
 }
 
 const RECIPE_KEYS = [
-  'mainRefusalReactions',
   'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
   'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'speech', 'tuneOut', 'dendrite', 'toolClassOverrides',
-  'maintenanceIntervalMs', 'inferenceBounds', 'toolResultInlineMaxChars',
+  'maintenanceIntervalMs', 'inferenceBounds', 'toolResultInlineMaxChars', 'mainRefusalReactions',
 ] as const;
 const RECIPE_AGENT_KEYS = [
   'allowedTools', 'toolPresentation',
@@ -2261,6 +2261,14 @@ export function unknownRecipeKeys(raw: unknown): string[] {
   check('agent.', obj.agent, RECIPE_AGENT_KEYS);
   const isObject = (value: unknown): value is Record<string, unknown> =>
     !!value && typeof value === 'object' && !Array.isArray(value);
+  check('mainRefusalReactions.', obj.mainRefusalReactions, ['ownership', 'servers']);
+  if (isObject(obj.mainRefusalReactions) && Array.isArray(obj.mainRefusalReactions.servers)) {
+    obj.mainRefusalReactions.servers.forEach((driver, index) => {
+      check(`mainRefusalReactions.servers[${index}].`, driver,
+        isObject(driver) && driver.kind === 'discord' ? ['serverId', 'kind', 'sourceRevision']
+          : ['serverId', 'kind', 'sourceRevision', 'realmTag', 'idMode', 'emojis', 'availableEmojiNames']);
+    });
+  }
   if (isObject(obj.agent)) {
     check('agent.mock.', obj.agent.mock, RECIPE_AGENT_MOCK_KEYS);
     const kvUnified = isObject(obj.agent.strategy) ? obj.agent.strategy.kvUnified : undefined;
@@ -2379,6 +2387,8 @@ export function validateRecipe(raw: unknown): Recipe {
     console.warn(warning);
     noteRecipeWarning(warning);
   }
+
+  validateRefusalReactionConfig(obj.mainRefusalReactions);
 
   const agent = obj.agent as Record<string, unknown>;
   // '' is dropped at the provider boundary: membrane omits a falsy `system`.
