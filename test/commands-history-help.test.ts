@@ -32,15 +32,23 @@ test("/help's /history line says what /history shows: the last n messages, and h
   ]);
 });
 
-test('/history refuses a count that is not a whole number above 0, naming it, and a count past the store shows the whole store', () => {
-  // "1e309" read as Infinity, and slice(-Infinity) printed every message to
-  // every client; "abc", "0" and "-5" fell back to 20 without a word.
-  for (const bad of ['1e309', 'abc', '0', '-5', '2.5', '1e9999', 'NaN', 'Infinity']) {
+test('/history refuses a count that is not decimal digits above 0, naming it, and shows at most 500', () => {
+  // "1e309" read as Infinity, and slice(-Infinity) printed every message in the
+  // command's result; "abc", "0" and "-5" fell back to 20 without a word.
+  // Number()'s grammar ("0x10", "1e3", "+5", "5.0") is refused: digits only, as /budget.
+  for (const bad of ['1e309', 'abc', '0', '-5', '2.5', '1e9999', 'NaN', 'Infinity', '0x10', '0b11', '1e3', '+5', '5.0', '9007199254740992', '1e16']) {
     const lines = handleCommand(`/history ${bad}`, appWithMessages(30)).lines.map((l) => l.text);
     expect(lines).toEqual([`Invalid message count: "${bad}". Examples: 20, 200`]);
   }
   expect(rows('/history 5000', 30)).toHaveLength(30);
   expect(rows('/history 1', 30)).toHaveLength(1);
+  // Past 500, the result is capped and says so; at 500 it is not.
+  const capped = handleCommand('/history 5000', appWithMessages(600)).lines.map((l) => l.text);
+  expect(capped[1]).toBe("Showing the last 500 of 5000 asked; the Web UI's history view pages further back.");
+  expect(capped.slice(2)).toHaveLength(500);
+  expect(capped[2]).toStartWith('  [m101] ');
+  expect(rows('/history 500', 600)).toHaveLength(500);
+  expect(rows('/history 9007199254740991', 30)).toHaveLength(30);
 });
 
 // /branchto looks its id up in the command agent's context (app.agentName,

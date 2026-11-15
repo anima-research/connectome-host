@@ -1536,26 +1536,37 @@ function handleBranchTo(app: AppContext, messageId: string | undefined, requeste
   return { lines: [{ text: `Branching at [${messageId}] -> "${newBranchName}"...`, style: 'system' }], asyncWork };
 }
 
+/** The most /history shows at once: the Web UI's history page maximum. */
+const HISTORY_MAX = 500;
+
 /** /history: the command agent's context, which /branchto looks its ids up in. */
 function handleHistory(app: AppContext, countArg?: string): CommandResult {
   const cm = commandAgent(app)?.getContextManager();
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
-  // A count that isn't a whole number above 0 is refused, naming it, as
-  // /budget refuses a token count: "1e309" read as Infinity and
-  // slice(-Infinity) printed the whole store to every client, and "abc",
-  // "0" or "-5" fell back to 20 without a word.
+  // A count that isn't decimal digits coming to a whole number above 0 is
+  // refused, naming it: "1e309" read as Infinity and slice(-Infinity) printed
+  // the whole store, one line per message, in the command's result, and "abc",
+  // "0" or "-5" fell back to 20 without a word. Digits only, not Number()'s
+  // grammar: "0x10" and "1e3" are refused as /budget refuses them (#669).
   let count = 20;
   if (countArg !== undefined) {
-    const n = Number(countArg);
-    if (!Number.isSafeInteger(n) || n <= 0) {
+    if (!/^\d+$/.test(countArg) || !Number.isSafeInteger(Number(countArg)) || Number(countArg) === 0) {
       return { lines: [{ text: `Invalid message count: "${countArg}". Examples: 20, 200`, style: 'system' }] };
     }
-    count = n;
+    count = Number(countArg);
   }
 
   const { messages } = cm.queryMessages({});
   const lines: Line[] = [{ text: `--- History (${messages.length} messages) ---`, style: 'system' }];
+
+  // The result is one message to one client, so it is capped where the Web
+  // UI's own history paging is (HISTORY_PAGE_MAX in web-ui-module): /history
+  // 5000 on a 4,590-message store printed 4,590 lines, 151 KB (#666).
+  if (count > HISTORY_MAX) {
+    lines.push({ text: `Showing the last ${HISTORY_MAX} of ${count} asked; the Web UI's history view pages further back.`, style: 'system' });
+    count = HISTORY_MAX;
+  }
 
   const recent = messages.slice(-count);
   for (const msg of recent) {
