@@ -324,13 +324,13 @@ export function recipeFit(recipe: Recipe, model: string): RecipeFit {
     // So is a budget no greater than agent.maxTokens, the one fact of the
     // 'room' check that needs no window: where the window is known such a
     // recipe is refused at load, and the framework refuses the same budget
-    // as a live change, while here it loaded without a word (#654 R1-2).
+    // as a live change, while here it loaded without a word (#653).
     const unreadable = unreadableTokenField(recipe) === undefined ? undefined : readNumbers(recipe);
     const budget: unknown = recipe.agent.contextBudgetTokens;
     const reply = effectiveMaxTokens(recipe);
     const noRoom = unreadable === undefined && isTokenSize(budget) && budget - reply <= 0
       ? `Recipe agent.contextBudgetTokens (${n(budget)}) is no more than agent.maxTokens (${n(reply)}), which the host keeps ` +
-        'out of the budget for the reply, so the conversation gets no room and every reply fails.'
+        'out of the budget for the reply, so no conversation fits in the compile.'
       : undefined;
     return notChecked((provider === 'anthropic'
       ? `The host has no window for ${show(model)}.`
