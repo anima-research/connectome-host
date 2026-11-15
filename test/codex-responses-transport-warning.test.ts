@@ -47,7 +47,7 @@ describe('the settings one OpenAI provider reads and the other drops', () => {
     expect(responsesTransportSettingsWarning(recipe('openai-responses', { codex: { futureFlag: true } }))).toBeUndefined();
   });
 
-  test('no pointer at a setting the recipe already has: a portable recipe with both fastMode and the priority tier', () => {
+  test('no pointer where the recipe already asks for priority processing: a portable recipe with both fastMode: true and the priority tier', () => {
     expect(responsesTransportSettingsWarning(recipe('openai-codex', { codex: { fastMode: true }, responses: { serviceTier: 'priority' } })))
       .toBe('[agent-settings] agent.responses.serviceTier is sent on provider "openai-responses" only: provider "openai-codex" doesn\'t send it.');
     expect(responsesTransportSettingsWarning(recipe('openai-responses', { codex: { fastMode: true }, responses: { serviceTier: 'priority' } })))
@@ -71,7 +71,7 @@ describe('the settings one OpenAI provider reads and the other drops', () => {
   });
 });
 
-describe('the host says the line once, from main(), on a real boot (R2-2)', () => {
+describe('the host says the line once at boot, before the framework is created (R2-2)', () => {
   test('a mock-provider recipe with codex.fastMode boots to create() with exactly one line on stderr', () => {
     const dir = mkdtempSync(join(tmpdir(), 'transport-warning-'));
     try {
@@ -97,7 +97,8 @@ describe('the host says the line once, from main(), on a real boot (R2-2)', () =
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  // Above the child's 15 s: bun's 5 s default would end the test first (R3-2).
+  }, 20_000);
 });
 
 describe('warnTransportSettings', () => {

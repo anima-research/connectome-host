@@ -4,7 +4,7 @@
   the host sends on `openai-responses` only, with `agent.codex.fastMode` (or
   `/fast on`) named for a `priority` tier; on any other provider,
   `agent.codex.fastMode`, which the host reads on `openai-codex` only, with
-  `agent.responses.serviceTier: "priority"` named for `fastMode` on
+  `agent.responses.serviceTier: "priority"` named for `fastMode: true` on
   `openai-responses`. The other provider's setting is named only where the
-  recipe doesn't already have it. Before, each was accepted and dropped with
+  recipe doesn't already ask for priority processing. Before, each was accepted and dropped with
   no sign.

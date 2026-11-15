@@ -24,7 +24,7 @@ export function autoContinueSupportWarning(recipe: Recipe, agent: object | undef
 /**
  * The settings each OpenAI provider reads and the other drops: the host sends
  * `agent.responses.serviceTier` and `compactThreshold` on `openai-responses`
- * only, and reads `agent.codex` on `openai-codex` only. A recipe that moves
+ * only, and reads `agent.codex.fastMode` on `openai-codex` only. A recipe that moves
  * between the two keeps the keys and loses their effect with no other sign,
  * so the start names them, and, for a `priority` tier or `fastMode`, the
  * other provider's way of asking for the same thing (#644). Pure:
