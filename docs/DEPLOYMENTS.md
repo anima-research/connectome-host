@@ -113,9 +113,12 @@ the working directory):
   conventions; the host does not create them. `--headless` redirects
   `process.stdout.write` / `process.stderr.write` into `data/headless.log`
   (beside `headless.pid` and `ipc.sock`), but Bun's `console.*` bypasses those
-  methods, so `console.error`/`console.log` lines — `[inference-failed]`,
-  `[routeSpeech]`, `[webui] listening …` — still reach the supervisor's
-  stdout/stderr. `headless.log` mostly holds the headless runtime's own lines.
+  methods, so console lines — `[inference-failed]`, `[routeSpeech]`, `[webui]
+  listening …` — still reach the supervisor's stdout/stderr. `console.error`
+  and `console.warn` lines are written to `headless.log` as well, from boot,
+  since `/bug` reads a headless host's errors from it; `console.log` lines go
+  to the supervisor alone. `headless.log` is rolled over to `headless.log.1`
+  past 64 MiB.
 - routing decisions on stderr: `[routeSpeech] …`, `[routing] …`. In readline
   mode they go to `data/readline-error.log` instead (below).
 - raw model calls: `data/llm-calls.<iso>.jsonl` — a new file per process start

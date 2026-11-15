@@ -14,8 +14,12 @@
  * path (parent uses the socket, not pipes).  Bun's console.* writes to file
  * descriptors 1 and 2 directly, not through those methods, so console lines
  * go wherever those descriptors point: for a fleet child, the startup.log
- * its parent opened.  PID lives at {DATA_DIR}/headless.pid for parent-side
- * liveness.
+ * its parent opened.  console.error and console.warn lines are written to
+ * headless.log as well, from boot (main() buffers them until the log is
+ * open), since /bug reads a headless host's errors from that file; log,
+ * info and debug go to the descriptors only.  headless.log is rolled over
+ * to headless.log.1 past HEADLESS_LOG_MAX_BYTES, one generation kept.  PID
+ * lives at {DATA_DIR}/headless.pid for parent-side liveness.
  *
  * One client at a time.  Client disconnect does NOT exit the process —
  * children stay up across parent restarts and accept the next connection.
@@ -25,7 +29,8 @@
 
 // Keep this module's imports light: the headless tests start a host per test, many at once.
 import { createServer, type Socket, type Server } from 'node:net';
-import { createWriteStream, mkdirSync, existsSync, unlinkSync, writeFileSync, type WriteStream } from 'node:fs';
+import { createWriteStream, mkdirSync, existsSync, unlinkSync, writeFileSync, renameSync, statSync, type WriteStream } from 'node:fs';
+import { takeBootConsole } from './headless-boot-console.js';
 import { sessionMarker } from './session-marker.js';
 import { join, resolve } from 'node:path';
 import { format } from 'node:util';
@@ -67,6 +72,23 @@ const EXITING_FLUSH_MS = 50;
 
 let activeLog: WriteStream | null = null;
 
+/** headless.log is rolled over to headless.log.1 past this, at a start and
+ *  live: nothing else rotates it, and /bug reads its last 4 MiB alone. */
+export const HEADLESS_LOG_MAX_BYTES = 64 * 1024 * 1024;
+
+/** Move a headless.log past the cap aside as headless.log.1 (replacing the
+ *  one before), so the file the stream opens starts near empty. */
+function rollOverIfLarge(logPath: string, size?: number): boolean {
+  try {
+    const bytes = size ?? statSync(logPath).size;
+    if (bytes < HEADLESS_LOG_MAX_BYTES) return false;
+    renameSync(logPath, `${logPath}.1`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** process.exit drops a stream's pending writes, so the exits made while
  *  headless.log is open wait for this first. */
 export function endHeadlessLog(): Promise<void> {
@@ -95,15 +117,18 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   selfRestart.attachHeadless();
 
   // Bun's console.* bypasses these methods and writes to descriptors 1 and 2,
-  // which for a fleet child are its startup.log, so console lines from
-  // framework code land there, not here.
+  // which for a fleet child are its startup.log; console.error and
+  // console.warn are routed here as well, below.
   //
   // Match the real process.stdout.write overload signature so libraries
   // passing (chunk, cb) or (chunk, encoding, cb) for backpressure /
   // flush confirmation don't have their callbacks silently swallowed.
-  const logStream: WriteStream = createWriteStream(logPath, { flags: 'a' });
+  const rolledAtStart = rollOverIfLarge(logPath);
+  let logStream: WriteStream = createWriteStream(logPath, { flags: 'a' });
   activeLog = logStream;
-  logStream.write(`\n${sessionMarker(new Date())}\n`);
+  let logBytes = (() => { try { return statSync(logPath).size; } catch { return 0; } })();
+  const openSession = (): void => { logStream.write(`\n${sessionMarker(new Date())}\n`); };
+  openSession();
   type StdWrite = typeof process.stdout.write;
   // Once endHeadlessLog has ended the stream, such a line goes to the
   // process's own stderr instead, whichever stream it was written to:
@@ -116,6 +141,20 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     cb?: (err?: Error | null) => void,
   ): boolean => {
     if (logStream.writableEnded) return toStderr(chunk, encodingOrCb, cb);
+    logBytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.byteLength;
+    if (logBytes >= HEADLESS_LOG_MAX_BYTES && rollOverIfLarge(logPath, logBytes)) {
+      // A resident up for weeks reaches the cap live: the open file keeps its
+      // name's new place, headless.log.1, and the stream ends there once its
+      // pending lines are written; a new file takes the lines from here, with
+      // a marker of its own so /bug's "this run" starts there, and a line
+      // saying what moved.
+      logStream.end();
+      logStream = createWriteStream(logPath, { flags: 'a' });
+      activeLog = logStream;
+      logBytes = 0;
+      openSession();
+      logStream.write(`[${new Date().toISOString()}] headless.log rolled over at ${HEADLESS_LOG_MAX_BYTES} bytes; the lines before this are in headless.log.1\n`);
+    }
     return typeof encodingOrCb === 'function'
       ? logStream.write(chunk, encodingOrCb)
       : logStream.write(chunk, encodingOrCb as BufferEncoding, cb);
@@ -130,13 +169,29 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   } as StdWrite;
   process.stdout.write = makeRedirect();
   process.stderr.write = makeRedirect();
+  const log = (msg: string): void => {
+    writeLog(`[${new Date().toISOString()}] ${msg}\n`);
+  };
+
+  log(`headless start pid=${process.pid} dataDir=${dataDir} socket=${socketPath}`);
+  if (rolledAtStart) log(`headless.log was over ${HEADLESS_LOG_MAX_BYTES} bytes and was moved to headless.log.1`);
+  for (const warning of takeRecipeWarnings()) log(`warning: ${warning}`);
+
   // Bun's console writes to the descriptors itself (above), so what the host
   // and agent-framework say through console.error and console.warn never
   // reached this log, and /bug, which reads this log in headless mode for
-  // its host-error tags and shapes, saw none of it. Each line is written
-  // here too, and still printed where it went: the supervisor's stderr, or a
-  // fleet child's startup.log, which its parent quotes on a failed launch.
+  // its host-error tags and shapes, saw none of it. What was said while the
+  // host booted, which main() buffered (headless-boot-console.ts: an MCPL
+  // server that failed to connect, an update audit), is written first, after
+  // the session marker, so /bug counts it as this run's; from here each line
+  // is written as it is said. Each still prints where it went: the
+  // supervisor's stderr, or a fleet child's startup.log, which its parent
+  // quotes on a failed launch. Taking the buffer puts the console methods
+  // back as they were, so `print` here is what they were before the capture.
   // Once the log has ended, the print alone: writeLog would print it again.
+  const boot = takeBootConsole();
+  for (const line of boot.lines) writeLog(`${line}\n`);
+  if (boot.dropped > 0) log(`${boot.dropped} more console lines were said while the host booted than the ${boot.lines.length} kept above`);
   for (const level of ['error', 'warn'] as const) {
     const print = console[level];
     console[level] = (...args: unknown[]) => {
@@ -144,13 +199,6 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       print(...args);
     };
   }
-
-  const log = (msg: string): void => {
-    writeLog(`[${new Date().toISOString()}] ${msg}\n`);
-  };
-
-  log(`headless start pid=${process.pid} dataDir=${dataDir} socket=${socketPath}`);
-  for (const warning of takeRecipeWarnings()) log(`warning: ${warning}`);
 
   // A previous instance that crashed without unlinking its socket would make
   // listen() fail with EADDRINUSE.

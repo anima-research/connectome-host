@@ -28,6 +28,7 @@
 // First, so its warning about an old Bun prints before the modules below run.
 import './bun-floor-check.js';
 import { hostMembraneRetry } from './membrane-retry.js';
+import { captureBootConsole } from './headless-boot-console.js';
 import { frameworkErrorPolicy } from './framework-error-policy.js';
 import {
   BedrockAdapter,
@@ -865,6 +866,11 @@ async function main() {
     console.error('Set DATA_DIR to a path where this user has or can make a directory, or fix what the error names.');
     process.exit(1);
   }
+  // From here to runHeadless, console.error and console.warn lines (an MCPL
+  // server that fails to connect, an update audit) would reach the
+  // supervisor's stderr alone; runHeadless writes them to headless.log, where
+  // /bug reads a headless host's errors from.
+  if (headless) captureBootConsole();
   const recipe = await resolveRecipe();
   const provider = resolveProvider(recipe);
   const fit = runningFit(recipe, config.model);
