@@ -346,7 +346,6 @@ async function checkToken(report: Report, parts: DoctorParts, dotenv: Map<string
   else report.check('–', `Discord gave no answer that doctor could read: ${check.why}.`);
 }
 
-/** The install record's data directory where it isn't `<work>/data`, the host's own default from `work`. */
 function movedDataDir(root: string, work: string): string | null {
   let dataDir: string;
   try {
