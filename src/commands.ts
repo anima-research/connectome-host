@@ -429,7 +429,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
       return handleTools(framework, args.join(' ') || undefined);
 
     // The whole rest of the line: a count split on whitespace (200 000, 150 k)
-    // would otherwise be read from its first word alone (#669 R1-1).
+    // would otherwise be read from its first word alone (#668).
     case 'budget':
       return handleBudget(framework, args.join(' ') || undefined);
 
@@ -950,6 +950,13 @@ function windowInsteadOfBudget(agent: { model: string; physicalWindowTokens?: nu
  * `150abc` as 150, and `/budget` set that for every agent, confirming it as
  * a success.
  */
+/** A token count as fmtTokens rounds it, with the exact count beside it where
+ *  rounding hid it: 1,001 reads as "1.0k (1,001)", 200,000 as "200.0k". */
+export function exactTokens(n: number): string {
+  const rounded = fmtTokens(n);
+  return parseTokenCount(rounded) === n ? rounded : `${rounded} (${n.toLocaleString('en-US')})`;
+}
+
 export function parseTokenCount(arg: string, suffixes: 'km' | 'none' = 'km'): number | undefined {
   const match = /^\+?(\d*)(?:\.(\d*))?([km])?$/i.exec(arg.trim());
   if (!match) return undefined;
@@ -979,7 +986,7 @@ function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
       const pct = budget > 0 ? ((last / budget) * 100).toFixed(0) : '—';
       const window = windowInsteadOfBudget(agent);
       lines.push({
-        text: `  ${agent.name}: ${fmtTokens(budget)} (last: ${fmtTokens(last)}, ${pct}%)` +
+        text: `  ${agent.name}: ${exactTokens(budget)} (last: ${fmtTokens(last)}, ${pct}%)` +
           (window !== undefined
             ? `; its stream doesn't break at this budget mid-turn: for its size, only before a request its ${fmtTokens(window)} window can't hold`
             : ''),
@@ -1003,7 +1010,7 @@ function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
     lines: [
       // The exact count beside the rounded one where rounding hid it: 1,001 reads
       // as "1.0k", while "200.0k" is 200,000 and says so on its own.
-      { text: `Stream budget set to ${fmtTokens(tokens)}${parseTokenCount(fmtTokens(tokens)) === tokens ? '' : ` (${tokens.toLocaleString('en-US')})`} tokens for all agents.`, style: 'system' },
+      { text: `Stream budget set to ${exactTokens(tokens)} tokens for all agents.`, style: 'system' },
       ...(windowed.length > 0
         ? [{
           text: `It's kept, but doesn't break the stream mid-turn for ${windowed.join(', ')}, whose thinking binds and ` +

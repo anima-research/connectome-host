@@ -25,6 +25,12 @@ test('/budget takes a whole number of tokens, plain or with a k or m suffix, and
   }
   // The exact count is shown only where the rounded form hides it (R1-6).
   expect(fleet().budget('1.001k')[0]).toBe('Stream budget set to 1.0k (1,001) tokens for all agents.');
+  // The listing shows the same (R2-2): after /budget 1.001k, each agent reads 1.0k (1,001).
+  {
+    const f = fleet();
+    f.budget('1.001k');
+    for (const line of f.budget('').filter((l) => l.startsWith('  '))) expect(line).toContain(': 1.0k (1,001) (last:');
+  }
   expect(fleet().budget('2.345m')[0]).toBe('Stream budget set to 2.3M (2,345,000) tokens for all agents.');
   expect(fleet().budget('1500')[0]).toBe('Stream budget set to 1.5k tokens for all agents.');
   expect(fleet().budget('999')[0]).toBe('Stream budget set to 999 tokens for all agents.');
