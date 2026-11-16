@@ -105,7 +105,7 @@ function fakeHost(at: Install, health: unknown, opts: { agent?: string } = {}) {
 
 async function run(at: Install, opts: {
   states?: States; argv?: string[]; uid?: number; owner?: number; fetch?: typeof fetch; env?: Record<string, string>;
-  health?: unknown; healthWaitMs?: number; recipeLimitMs?: number;
+  health?: unknown; healthWaitMs?: number; recipeLimitMs?: number; agent?: string;
 } = {}) {
   const out: string[] = [];
   const err: string[] = [];
@@ -124,7 +124,7 @@ async function run(at: Install, opts: {
     healthWaitMs: opts.healthWaitMs ?? 2_000,
     recipeLimitMs: opts.recipeLimitMs ?? 10_000,
   };
-  const stop = opts.health === undefined ? null : fakeHost(at, opts.health);
+  const stop = opts.health === undefined ? null : fakeHost(at, opts.health, { agent: opts.agent });
   try {
     const status = await doctor({ root: at.root, argv: opts.argv ?? [], out: (line) => out.push(line), err: (line) => err.push(line) }, parts);
     return { status, out: out.join('\n'), err: err.join('\n'), lines: out };
@@ -497,6 +497,15 @@ describe('connectome doctor: check 4, the model calls', () => {
       consecutiveInferenceFailures: 2, lastInference: { startedAt: STARTED, failedAt: FAILED },
     })] } });
     expect(failing.out).toContain('✗ helper\'s last 2 turns failed at the model call');
+  });
+
+  test('counts that list no agent, or not the host\'s own, leave its check not made, with why', async () => {
+    const at = install();
+    const none = await run(at, { states: RUNNING, health: { agents: [] } });
+    expect(none.lines[4]).toBe('– Not checked: the host\'s counts list no agent.');
+    const other = await run(at, { states: RUNNING, health: { agents: [agent('helper')] }, agent: 'ember' });
+    expect(other.lines[4]).toBe('– Not checked: the host\'s counts list no agent named ember.');
+    expect(other.out).not.toContain('helper');
   });
 
   test('a host that gives no counts leaves the check not made, with why', async () => {

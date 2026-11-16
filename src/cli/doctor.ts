@@ -267,6 +267,10 @@ async function checkCalls(report: Report, parts: DoctorParts, host: HostClient |
     return;
   }
   const named = host.ready.agent ?? agents[0]?.name;
+  if (named === undefined || !agents.some((agent) => agent.name === named)) {
+    report.check('–', named === undefined ? 'Not checked: the host\'s counts list no agent.'
+      : `Not checked: the host's counts list no agent named ${named}.`);
+  }
   for (const agent of agents) {
     if (agent.name !== named && agent.failures === 0 && agent.refusals === null) continue;
     if (agent.failures > 0) {
