@@ -1361,6 +1361,8 @@ export interface RecipeModules {
    * the agent stays down after its own request.
    */
   selfRestart?: boolean | { cooldownMinutes?: number };
+  /** The host's own setup agent's tools, which `connectome setup` starts. */
+  setup?: boolean;
 }
 
 export interface RecipeWebUi {
@@ -2135,7 +2137,7 @@ const RECIPE_AGENT_MOCK_KEYS = [
 const RECIPE_MODULE_KEYS = [
   'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
-  'channelMode', 'selfRestart', 'heartbeat', 'fetch',
+  'channelMode', 'selfRestart', 'heartbeat', 'setup', 'fetch',
 ] as const;
 const RECIPE_FETCH_KEYS = ['model', 'local', 'allowPrivateNetwork', 'maxBytes'] as const;
 /** The most a recipe can ask for: past this, little HTML would convert within its memory limit anyway. */
@@ -3448,6 +3450,10 @@ export function validateRecipe(raw: unknown): Recipe {
       if (cd !== undefined && (typeof cd !== 'number' || !Number.isFinite(cd) || cd < 0)) {
         throw new Error('modules.selfRestart.cooldownMinutes must be a non-negative number of minutes');
       }
+    }
+
+    if (mods.setup !== undefined && typeof mods.setup !== 'boolean') {
+      throw new Error('modules.setup must be true or false');
     }
 
     if (mods.ttsRelay !== undefined && mods.ttsRelay !== false) {

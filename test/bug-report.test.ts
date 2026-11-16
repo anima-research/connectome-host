@@ -806,6 +806,11 @@ describe('the running setup and the saved file', () => {
     expect(setupFacts(recipe)).toMatchObject({ model: 'claude-opus-4-6', maxTokens: 1000, thinking: true, modules: ['lessons'] });
   });
 
+  test('the setup agent\'s module counts as the host\'s own, from the recipe and from the running agent', () => {
+    expect(setupFacts({ modules: { setup: true } })).toMatchObject({ modules: ['setup'], customModules: 0 });
+    expect(setupFacts({}, { agent: {}, modules: ['setup'], wake: false })).toMatchObject({ modules: ['setup'], customModules: 0 });
+  });
+
   test('the fetch module is named as one of the host\'s own, from the recipe and from the running setup', () => {
     const recipe = { agent: { provider: 'anthropic', model: 'claude-opus-4-6' }, modules: { fetch: { local: true } } };
     expect(setupFacts(recipe)).toMatchObject({ modules: ['fetch'], customModules: 0 });
