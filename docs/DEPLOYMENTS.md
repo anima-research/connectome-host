@@ -205,7 +205,8 @@ the working directory):
   line. `--data-dir`
   names the host's data directory, `INSTALL_DIR/data` when left out.
   The ladder cuts a message's preview at 40 characters, a model call's error
-  at 80 and each failure line at 150, and hides nothing.
+  at 80 and each line of its recent failures at 150. It quotes whole the line
+  of a reply whose delivery failed or wasn't confirmed, and hides nothing.
 
 ---
 
