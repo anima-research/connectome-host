@@ -219,7 +219,8 @@ async function residentWithBothNotes() {
   const rows = () => framework.getAgent('scout')!.getContextManager().getAllMessages();
   const textOf = (r: StoredMessage) => r.content.map((b) => ('text' in b ? String(b.text) : '')).join('');
   const notes = () => rows().filter((r) => ['refusal-rewind', 'inference-failed'].includes(String(r.metadata?.kind)));
-  const app = { framework, branchState: createBranchState(), agentName: 'scout', userMessageCount: 0 } as never;
+  const sessionManager = { listSessions: () => [{ id: 'open' }], getActiveSession: () => ({ id: 'open' }) };
+  const app = { framework, branchState: createBranchState(), agentName: 'scout', userMessageCount: 0, sessionManager } as never;
   const sweep = (write = false) => handleCommand(`/sweep unstick-fix-11-16${write ? ' --write' : ''}`, app);
   const nextRequest = async () => {
     const before = requests.length;
