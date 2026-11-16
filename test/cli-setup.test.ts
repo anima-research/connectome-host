@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setup, setupDirectory } from '../src/cli/setup.js';
@@ -19,6 +19,13 @@ const HOST = '@animalabs/connectome-host';
 function scratch(): string {
   const dir = mkdtempSync(join(tmpdir(), 'cli-setup-'));
   dirs.push(dir);
+  return dir;
+}
+
+function ownDir(): string {
+  const dir = scratch();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'made-by-connectome-setup'), '');
   return dir;
 }
 
@@ -123,12 +130,12 @@ describe('a first setup', () => {
   });
 
   test('gives the agent each dotenv file that sets MODEL or MCPL_AGENT_OVERLAY_FILE, in Bun\'s order, and names one it can\'t read', async () => {
-    const dir = scratch();
-    mkdirSync(join(dir, '.setup'));
+    const dir = ownDir();
     writeFileSync(join(dir, '.env.local'), 'OTHER=1\nMCPL_AGENT_OVERLAY_FILE=overlay.json\n');
     mkdirSync(join(dir, '.env.development'));
     writeFileSync(join(dir, '.env'), 'MODEL=""\n');
     const m = machine(dir, { hidden: [KEY] });
+    m.world.cwd = scratch();
     expect((await runSetup(dir, m.world)).status).toBe(0);
     expect(readFileSync(join(dir, '.env'), 'utf-8')).toBe(`MODEL=""\nANTHROPIC_API_KEY="${KEY}"\n`);
     expect(m.launched[0]!.env.CONNECTOME_SETUP_DOTENV)
@@ -140,8 +147,7 @@ describe('a first setup', () => {
   });
 
   test('stops at an ANTHROPIC_BASE_URL in .env that isn\'t a URL, naming it, before it asks for a key', async () => {
-    const dir = scratch();
-    mkdirSync(join(dir, '.setup'));
+    const dir = ownDir();
     writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=not-a-url\n');
     const m = machine(dir, { hidden: [KEY] });
     const { status, err } = await runSetup(dir, m.world);
@@ -149,20 +155,53 @@ describe('a first setup', () => {
     expect(err.join('\n')).toContain(`ANTHROPIC_BASE_URL in ${join(dir, '.env')} is "not-a-url", which isn't a URL. ` +
       'Correct it, or take that line away to use Anthropic\'s own API, then run setup again.');
     expect(m.launched).toEqual([]);
+    expect(m.asked).toEqual([]);
   });
 
-  test('gives Bun\'s install, and the agent, none of the values Bun loaded from the dotenv files where it was typed', async () => {
-    const dir = scratch();
-    mkdirSync(join(dir, '.setup'));
+  test('gives Bun\'s install, and the agent, no variable that a dotenv file where it was typed sets, whatever its value', async () => {
+    const dir = ownDir();
     writeFileSync(join(dir, '.env'), 'DISCORD_TOKEN="from-env-file"\nSHARED="file"\n');
     writeFileSync(join(dir, '.env.local'), 'LOCAL_ONLY="from-local"\n');
-    const m = machine(dir, { hidden: [KEY], env: { DISCORD_TOKEN: 'from-env-file', LOCAL_ONLY: 'from-local', SHARED: 'exported' } });
+    const m = machine(dir, {
+      hidden: [KEY], env: { DISCORD_TOKEN: 'from-env-file', LOCAL_ONLY: 'from-local', SHARED: 'exported', OTHER: 'exported' },
+    });
     expect((await runSetup(dir, m.world)).status).toBe(0);
     const added = m.envs[m.ran.findIndex((argv) => argv[2] === 'add')]!;
     expect(added).not.toHaveProperty('DISCORD_TOKEN');
     expect(added).not.toHaveProperty('LOCAL_ONLY');
-    expect(added.SHARED).toBe('exported');
+    expect(added).not.toHaveProperty('SHARED');
+    expect(added.OTHER).toBe('exported');
     expect(m.launched[0]!.env).not.toHaveProperty('DISCORD_TOKEN');
+  });
+
+  test('leaves out each name a dotenv file that Bun loads in some mode sets, a value Bun expanded and NODE_ENV\'s own files included', async () => {
+    const dir = ownDir();
+    writeFileSync(join(dir, '.env.local'), 'ANTHROPIC_API_KEY=sk-ant-$SUFFIX\n');
+    writeFileSync(join(dir, '.env.production.local'), 'PROD_SECRET=from-production\n');
+    writeFileSync(join(dir, '.env.example'), 'EXAMPLE_ONLY=placeholder\n');
+    const m = machine(dir, {
+      hidden: [KEY], env: {
+        NODE_ENV: 'production', SUFFIX: 'expanded-0123456789', ANTHROPIC_API_KEY: 'sk-ant-expanded-0123456789',
+        PROD_SECRET: 'from-production', EXAMPLE_ONLY: 'exported',
+      },
+    });
+    expect((await runSetup(dir, m.world)).status).toBe(0);
+    const added = m.envs[m.ran.findIndex((argv) => argv[2] === 'add')]!;
+    expect(added).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(added).not.toHaveProperty('PROD_SECRET');
+    expect(added.EXAMPLE_ONLY).toBe('exported');
+    expect(m.asked.some((question) => question.includes('exported'))).toBe(false);
+    expect(m.checked).toEqual([KEY]);
+  });
+
+  test('stops at a dotenv file Bun loads that it can\'t read where it was typed, naming it, before it runs anything', async () => {
+    const dir = ownDir();
+    mkdirSync(join(dir, '.env.local'));
+    const m = machine(dir, { hidden: [KEY] });
+    const { status, err } = await runSetup(dir, m.world);
+    expect(status).toBe(1);
+    expect(err.join('\n')).toContain(`${join(dir, '.env.local')} can't be read (EISDIR)`);
+    expect(m.ran).toEqual([]);
   });
 
   test('gives the agent none of the CONNECTOME_SETUP_ settings the shell it was typed in exports', async () => {
@@ -182,8 +221,7 @@ describe('a first setup', () => {
   });
 
   test('takes a key already in .env without asking, and an exported one on a yes', async () => {
-    const inEnv = scratch();
-    mkdirSync(join(inEnv, '.setup'));
+    const inEnv = ownDir();
     writeFileSync(join(inEnv, '.env'), `ANTHROPIC_API_KEY=${KEY}\n`, { mode: 0o644 });
     const stored = machine(inEnv);
     expect((await runSetup(inEnv, stored.world)).status).toBe(0);
@@ -272,11 +310,54 @@ describe('where the resident lives', () => {
     const home = scratch();
     const busy = scratch();
     writeFileSync(join(busy, 'notes.txt'), '');
-    const own = scratch();
-    mkdirSync(join(own, '.setup'));
+    const own = ownDir();
     expect(setupDirectory(home, home)).toBe(home);
     expect(setupDirectory(busy, home)).toBe(join(home, 'resident'));
     expect(setupDirectory(own, home)).toBe(own);
+  });
+
+  test('takes a .setup that setup didn\'t make as another program\'s, and puts no resident there', async () => {
+    const home = scratch();
+    const project = scratch();
+    mkdirSync(join(project, '.setup'));
+    writeFileSync(join(project, '.setup', 'config.yml'), '');
+    writeFileSync(join(project, 'package.json'), '{}');
+    expect(setupDirectory(project, home)).toBe(join(home, 'resident'));
+    const m = machine(project);
+    const { status, err } = await runSetup(project, m.world);
+    expect(status).toBe(1);
+    expect(err[0]).toContain(`${project} holds other files, and no connectome-host install`);
+    expect(m.ran).toEqual([]);
+    expect(readFileSync(join(project, 'package.json'), 'utf-8')).toBe('{}');
+  });
+
+  test('takes a directory where setup stopped before it made the install as setup\'s', async () => {
+    const dir = scratch();
+    const first = machine(dir, { fails: { add: { status: 1, stdout: '', stderr: 'error: no registry' } } });
+    expect((await runSetup(dir, first.world)).status).toBe(1);
+    expect(existsSync(join(dir, 'connectome-host', 'install.json'))).toBe(false);
+    expect(setupDirectory(dir, scratch())).toBe(dir);
+    const { status, out } = await runSetup(dir, machine(dir, { hidden: [KEY] }).world);
+    expect(status).toBe(0);
+    expect(out[0]).toBe(`Setup ran in ${dir} before. Its agent can change with you what it set up.`);
+  });
+
+  test.skipIf(process.getuid?.() === 0)('stops where it can\'t list the directory, naming it, and makes nothing there', async () => {
+    const home = scratch();
+    const dir = scratch();
+    writeFileSync(join(dir, 'notes.txt'), '');
+    chmodSync(dir, 0o300);
+    try {
+      expect(setupDirectory(dir, home)).toBe(dir);
+      const m = machine(dir, { hidden: [KEY] });
+      const { status, err } = await runSetup(dir, m.world);
+      expect(status).toBe(1);
+      expect(err.join('\n')).toContain(`${dir} can't be listed (EACCES)`);
+      expect(m.ran).toEqual([]);
+      expect(existsSync(join(dir, '.setup'))).toBe(false);
+    } finally {
+      chmodSync(dir, 0o700);
+    }
   });
 
   test('refuses a directory that holds other files and no install, and makes nothing there', async () => {
@@ -320,6 +401,15 @@ describe('the user the resident runs as', () => {
     const m = machine(dir, { sudo: true, answers: [''], hidden: [KEY] });
     expect((await runSetup(dir, m.world)).status).toBe(0);
     expect(m.launched[0]!.env.CONNECTOME_SETUP_OWN_USER_LINE).toStartWith('id -u connectome >/dev/null 2>&1');
+  });
+
+  test('on a run after the install was made, the agent gets no such line, since setup showed none', async () => {
+    const dir = scratch();
+    expect((await runSetup(dir, machine(dir, { hidden: [KEY] }).world)).status).toBe(0);
+    const again = machine(dir, { sudo: true });
+    expect((await runSetup(dir, again.world)).status).toBe(0);
+    expect(again.asked).toEqual([]);
+    expect(again.launched[0]!.env).not.toHaveProperty('CONNECTOME_SETUP_OWN_USER_LINE');
   });
 });
 
@@ -427,6 +517,19 @@ describe('refusals', () => {
     expect(err.join('\n')).toContain(`${record} names ${data} as its data directory, and no directory is there`);
     expect(existsSync(data)).toBe(false);
     expect(again.launched).toEqual([]);
+  });
+
+  test('an install record that names no data directory stops setup, which says so', async () => {
+    const dir = scratch();
+    mkdirSync(join(dir, 'connectome-host'));
+    const record = join(dir, 'connectome-host', 'install.json');
+    writeFileSync(record, JSON.stringify({ v: 1, extraState: [] }));
+    const m = machine(dir, { hidden: [KEY] });
+    const { status, err } = await runSetup(dir, m.world);
+    expect(status).toBe(1);
+    expect(err.join('\n')).toContain(`The install record at ${record} names no data directory, so setup stops here.`);
+    expect(m.ran.some((argv) => argv[2]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(false);
+    expect(existsSync(join(dir, 'data'))).toBe(false);
   });
 
   test('an install record\'s relative data directory is the one beside the install, from any directory', async () => {

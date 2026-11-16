@@ -6,7 +6,7 @@ import { ANTHROPIC_API } from '../setup/key-check.js';
 import { SERVERS, SETUP_BUN_FLOOR, SHELL_NODE_TOP, installedVersion, packageJson } from '../setup/packages.js';
 import { DOTENV_FILES, readEnvFile, unwritableValue, withoutDotenv, writeEnvValue } from '../setup/secrets.js';
 import { macSessionCheck, ended, realWorld, withoutKeys, type SetupWorld } from '../setup/world.js';
-import { readCurrent, readRecord, releaseDir, type InstallRecord } from '../update/contract.js';
+import { WRITE_RECORD_AGAIN, readCurrent, readRecord, releaseDir, type InstallRecord } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
 import { INSTALL_COMMAND } from './install-command.js';
@@ -22,6 +22,7 @@ const PACKAGE = '@animalabs/connectome-host';
 const SURFACE = 'discord';
 const BOOT_TIMEOUT_MS = 60_000;
 const OWN_USER = 'connectome';
+const MARK = 'made-by-connectome-setup';
 const NOT_FOR_THE_AGENT = [
   'CONNECTOME_INSTALL_ROOT', 'MODEL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'ANTHROPIC_BASE_URL',
   'MCPL_AGENT_OVERLAY_FILE',
@@ -38,8 +39,11 @@ export function firstLine(): string {
 function entriesOf(dir: string): string[] {
   try {
     return readdirSync(dir);
-  } catch {
-    return [];
+  } catch (error) {
+    const { code, message } = error as NodeJS.ErrnoException;
+    if (code === 'ENOENT') return [];
+    throw new Error(`${dir} can't be listed (${code ?? message}), so setup can't tell whether it holds other files. ` +
+      'Make it a directory you can list, and run setup again.');
   }
 }
 
@@ -50,11 +54,15 @@ function nearestDirectory(dir: string): string {
 }
 
 function setupsOwn(dir: string): boolean {
-  return existsSync(join(dir, '.setup')) || existsSync(join(dir, ROOT_IN_WORKDIR, 'install.json'));
+  return existsSync(join(dir, '.setup', MARK)) || existsSync(join(dir, ROOT_IN_WORKDIR, 'install.json'));
 }
 
 export function setupDirectory(cwd: string, home: string | undefined): string {
-  if (entriesOf(cwd).length === 0 || setupsOwn(cwd)) return cwd;
+  try {
+    if (setupsOwn(cwd) || entriesOf(cwd).length === 0) return cwd;
+  } catch {
+    return cwd;
+  }
   return home !== undefined && isAbsolute(home) && statSync(home, { throwIfNoEntry: false })?.isDirectory()
     ? join(home, 'resident') : cwd;
 }
@@ -95,7 +103,9 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     : `The resident will live in ${dir}${dir === world.cwd ? '' : `, since ${world.cwd} holds other files`}. Its ` +
       `service will be named after the directory's name, ${basename(dir)}.`);
   const recordPath = join(root, 'install.json');
-  if (!existsSync(recordPath) && offersOwnUser(world)) {
+  const linger = world.lingerOf(world.user);
+  const ownUserShown = !existsSync(recordPath) && offersOwnUser(world, linger);
+  if (ownUserShown) {
     adviseOwnUser(world, out);
     out('To give it that user, answer no: setup then says how to go on there.');
     const go = await yesNo(world, `Go on as ${world.user}? (yes/no) [yes] `, true);
@@ -112,7 +122,6 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       return 0;
     }
   }
-  const linger = world.lingerOf(world.user);
   const session = world.platform === 'darwin' ? world.macSession() : undefined;
   if (linger === null && world.platform === 'linux') {
     out('This machine doesn\'t run systemd, so the resident can\'t run as a systemd user service here, the way its ' +
@@ -158,6 +167,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
 
   mkdirSync(join(dir, '.setup'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, '.setup', MARK), '');
   const wanted = [
     ...installedVersion(dir, PACKAGE) === pkg.version ? [] : [`${PACKAGE}@${pkg.version}`],
     ...installedVersion(dir, SERVERS.discord) === null ? [SERVERS.discord] : [],
@@ -174,6 +184,10 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
 
   const record = readRecord<InstallRecord>(recordPath, 'install record');
+  if (record !== null && (typeof record.dataDir !== 'string' || record.dataDir === '')) {
+    err(`The install record at ${recordPath} names no data directory, so setup stops here. ${WRITE_RECORD_AGAIN}`);
+    return 1;
+  }
   const dataDir = resolve(dir, record?.dataDir ?? 'data');
   if (record === null) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   else if (statSync(dataDir, { throwIfNoEntry: false })?.isDirectory() !== true) {
@@ -271,7 +285,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       CONNECTOME_SETUP_GUIDE: join(release, RELEASE_HOST, 'docs', 'AGENT-ONBOARDING.md'),
       CONNECTOME_SETUP_USER: world.user,
       CONNECTOME_SETUP_COMMAND: command,
-      ...offersOwnUser(world, linger) ? { CONNECTOME_SETUP_OWN_USER_LINE: OWN_USER_LINE } : {},
+      ...ownUserShown ? { CONNECTOME_SETUP_OWN_USER_LINE: OWN_USER_LINE } : {},
       ...linger === false ? { CONNECTOME_SETUP_LINGER_LINE: lingerLine(world) } : {},
       ...world.timeZone ? { CONNECTOME_SETUP_TIME_ZONE: world.timeZone } : {},
       ...session === undefined ? {} : { CONNECTOME_SETUP_MAC_SESSION: session ?? '0' },
@@ -363,7 +377,7 @@ async function yesNo(world: SetupWorld, question: string, enter: boolean): Promi
   }
 }
 
-function offersOwnUser(world: SetupWorld, linger = world.lingerOf(world.user)): boolean {
+function offersOwnUser(world: SetupWorld, linger: boolean | null): boolean {
   return world.platform === 'linux' && world.hasSudo && linger !== null && world.user !== OWN_USER;
 }
 

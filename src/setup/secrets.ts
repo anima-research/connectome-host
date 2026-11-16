@@ -54,18 +54,24 @@ export function readEnvFile(path: string): Map<string, string> {
 // value wins first.
 export const DOTENV_FILES = ['.env.development.local', '.env.local', '.env.development', '.env'];
 
+// And those it loads in place of development's where NODE_ENV is production or test. It loads any other NODE_ENV as
+// development.
+const DOTENV_FILES_IN_ANY_MODE = [...DOTENV_FILES, '.env.production.local', '.env.production', '.env.test.local', '.env.test'];
+
 export function withoutDotenv(env: Record<string, string | undefined>, dir: string): Record<string, string> {
-  const kept: Record<string, string> = {};
-  for (const [name, value] of Object.entries(env)) if (value !== undefined) kept[name] = value;
-  for (const file of DOTENV_FILES) {
+  const set = new Set<string>();
+  for (const file of DOTENV_FILES_IN_ANY_MODE) {
     let values: Map<string, string>;
     try {
       values = readEnvFile(join(dir, file));
-    } catch {
-      continue;
+    } catch (error) {
+      throw new Error(`${(error as Error).message}. Bun may have loaded it, and what it runs is given none of the ` +
+        'names a dotenv file sets, so this stops here. Make it a file you can read, or move it away, and run this again.');
     }
-    for (const [name, value] of values) if (kept[name] === value) delete kept[name];
+    for (const name of values.keys()) set.add(name);
   }
+  const kept: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) if (value !== undefined && !set.has(name)) kept[name] = value;
   return kept;
 }
 

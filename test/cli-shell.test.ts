@@ -77,13 +77,14 @@ test('installs the shell where it is missing, with Bun\'s default trusted packag
   expect(out.at(-1)).toStartWith(`A pty opens in ${m.dir}`);
 });
 
-test('gives Bun\'s install none of the values Bun loaded from the dotenv files where the command runs', async () => {
-  const m = machine({ env: { DISCORD_TOKEN: 'from-env-file', SHARED: 'exported' } });
+test('gives Bun\'s install no variable that a dotenv file where the command runs sets, whatever its value', async () => {
+  const m = machine({ env: { DISCORD_TOKEN: 'from-env-file', SHARED: 'exported', OTHER: 'exported' } });
   writeFileSync(join(m.dir, '.env'), 'DISCORD_TOKEN="from-env-file"\nSHARED="file"\n');
   expect((await install(m)).status).toBe(0);
   const added = m.envs[m.ran.findIndex((argv) => argv[2] === 'add')]!;
   expect(added).not.toHaveProperty('DISCORD_TOKEN');
-  expect(added.SHARED).toBe('exported');
+  expect(added).not.toHaveProperty('SHARED');
+  expect(added.OTHER).toBe('exported');
 });
 
 test('says, under setup\'s agent, that the agent has Bun\'s lines when the install fails', async () => {
