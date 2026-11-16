@@ -455,14 +455,17 @@ describe('connectome doctor: check 3, the recipe', () => {
     }
   });
 
-  test('a recipe that doesn\'t load within the limit is a problem, with the limit', async () => {
+  test('a recipe that doesn\'t load within the limit isn\'t checked, with the limit, and isn\'t called one to correct', async () => {
     const server = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } });
     try {
       const recipe = JSON.stringify({ name: 'Ember', agent: { name: 'ember', model: 'claude-test-model',
         systemPrompt: `http://127.0.0.1:${server.port}/prompt.md` } });
       const at = install({ recipe });
       const r = await run(at, { states: { [HOST]: 'inactive/dead' }, recipeLimitMs: 300 });
-      expect(r.lines[5]).toBe(`✗ ${join(at.work, 'recipe.json')} doesn't load: it didn't load within 0.3 s.`);
+      expect(r.lines.slice(5, 7)).toEqual([
+        `– Not checked: ${join(at.work, 'recipe.json')} didn't load within 0.3 s, so whether it loads isn't known.`,
+        '  Next: run doctor again: the recipe, or a system prompt it names by URL, may be slow to answer.',
+      ]);
     } finally {
       server.stop(true);
     }

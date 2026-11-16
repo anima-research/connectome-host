@@ -246,6 +246,11 @@ async function checkRecipe(report: Report, parts: DoctorParts, root: string, hos
     })());
     report.check('✓', `${recipe} loads.`);
   } catch (error) {
+    if (error instanceof TooLong) {
+      report.check('–', `Not checked: ${recipe} ${error.message}, so whether it loads isn't known.`,
+        'run doctor again: the recipe, or a system prompt it names by URL, may be slow to answer.');
+      return;
+    }
     report.check('✗', `${recipe} doesn't load: ${errorText(error)}.`,
       `correct it, then start the service with \`${commands.start}\`.`);
   }
@@ -371,10 +376,12 @@ function iso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
+class TooLong extends Error {}
+
 async function within<T>(limitMs: number, work: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`it didn't load within ${limitMs / 1000} s`)), limitMs);
+    timer = setTimeout(() => reject(new TooLong(`didn't load within ${limitMs / 1000} s`)), limitMs);
   });
   try {
     return await Promise.race([work, late]);
