@@ -136,16 +136,17 @@ function checkService(report: Report, sys: ServiceSystem, typed: string, units: 
     } else if (state.runs) {
       report.check('✓', `The service ${unit.name} runs.`);
     } else {
-      report.check('✗', `The service ${unit.name} is ${state.state}.`,
-        `start it with \`${commands.start}\`, and read its log with \`${log}\`.`);
+      report.check('✗', `The service ${unit.name} is ${state.state}.`, state.changing
+        ? `systemd is changing its state now, so read its log with \`${log}\`, and run doctor again in a minute.`
+        : `start it with \`${commands.start}\`, and read its log with \`${log}\`.`);
     }
-    if (unit.name === units.host.name) hostRuns = 'unasked' in state ? null : state.runs;
+    if (unit.name === units.host.name) hostRuns = 'unasked' in state ? null : state.runs || state.changing;
   }
   return hostRuns;
 }
 
 function unitState(sys: ServiceSystem, env: Record<string, string>, units: ServiceUnits, unit: ServiceUnit):
-  { runs: boolean; state: string } | { unasked: string; question: string } {
+  { runs: boolean; changing: boolean; state: string } | { unasked: string; question: string } {
   if (units.manager === 'systemd-user') {
     const shown = showUnit(sys, env, unit.name, ['ActiveState', 'SubState']);
     if (typeof shown === 'string') {
@@ -153,15 +154,20 @@ function unitState(sys: ServiceSystem, env: Record<string, string>, units: Servi
     }
     const active = shown.get('ActiveState') ?? '';
     const sub = shown.get('SubState') ?? '';
-    return { runs: active === 'active', state: sub === '' ? active : `${active} (${sub})` };
+    return {
+      runs: active === 'active',
+      changing: active !== 'active' && active !== 'inactive' && active !== 'failed',
+      state: sub === '' ? active : `${active} (${sub})`,
+    };
   }
   const state = agentState(sys, env, unit);
   if (state.kind === 'unknown') {
     return { unasked: `launchctl list ${unit.name} failed: ${state.why}`, question: `launchctl list ${unit.name}` };
   }
-  if (state.kind === 'running') return { runs: true, state: 'running' };
+  if (state.kind === 'running') return { runs: true, changing: false, state: 'running' };
   return {
     runs: false,
+    changing: false,
     state: state.kind === 'unloaded' ? 'not loaded'
       : `loaded and not running${state.exit === undefined ? '' : `, its last exit ${state.exit}`}`,
   };
@@ -181,13 +187,17 @@ async function reachHost(report: Report, parts: DoctorParts, root: string, typed
   }
   const bun = serviceBun(parts.sys.bun, parts.sys.env.PATH ?? '', parts.sys);
   const moved = movedDataDir(root, dirname(root));
-  const next = !installable
+  const next = !reached.down
+    ? 'put right what that names, then run doctor again, or run it again in a minute if a host is still starting.'
+    : !installable
     ? 'no service can be installed here, so start the host as this machine runs a program, from ' +
       `${dirname(root)}: \`${moved === null ? '' : `DATA_DIR=${shellWord(moved)} `}` +
       `${shellWord(bun)} ${shellWord(join(root, 'start.js'))} <recipe> --headless\``
     : commands === null ? `\`${typed} service install <recipe>\``
     : runs === true ? `it may still be starting, so run doctor again in a minute. Its log: \`${commands.log}\``
-      : `start the service with \`${commands.start}\`.`;
+    : runs === false ? `start the service with \`${commands.start}\`.`
+    : 'its service manager couldn\'t be asked whether the service runs, so ask it as the line for the service says, ' +
+      'then run doctor again.';
   report.check('✗', `No host answers: ${reached.reason}.`, next);
   return null;
 }

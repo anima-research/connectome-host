@@ -228,6 +228,17 @@ describe('connectome doctor: check 1, the service', () => {
     ]);
   });
 
+  test('a systemd service that is changing its state gets its log and a run in a minute, not the start command', async () => {
+    const at = install();
+    const r = await run(at, { states: { [HOST]: 'activating/auto-restart' } });
+    expect(r.lines.slice(1, 5)).toEqual([
+      `✗ The service ${HOST} is activating (auto-restart).`,
+      `  Next: systemd is changing its state now, so read its log with \`journalctl --user -u ${HOST} -f\`, and run doctor again in a minute.`,
+      expect.stringMatching(/^✗ No host answers: /),
+      `  Next: it may still be starting, so run doctor again in a minute. Its log: \`journalctl --user -u ${HOST} -f\``,
+    ]);
+  });
+
   test('where systemd can\'t be asked, it gives systemd\'s words and the question to ask', async () => {
     const at = install();
     const r = await run(at, { states: { [HOST]: { fails: 'Failed to connect to bus' } } });
@@ -284,6 +295,36 @@ describe('connectome doctor: check 2, the host', () => {
     const at = install();
     const r = await run(at, { states: { [HOST]: 'inactive/dead' } });
     expect(r.lines[4]).toBe(`  Next: start the service with \`systemctl --user start ${HOST}\`.`);
+  });
+
+  test('with no host and a service manager that couldn\'t be asked, the next step is that question, not a start', async () => {
+    const at = install();
+    const r = await run(at, { states: { [HOST]: { fails: 'Failed to connect to bus' } } });
+    expect(r.lines[3]).toStartWith('✗ No host answers: ');
+    expect(r.lines[4]).toBe('  Next: its service manager couldn\'t be asked whether the service runs, so ask it as the line for ' +
+      'the service says, then run doctor again.');
+  });
+
+  test('a socket that answers, but not as a host, gets no start step', async () => {
+    const at = install();
+    const server = Bun.listen({ unix: join(at.data, 'ipc.sock'), socket: { data() {} } });
+    try {
+      const r = await run(at, { states: { [HOST]: 'inactive/dead' } });
+      expect(r.lines[3]).toStartWith(`✗ No host answers: the socket ${join(at.data, 'ipc.sock')} accepted the connection, but no host said it was ready`);
+      expect(r.lines[4]).toBe('  Next: put right what that names, then run doctor again, or run it again in a minute if a host is ' +
+        'still starting.');
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('where the install record can\'t be read, the next step is to put that right, not a start line without the data directory', async () => {
+    const at = { ...install({ unit: false }), platform: 'win32' as NodeJS.Platform };
+    rmSync(join(at.root, 'install.json'));
+    const r = await run(at, { env: { PATH: '/nonexistent' } });
+    expect(r.lines[2]).toStartWith('✗ No host answers: ');
+    expect(r.lines[3]).toBe('  Next: put right what that names, then run doctor again, or run it again in a minute if a host is ' +
+      'still starting.');
   });
 
   test('where no service can be installed, the next step starts the host with its own start line', async () => {
