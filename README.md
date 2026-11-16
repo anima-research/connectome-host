@@ -279,6 +279,18 @@ choice persists across restarts. The setting came in Agent Framework
 }
 ```
 
+`agent.sameRoundSkipReplyTextPolicy` (`"private"` default, or `"ask"`) governs
+ordinary text in a round that calls `skip_reply`. Under `"private"` it stays
+private and isn't held. Under `"ask"`, text that only the `skip_reply` keeps
+back is held as a draft. Where some of it would have been posted or bounced
+without the `skip_reply`, the turn's first such `skip_reply` is refused once
+with a result that names the drafts and asks where they should go; calling
+`skip_reply` again ends the turn and keeps them. A recipe that runs the
+XML formatter (`formatter: "anthropic-xml"` with a provider other than
+`openai-responses` or `openai-codex`) can't set `"ask"`: on that path the
+framework neither refuses nor holds. It's the recipe's alone; `agent_settings`
+neither shows nor switches it.
+
 See Agent Framework's `docs/disabled-prose-routing.md`,
 `docs/explicit-prose-routing.md`, `docs/hybrid-prose-routing.md`, and
 `docs/locked-prose-routing.md` for the full semantics of each mode.

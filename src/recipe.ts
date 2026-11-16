@@ -397,6 +397,17 @@ export interface RecipeAgent {
    */
   sameRoundThinkTextPolicy?: 'public' | 'private';
   /**
+   * What becomes of ordinary text in a round that calls `skip_reply`.
+   * Omitted or 'private': it stays private and isn't held. 'ask': text that
+   * only the `skip_reply` keeps back is held as a draft. Where some of it
+   * would have been posted or bounced without the `skip_reply`, the turn's
+   * first such `skip_reply` is refused once with a result that names the
+   * drafts and asks where they should go. Refused where the recipe runs the
+   * XML formatter (runsXmlFormatter), since the framework does neither on
+   * that path.
+   */
+  sameRoundSkipReplyTextPolicy?: 'private' | 'ask';
+  /**
    * Prose delivery mode (agent-framework docs/explicit-prose-routing.md).
    * 'explicit' = model prefixes plain text with `>>destination`; unprefixed
    * prose bounces to a clipboard instead of auto-routing.
@@ -1789,6 +1800,13 @@ export function resolveProvider(recipe: Recipe): RecipeProvider {
   return recipe.agent.provider ?? 'anthropic';
 }
 
+/** Whether the agent runs membrane's XML formatter, as recipeFormatter
+ *  chooses it: the two OpenAI providers take their own formatter whatever
+ *  `formatter` says. */
+export function runsXmlFormatter(agent: { formatter?: unknown }, provider: string): boolean {
+  return agent.formatter === 'anthropic-xml' && provider !== 'openai-responses' && provider !== 'openai-codex';
+}
+
 /** The model a recipe's agent runs: `envModel`, the environment's `MODEL`,
  *  when it's set, else the recipe's own, else its provider's default. */
 export function recipeModel(recipe: Recipe, envModel: string | undefined): string {
@@ -2060,7 +2078,7 @@ const RECIPE_AGENT_KEYS = [
   'allowedTools', 'toolPresentation',
   'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
   'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
-  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting', 'proseLock',
+  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'sameRoundSkipReplyTextPolicy', 'proseRouting', 'proseLock',
   'toolWrapperProseGuard', 'primaryWaitsForAuxiliary', 'sendSilencing', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
   'refusalHandling', 'clock',
 ] as const;
@@ -2713,6 +2731,24 @@ export function validateRecipe(raw: unknown): Recipe {
   ) {
     throw new Error(
       `Recipe agent.sameRoundThinkTextPolicy must be 'public' or 'private', got ${JSON.stringify(agent.sameRoundThinkTextPolicy)}.`,
+    );
+  }
+
+  if (
+    agent.sameRoundSkipReplyTextPolicy !== undefined &&
+    agent.sameRoundSkipReplyTextPolicy !== 'private' &&
+    agent.sameRoundSkipReplyTextPolicy !== 'ask'
+  ) {
+    throw new Error(
+      `Recipe agent.sameRoundSkipReplyTextPolicy must be 'private' or 'ask', got ${JSON.stringify(agent.sameRoundSkipReplyTextPolicy)}.`,
+    );
+  }
+  const provider = (agent.provider as RecipeProvider | undefined) ?? 'anthropic';
+  if (agent.sameRoundSkipReplyTextPolicy === 'ask' && runsXmlFormatter(agent, provider)) {
+    throw new Error(
+      `Recipe agent.sameRoundSkipReplyTextPolicy 'ask' needs native tools, and formatter 'anthropic-xml' with provider '${provider}' runs XML tools. ` +
+      "There a round's text reaches the framework as a slice of the raw response, which can hold the model's thinking, " +
+      "so the framework neither refuses skip_reply nor holds that text. Set formatter 'native', or leave the policy out.",
     );
   }
 

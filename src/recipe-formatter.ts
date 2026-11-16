@@ -1,5 +1,5 @@
 import { AnthropicXmlFormatter, NativeFormatter, OpenAIResponsesFormatter } from '@animalabs/membrane';
-import type { Recipe } from './recipe.js';
+import { runsXmlFormatter, type Recipe } from './recipe.js';
 import { resolvePromptCaching } from './framework-agent-config.js';
 
 export function recipeFormatter(
@@ -7,8 +7,8 @@ export function recipeFormatter(
   provider: string,
   model: string,
 ): AnthropicXmlFormatter | NativeFormatter | OpenAIResponsesFormatter {
+  if (runsXmlFormatter(recipe.agent, provider)) return anthropicXmlFormatter({ toolsInSystem: xmlToolsInSystem(recipe, model) });
   if (provider === 'openai-responses' || provider === 'openai-codex') return new OpenAIResponsesFormatter();
-  if (recipe.agent.formatter === 'anthropic-xml') return anthropicXmlFormatter({ toolsInSystem: xmlToolsInSystem(recipe, model) });
   return new NativeFormatter();
 }
 
