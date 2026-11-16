@@ -8,6 +8,7 @@ const REWIND_REST = `were set aside ${SET_ASIDE}. Their content isn't shown here
 const FAILURE_ADVICE = 'If this recurs with the same cause, change approach rather than retrying identically ' +
   '(e.g. drop an oversized attachment or an unsupported setting).';
 const TIMEOUT_ADVICE = 'If a reply is still owed from that turn, you can give it now.';
+const REWIND_OPENING = /^\[[^\]]+\] (?:The (\d+) most recent turn\(s\)|Some recent turns) were set aside /;
 const REASON = ' Reason: ';
 const SAFETY_CAUSE = / \(safety(?:, HTTP \d+)?\)/;
 
@@ -24,8 +25,9 @@ export const UNSTICK_FIX_11_16: Sweep = {
     if (metadata.system !== true) return null;
     const text = textOf(row);
     if (metadata.kind === 'refusal-rewind') {
-      if (text.includes(SET_ASIDE)) return null;
-      const told = /The (\d+) most recent turn\(s\)/.exec(text)?.[1];
+      const opening = REWIND_OPENING.exec(text);
+      if (opening !== null && text.startsWith(SET_ASIDE, opening[0].length)) return null;
+      const told = opening?.[1];
       const count = told === undefined ? 'Some recent turns' : `The ${told} most recent turn(s)`;
       return { kind: 'rewind note', text: `[refusal-rewind] ${count} ${REWIND_REST}` };
     }

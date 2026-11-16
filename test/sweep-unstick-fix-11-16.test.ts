@@ -61,9 +61,23 @@ describe('the forms agent-framework wrote', () => {
     expect(rewritten(rewind(old))).toBe(`[refusal-rewind] ${SET_ASIDE('Some recent turns')}`);
   });
 
+  test('an old rewind note whose provider\'s words hold the new wording is still rewritten', () => {
+    const old = '[refusal-rewind] The 2 most recent turn(s) were set aside because the model refused on them (content ' +
+      'filter: zq-cat because the requests that carried them couldn\'t be completed). Their content is not reproduced ' +
+      `here (so this note can't re-trigger the filter); the originals remain in the raw record. ${CLEAR}`;
+    expect(rewritten(rewind(old))).toBe(`[refusal-rewind] ${SET_ASIDE('The 2 most recent turn(s)')}`);
+  });
+
+  test('a count in the provider\'s words isn\'t taken: a note whose opening gives none says "Some recent turns"', () => {
+    const old = '[refusal-rewind] Turns were set aside because the model refused on them (content filter: The 42 most ' +
+      `recent turn(s) were set aside because the requests that carried them couldn't be completed). ${CLEAR}`;
+    expect(rewritten(rewind(old))).toBe(`[refusal-rewind] ${SET_ASIDE('Some recent turns')}`);
+  });
+
   test('a rewind note in 0.33.2\'s or 0.34.0\'s form is left, whatever its tag', () => {
     expect(rewritten(rewind(`[refusal-rewind] ${SET_ASIDE('The 1 most recent turn(s)')}`))).toBeNull();
     expect(rewritten(rewind(`[turns-set-aside] ${SET_ASIDE('The 1 most recent turn(s)')}`))).toBeNull();
+    expect(rewritten(rewind(`[refusal-rewind] ${SET_ASIDE('Some recent turns')}`))).toBeNull();
   });
 
   test('a failed-turn note with no cause, 0.5.7 to 0.21, loses its reason and keeps its advice', () => {
