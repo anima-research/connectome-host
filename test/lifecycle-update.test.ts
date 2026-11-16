@@ -11,6 +11,7 @@ import type { InstallOps } from '../src/update/install.js';
 import { RELEASE_HOST } from '../src/update/launcher.js';
 import { shellWord } from '../src/update/install-command-name.js';
 import type { SwitchFleet, SwitchRequest } from '../src/update/quiesce.js';
+import { NOT_THE_SWITCHS } from '../src/update/quiesce.js';
 import { HostUpdate, type SwitchFramework } from '../src/update/update.js';
 import { COMMAND_WAYS, PAGE_WAYS, cliWays, statusLines, type UpdateStatus } from '../src/web/update-text.js';
 import { answerToQuiesce } from './switch-answer-child.js';
@@ -120,6 +121,9 @@ function fleetChild(state: {
       if (request.op === 'resume') {
         await state.resumeHeld;
         if (state.resumes === false) return { ok: false, error: 'the socket closed' };
+        if (state.operator !== undefined && child.looks >= state.operator.fromLook) {
+          return { ok: true, data: { resumed: false, why: `${NOT_THE_SWITCHS} (${state.operator.reason ?? 'no reason'}), so it stays` } };
+        }
         child.quiesced = false;
         return { ok: true, data: { resumed: true } };
       }
@@ -737,12 +741,15 @@ test('an operator who quiesces this host after the children\'s look, before the 
 });
 
 for (const [fromLook, when] of [[1, 'at the children\'s look'], [2, 'at the switch\'s own quiesce']] as const) {
-  test(`a fleet child quiesced by its operator holds an armed restart ${when}: nothing switches, this host is quiesced only if the switch's own quiesce began, it stays armed, and check names the child's hold`, async () => {
+  test(`a fleet child quiesced by its operator holds an armed restart ${when}: nothing switches, this host is quiesced only if the switch's own quiesce began, it stays armed, the child's hold stays and isn't reported as a quiesce the switch left, and check names it`, async () => {
     const { root } = installRunning0141(['0.15.0']);
-    const { fleet } = fleetChild({ busy: false, operator: { reason: 'maintenance', fromLook } });
+    const { fleet, child } = fleetChild({ busy: false, operator: { reason: 'maintenance', fromLook } });
     const host = residentHost({ root, fleet });
     await host.armed();
-    expect((await host.update.runArmed(alwaysQuiet)).done).toBe(false);
+    const answer = await host.update.runArmed(alwaysQuiet);
+    expect(answer.done).toBe(false);
+    expect(answer.lines.join('\n')).not.toContain('didn\'t reach every host');
+    expect(child.quiesced).toBe(true);
     expect(readMark(root)).toBeNull();
     expect(host.stops).toEqual([]);
     expect(host.serving()).toBe(true);

@@ -219,8 +219,10 @@ describe('before a switch, check says what going back can cost', () => {
       .toEqual({ at: true, beforeNotes: true });
   });
 
-  test('a host that is no install, and so has no switch to go back from, says nothing of it', () => {
-    expect(noticeLines(read, '0.12.1', false).join('\n')).not.toContain('Going back after a switch');
+  test('a host that is no install, and so has no switch to go back from, still gets the notice, which says nothing of it', () => {
+    const lines = noticeLines(read, '0.12.1', false);
+    expect(lines[0]).toBe('connectome-host 0.13.1 is out; this host runs 0.12.1.');
+    expect(lines.join('\n')).not.toContain('Going back after a switch');
   });
 
   test('the banner leaves it out, as it leaves out the notes', () => {
