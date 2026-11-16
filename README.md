@@ -1000,7 +1000,9 @@ while any agent sharing the store is mid-turn, the subconscious included, and
 row that the window of an agent with a turn alive holds, says so, and
 rewrites the rest; run it again once those turns end. While a command that
 changes the session, such as a bare `/newtopic` writing its summary, is still
-running, `/sweep` with `--write` writes nothing and says so.
+running, `/sweep` with `--write` writes nothing and says so. `/sweep` reaches
+the open session's rows alone, and on a host with more sessions its answer
+says so.
 `/newtopic` stores its transition only while the agent has no turn alive, and
 is refused while a continuation or a retry of the agent's turn is on its way.
 A bare `/newtopic` writes its summary first. If the branch or the strategy

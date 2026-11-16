@@ -15,6 +15,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connectWhenAccepting } from './ipc-connect.js';
+import { SWEEPS } from '../src/sweeps.js';
 
 async function until(check: () => boolean, label: string): Promise<void> {
   const deadline = Date.now() + 5_000;
@@ -139,11 +140,11 @@ test('a session switch before any client connects leaves the first client the ne
   });
 });
 
-test('the ready event says the host knows /sweep', async () => {
+test('the ready event names the sweeps the host knows', async () => {
   await withChild(async (open) => {
     const client = await open();
     const ready = client.events.find(event => event.type === 'lifecycle' && event.phase === 'ready')!;
-    expect(ready.sweep).toBe(true);
+    expect(ready.sweeps).toEqual(SWEEPS.map((sweep) => sweep.name));
   });
 });
 

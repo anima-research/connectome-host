@@ -1000,7 +1000,7 @@ test('sweep NAME asks the host /sweep with the same words and prints its answer,
     reply({ type: 'command-output', text: 'Sweep test-notes rewrote 1 of 2 rows.', style: 'system', corrId: message.corrId });
     reply({ type: 'command-output', text: 'Another client\'s line.', style: 'system', corrId: 'someone-else' });
     reply({ type: 'command-done', corrId: message.corrId, ...(String(message.command).endsWith('--write') ? { refused: true } : {}) });
-  }, { pid: 4242, dataDir: data, recipe: 'Resident', turnWork: false, agent: 'resident', sweep: true });
+  }, { pid: 4242, dataDir: data, recipe: 'Resident', turnWork: false, agent: 'resident', sweeps: ['test-notes'] });
   const shown = sweepCtx(root, ['test-notes']);
   expect(await sweep(shown.ctx, NOTES)).toBe(0);
   expect(shown.out).toEqual(['Sweep test-notes rewrote 1 of 2 rows.']);
@@ -1019,7 +1019,7 @@ test('sweep NAME with no host answering asks nothing and exits 1, and one whose 
     if (message.type !== 'command') return;
     if (closing) socket.end();
     else reply({ type: 'command-done', corrId: message.corrId, error: 'the store is closed' });
-  }, { pid: 4242, dataDir: data, recipe: 'Resident', turnWork: false, agent: 'resident', sweep: true });
+  }, { pid: 4242, dataDir: data, recipe: 'Resident', turnWork: false, agent: 'resident', sweeps: ['test-notes'] });
   const failed = sweepCtx(root, ['test-notes', '--write']);
   expect(await sweep(failed.ctx, NOTES)).toBe(1);
   expect(failed.err).toEqual(['connectome: the host\'s sweep command failed: the store is closed']);
@@ -1031,6 +1031,19 @@ test('sweep NAME with no host answering asks nothing and exits 1, and one whose 
   expect(await sweep(shown.ctx, NOTES)).toBe(1);
   expect(shown.err.join('\n')).toContain('closed the connection before its answer ended');
   expect(shown.err.join('\n')).not.toContain('rewrote');
+});
+
+test('sweep NAME against a host that knows /sweep but not that sweep asks nothing and exits 1, naming the remedy', async () => {
+  const { root, data } = install();
+  const asked: string[] = [];
+  await fakeHost(data, (message) => {
+    if (message.type === 'command') asked.push(String(message.command));
+  }, { pid: 4242, dataDir: data, recipe: 'Resident', turnWork: false, agent: 'resident', sweeps: [] });
+  const given = sweepCtx(root, ['test-notes', '--write']);
+  expect(await sweep(given.ctx, NOTES)).toBe(1);
+  expect(asked).toEqual([]);
+  expect(given.err.join('\n')).toContain('the running host is an earlier release, which doesn\'t know the sweep test-notes');
+  expect(given.err.join('\n')).toContain('Then connectome sweep test-notes works.');
 });
 
 test('sweep NAME against a host that doesn\'t say it knows /sweep asks nothing and exits 1', async () => {
