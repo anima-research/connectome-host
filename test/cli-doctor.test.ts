@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { doctor, type DoctorParts } from '../src/cli/doctor.js';
@@ -623,6 +623,15 @@ describe('connectome doctor: the closing line', () => {
     const at = install();
     const r = await run(at, { states: RUNNING, health: HEALTHY, env: { XDG_RUNTIME_DIR: '' } });
     expect(r.lines.at(-1)).toMatch(/^Where an incoming message stops, the ladder shows: XDG_RUNTIME_DIR=\/run\/user\/1000 python3 /);
+  });
+
+  test('in an install with a current release, the ladder line goes through current, which an update keeps', async () => {
+    const at = install();
+    mkdirSync(join(at.root, 'releases', '99.0.0'), { recursive: true });
+    symlinkSync(join('releases', '99.0.0'), join(at.root, 'current'));
+    const r = await run(at, { states: RUNNING, health: HEALTHY });
+    expect(r.lines.at(-1)).toBe('Where an incoming message stops, the ladder shows: python3 ' +
+      `${join(at.root, 'current', 'node_modules', '@animalabs', 'connectome-host', 'scripts', 'connectome-doctor')} ${at.work} ${HOST}`);
   });
 
   test('on launchd there is no ladder line', async () => {

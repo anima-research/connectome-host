@@ -1,10 +1,11 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadRecipeDocument, readRecipeDocument } from '../recipe.js';
 import { checkDiscordToken } from '../setup/discord-token.js';
 import { DISCORD_TOKEN, readEnvFile, shownByName, storedSecrets, type Secret } from '../setup/secrets.js';
-import { shellWord } from '../update/launcher.js';
+import { installPaths } from '../update/contract.js';
+import { RELEASE_HOST, shellWord } from '../update/launcher.js';
 import { serviceBun } from '../update/service-bun.js';
 import type { CliContext } from './connectome.js';
 import { dataDirOf, openHost, type HostClient, type NoHost } from './host-socket.js';
@@ -352,7 +353,9 @@ function movedDataDir(root: string, work: string): string | null {
 
 function ladderLine(sys: ServiceSystem, root: string, work: string, unit: ServiceUnit): string {
   const dataDir = movedDataDir(root, work);
-  const args = [LADDER, work, unit.name, ...(dataDir !== null ? ['--data-dir', dataDir] : [])];
+  const current = installPaths(root).current;
+  const ladder = existsSync(current) ? join(current, RELEASE_HOST, 'scripts', 'connectome-doctor') : LADDER;
+  const args = [ladder, work, unit.name, ...(dataDir !== null ? ['--data-dir', dataDir] : [])];
   return `${sys.env.XDG_RUNTIME_DIR ? '' : `XDG_RUNTIME_DIR=/run/user/${sys.uid} `}python3 ${args.map(shellWord).join(' ')}`;
 }
 
