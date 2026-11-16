@@ -43,6 +43,16 @@ async function marker(dir: string, name: string, closed: Promise<unknown>): Prom
   }
 }
 
+async function heldFor(dir: string, closed: Promise<unknown>, ms: number): Promise<void> {
+  let exited = false;
+  void closed.then(() => { exited = true; });
+  const looked = join(dir, 'hold-looked');
+  while (!existsSync(looked) || Number(readFileSync(looked, 'utf8')) < ms) {
+    if (exited) throw new Error(`the fixture ended before the host had looked at its hold for ${ms} ms`);
+    await Bun.sleep(10);
+  }
+}
+
 function quietFrom(dir: string): number {
   return Number(readFileSync(join(dir, 'quiet-from'), 'utf8'));
 }
@@ -115,7 +125,13 @@ async function idleAfterQuiet(hold: string): Promise<void> {
 }
 
 async function exitAfterQuiet(hold: string): Promise<void> {
-  const { dir, closed, output } = start('quiet-exit', hold);
+  const released = ['turn', 'gated', 'script', 'queue', 'subagent-active', 'subagent-queued'].includes(hold);
+  const { dir, closed, output } = start('quiet-exit', hold, released ? { FIXTURE_HOLD_UNTIL_RELEASED: '1' } : {});
+  if (released) {
+    await heldFor(dir, closed, CONFIRM_MS);
+    expect(existsSync(join(dir, 'stopped'))).toBe(false);
+    writeFileSync(join(dir, 'release-hold'), '');
+  }
   const result = await closed;
   expect({ code: result.code, signal: result.signal, output: result.code === 0 ? '' : output() })
     .toEqual({ code: 0, signal: null, output: '' });
@@ -465,18 +481,24 @@ test.concurrent('texts the replaced framework hadn\'t finished go to the new fra
 }, 15_000);
 
 async function turnWorkAndIdle(hold: string): Promise<{ done: number; idle: number; dones: number; doneFirst: boolean; scoutStarts: number; turnWorkFrom: number; quietFrom: number }> {
-  const released = hold.startsWith('subagent') || hold === 'command' || hold === 'credential';
+  const turnWork = ['turn', 'gated', 'parked', 'queue'].includes(hold);
+  const released = turnWork || hold.startsWith('subagent') || hold === 'command' || hold === 'credential';
   const { dir, child, closed } = start('quiet-idle', hold, released ? { FIXTURE_HOLD_UNTIL_RELEASED: '1' } : {});
   try {
     const watching = await client(dir, closed);
     await watching.next('ready');
     writeFileSync(join(dir, 'go'), '');
+    if (turnWork) {
+      await heldFor(dir, closed, CONFIRM_MS);
+      expect(watching.count('turn-work-done')).toBe(0);
+      writeFileSync(join(dir, 'release-hold'), '');
+    }
     const done = Number((await watching.next('turn-work-done')).ts);
     if (hold === 'subagent-streaming') {
       writeFileSync(join(dir, 'scout-go'), '');
       await marker(dir, 'scout-polled', closed);
     }
-    if (released) {
+    if (released && !turnWork) {
       await marker(dir, 'hold-entered', closed);
       writeFileSync(join(dir, 'release-hold'), '');
     }

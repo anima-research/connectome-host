@@ -3,7 +3,7 @@ import type { AppContext } from '../src/index.ts';
 import { selfRestart } from '../src/self-restart.ts';
 import { CredentialMonitor } from '../src/credential-state.ts';
 import { hostUpdate } from '../src/update/update.ts';
-import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const MODES = ['self-restart', 'sigterm-first', 'exit-when-idle', 'held', 'cancel-in-wait', 'arm-after-idle', 'late-arm-gap', 'unseen-turn',
@@ -84,6 +84,7 @@ const holding = (kind: string): boolean => {
     if (hold !== kind || heldFrom === 0) return false;
     if (!existsSync(join(dataDir, 'release-hold'))) {
       holdEntered();
+      writeFileSync(join(dataDir, 'hold-looked'), String(Date.now() - Number(readFileSync(join(dataDir, 'hold-entered'), 'utf8'))));
       return true;
     }
     // The host's first look after the release, so quiet-from is never later than the host's own reading.
