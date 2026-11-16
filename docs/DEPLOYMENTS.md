@@ -102,6 +102,18 @@ gui/$(id -u)/<label>` shows, 5 s for these agents on macOS 26, and under
 systemd it's the unit's `TimeoutStopSec`, 90 s by default. The host's own stop
 has no time limit.
 
+Under the systemd unit, a host's fleet children end when the host exits. The
+unit's `KillMode=mixed` sends a stop's SIGTERM to the host alone, and SIGKILL to
+what is left once the host exits, a child it detached included. So when a
+fleet's parent exits without stopping its children, as at a crash, they are
+killed in the middle of what they do.
+
+On macOS, the host's log, `logs/agent.log`, and the shell daemon's,
+`logs/shell.log`, grow until someone cuts them. launchd appends to each and
+holds it open, so a log deleted while its service runs isn't written again
+until the next load. To cut one: stop the service with its stop line, move or
+delete the log, then start the service with its start line.
+
 A restart can make auxiliary model calls before any user message: agent-framework
 immediately drains restored Context Manager compression/merge debt. This happens only
 when the store has pending maintenance, and it is visible in the new process's
