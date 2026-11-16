@@ -989,12 +989,16 @@ headless socket.
 | `/session [list\|new\|switch\|rename\|delete]` | Session management; `delete` requires `--confirm` |
 | `/fleet [list\|status\|view\|peek\|stop\|restart]` | Fleet children (see [`docs/fleet-protocol.md`](docs/fleet-protocol.md)) |
 | `/update [check\|install\|restart [wait\|now\|resume\|<version>]\|back [(keep\|restore) [<version>]]]` | Whether a newer release is out and what it costs (`check`, or `/update` alone); on an install set up to update itself, install it, restart onto it, or go back. A version, as the Web UI sends it, makes Restart or Go back refuse unless that's still the release it would act on ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
+| `/sweep [name [--write]]` | List the sweeps this release knows. With a name, show each stored row that sweep would rewrite, with its new text and never its old text, and which agents' prompt caches a write would rewrite; `--write` rewrites them, and `connectome sweep` asks the running host the same |
 
 The commands that move the head (`/checkout`, `/restore`, `/branchto`) and
 those that change the agent's window (`/undo`, `/redo`, `/newtopic`) are
 refused while a turn is in flight: `/checkout`, `/restore` and `/branchto`
 while any agent sharing the store is mid-turn, the subconscious included, and
 `/undo`, `/redo` and `/newtopic` while the agent the command acts for is.
+`/sweep` isn't refused for a turn in flight. With `--write`, it leaves each
+row that the window of an agent with a turn alive holds, says so, and
+rewrites the rest; run it again once those turns end.
 `/newtopic` stores its transition only while the agent has no turn alive, and
 is refused while a continuation or a retry of the agent's turn is on its way.
 A bare `/newtopic` writes its summary first. If the branch or the strategy

@@ -219,6 +219,19 @@ describe('/sweep NAME --write', () => {
     expect(logged[0]).toMatchObject({ requester: { via: 'test' }, params: { sweep: 'test-notes' }, result: { rewritten: 1, leftForTurns: 0, failed: 0 } });
   });
 
+  test('a row of b\'s that a\'s manager lists first is edited through it, and b\'s next request carries the new text', async () => {
+    const h = await host();
+    const id = h.note('b', 2);
+    await h.turn('b');
+    expect(JSON.stringify(h.requests.at(-1))).toContain(OLD);
+    expect(h.agent('a').getContextManager().getMessage(id as never)).not.toBeNull();
+    expect(said(h.sweep('test-notes', '--write'))).toContain('rewrote 1 of 1 row.');
+    await h.turn('b');
+    const next = JSON.stringify(h.requests.at(-1));
+    expect(next).toContain('New words for note 2.');
+    expect(next).not.toContain(OLD);
+  });
+
   test('a second run finds nothing to rewrite', async () => {
     const h = await host();
     h.note('a', 1);
