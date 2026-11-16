@@ -532,6 +532,10 @@ export function handleSweep(app: AppContext, args: string[], requester: Operator
       refused: true,
     };
   }
+  const open = app.sessionManager.getActiveSession()?.id;
+  const others = app.sessionManager.listSessions().filter((session) => session.id !== open).length;
+  const elsewhere = others === 0 ? [] : [say(`This host has ${others} other ${others === 1 ? 'session' : 'sessions'}: the sweep ` +
+    'reached the open session alone. Each other session takes its own run after a /session switch.')];
   const framework = app.framework;
   const live = framework.getAllAgents().filter((agent) => !agent.getContextManager().isClosed());
   const found: Array<{ id: string; cm: ContextManager; kind: string; text: string; was: number; at: Date; holders: string[] }> = [];
@@ -548,7 +552,7 @@ export function handleSweep(app: AppContext, args: string[], requester: Operator
       found.push({ id: row.id, cm, ...next, was: textLength(row.content), at: new Date(row.timestamp), holders });
     }
   }
-  if (found.length === 0) return { lines: [say(`Sweep ${name} finds no row to rewrite.`)] };
+  if (found.length === 0) return { lines: [say(`Sweep ${name} finds no row to rewrite.`), ...elsewhere] };
   const where = (row: (typeof found)[number]): string =>
     `${row.kind} row ${row.id} of ${row.at.toISOString()}, in the window of ${row.holders.length > 0 ? row.holders.join(', ') : 'no agent'}`;
   if (flag === undefined) {
@@ -566,6 +570,7 @@ export function handleSweep(app: AppContext, args: string[], requester: Operator
         say(earliest.size === 0
           ? 'No agent\'s window holds these rows, so --write rewrites no prompt cache.'
           : `With --write, each of these agents has its prompt cache rewritten once, from its earliest row above: ${[...earliest].map(([agent, at]) => `${agent} (from ${at.toISOString()})`).join(', ')}.`),
+        ...elsewhere,
       ],
     };
   }
@@ -592,7 +597,7 @@ export function handleSweep(app: AppContext, args: string[], requester: Operator
   if (failed > 0) lines.push(say('Run the sweep again without --write to see whether a row whose edit failed is still listed.'));
   framework.recordOperatorAction({ kind: 'sweep', requester, params: { sweep: name }, result: { rewritten, leftForTurns, failed } });
   return {
-    lines: [say(`Sweep ${name} rewrote ${rewritten} of ${found.length} ${found.length === 1 ? 'row' : 'rows'}.`), ...lines],
+    lines: [say(`Sweep ${name} rewrote ${rewritten} of ${found.length} ${found.length === 1 ? 'row' : 'rows'}.`), ...lines, ...elsewhere],
     ...(rewritten === found.length ? {} : { refused: true }),
   };
 }

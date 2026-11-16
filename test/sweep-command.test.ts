@@ -101,7 +101,9 @@ async function host() {
     return id;
   };
   const rowText = (owner: string, id: string) => textOf(agent(owner).getContextManager().getMessage(id as never)!);
-  const app = { framework, branchState: createBranchState(), agentName: 'a', userMessageCount: 0 } as never;
+  const sessions = [{ id: 'open', name: 'open' }];
+  const sessionManager = { listSessions: () => sessions, getActiveSession: () => sessions[0] };
+  const app = { framework, branchState: createBranchState(), agentName: 'a', userMessageCount: 0, sessionManager } as never;
   const sweep = (...args: string[]) => handleSweep(app, args, { via: 'test' }, [notes]);
   const turn = async (name: string) => { framework.nudgeAgent(name, 'test'); await framework.runUntilIdle(); };
   const operatorLog = (): Array<Record<string, unknown>> => {
@@ -111,7 +113,7 @@ async function host() {
       return [];
     }
   };
-  return { framework, app, requests, holdFor, agent, note, rowText, sweep, turn, operatorLog };
+  return { framework, app, requests, holdFor, agent, note, rowText, sweep, turn, operatorLog, sessions };
 }
 
 describe('/sweep, the list and its words', () => {
@@ -200,6 +202,17 @@ describe('/sweep NAME shows, and writes nothing', () => {
     expect(said(h.sweep('test-notes'))).toBe('Sweep test-notes finds no row to rewrite.');
     expect(said(h.sweep('test-notes', '--write'))).toBe('Sweep test-notes finds no row to rewrite.');
     expect(cm.getMessage(id as never)!.content.map((block) => block.type)).toEqual(['thinking', 'text']);
+  });
+
+  test('on a host with other sessions, the show, the write and a run that finds nothing each end saying the sweep reached the open session alone', async () => {
+    const h = await host();
+    const line = 'This host has 2 other sessions: the sweep reached the open session alone. Each other session takes its own run after a /session switch.';
+    expect(said(h.sweep('test-notes'))).not.toContain('other session');
+    h.sessions.push({ id: 'second', name: 'second' }, { id: 'third', name: 'third' });
+    expect(said(h.sweep('test-notes')).split('\n').at(-1)).toBe(line);
+    h.note('a', 1);
+    expect(said(h.sweep('test-notes')).split('\n').at(-1)).toBe(line);
+    expect(said(h.sweep('test-notes', '--write')).split('\n').at(-1)).toBe(line);
   });
 
   test('a row the sweep returns nothing for isn\'t listed, and with none it says so', async () => {

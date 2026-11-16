@@ -9,6 +9,9 @@
   a turn of an agent whose window holds it is alive, names a row whose edit
   fails, and records each write in the operator log with its counts. While a
   command that changes the session, such as a bare `/newtopic`, is still
-  running, `--write` writes nothing. The host's own `/sweep` takes the same
-  words. `connectome sweep NAME` asks nothing of a running host from an
-  earlier release, which doesn't know `/sweep`.
+  running, `--write` writes nothing. It rewrites the open session's rows; on
+  a host with more sessions, its answer says so, and each other session
+  takes its own run after a switch. The host's own `/sweep` takes the same
+  words. The host's ready event names the sweeps it knows, in `sweeps`, and
+  `connectome sweep NAME` asks nothing of a running host from an earlier
+  release that doesn't know `/sweep` or that sweep.
