@@ -3,7 +3,6 @@ import { answerOf, type KeyAnswer } from './provider-key.js';
 
 export const DISCORD_API = 'https://discord.com/api/v10';
 
-/** What a request to Discord's API with a bot token carries. */
 export function discordHeaders(token: string): Record<string, string> {
   return {
     authorization: `Bot ${token}`,

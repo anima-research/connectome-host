@@ -181,7 +181,8 @@ the working directory):
   started, else from the unit's journal: its lines since the unit's latest
   start that hold a delivery or a failure, which journalctl's `-g` picks
   out, and the time of its last entry. A journalctl that refuses `-g` leaves
-  those stages unseen, saying so. An earlier start's inference failures are
+  those stages unseen, saying so, and so does a unit whose start time systemd
+  doesn't give. An earlier start's inference failures are
   in `INSTALL_DIR/logs/failures.log`. Recent failures also come from that
   file: its records in its last 400 KB, of every kind but the subscription
   GC's `subscription-gc-close`. It
@@ -204,7 +205,8 @@ the working directory):
   line. `--data-dir`
   names the host's data directory, `INSTALL_DIR/data` when left out.
   The ladder cuts a message's preview at 40 characters, a model call's error
-  at 80 and each failure line at 150, and hides nothing.
+  at 80 and each line of its recent failures at 150. It quotes whole the line
+  of a reply whose delivery failed or wasn't confirmed, and hides nothing.
 
 ---
 

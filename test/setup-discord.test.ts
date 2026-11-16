@@ -169,6 +169,27 @@ describe('setup--discord', () => {
       .toEqual([{ id: '201', name: 'lobby', category: null, send: true }]);
   });
 
+  test('a channel\'s overwrites go in Discord\'s order: @everyone\'s, then the bot\'s roles\' together, then the bot\'s own', async () => {
+    const roles: FakeServer = {
+      id: '300', name: 'Roles', ownerId: '701', everyone: VIEW | SEND,
+      botRoles: [{ id: '310', permissions: 0 }],
+      members: [{ id: '701', username: 'adam.k' }, { id: '900', username: 'ember' }],
+      channels: [
+        { id: '301', name: 'role-allows', type: 0, position: 0, overwrites: [{ id: '300', type: 0, deny: SEND }, { id: '310', type: 0, allow: SEND }] },
+        { id: '302', name: 'bot-denies', type: 0, position: 1, overwrites: [{ id: '310', type: 0, allow: SEND }, { id: '900', type: 1, deny: SEND }] },
+        { id: '303', name: 'bot-allows', type: 0, position: 2, overwrites: [{ id: '310', type: 0, deny: SEND }, { id: '900', type: 1, allow: SEND }] },
+        { id: '304', name: 'role-denies', type: 0, position: 3, overwrites: [{ id: '310', type: 0, deny: SEND }] },
+      ],
+    };
+    const r = await read(install(fakeDiscord([roles])).module);
+    expect((r.data as { servers: Array<{ channels: unknown[] }> }).servers[0]!.channels).toEqual([
+      { id: '301', name: 'role-allows', category: null, send: true },
+      { id: '302', name: 'bot-denies', category: null, send: false },
+      { id: '303', name: 'bot-allows', category: null, send: true },
+      { id: '304', name: 'role-denies', category: null, send: false },
+    ]);
+  });
+
   test('given a server and a username, it asks Discord for up to 1,000 members, its most, whose username or nickname starts with it, and gives them', async () => {
     const discord = fakeDiscord([{ ...HOME, members: [...HOME.members, { id: '703', username: 'lovelace', global_name: 'Countess', nick: 'ada of the hall' }] }]);
     const { module } = install(discord);
@@ -212,19 +233,21 @@ describe('setup--discord', () => {
       .toEqual(['/users/@me/guilds?limit=200', '/users/@me/guilds?limit=200&after=1199']);
   });
 
-  test('it follows no redirect, which would carry the token wherever it points', async () => {
-    const discord = fakeDiscord([HOME], { '/users/@me': () => new Response(null, { status: 301, headers: { location: 'https://elsewhere.example/' } }) });
+  test('it follows no redirect on any of its reads', async () => {
+    const redirecting = fakeDiscord([HOME], { '/users/@me': () => new Response(null, { status: 301, headers: { location: 'https://elsewhere.example/' } }) });
+    expect((await read(install(redirecting).module)).error).toBe('Discord answered 301 to GET /users/@me with something other ' +
+      'than JSON, so the read stopped there. Tell the person what it answered.');
+    const discord = fakeDiscord([HOME]);
     const redirects: Array<RequestRedirect | undefined> = [];
     const watched = { fetch: (async (input: string, init?: RequestInit) => {
       redirects.push(init?.redirect);
       return discord.fetch(input, init);
     }) as typeof fetch };
-    expect((await read(install(watched).module)).error).toBe('Discord answered 301 to GET /users/@me with something other ' +
-      'than JSON, so the read stopped there. Tell the person what it answered.');
-    expect((await read(install(fakeDiscord([HOME])).module)).success).toBe(true);
-    await read(install(watched).module, { server: '100' });
-    expect(redirects.length).toBeGreaterThan(0);
-    expect(new Set(redirects)).toEqual(new Set(['manual']));
+    const { module } = install(watched);
+    for (const input of [{}, { server: '100' }, { server: '100', username: 'ada' }]) expect((await read(module, input)).success).toBe(true);
+    expect(discord.asked).toContain('/applications/@me');
+    expect(discord.asked).toContain('/guilds/100/channels');
+    expect(redirects).toEqual(discord.asked.map(() => 'manual'));
   });
 
   test('a call outside its shapes is refused, and Discord isn\'t asked', async () => {
@@ -274,10 +297,18 @@ describe('setup--discord', () => {
 
   test('the person sees a line for each read, before Discord is asked, with a stored secret given as a username shown by its name', async () => {
     const discord = fakeDiscord([HOME]);
-    const { module, shown } = install(discord, `DISCORD_TOKEN="${TOKEN}"\nOPENAI_API_KEY="sk-test-secret-value"\n`);
+    let lines: string[] = [];
+    const linesAtFirstRequest: number[] = [];
+    const watched = { fetch: (async (input: string, init?: RequestInit) => {
+      if (new URL(input).pathname.endsWith('/users/@me')) linesAtFirstRequest.push(lines.length);
+      return discord.fetch(input, init);
+    }) as typeof fetch };
+    const { module, shown } = install(watched, `DISCORD_TOKEN="${TOKEN}"\nOPENAI_API_KEY="sk-test-secret-value"\n`);
+    lines = shown;
     await read(module);
     await read(module, { server: '100' });
     await read(module, { server: '100', username: 'sk-test-secret-value' });
+    expect(linesAtFirstRequest).toEqual([1, 2, 3]);
     expect(shown).toEqual([
       'Setup\'s agent reads the bot\'s servers and channels from Discord.',
       'Setup\'s agent reads one of the bot\'s servers from Discord.',
@@ -288,9 +319,12 @@ describe('setup--discord', () => {
   test('a read asked for while a secret is being asked waits for its answer, through the one queue', async () => {
     let answer!: (value: string) => void;
     const typed = new Promise<string>((done) => { answer = done; });
+    let entered!: () => void;
+    const asking = new Promise<void>((done) => { entered = done; });
     const discord = fakeDiscord([HOME]);
-    const { module, shown } = install(discord, `DISCORD_TOKEN="${TOKEN}"\n`, () => ({ ask: () => typed }));
+    const { module, shown } = install(discord, `DISCORD_TOKEN="${TOKEN}"\n`, () => ({ ask: () => { entered(); return typed; } }));
     const asked = module.handleToolCall({ id: 'a1', name: 'ask_secret', input: { name: 'OTHER_SECRET', purpose: 'a test' } } as ToolCall);
+    await asking;
     const reading = read(module);
     await Bun.sleep(50);
     expect(shown).toEqual([]);

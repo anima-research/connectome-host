@@ -1,6 +1,6 @@
 import { describe, test, expect, afterAll, afterEach } from 'bun:test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -115,8 +115,8 @@ async function install(opts: {
         : `  "$unit -q --no-pager --since @"*" -g "*" -o short-unix") awk -v since="\${7#@}" '$1 + 0 >= since' ${journal} | grep -P -- "$9" ;;`,
       opts.dumpReadFails
         ? '  "$unit -o cat --no-pager --since @"*) echo "Failed to open the journal: Permission denied" >&2; exit 1 ;;'
-        : opts.dumpReadHangs ? '  "$unit -o cat --no-pager --since @"*) exec sleep 10 ;;'
-        : `  "$unit -o cat --no-pager --since @"*) awk -v since="\${8#@}" '$1 + 0 >= since { sub(/^[^ ]+ [^ ]+ [^ ]+ /, ""); print }' ${journal}; echo read >> ${join(work, 'dump-reads')} ;;`,
+        : opts.dumpReadHangs ? `  "$unit -o cat --no-pager --since @"*) echo start >> ${join(work, 'dump-starts')}; exec sleep 10 ;;`
+        : `  "$unit -o cat --no-pager --since @"*) echo start >> ${join(work, 'dump-starts')}; awk -v since="\${8#@}" '$1 + 0 >= since { sub(/^[^ ]+ [^ ]+ [^ ]+ /, ""); print }' ${journal}; echo read >> ${join(work, 'dump-reads')} ;;`,
       '  *) echo "journalctl stand-in: arguments it doesn\'t answer: $*" >&2; exit 2 ;;',
       'esac',
     ].join('\n'));
@@ -389,6 +389,12 @@ describe.skipIf(ladderUnrunnable)('where the ladder reads a unit\'s output', () 
     expect(foundIn(out)).toContainEqual(`connectome-test.service's unit file, ${unitFile}, can't be read (Is a directory), so whether it sends the host's ` +
         'output to a file isn\'t known');
     expect(out).toContain('400 prompt is too long');
+    const missing = `connectome-test.service's unit file, ${unitFile}, can't be read (No such file or directory), so whether it sends ` +
+      'the host\'s output to a file isn\'t known';
+    rmSync(unitFile, { recursive: true });
+    expect(foundIn(ladder(at).out)).toContainEqual(missing);
+    symlinkSync(join(at.work, 'nowhere'), unitFile);
+    expect(foundIn(ladder(at).out)).toContainEqual(missing);
   });
 });
 
@@ -404,11 +410,21 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
       'log doesn\'t say whose, so whether the agent that failed has recovered isn\'t known'));
     expect(foundIn(ladder(at).out)).toContainEqual(expect.stringMatching(/^last inference failure \S+ ago: a later call/));
     expect(fixed).not.toContain('hard-down');
+    const spanning = JSON.stringify({ timestamp: new Date((at.now - 25) * 1000).toISOString(), durationMs: 22_000,
+      kind: 'stream', rawResponse: { stop_reason: 'end_turn' } });
+    writeFileSync(calls, `${spanning}\n`);
+    const ended = ladder(at).out;
+    expect(ended).toMatch(new RegExp(`a later call, at ${stamp(at.now - 3)}, succeeded`));
+    expect(ended).not.toContain('hard-down');
     const finding = /\* inference failures, the last \S+ ago, with no successful turn found since — if the reason repeats/;
     writeFileSync(calls, `${call(at.now - 25)}\n`);
     expect(ladder(at).out).toMatch(finding);
-    writeFileSync(calls, `${call(at.now - 5, '400 prompt is too long')}\n`);
-    expect(ladder(at).out).toMatch(finding);
+    const failedToo = new RegExp(`\\* inference failures, the last \\S+ ago, and the newest turn's model call, at ${stamp(at.now - 5)}, ` +
+      'failed too — if the reason repeats');
+    writeFileSync(calls, `${call(at.now - 25)}\n${call(at.now - 15)}\n${call(at.now - 5, '400 prompt is too long')}\n`);
+    const newestFailed = ladder(at).out;
+    expect(newestFailed).toMatch(failedToo);
+    expect(newestFailed).not.toContain('no successful turn found since');
     writeFileSync(calls, `${call(at.now - 25)}\n${call(at.now - 5, undefined, 'complete')}\n`);
     const compressed = ladder(at).out;
     expect(compressed).toMatch(finding);
@@ -417,7 +433,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
       kind: 'stream', rawResponse: { stop_reason: 'end_turn' }, ...fields });
     for (const failed of [later({ type: 'error' }), later({ error: 'overloaded' })]) {
       writeFileSync(calls, `${failed}\n`);
-      expect(ladder(at).out).toMatch(finding);
+      expect(ladder(at).out).toMatch(failedToo);
     }
   });
 
@@ -457,7 +473,8 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
     expect(out).toMatch(/inference failures, the last \S+ ago; whether a turn has succeeded since isn't known, since newer rows of the call log can't be read/);
     expect(out).not.toContain('with no successful turn found since');
     writeFileSync(calls, `${failed}\n`);
-    expect(ladder(at).out).toMatch(/\* inference failures, the last \S+ ago, with no successful turn found since/);
+    expect(ladder(at).out).toMatch(new RegExp(`\\* inference failures, the last \\S+ ago, and the newest turn's model call, ` +
+      `at ${stamp(at.now - 5)}, failed too`));
   });
 
   test('an exhausted inference that only failures.log still holds is a finding, with its time from the record', async () => {
@@ -692,7 +709,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
     expect(out).toMatch(/^live gate dump: SIGUSR2 couldn't be sent \(.+\)$/m);
     expect(out).toMatch(/=== findings ===[\s\S]*SIGUSR2 couldn't be sent \(.+\), so the gate dump isn't known/);
     expect(out).not.toContain('[diagnostics] line');
-    expect(lines(join(at.work, 'dump-reads'))).toBe(0);
+    expect(lines(join(at.work, 'dump-starts'))).toBe(0);
     expect(signalled(at.host)).toBe(false);
     expect(alive(at.host)).toBe(true);
   });
@@ -729,6 +746,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
     expect(out).toMatch(/live gate dump: SIGUSR2 sent, but no read of connectome-test\.service's journal finished within 5 s, so whether a \[diagnostics\] line came isn't known/);
     expect(out).not.toContain('no [diagnostics] line was seen');
     expect(out).toMatch(/=== findings ===[\s\S]*no read of connectome-test\.service's journal finished within 5 s, so the gate dump isn't known/);
+    expect(lines(join(at.work, 'dump-starts'))).toBeGreaterThan(0);
   }, 20_000);
 
   test('a host that answers its SIGUSR2 only after the ladder\'s first read of its journal still has its dump read', async () => {
@@ -737,7 +755,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
     await settled(at.host);
     expect(out).toContain('live gate dump (SIGUSR2): {"activeStreams":[]');
     expect(lines(join(at.work, 'dump-reads'))).toBeGreaterThan(1);
-  });
+  }, 20_000);
 });
 
 describe.skipIf(ladderUnrunnable)('the start command', () => {
@@ -795,6 +813,15 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s inference stage', () => {
     expect(out).not.toContain('stop=');
   });
 
+  test('a call logged with only its response\'s summary, as the Bedrock logger writes it, gives that stop reason', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'data', STARTED), `${JSON.stringify({
+      timestamp: new Date((at.now - 5) * 1000).toISOString(), kind: 'stream', response: { stopReason: 'refusal' } })}\n`);
+    const { out } = ladder(at);
+    expect(out).toMatch(/inference \(llm call\) .* stop=refusal$/m);
+    expect(out).toContain('last model response was a REFUSAL');
+  });
+
   test('a streamed call is the stage, though calls that aren\'t streamed came after it', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'data', STARTED),
@@ -839,6 +866,18 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s data directory', () => {
     writeFileSync(join(data, 'llm-calls.2026-10-27T00-00-00.jsonl'), `${JSON.stringify(row)}\n`);
     const { out } = ladder(at, ['--data-dir', data]);
     expect(out).toContain('stop=end_turn');
+  });
+
+  test('--data-dir with no directory after it stops with a usage line, rather than reading INSTALL_DIR/data', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    for (const args of [[at.work, 'connectome-test.service', '--data-dir'], ['--data-dir', '', at.work, 'connectome-test.service']]) {
+      const ran = spawnSync('python3', [LADDER, ...args], {
+        encoding: 'utf-8', env: { ...process.env, PATH: `${at.bins}:${process.env.PATH}` }, timeout: 30_000,
+      });
+      expect(ran.stderr).toContain('connectome-doctor: --data-dir needs a directory after it');
+      expect(ran.stdout).not.toContain('pipeline ladder');
+      expect(ran.status).toBe(2);
+    }
   });
 
   test('a model call that answered with no stop reason in its record says it answered, not stop=None, and one that failed says only its error', async () => {
@@ -1183,6 +1222,7 @@ describe.skipIf(ladderUnrunnable)('the ladder, its round on the review of 3c6be0
     JSON.stringify({ timestamp: new Date(s * 1000).toISOString(), kind, rawResponse });
   const findings = (at: Install): string[] => foundIn(ladder(at).out);
   const hardDown = expect.stringMatching(/^inference failures, the last \d+m ago, with no successful turn found since/);
+  const failedToo = expect.stringMatching(/^inference failures, the last \d+m ago, and the newest turn's model call, at \S+ \S+, failed too/);
   const startsAfter = expect.stringMatching(new RegExp('^inference failures, the last \\d+m ago; whether a turn has succeeded ' +
     'since isn\'t known, since the call log read here starts at \\S+ \\S+, after it$'));
 
@@ -1199,6 +1239,23 @@ describe.skipIf(ladderUnrunnable)('the ladder, its round on the review of 3c6be0
     expect(findings(at)).not.toContainEqual(hardDown);
     writeFileSync(newest, `${row(at.now - 400, 'complete')}\n${row(at.now - 50, 'complete')}\n`);
     expect(findings(at)).toContainEqual(hardDown);
+  });
+
+  test('a failure from before the call log the ladder reads isn\'t called hard-down when that log\'s last turn failed too', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'journal.txt'), '');
+    exhausted(at, at.now - 300);
+    const before = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    writeFileSync(before, `${row(at.now - 200, 'stream')}\n`);
+    utimesSync(before, at.now - 200, at.now - 200);
+    const started = new Date((at.now - 100) * 1000).toISOString().replace(/:/g, '-').replace('.', '-');
+    const newest = join(at.work, 'data', `llm-calls.${started}.jsonl`);
+    writeFileSync(newest, `${row(at.now - 50, 'stream', { stop_reason: null, error: 'overloaded' })}\n`);
+    expect(findings(at)).toContainEqual(startsAfter);
+    expect(findings(at)).not.toContainEqual(failedToo);
+    const earlier = new Date((at.now - 400) * 1000).toISOString().replace(/:/g, '-').replace('.', '-');
+    renameSync(newest, join(at.work, 'data', `llm-calls.${earlier}.jsonl`));
+    expect(findings(at)).toContainEqual(failedToo);
   });
 
   test('a failure from before the last 30 MB of the call log isn\'t called hard-down either', async () => {

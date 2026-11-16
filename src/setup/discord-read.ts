@@ -8,7 +8,6 @@ const TEXT_CHANNEL_TYPES = [0, 5];
 const GUILD_PAGE = 200;
 const REQUEST_LIMIT_MS = 15_000;
 
-/** Where a read stopped: the path, and Discord's status and numeric code, or why there was no answer. */
 export interface DiscordFailure {
   path: string;
   status: number | null;
@@ -25,7 +24,6 @@ export class DiscordFailed extends Error {
   }
 }
 
-/** GETs from Discord's API with a bot token, following no redirect; `last` is the path asked last. */
 export class DiscordReader {
   last = '';
 
@@ -84,7 +82,6 @@ export async function botServers(reader: DiscordReader): Promise<string[]> {
   }
 }
 
-/** A server with its owner and its text and announcement channels, in Discord's order, each with whether the bot can send there. */
 export async function serverOf(reader: DiscordReader, id: string, botId: string) {
   const guild = await reader.get<{ name: string; owner_id: string }>(`/guilds/${id}`);
   const roles = new Map((await reader.get<Array<{ id: string; permissions: string }>>(`/guilds/${id}/roles`))

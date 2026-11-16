@@ -1,9 +1,11 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadRecipeDocument, readRecipeDocument } from '../recipe.js';
 import { checkDiscordToken } from '../setup/discord-token.js';
 import { DISCORD_TOKEN, readEnvFile, shownByName, storedSecrets, type Secret } from '../setup/secrets.js';
+import { installPaths } from '../update/contract.js';
+import { RELEASE_HOST } from '../update/launcher.js';
 import { serviceBun } from '../update/service-bun.js';
 import type { CliContext } from './connectome.js';
 import { dataDirOf, openHost, type HostClient, type NoHost } from './host-socket.js';
@@ -98,7 +100,7 @@ export async function doctor(
   const commands = units === null ? null : serviceCommands(root, sys);
   const runs = checkService(report, sys, typed, units, commands);
   const host = await reachHost(report, parts, root, typed, units !== null, commands, runs);
-  await checkRecipe(report, parts, host, units, commands, dotenv);
+  await checkRecipe(report, parts, root, host, units, commands, dotenv);
   await checkCalls(report, parts, host, units, commands);
   if (host !== null) host.close();
   await checkToken(report, parts, dotenv, typed, work);
@@ -109,13 +111,13 @@ export async function doctor(
     ? `Doctor found no problem.${unchecked}`
     : `Doctor found ${report.problems} problem${report.problems === 1 ? '' : 's'}, marked ✗.${unchecked}`);
   if (report.problems === 0 && units?.manager === 'systemd-user' && commands !== null) {
-    report.line(`Where an incoming message stops, the ladder shows: ${ladderLine(root, work, units.host)}`);
+    report.line(`Where an incoming message stops, the ladder shows: ${ladderLine(sys, root, work, units.host)}`);
   }
   return report.problems === 0 ? 0 : 1;
 }
 
 function checkService(report: Report, sys: ServiceSystem, typed: string, units: ServiceUnits | null,
-  commands: ServiceCommands | null): boolean | null {
+  commands: ServiceCommands | null): boolean | 'changing' | null {
   if (units === null) {
     report.check('–', 'Not checked: no service can be installed here.');
     return null;
@@ -125,24 +127,27 @@ function checkService(report: Report, sys: ServiceSystem, typed: string, units: 
     return null;
   }
   const env = childEnv(sys);
-  const start = `start it with \`${commands.start}\`, and read its log with \`${commands.log}\`.`;
-  let hostRuns: boolean | null = null;
+  let hostRuns: boolean | 'changing' | null = null;
   for (const unit of [...commands.units].reverse()) {
     const state = unitState(sys, env, units, unit);
+    const log = unit.name === units.host.name ? commands.log : units.manager === 'systemd-user'
+      ? `journalctl --user -u ${unit.name} -f` : `tail -f ${shellWord(join(units.work, 'logs', 'shell.log'))}`;
     if ('unasked' in state) {
       report.check('✗', state.unasked, `ask it yourself, as the user who runs the resident: \`${state.question}\``);
     } else if (state.runs) {
       report.check('✓', `The service ${unit.name} runs.`);
     } else {
-      report.check('✗', `The service ${unit.name} is ${state.state}.`, start);
+      report.check('✗', `The service ${unit.name} is ${state.state}.`, state.changing
+        ? `systemd is changing its state now, so read its log with \`${log}\`, and run doctor again in a minute.`
+        : `start it with \`${commands.start}\`, and read its log with \`${log}\`.`);
     }
-    if (unit.name === units.host.name) hostRuns = 'unasked' in state ? null : state.runs;
+    if (unit.name === units.host.name) hostRuns = 'unasked' in state ? null : state.changing ? 'changing' : state.runs;
   }
   return hostRuns;
 }
 
 function unitState(sys: ServiceSystem, env: Record<string, string>, units: ServiceUnits, unit: ServiceUnit):
-  { runs: boolean; state: string } | { unasked: string; question: string } {
+  { runs: boolean; changing: boolean; state: string } | { unasked: string; question: string } {
   if (units.manager === 'systemd-user') {
     const shown = showUnit(sys, env, unit.name, ['ActiveState', 'SubState']);
     if (typeof shown === 'string') {
@@ -150,22 +155,27 @@ function unitState(sys: ServiceSystem, env: Record<string, string>, units: Servi
     }
     const active = shown.get('ActiveState') ?? '';
     const sub = shown.get('SubState') ?? '';
-    return { runs: active === 'active', state: sub === '' ? active : `${active} (${sub})` };
+    return {
+      runs: active === 'active',
+      changing: active !== 'active' && active !== 'inactive' && active !== 'failed',
+      state: sub === '' ? active : `${active} (${sub})`,
+    };
   }
   const state = agentState(sys, env, unit);
   if (state.kind === 'unknown') {
     return { unasked: `launchctl list ${unit.name} failed: ${state.why}`, question: `launchctl list ${unit.name}` };
   }
-  if (state.kind === 'running') return { runs: true, state: 'running' };
+  if (state.kind === 'running') return { runs: true, changing: false, state: 'running' };
   return {
     runs: false,
+    changing: false,
     state: state.kind === 'unloaded' ? 'not loaded'
       : `loaded and not running${state.exit === undefined ? '' : `, its last exit ${state.exit}`}`,
   };
 }
 
 async function reachHost(report: Report, parts: DoctorParts, root: string, typed: string, installable: boolean,
-  commands: ServiceCommands | null, runs: boolean | null): Promise<HostClient | null> {
+  commands: ServiceCommands | null, runs: boolean | 'changing' | null): Promise<HostClient | null> {
   let reached: HostClient | NoHost;
   try {
     reached = await parts.openHost(root);
@@ -178,19 +188,24 @@ async function reachHost(report: Report, parts: DoctorParts, root: string, typed
   }
   const bun = serviceBun(parts.sys.bun, parts.sys.env.PATH ?? '', parts.sys);
   const moved = movedDataDir(root, dirname(root));
-  const next = !installable
+  const next = !reached.down
+    ? 'put right what that names, then run doctor again, or run it again in a minute if a host is still starting.'
+    : !installable
     ? 'no service can be installed here, so start the host as this machine runs a program, from ' +
       `${dirname(root)}: \`${moved === null ? '' : `DATA_DIR=${shellWord(moved)} `}` +
       `${shellWord(bun)} ${shellWord(join(root, 'start.js'))} <recipe> --headless\``
     : commands === null ? `\`${typed} service install <recipe>\``
     : runs === true ? `it may still be starting, so run doctor again in a minute. Its log: \`${commands.log}\``
-      : `start the service with \`${commands.start}\`.`;
+    : runs === 'changing' ? `it may be starting or stopping, so run doctor again in a minute. Its log: \`${commands.log}\``
+    : runs === false ? `start the service with \`${commands.start}\`.`
+    : 'its service manager couldn\'t be asked whether the service runs, so ask it as the line for the service says, ' +
+      'then run doctor again.';
   report.check('✗', `No host answers: ${reached.reason}.`, next);
   return null;
 }
 
-async function checkRecipe(report: Report, parts: DoctorParts, host: HostClient | null, units: ServiceUnits | null,
-  commands: ServiceCommands | null, dotenv: Map<string, string>): Promise<void> {
+async function checkRecipe(report: Report, parts: DoctorParts, root: string, host: HostClient | null,
+  units: ServiceUnits | null, commands: ServiceCommands | null, dotenv: Map<string, string>): Promise<void> {
   if (host !== null) {
     report.check('✓', `The host loaded ${host.ready.recipe} when it started.`);
     return;
@@ -213,8 +228,17 @@ async function checkRecipe(report: Report, parts: DoctorParts, host: HostClient 
       `${'why' in read ? read.why : 'it names no recipe after start.js'}.`);
     return;
   }
-  const recipe = resolve(read.workingDirectory === '~' ? parts.sys.home : read.workingDirectory, named);
-  const env = { ...Object.fromEntries(dotenv), ...parts.sys.env };
+  const recipe = /^https?:\/\//.test(named) ? named
+    : resolve(read.workingDirectory === '~' ? parts.sys.home : read.workingDirectory, named);
+  let dataDir: string;
+  try {
+    dataDir = dataDirOf(root);
+  } catch {
+    report.check('–', 'Not checked: the install record can\'t be read, as the host\'s line says, so the data directory the ' +
+      'service starts the host with isn\'t known.');
+    return;
+  }
+  const env = { ...Object.fromEntries(dotenv), ...parts.sys.env, DATA_DIR: dataDir };
   try {
     await within(parts.recipeLimitMs, (async () => {
       const document = await readRecipeDocument(recipe);
@@ -222,6 +246,11 @@ async function checkRecipe(report: Report, parts: DoctorParts, host: HostClient 
     })());
     report.check('✓', `${recipe} loads.`);
   } catch (error) {
+    if (error instanceof TooLong) {
+      report.check('–', `Not checked: ${recipe} ${error.message}, so whether it loads isn't known.`,
+        'run doctor again: the recipe, or a system prompt it names by URL, may be slow to answer.');
+      return;
+    }
     report.check('✗', `${recipe} doesn't load: ${errorText(error)}.`,
       `correct it, then start the service with \`${commands.start}\`.`);
   }
@@ -253,6 +282,10 @@ async function checkCalls(report: Report, parts: DoctorParts, host: HostClient |
     return;
   }
   const named = host.ready.agent ?? agents[0]?.name;
+  if (named === undefined || !agents.some((agent) => agent.name === named)) {
+    report.check('–', named === undefined ? 'Not checked: the host\'s counts list no agent.'
+      : `Not checked: the host's counts list no agent named ${named}.`);
+  }
   for (const agent of agents) {
     if (agent.name !== named && agent.failures === 0 && agent.refusals === null) continue;
     if (agent.failures > 0) {
@@ -277,22 +310,32 @@ async function checkCalls(report: Report, parts: DoctorParts, host: HostClient |
 function countsOf(data: unknown): AgentCounts[] {
   const agents = (data as { agents?: unknown } | null)?.agents;
   if (!Array.isArray(agents)) throw new Error('its answer has no list of agents');
-  const time = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const time = (value: unknown): number | null => {
+    if (value === undefined || value === null) return null;
+    if (typeof value === 'number' && Number.isFinite(new Date(value).getTime())) return value;
+    throw new Error('an agent in its answer has a time that isn\'t one');
+  };
   return agents.map((agent: unknown) => {
     const { name, consecutiveInferenceFailures: failures, lastInference, refusalStats } = (agent ?? {}) as Record<string, unknown>;
     if (typeof name !== 'string' || typeof failures !== 'number' || !Number.isInteger(failures) || failures < 0) {
       throw new Error('an agent in its answer has no name or no count of failed turns');
     }
     const last = lastInference !== null && typeof lastInference === 'object' ? lastInference as Record<string, unknown> : null;
-    const refused = refusalStats !== null && typeof refusalStats === 'object' ? refusalStats as Record<string, unknown> : null;
-    const total = refused?.total;
-    const lastAt = time(refused?.lastAt);
+    let refusals: AgentCounts['refusals'] = null;
+    if (refusalStats !== undefined && refusalStats !== null) {
+      const { total, lastAt } = (typeof refusalStats === 'object' ? refusalStats : {}) as Record<string, unknown>;
+      const at = time(lastAt);
+      if (typeof total !== 'number' || !Number.isInteger(total) || total < 0 || (total > 0 && at === null)) {
+        throw new Error('an agent in its answer has refusal counts with no total or no time of the last');
+      }
+      if (total > 0 && at !== null) refusals = { total, lastAt: at };
+    }
     return {
       name,
       failures,
       lastCall: last === null ? null : time(last.startedAt),
       failedAt: last === null ? null : time(last.failedAt),
-      refusals: typeof total === 'number' && total > 0 && lastAt !== null ? { total, lastAt } : null,
+      refusals,
     };
   });
 }
@@ -301,7 +344,7 @@ function failureSearch(units: ServiceUnits | null, commands: ServiceCommands | n
   if (units === null || commands === null) return '.';
   const line = `[inference-failed] agent=${agent} `;
   return units.manager === 'systemd-user'
-    ? `: \`journalctl --user -u ${units.host.name} -g ${shellWord(line.replace(/[[\]]/g, '\\$&'))}\` lists them.`
+    ? `: \`journalctl --user -u ${units.host.name} --no-pager | grep -F -- ${shellWord(line)}\` lists them.`
     : `: \`grep -F -- ${shellWord(line)} ${shellWord(join(units.work, 'logs', 'agent.log'))}\` lists them.`;
 }
 
@@ -321,7 +364,6 @@ async function checkToken(report: Report, parts: DoctorParts, dotenv: Map<string
   else report.check('–', `Discord gave no answer that doctor could read: ${check.why}.`);
 }
 
-/** The install record's data directory where it isn't `<work>/data`, the host's own default from `work`. */
 function movedDataDir(root: string, work: string): string | null {
   let dataDir: string;
   try {
@@ -332,20 +374,24 @@ function movedDataDir(root: string, work: string): string | null {
   return resolve(dataDir) !== join(work, 'data') ? dataDir : null;
 }
 
-function ladderLine(root: string, work: string, unit: ServiceUnit): string {
+function ladderLine(sys: ServiceSystem, root: string, work: string, unit: ServiceUnit): string {
   const dataDir = movedDataDir(root, work);
-  const args = [LADDER, work, unit.name, ...(dataDir !== null ? ['--data-dir', dataDir] : [])];
-  return `python3 ${args.map(shellWord).join(' ')}`;
+  const current = installPaths(root).current;
+  const ladder = existsSync(current) ? join(current, RELEASE_HOST, 'scripts', 'connectome-doctor') : LADDER;
+  const args = [ladder, work, unit.name, ...(dataDir !== null ? ['--data-dir', dataDir] : [])];
+  return `${sys.env.XDG_RUNTIME_DIR ? '' : `XDG_RUNTIME_DIR=/run/user/${sys.uid} `}python3 ${args.map(shellWord).join(' ')}`;
 }
 
 function iso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
+class TooLong extends Error {}
+
 async function within<T>(limitMs: number, work: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`it didn't load within ${limitMs / 1000} s`)), limitMs);
+    timer = setTimeout(() => reject(new TooLong(`didn't load within ${limitMs / 1000} s`)), limitMs);
   });
   try {
     return await Promise.race([work, late]);

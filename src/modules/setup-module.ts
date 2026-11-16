@@ -370,7 +370,6 @@ function fitted(data: unknown, cap: number, otherwise: string): ToolResult {
   return JSON.stringify(data).length <= cap ? { success: true, data } : failed(otherwise);
 }
 
-/** A failed read in setup's words: the path, Discord's status and numeric code, and what to do. */
 function discordWords(failure: DiscordFailure): string {
   const at = `GET ${failure.path.replace(/\?.*$/s, '')}`;
   if (failure.status === null) {
