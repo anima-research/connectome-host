@@ -216,7 +216,8 @@ async function checkRecipe(report: Report, parts: DoctorParts, host: HostClient 
       `${'why' in read ? read.why : 'it names no recipe after start.js'}.`);
     return;
   }
-  const recipe = resolve(read.workingDirectory === '~' ? parts.sys.home : read.workingDirectory, named);
+  const recipe = /^https?:\/\//.test(named) ? named
+    : resolve(read.workingDirectory === '~' ? parts.sys.home : read.workingDirectory, named);
   const env = { ...Object.fromEntries(dotenv), ...parts.sys.env };
   try {
     await within(parts.recipeLimitMs, (async () => {

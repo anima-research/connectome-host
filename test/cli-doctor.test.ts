@@ -322,6 +322,19 @@ describe('connectome doctor: check 3, the recipe', () => {
     expect((await run(at, { states: { [HOST]: 'inactive/dead' } })).lines[5]).toBe(`✓ ${join(at.work, 'recipe.json')} loads.`);
   });
 
+  test('a recipe the unit names by URL is loaded from the URL, as service install keeps it', async () => {
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => Response.json(
+      { name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hello' } }) });
+    try {
+      const at = install();
+      const url = `http://127.0.0.1:${server.port}/recipe.json`;
+      writeUnits(at, false, [process.execPath, join(at.root, 'start.js'), url, '--headless']);
+      expect((await run(at, { states: { [HOST]: 'inactive/dead' } })).lines[5]).toBe(`✓ ${url} loads.`);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test('the loader takes its values from .env, with doctor\'s own environment over them', async () => {
     const recipe = JSON.stringify({ name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hi', proseRouting: '${ROUTING}' } });
     const at = install({ recipe, env: `DISCORD_TOKEN="${TOKEN}"\nROUTING=from-dotenv\n` });
