@@ -16,7 +16,7 @@ import {
   spaceTaken, syncEntries, syncPath, type FileKeep,
 } from './data-swap.js';
 import { agentOverlayPath } from './agent-overlay-path.js';
-import { shellWord, typedCommand } from './typed-command.js';
+import { installCommandAt, shellWord } from './install-command-name.js';
 
 /** Where a release's host is inside its directory, one npm install of the
  *  package. The entry point imports the launcher from here, so neither path
@@ -1115,7 +1115,7 @@ export function goBackLine(root: string, offer: { to: string; since: string }): 
 
 export async function goBackFromStart(root: string, args: string[], ops: LauncherOps): Promise<number> {
   const back = await import('../web/update-text.js')
-    .then(({ cliWays }) => cliWays(typedCommand(root)).back)
+    .then(({ cliWays }) => cliWays(installCommandAt(root)).back)
     .catch(() => null);
   return back === null ? goBackFromShell(root, args, ops) : goBackFromShell(root, args, ops, undefined, back);
 }

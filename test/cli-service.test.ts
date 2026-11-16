@@ -14,6 +14,7 @@ import { DEFAULT_TIMEOUT_MS } from '../src/modules/setup-module.js';
 import { readRecipeDocument } from '../src/recipe-document.js';
 import { SHOWN_FILE } from '../src/setup/commands-shown.js';
 import { StoredSecrets, readEnvFile } from '../src/setup/secrets.js';
+import { shellWord } from '../src/update/install-command-name.js';
 
 const made: string[] = [];
 
@@ -492,6 +493,7 @@ function fake(at: Install, options: {
 }
 
 const unitsDir = (at: Install) => join(at.home, '.config', 'systemd', 'user');
+const commandOf = (at: Install) => shellWord(join(at.root, 'connectome'));
 const hostUnit = (at: Install) => join(unitsDir(at), 'connectome-my-resident.service');
 const shellUnit = (at: Install) => join(unitsDir(at), 'connectome-my-resident.shell.service');
 const agentPlist = (at: Install, label = 'com.animalabs.connectome.my-resident') =>
@@ -741,7 +743,7 @@ test('run from inside the host\'s or the shell daemon\'s unit it refuses, writin
     const at = install('My Resident', { shell: true });
     const f = fake(at, { cgroup: `0::/user.slice/user-1001.slice/user@1001.service/app.slice/${unit}\n` });
     expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-    expect(f.err).toEqual([`connectome: connectome service install restarts ${unit}, and this command runs inside it, so ` +
+    expect(f.err).toEqual([`connectome: ${commandOf(at)} service install restarts ${unit}, and this command runs inside it, so ` +
       'that would end this command partway, before it knows whether the host answers. Nothing was written. Ask ' +
       'whoever runs ' +
       'this machine to run it from a terminal outside the resident\'s service, such as over ssh.']);
@@ -753,7 +755,7 @@ test('run from inside the host\'s or the shell daemon\'s unit it refuses, writin
   rmSync(join(at.work, 'node_modules', 'term-sessions-mcp'), { recursive: true });
   f.system.cgroup = () => `0::/user.slice/user-1001.slice/user@1001.service/app.slice/${SHELL}/sessions\n`;
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.err.join('\n')).toContain(`connectome service install stops ${SHELL}, and this command runs inside it`);
+  expect(f.err.join('\n')).toContain(`${commandOf(at)} service install stops ${SHELL}, and this command runs inside it`);
   expect(existsSync(shellUnit(at))).toBe(true);
 });
 
@@ -1313,7 +1315,7 @@ test('a host whose unit stops before it answers fails the install, which says to
   f.systemd.exiting.add(HOST);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.out).toContain(`Its log shows what happened: journalctl --user -u ${HOST} -f. Put that right, then run ` +
-    `connectome service install '${at.recipe}' again. Until then systemd restarts the host each time it fails, while ` +
+    `${commandOf(at)} service install '${at.recipe}' again. Until then systemd restarts the host each time it fails, while ` +
     'it has its unit loaded and its start limit allows; the run clears that limit.');
 });
 
@@ -1821,7 +1823,7 @@ test('a .env that can\'t be read is refused with a shell, naming it, writing not
   }
 });
 
-test('with a shell, a .env that is a link is refused, naming where it leads, writing nothing; without one it is left alone', async () => {
+test('with a shell, a .env that is a link becomes a file of its own when a new shell setting is written, holding the target\'s lines, and the target keeps its text; without one it is left alone', async () => {
   const cases: Array<{ shell: boolean; held: string | null; mode: number }> = [
     { shell: true, held: 'OTHER="1"\n', mode: 0o600 },
     { shell: true, held: 'SESSION_SERVER_PORT="3107"\n', mode: 0o600 },
@@ -1840,30 +1842,27 @@ test('with a shell, a .env that is a link is refused, naming where it leads, wri
     }
     symlinkSync(target, join(at.work, '.env'));
     const f = fake(at);
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
+    if (held !== null) expect(readFileSync(target, 'utf-8')).toBe(held);
     if (!shell) {
-      expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
       expect(lstatSync(join(at.work, '.env')).isSymbolicLink()).toBe(true);
-      if (held !== null) expect(readFileSync(target, 'utf-8')).toBe(held);
       continue;
     }
-    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-    const said = f.err.join('\n');
-    expect(said).toContain(`${join(at.work, '.env')} is a link to ${target}, and it's written only as a file of its own, ` +
-      'not through a link or over one. Replace the link with the file it leads to, if that\'s there, or take it away, ' +
-      'then repeat this service install command with the same recipe. Nothing was written.');
-    if (held !== null) {
-      expect(readFileSync(target, 'utf-8')).toBe(held);
-      expect(statSync(target).mode & 0o777).toBe(mode);
+    const both = held!.includes('SESSION_SERVER_PORT=') && held!.includes('SESSION_SERVER_TOKEN=');
+    expect(lstatSync(join(at.work, '.env')).isSymbolicLink()).toBe(both);
+    if (both) {
+      expect(statSync(target).mode & 0o777).toBe(0o600);
+      continue;
     }
-    expect(lstatSync(join(at.work, '.env')).isSymbolicLink()).toBe(true);
-    expect(f.systemd.starts).toEqual([]);
-    expect(existsSync(join(at.work, '.setup', 'stored-secrets.json'))).toBe(false);
-    expect(existsSync(hostUnit(at))).toBe(false);
-    expect(existsSync(shellUnit(at))).toBe(false);
+    const written = readFileSync(join(at.work, '.env'), 'utf-8');
+    for (const line of held!.split('\n').filter(Boolean)) expect(written).toContain(`${line}\n`);
+    expect(written).toMatch(/^SESSION_SERVER_PORT="\d+"$/m);
+    expect(written).toMatch(/^SESSION_SERVER_TOKEN="[0-9a-f]{64}"$|^SESSION_SERVER_TOKEN="abc123"$/m);
+    expect(statSync(join(at.work, '.env')).mode & 0o777).toBe(0o600);
   }
 });
 
-test('a .env with a line outside setup\'s form is refused by that line before anything is written, showing none of it', async () => {
+test('a .env with lines another writer would read otherwise keeps them, and gets the shell\'s settings after them, showing none of them', async () => {
   const cases = [
     { held: 'OTHER="1"\nPEM="-----BEGIN KEY-----\nsecret-body-line\n-----END KEY-----"\n',
       hidden: ['PEM', '-----BEGIN KEY-----', 'secret-body-line', '-----END KEY-----'] },
@@ -1873,15 +1872,13 @@ test('a .env with a line outside setup\'s form is refused by that line before an
     const at = install('My Resident', { shell: true });
     writeFileSync(join(at.work, '.env'), held, { mode: 0o644 });
     const f = fake(at);
-    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+    expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
     const said = [...f.out, ...f.err].join('\n');
-    expect(said).toContain(`${join(at.work, '.env')}, line 2,`);
-    expect(said).toContain('Then repeat this service install command with the same recipe. Nothing was written.');
     for (const text of hidden) expect(said).not.toContain(text);
-    expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(held);
-    expect(statSync(join(at.work, '.env')).mode & 0o777).toBe(0o644);
-    expect(existsSync(join(at.work, '.setup', 'stored-secrets.json'))).toBe(false);
-    expect(existsSync(hostUnit(at))).toBe(false);
+    const written = readFileSync(join(at.work, '.env'), 'utf-8');
+    expect(written.startsWith(held)).toBe(true);
+    expect(written.slice(held.length)).toMatch(/^SESSION_SERVER_PORT="\d+"\nSESSION_SERVER_TOKEN="[0-9a-f]{64}"\n$/);
+    expect(statSync(join(at.work, '.env')).mode & 0o777).toBe(0o600);
   }
 });
 
@@ -1892,7 +1889,8 @@ test('a .env value with a control character is refused without printing it, writ
   const f = fake(at);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   const said = f.err.join('\n');
-  expect(said).toContain(`${join(at.work, '.env')}, line 2,`);
+  expect(said).toContain('SESSION_SERVER_TOKEN holds a line break or another control character, so it can\'t go in a unit. ' +
+    'Nothing was written.');
   expect(said).not.toContain('secretpart');
   expect(readFileSync(join(at.work, '.env'), 'utf-8')).toBe(env);
   expect(existsSync(hostUnit(at))).toBe(false);
@@ -1942,7 +1940,7 @@ test('an install without a recipe is a usage error, every time', async () => {
   expect(await runService(f.ctx(['install']), f.system)).toBe(2);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(await runService(f.ctx(['install']), f.system)).toBe(2);
-  expect(f.err.join('\n')).toContain('connectome service install <recipe>');
+  expect(f.err.join('\n')).toContain(`${commandOf(at)} service install <recipe>`);
 });
 
 test('a recipe given as a URL goes to the recipe reader as given, and into the unit as given', async () => {
@@ -2069,7 +2067,7 @@ test('with a shell daemon, serviceLines names it and stops and starts it with th
   expect(readFileSync(hostUnit(at), 'utf-8')).toContain(`Wants=${SHELL}\n`);
 });
 
-test('the usage spells the install\'s own command by its full path, unless the first connectome on the printing process\'s PATH is the install\'s own', async () => {
+test('the usage spells the install\'s own command by its full path, whichever connectome the printing process\'s PATH finds first', async () => {
   const at = install();
   const full = `'${join(at.root, 'connectome')}'`;
   const elsewhere = fake(at, { env: { PATH: '/usr/bin:/bin' } });
@@ -2077,7 +2075,7 @@ test('the usage spells the install\'s own command by its full path, unless the f
   expect(elsewhere.err).toEqual([`Usage: ${full} service install <recipe>`]);
   const onPath = fake(at);
   expect(await runService(onPath.ctx(['install']), onPath.system)).toBe(2);
-  expect(onPath.err).toEqual(['Usage: connectome service install <recipe>']);
+  expect(onPath.err).toEqual([`Usage: ${full} service install <recipe>`]);
 });
 
 test('on macOS with a shell agent, serviceLines stops and starts it with the host', async () => {
@@ -2098,7 +2096,7 @@ test('anything but install with one recipe is a usage error, and stop and start 
   for (const argv of [[], ['uninstall'], ['install', at.recipe, 'extra'], ['stop'], ['start']]) {
     f.err.length = 0;
     expect(await runService(f.ctx(argv), f.system)).toBe(2);
-    expect(f.err).toEqual(['Usage: connectome service install <recipe>']);
+    expect(f.err).toEqual([`Usage: ${commandOf(at)} service install <recipe>`]);
   }
   expect(f.systemd.calls).toEqual([]);
 });
@@ -2451,7 +2449,7 @@ for (const platform of ['linux', 'darwin'] as const) test(platform + ' a host th
   const f = fake(at, { platform, ready: false });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.err.join('\n')).toContain('no host said it was ready within 60 s');
-  expect(f.err.join('\n')).toContain('It may still be starting: connectome alone says whether its host answers.');
+  expect(f.err.join('\n')).toContain(`It may still be starting: ${commandOf(at)} alone says whether its host answers.`);
   const log = platform === 'darwin' ? `tail -f '${join(at.work, 'logs', 'agent.log')}'` : `journalctl --user -u ${HOST} -f`;
   expect(f.out).toContain(`Its log shows how its start is going: ${log}.`);
   expect([...f.out, ...f.err].join('\n')).not.toContain('Put that right');
@@ -2509,7 +2507,7 @@ test('a recipe that names a shell, without the shell\'s package here, gets the c
   const f = fake(at);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   expect(f.out).toContain("The recipe names a shell client or setting, but term-sessions-mcp isn't installed in this " +
-    'directory, so this run sets up no shell daemon. To set one up, run connectome shell install, then this service install ' +
+    `directory, so this run sets up no shell daemon. To set one up, run ${commandOf(at)} shell install, then this service install ` +
     'command again with the same recipe.');
 });
 

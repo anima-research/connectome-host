@@ -14,7 +14,7 @@ import {
 import { HOST_ENTRY, LAUNCHER, readInstall, type LauncherOps } from '../src/update/launcher.js';
 import { ENTRY_POINT, entryPointText, parseArgs, setup, type SetupOptions } from '../src/update/setup.js';
 import { passwdHome, systemdUnits, type ServiceUnits } from '../src/update/systemd-units.js';
-import { INSTALL_COMMAND } from '../src/update/typed-command.js';
+import { INSTALL_COMMAND } from '../src/update/install-command-name.js';
 
 let dir: string;
 let install: string;
@@ -100,11 +100,8 @@ const RECORD_AGAIN = 'To put it right, write the record again as\n' +
   './data, resolved from that working directory. If it isn\'t the one its service starts the host with, the ' +
   'host\'s next start through start.js refuses, naming both.\n' +
   'And <places> are the places of state kept outside the data directory that each update copies, such as an MCPL ' +
-  'server\'s state, each a JSON string, or none. Only the install\'s setup writes that list, and each of its runs ' +
-  'that finished printed what it recorded, after "State kept outside the data directory", though `connectome setup` ' +
-  'shows that block only at its end, only while the record still holds it, and not at all when it holds none; a run ' +
-  'that stopped partway may have written the record without printing it. If the install has updated, ' +
-  'copy/copy.json beside ' +
+  'server\'s state, each a JSON string, or none. Only setup writes that list, and each setup run that finished ' +
+  'printed it, after "State kept outside the data directory". If the install has updated, copy/copy.json beside ' +
   'the record shows under "items" and "absent" what the last update copied or found missing: the data directory, ' +
   'its fleet children\'s data directories and the files every update copies (mcpl-servers.json and the agent ' +
   'overlay, mcpl-servers.agent.json or the file MCPL_AGENT_OVERLAY_FILE names, each resolved from the service\'s ' +
@@ -574,16 +571,13 @@ describe('setup', () => {
       'starting the service again starts the new install, since its path is the same, and ' +
       `\`${join(root, 'connectome')} service install <recipe>\` then writes the service again, if that's what set ` +
       'it up. Those places: a setup run that ' +
-      'finished printed them after "State kept outside the data directory" (`connectome setup` shows that block only at ' +
-      'its end, only while the record still holds it, and not at all when it holds none), and the moved root\'s ' +
-      'copy/copy.json, if it ' +
+      'finished printed them after "State kept outside the data directory", and the moved root\'s copy/copy.json, if it ' +
       'has updated, shows under "items" and "absent" what the last ' +
       'update copied or found missing: the data directory, its fleet children\'s data directories and the files every ' +
       'update copies (mcpl-servers.json and the agent overlay, mcpl-servers.agent.json or the file ' +
       'MCPL_AGENT_OVERLAY_FILE names, each resolved from the service\'s working directory), which aren\'t given, and ' +
       'among the rest, those places as that update found them: each through any link to where it led, and one inside ' +
-      'another shown only as the outer one. A run that stopped partway may have written the record without ' +
-      'printing them. If setup didn\'t make it, choose another --root.';
+      'another shown only as the outer one. If setup didn\'t make it, choose another --root.';
     const unrecorded = (): string => 'It has no journal: an install has none until an update or a Go back is ' +
       'first asked of it, and a journal can be lost with the record, so its absence doesn\'t show whether one ran on ' +
       'that data. If one did, don\'t start any ' +

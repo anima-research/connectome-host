@@ -1,15 +1,14 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { bunBelowFloor } from '../bun-floor.js';
 import {
-  ContractError, askedBy, installPaths, isSwitchQuiesce, readCurrent, readJournal, readWithoutWaiting, releaseDir,
-  SUPERVISED_ENV, unsyncedText, writeMark,
+  ContractError, askedBy, installPaths, isSwitchQuiesce, readCurrent, readJournal, releaseDir, SUPERVISED_ENV,
+  unsyncedText, writeMark,
 } from './contract.js';
 import type { ReleaseHere } from './host.js';
 import { EXACT_VERSION, hostProblem, installRelease, machineInstallOps, type InstallOps } from './install.js';
 import { RELEASE_HOST, goBackOffer } from './launcher.js';
-import { installCommandAt } from './typed-command.js';
+import { installCommandAt } from './install-command-name.js';
 import {
   NOT_THE_SWITCHS, SERVING, lookAtChildren, quiesceForSwitch, resumeAfterSwitchQuiesce, type QuiesceFramework,
   type SwitchFleet,
@@ -835,14 +834,7 @@ export function lastSwitchOf(root: string, problems: string[] = []): SwitchOutco
 }
 
 export function hostVersionOf(packageJson: URL): string {
-  const path = fileURLToPath(packageJson);
-  let text: string;
-  try {
-    text = readWithoutWaiting(path);
-  } catch (error) {
-    throw new Error(`${path} can't be read (${(error as Error).message})`);
-  }
-  const version = (JSON.parse(text) as { version?: unknown }).version;
+  const version = (JSON.parse(readFileSync(packageJson, 'utf-8')) as { version?: unknown }).version;
   if (typeof version !== 'string') throw new Error(`${packageJson.pathname} names no version.`);
   return version;
 }
