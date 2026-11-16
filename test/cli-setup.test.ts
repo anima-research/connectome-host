@@ -121,7 +121,7 @@ describe('a first setup', () => {
     });
   });
 
-  test('says the two test setups\' figures for what setup\'s agent spends', async () => {
+  test('says the least and the most that setup\'s agent cost in five test setups', async () => {
     const dir = scratch();
     const { out } = await runSetup(dir, machine(dir, { hidden: [KEY] }).world);
     expect(out).toContain('Setup\'s agent runs on claude-opus-5-5, and spends from this key. In five test setups, ' +
