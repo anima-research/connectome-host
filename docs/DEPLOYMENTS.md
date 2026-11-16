@@ -314,7 +314,8 @@ the data directory, so each update copies it with the data.
 Then have the service start the host with `bun '<root>/start.js'`, followed by
 the arguments it gives the host now, and restart it. In a systemd unit,
 write each `%` in a path as `%%` and each `$` as `$$`, since systemd reads `%`
-as a specifier, and `${...}` as a variable, even between quotes. Setup
+as a specifier, and `${...}` as a variable, even between quotes. In the
+unit, as in a shell, write each `'` in the path as `'\''`. Setup
 says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
