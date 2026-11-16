@@ -27,12 +27,13 @@ const CHECK_EVERY_MS = 24 * 60 * 60 * 1000;
 const RESTART_QUIESCE_MS = 120_000;
 const WAIT_LONGER_MS = 600_000;
 // Each try quiesces every fleet child, and agent-framework 0.33.0 waits up to
-// a second for a busy host to drain before it answers (QUIESCE_TIMEOUT_MIN_MS),
-// holding that child's new turns until the try ends its quiesce: once every
-// child has answered, which a child that doesn't answer makes up to 10 seconds
-// (quiesce.ts's ANSWER_MARGIN_MS), and then for the resumes. One try a minute
-// bounds that hold on a busy child to about a second a minute, or about 10
-// seconds a minute where a child doesn't answer.
+// a second for a busy host to drain before it answers (QUIESCE_TIMEOUT_MIN_MS).
+// A try that doesn't go ahead holds a child's new turns from its first ask
+// until its resume. It asks each child up to three times before the resume,
+// and waits up to 10 seconds for each answer and for the resume's (quiesce.ts's
+// ANSWER_MARGIN_MS). One try a minute bounds that hold to about a second a
+// minute where each child answers within its second, and to about 40 seconds a
+// minute where a child answers each ask and the resume late.
 const ARMED_RETRY_MS = 60_000;
 
 export type SwitchFramework = QuiesceFramework & {
