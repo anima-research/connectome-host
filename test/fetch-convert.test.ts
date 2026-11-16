@@ -221,6 +221,11 @@ describe('htmlToMarkdown', () => {
     const late = page('<img src="/placeholder.gif" data-src="/real.png"><img src="/wide.png" width="10%">');
     expect(await htmlToMarkdown(late, 'https://x.test/', { images: true })).toBe('![](https://x.test/real.png)![](https://x.test/wide.png)');
     expect(await htmlToMarkdown(page('<img alt="a" src="/placeholder.gif" data-src="/real.png">'), 'https://x.test/')).toBe('![a](https://x.test/placeholder.gif)');
+    // Only a web address counts, in data-src and for an image with no alt text.
+    const mail = page('<img alt="chart" data-src="mailto:a@x.test" src="/chart.png"><img src="mailto:b@x.test">');
+    const kept = await htmlToPage(mail, 'https://x.test/', { images: true });
+    expect(kept.markdown).toBe('![chart](https://x.test/chart.png)');
+    expect(kept.images).toEqual([{ written: 'https://x.test/chart.png', address: 'https://x.test/chart.png' }]);
   });
 
   test('a conversion lists the web images it wrote, each as written and as its address is, and none without being asked', async () => {

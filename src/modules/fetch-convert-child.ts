@@ -241,14 +241,15 @@ service.addRule('followable-image', {
     // A data: address is the image itself, and can run to megabytes of base64.
     // For a reader that can look, a page that loads its images late names the
     // real one in data-src, with a placeholder in src, so data-src comes first.
-    const src = (keepImages ? followable(element.getAttribute?.('data-src') ?? null) : null)
+    const web = (address: string | null): string | null => (address !== null && /^https?:\/\//i.test(address) ? address : null);
+    const src = (keepImages ? web(followable(element.getAttribute?.('data-src') ?? null)) : null)
       ?? followable(element.getAttribute?.('src') ?? null);
     if (src === null) return alt;
     // HTML's empty alt marks an image as decoration, and a text reader gets
     // nothing from its address. A reader that can look gets it all the same,
     // unless the image is too small to be more than decoration: a chart often
     // has no alt text either.
-    if (alt === '' && !(keepImages && !isSmall(element))) return '';
+    if (alt === '' && !(keepImages && !isSmall(element) && web(src) !== null)) return '';
     if (keepImages && /^https?:\/\//i.test(src)) {
       // A bar is encoded as well, for a reader that will give the address
       // back: a table cell would escape it, and the address written would no

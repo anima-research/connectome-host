@@ -339,10 +339,14 @@ describe('what comes back', () => {
   });
 
   test('a clearly binary type is read when the caller asks for binary too, up to the byte limit', async () => {
+    const before = closedEarly;
     const got = await httpGet(new URL(`http://127.0.0.1:${port}/png`), { ...onlyLoopback, readBinary: true, maxBytes: 100 });
     expect(got.body.length).toBe(100);
     expect(got.cut).toBe(true);
     expect(got.binary).toBe(false);
+    // The server has seen this connection close before the next test counts closings.
+    await until(() => closedEarly === before + 1);
+    expect(closedEarly).toBe(before + 1);
   });
 
   test('the Accept header is the caller\'s to set, and prefers text when it doesn\'t', async () => {

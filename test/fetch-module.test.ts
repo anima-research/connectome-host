@@ -1231,6 +1231,17 @@ describe('looking at a page\'s images', () => {
     expect(answer).toMatch(/<answer-([0-9a-f]{12})>\nThe totals are 3, 9 and 5\.\n\nThe tallest bar is blue\.\n<\/answer-\1>/);
   });
 
+  test('past its three rounds, a turn that answers and asks again is taken for its answer', async () => {
+    const { call, calls } = await withImages([asking(at('/pic1.png')), asking(at('/pic2.png')), asking(at('/pic3.png')), { asks: [at('/pic4.png')], saying: 'They are all pictures.' }]);
+    const before = hits['/pic4.png'] ?? 0;
+    const result = await call({ source: at('/gallery'), prompt: 'q' });
+    expect(calls).toHaveLength(4);
+    expect(result.success).toBe(true);
+    expect(textOf(result)).toContain('They are all pictures.');
+    expect(hits['/pic4.png'] ?? 0).toBe(before);
+    expect(result.structured).toMatchObject({ imagesViewed: [1, 2, 3].map((n) => at(`/pic${n}.png`)) });
+  });
+
   test('a model that keeps asking instead of answering is an error after three rounds', async () => {
     const { call, calls } = await withImages([1, 2, 3, 4].map((n) => asking(at(`/pic${n}.png`))));
     const result = await call({ source: at('/gallery'), prompt: 'q' });

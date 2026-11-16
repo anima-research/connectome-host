@@ -634,7 +634,11 @@ export class FetchModule implements Module {
         ? response.content.filter((block): block is Extract<ContentBlock, { type: 'tool_use' }> => block.type === 'tool_use')
         : [];
       if (asks.length === 0) break;
-      if (round >= IMAGE_ROUNDS) return { ok: false, error: `${leadIn}: it kept calling its tool instead.${asked()} ${instead}` };
+      if (round >= IMAGE_ROUNDS) {
+        // Past its rounds, what it wrote in this turn is its answer, and the calls beside it go unanswered.
+        if (last !== '') break;
+        return { ok: false, error: `${leadIn}: it kept calling its tool instead.${asked()} ${instead}` };
+      }
       const shown: ContentBlock[] = [];
       for (const ask of asks) {
         const outcome = ask.name === VIEW_IMAGE.name
