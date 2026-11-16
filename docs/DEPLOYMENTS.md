@@ -306,17 +306,19 @@ It copies the install as the first release of an install root,
 `start.js` there, with the install's own command, `connectome`, beside it.
 That command's `connectome setup` works in the directory that holds the
 install root, reading and writing its `.env`, `.setup`, `package.json` and
-`node_modules` there. So for a root anywhere but directly in the service's
-working directory, it sets up the root's parent instead: to use it, keep the
-root directly in the working directory, as the default root is.
+`node_modules` there, and it knows an install there only by a root named
+`connectome-host`. So to use it, keep the default root, `./connectome-host`.
+For a root of that name elsewhere, it sets up the root's parent instead; for a
+root with another name, it refuses where it hasn't run before.
 Give `--extra-state` for each place an MCPL server keeps its state outside
 the data directory, so each update copies it with the data.
 Then have the service start the host with `bun '<root>/start.js'`, followed by
 the arguments it gives the host now, and restart it. In a systemd unit,
 write each `%` in a path as `%%` and each `$` as `$$`, since systemd reads `%`
 as a specifier, and `${...}` as a variable, even between quotes. In the
-unit, as in a shell, write each `'` in the path as `'\''`. Setup
-says whether the
+unit, as in a shell, write each `'` in the path as `'\''`. In the unit
+alone, write each `\` as `\\` too, since systemd reads a backslash as an
+escape even between single quotes. Setup says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
 
