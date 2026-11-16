@@ -15,7 +15,7 @@ import { hostNoteMetadata } from '../speaker.js';
 import { EXACT_VERSION } from '../update/install.js';
 import { hostUpdate, type HostUpdate, type UpdateAnswer } from '../update/update.js';
 import {
-  TOOL_CANCEL, armedName, statusLines, toolWays,
+  TOOL_CANCEL, UNASKED_CHILD_TURN, armedName, statusLines, toolWays,
 } from '../web/update-text.js';
 import {
   SELF_RESTART_EXIT_CODE,
@@ -75,8 +75,7 @@ const UPDATE_DESCRIPTION =
   '- install: installs the newest release beside yours, which runs on.\n' +
   '- restart: arms a restart onto the newest release installed. It begins at the host\'s first quiet moment and asks ' +
   'nobody: your turn ends as it would, as does every other agent\'s on this host, and so does each turn going on a fleet ' +
-  'child when the switch asks it. A turn that a fleet child begins after the switch last asked its children isn\'t ' +
-  'waited for.\n' +
+  `child when the switch asks it. ${UNASKED_CHILD_TURN}\n` +
   '- cancel: disarms an armed restart before it begins, whoever armed it.\n' +
   '`version`, with restart, is the release you looked at: if it would go to another by then, nothing is armed. ' +
   'Restart needs a headless host started with `CONNECTOME_SUPERVISED=1`; elsewhere it refuses and ' +
@@ -332,11 +331,12 @@ export class LifecycleModule implements Module {
       return refuse(`This tool takes \`action\` and \`version\`, not ${unknown.map((key) => `\`${key}\``).join(', ')}, ` +
         'and nothing was done.');
     }
+    const given = (value: unknown): string => (typeof value === 'string' ? `, not \`${value}\`` : '');
     if (typeof input.action !== 'string' || !(UPDATE_ACTIONS as readonly string[]).includes(input.action)) {
-      return refuse(`\`action\` must be one of ${UPDATE_ACTIONS.join(', ')}, and nothing was done.`);
+      return refuse(`\`action\` must be one of ${UPDATE_ACTIONS.join(', ')}${given(input.action)}, and nothing was done.`);
     }
     if (input.version !== undefined && (typeof input.version !== 'string' || !EXACT_VERSION.test(input.version))) {
-      return refuse('`version` must be an exact release, such as 0.15.0, and nothing was done.');
+      return refuse(`\`version\` must be an exact release, such as 0.15.0${given(input.version)}, and nothing was done.`);
     }
     if (input.version !== undefined && input.action !== 'restart' && input.action !== 'notes') {
       return refuse(`\`version\` goes with restart or notes, not ${input.action}, and nothing was done.`);

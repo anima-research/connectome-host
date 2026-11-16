@@ -468,10 +468,10 @@ reasons unless the grant holds `ops` too.
   turns or holding them if its operator quiesced it (a switch's quiesce left
   behind ends at that start), or restoring the copy
   (`/update back restore`), which sets everything since aside, not deleted,
-  and brings the host back answering new turns, unless it had been quiesced
-  from the Web UI before the Restart that took the copy: then it comes back
-  holding them, and clicking "⏸ quiesced" in the Web UI's top bar lets them
-  through. Whether it's quiesced now makes no difference. Either way the
+  and brings the host back answering new turns, unless its operator had
+  quiesced it before the Restart that took the copy, from the Web UI or
+  through an MCPL server: then it comes back holding them, and clicking
+  "⏸ quiesced" in the Web UI's top bar lets them through. Whether it's quiesced now makes no difference. Either way the
   host first holds new turns and gives turns in progress up to 2 min to end,
   as Restart does, and records its connected servers for the older release's
   commit as Restart does, where that release reads the record. If the older release ends before its commit on

@@ -163,12 +163,15 @@ export function toolWays(headless: boolean, command = 'connectome'): UpdateWays 
 export const TOOL_WAYS = toolWays(true);
 
 export const QUIET_MOMENT = 'nothing the host counts as in flight is still going here, such as a turn, subagent run, ' +
-  'background script, session switch, operator\'s work or credential action, and each fleet child says nothing is ' +
-  'going there, such as a turn, background script, operator\'s work or credential action, though a child on a ' +
-  'release that doesn\'t report its work outside turns says only that its turns and scripts are done';
+  'background script, session switch, operator\'s work or credential action, and each fleet child it asks says ' +
+  'nothing is going there, such as a turn, background script, operator\'s work or credential action, though a child ' +
+  'on a release that doesn\'t report its work outside turns says only that its turns and scripts are done';
 
-export const ASKS_NOBODY = 'however long that takes, so it goes only once every host has said no turn is running ' +
-  'there, and asks nobody';
+export const ASKS_NOBODY = 'however long that takes, so it goes only once every host it asked has said no turn is ' +
+  'running there, and asks nobody';
+
+export const UNASKED_CHILD_TURN = 'A turn that a fleet child begins after the switch last asked its children isn\'t ' +
+  'waited for.';
 
 export const ARMED_RETRY = 'A try that finds something still going waits at least a minute before the next.';
 
@@ -374,7 +377,8 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   const armed = status.armed ?? null;
   if (armed !== null) {
     lines.push(`${armedName(armed)} is armed since ${armed.since}${armed.by !== null ? `, asked for by ${armed.by}` : ''}: it ` +
-      `begins at the host's first quiet moment, once ${QUIET_MOMENT}.` + (armed.lastTry === null ? ` ${ARMED_RETRY}` : ''));
+      `begins at the host's first quiet moment, once ${QUIET_MOMENT}. ${UNASKED_CHILD_TURN}` +
+      (armed.lastTry === null ? ` ${ARMED_RETRY}` : ''));
     const last = armed.lastTry;
     if (last !== null) {
       lines.push(told(`Its try at ${last.at} didn't go ahead`, last.waited) + ' It tries again at a quiet moment at ' +
@@ -472,10 +476,9 @@ export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
       `ends at that start. If ${to} can't read the data, its start goes back to ${status.running} by itself, and ` +
       `${ways.restore} is the way then.`,
     `- ${ways.restore}: the copy is restored, and everything since ${since} is set aside, not deleted. For ` +
-      'residents, that is everything they have lived since then. The host comes back answering new turns, unless ' +
-      'it had been quiesced from the Web UI before the Restart that took the copy: then it comes back holding them, ' +
-      'and clicking "⏸ quiesced" in the Web UI\'s ' +
-      'top bar lets them through. Whether it\'s quiesced now makes no difference.',
+      'residents, that is everything they have lived since then. The host comes back answering new turns, unless its ' +
+      'operator had quiesced it before the Restart that took the copy, from the Web UI or through an MCPL server: then ' +
+      'it comes back holding them, and clicking "⏸ quiesced" in the Web UI\'s top bar lets them through. Whether it\'s quiesced now makes no difference.',
     'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
   ];
 }

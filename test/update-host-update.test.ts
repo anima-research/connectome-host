@@ -826,9 +826,9 @@ describe('Go back', () => {
         '/update back restore is the way then.',
       '- /update back restore: the copy is restored, and everything since 2026-10-20T10:00:00.000Z is set aside, ' +
         'not deleted. For residents, that is everything they have lived since then. The host comes back answering ' +
-        'new turns, unless it had been quiesced from the Web UI before the Restart that took the copy: then it ' +
-        'comes back holding them, and clicking "⏸ quiesced" in the Web UI\'s top bar lets them through. Whether it\'s ' +
-        'quiesced now makes no difference.',
+        'new turns, unless its operator had quiesced it before the Restart that took the copy, from the Web UI or ' +
+        'through an MCPL server: then it comes back holding them, and clicking "⏸ quiesced" in the Web UI\'s top bar ' +
+        'lets them through. Whether it\'s quiesced now makes no difference.',
       'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
     ]);
     expect(statusLines(update.status())).toContain('Going back to 0.12.1 is offered, with the copy of its data taken ' +

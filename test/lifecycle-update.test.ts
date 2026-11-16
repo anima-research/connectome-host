@@ -198,10 +198,11 @@ function residentHost(options: {
 
 const text = (result: ToolResult): string => String(result.success ? result.data : result.error);
 const QUIET = 'first quiet moment, once nothing the host counts as in flight is still going here, such as a turn, ' +
-  'subagent run, background script, session switch, operator\'s work or credential action, and each fleet child says ' +
-  'nothing is going there, such as a turn, background script, operator\'s work or credential action, though a child on a ' +
+  'subagent run, background script, session switch, operator\'s work or credential action, and each fleet child it asks ' +
+  'says nothing is going there, such as a turn, background script, operator\'s work or credential action, though a child on a ' +
   'release that doesn\'t report its work outside turns says only that its turns and scripts are done';
 const RETRY = 'A try that finds something still going waits at least a minute before the next.';
+const UNASKED = 'A turn that a fleet child begins after the switch last asked its children isn\'t waited for.';
 const alwaysQuiet = () => true;
 
 async function until(done: () => boolean): Promise<void> {
@@ -384,7 +385,9 @@ test('restart answers at once, says it waits for the host to be quiet and how to
   const host = residentHost({ root });
   const answer = await host.call({ action: 'restart' });
   expect(answer.success).toBe(true);
-  for (const words of ['0.15.0', 'quiet', QUIET, 'cancel', 'check', RETRY]) expect(text(answer)).toContain(words);
+  for (const words of ['0.15.0', 'quiet', QUIET, 'once every host it asked has said no turn is running there', UNASKED, 'cancel', 'check', RETRY]) {
+    expect(text(answer)).toContain(words);
+  }
   expect(text(answer)).toContain('If the host stops for any other reason first, nothing stays armed. An operator\'s own ' +
     'Restart or Go back also takes its place.');
   expect(toolDescription(host)).toContain('first quiet moment');
@@ -395,6 +398,7 @@ test('restart answers at once, says it waits for the host to be quiet and how to
   expect(check).toContain('armed');
   expect(check).toContain('2026-10-26T20:00:00.000Z');
   expect(check).toContain(QUIET);
+  expect(check).toContain(UNASKED);
   expect(check).toContain(RETRY);
 });
 
@@ -607,7 +611,7 @@ test('a child that doesn\'t take its resume after a try is named, in the try\'s 
     expect(said).not.toContain('so the switch\'s quiesce ended');
     expect(said).toContain('kid');
   }
-  expect(check).toContain(`An operator's ${shellWord(join(root, 'connectome'))} update restart resume ends it`);
+  expect(check).toContain(`An operator's ${shellWord(join(root, 'connectome'))} update restart resume tries again`);
   expect(check).not.toContain('/update');
 });
 
@@ -979,13 +983,14 @@ test('a restart of either kind waits alone: each refuses while the other is arme
   expect(state.isArmed()).toBe(true);
 });
 
-test('a call whose action or version the tool can\'t use, or a field it doesn\'t take, is refused, naming the field, and arms nothing', async () => {
+test('a call whose action or version the tool can\'t use, or a field it doesn\'t take, is refused, naming the field and what it was given, and arms nothing', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const host = residentHost({ root });
   for (const [input, field] of [
-    [{ action: 'reboot' }, '`action`'],
-    [{ action: 'back' }, '`action`'],
-    [{ action: 'restart', version: 'latest' }, '`version`'],
+    [{ action: 'reboot' }, '`action` must be one of check, notes, install, restart, cancel, not `reboot`,'],
+    [{ action: 'back' }, '`action` must be one of check, notes, install, restart, cancel, not `back`,'],
+    [{ action: 'restart', version: 'latest' }, '`version` must be an exact release, such as 0.15.0, not `latest`,'],
+    [{ action: 'restart', version: 'v0.15.0' }, '`version` must be an exact release, such as 0.15.0, not `v0.15.0`,'],
     [{ action: 'check', version: '0.15.0' }, '`version` goes with restart or notes'],
     [{ action: 'restart', data: 'keep' }, '`data`'],
     [{ action: 'restart', verison: '0.15.0' }, '`verison`'],
@@ -1174,20 +1179,22 @@ test('an arm refused while an operator\'s Restart waits on turns names wait, now
   await host.update.resume();
 });
 
-test('a cancel during an operator\'s resume leaves that resume holding the restart\'s place until it has answered', async () => {
+test('a cancel during an operator\'s resume answers once that resume has, naming a host it didn\'t reach, check keeps that, and the resume holds the restart\'s place until it has answered', async () => {
   const { root } = installRunning0141(['0.15.0']);
   let release: () => void = () => {};
-  const { fleet } = fleetChild({ busy: false, resumeHeld: new Promise((done) => { release = done; }) });
+  const { fleet } = fleetChild({ busy: false, resumes: false, resumeHeld: new Promise((done) => { release = done; }) });
   const host = residentHost({ root, fleet });
   await host.armed();
   const resuming = host.update.resume();
-  const cancelled = await host.call({ action: 'cancel' });
-  expect(cancelled.success).toBe(true);
-  expect(text(cancelled)).toContain('being ended already');
-  expect(host.update.armedSwitch()).toBeNull();
+  const cancelling = host.call({ action: 'cancel' });
   expect((await host.update.restartToInstalled()).lines.join(' ')).toContain('A switch\'s quiesce is being ended');
   release();
-  await resuming;
+  const [cancelled] = await Promise.all([cancelling, resuming]);
+  expect(cancelled.success).toBe(true);
+  expect(text(cancelled)).toContain('didn\'t reach every host: kid: the socket closed.');
+  expect(text(cancelled)).toContain('tries again, as does the host\'s next start.');
+  expect(host.update.armedSwitch()).toBeNull();
+  expect(text(await host.call({ action: 'check' }))).toContain('kid: the socket closed.');
   expect((await host.update.restartToInstalled()).lines.join(' ')).not.toContain('is being ended');
 });
 
