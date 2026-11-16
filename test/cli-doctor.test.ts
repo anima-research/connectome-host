@@ -197,9 +197,10 @@ describe('connectome doctor: the frame', () => {
 
   test('every line hides the stored secrets by name', async () => {
     const at = install();
-    const r = await run(at, { states: RUNNING, health: { agents: [agent(`ember-${KEY}`)] } });
-    expect(r.out).toContain('✓ ember-<ANTHROPIC_API_KEY>: no failed model call in a row.');
+    const r = await run(at, { states: RUNNING, health: { agents: [agent(`ember-${KEY}-${TOKEN}`)] } });
+    expect(r.out).toContain('✓ ember-<ANTHROPIC_API_KEY>-<DISCORD_TOKEN>: no failed model call in a row.');
     expect(r.out).not.toContain(KEY);
+    expect(r.out).not.toContain(TOKEN);
   });
 });
 
