@@ -10,18 +10,27 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ### Changed
 
-- **connectome-host takes agent-framework 0.33.2 or later in the 0.33 line**
-  (it took 0.33.0). With it, every host gets what 0.33.1 and 0.33.2
+- **connectome-host takes agent-framework 0.33.3 or later in the 0.33 line**
+  (it took 0.33.0). With it, every host gets what 0.33.1, 0.33.2 and 0.33.3
   changed:
-  - **0.33.2:** the rewind marker, `/unstick`'s give-up report and a failed
-    turn's `[inference-failed]` note no longer put a provider's words where
-    an agent reads them: no refusal category and no failure message. The
-    note names the error's type and HTTP status when it has them, as
-    before, and a safety failure's note names neither. It also gives no
-    reason for a progress bound's cut, a stream's abort, a deadline expiry
-    or a compile that context-manager refuses. On 0.33.0 the note gave each
-    one's message after "Reason:", such as the bound that ran out and the
-    host's setting for it. Rows already stored keep their text.
+  - **0.33.2 and 0.33.3, a provider's words:** the rewind marker,
+    `/unstick`'s give-up report, a failed turn's `[inference-failed]` note,
+    `gate_status` after a failed reply judge, `health--snapshot`'s recent
+    errors and the reason given to a script that a failed turn stops no
+    longer put a provider's words where an agent reads them: no refusal
+    category and no failure message. `gate_status`, `health--snapshot` and
+    the script's reason give the framework's words instead, such as "the
+    model call failed (invalid_request, HTTP 400)". In `health--snapshot`,
+    a failure logged before the update shows `null`. Rows already stored
+    keep their text.
+  - **0.33.2 and 0.33.3, the note's reason:** the `[inference-failed]` note
+    names the error's type and HTTP status when it has them, as before, and
+    a safety failure's note names neither. It gives a reason, after
+    "Reason:", only where agent-framework, membrane's progress bounds or
+    context-manager wrote the failure's message: a progress bound's cut,
+    which names the bound that ran out and the host's setting for it; a
+    compile that context-manager refuses; and a stream's abort. On 0.33.0
+    the note gave every failure's message there.
   - **0.33.1:** the first start of a store that has a `gate.json` and no
     `wake-decisions.json` records the MCPL servers it is configured with as
     predating wake onboarding, and settles each as `unasked` at its first
