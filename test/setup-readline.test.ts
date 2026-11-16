@@ -9,14 +9,16 @@ const INDEX_PATH = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 
 const SECRET = 'typed-hidden-0123456789';
 
 // The probe keeps the message setup opens the conversation with, and how many of the agent's inferences the log
-// holds in the microtask after each turn's inference:completed, where the host reads a refusal. On the agent's first
-// turn it asks the person for a secret through setup's own tool, and on its second it asks for the conversation to
-// end, as setup--finished does.
+// holds in the microtask after each turn's inference:completed, where the host reads a refusal. As the framework hands
+// it the opening message, it asks the person for a secret through setup's own tool, and the framework waits for its
+// onProcess before the turn, as a turn waits for a tool's result. On the agent's second turn it asks for the
+// conversation to end, as setup--finished does.
 const EXTENSION = `
 import { appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 console.error('[probe-early] a line before readline mode starts');
 export function register(api, config) {
+  let framework;
   api.registerModule(() => ({
     name: 'setup-probe',
     getTools() { return []; },
@@ -24,10 +26,15 @@ export function register(api, config) {
     async stop() {},
     async handleToolCall() { return { success: false, error: 'no tools' }; },
     async onProcess(event) {
-      if (event.type === 'external-message' && event.source === 'system') writeFileSync(join(config.dir, 'opened.txt'), event.content);
+      if (event.type !== 'external-message' || event.source !== 'system') return {};
+      writeFileSync(join(config.dir, 'opened.txt'), event.content);
+      const result = await framework.getModule('setup')
+        .handleToolCall({ id: 'probe', name: 'ask_secret', input: { name: 'PROBE_TOKEN', purpose: 'a probe' } });
+      writeFileSync(join(config.dir, 'asked.json'), JSON.stringify(result));
       return {};
     },
-    setFramework(framework) {
+    setFramework(given) {
+      framework = given;
       let turns = 0;
       framework.onTrace((event) => {
         if (event.type === 'inference:completed' && event.agentName === 'setup') {
@@ -36,12 +43,7 @@ export function register(api, config) {
         }
         if (event.type !== 'inference:started' || event.agentName !== 'setup') return;
         turns++;
-        const setup = framework.getModule('setup');
-        if (turns === 1) {
-          setup.handleToolCall({ id: 'probe', name: 'ask_secret', input: { name: 'PROBE_TOKEN', purpose: 'a probe' } })
-            .then((result) => writeFileSync(join(config.dir, 'asked.json'), JSON.stringify(result)));
-        }
-        if (turns === 2) setup.finishRequested = true;
+        if (turns === 2) framework.getModule('setup').finishRequested = true;
       });
     },
   }));
