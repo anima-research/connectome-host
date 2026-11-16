@@ -274,10 +274,18 @@ describe('setup--discord', () => {
 
   test('the person sees a line for each read, before Discord is asked, with a stored secret given as a username shown by its name', async () => {
     const discord = fakeDiscord([HOME]);
-    const { module, shown } = install(discord, `DISCORD_TOKEN="${TOKEN}"\nOPENAI_API_KEY="sk-test-secret-value"\n`);
+    let lines: string[] = [];
+    const linesAtFirstRequest: number[] = [];
+    const watched = { fetch: (async (input: string, init?: RequestInit) => {
+      if (new URL(input).pathname.endsWith('/users/@me')) linesAtFirstRequest.push(lines.length);
+      return discord.fetch(input, init);
+    }) as typeof fetch };
+    const { module, shown } = install(watched, `DISCORD_TOKEN="${TOKEN}"\nOPENAI_API_KEY="sk-test-secret-value"\n`);
+    lines = shown;
     await read(module);
     await read(module, { server: '100' });
     await read(module, { server: '100', username: 'sk-test-secret-value' });
+    expect(linesAtFirstRequest).toEqual([1, 2, 3]);
     expect(shown).toEqual([
       'Setup\'s agent reads the bot\'s servers and channels from Discord.',
       'Setup\'s agent reads one of the bot\'s servers from Discord.',
