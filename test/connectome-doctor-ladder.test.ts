@@ -1,6 +1,6 @@
 import { describe, test, expect, afterAll, afterEach } from 'bun:test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -1207,6 +1207,23 @@ describe.skipIf(ladderUnrunnable)('the ladder, its round on the review of 3c6be0
     expect(findings(at)).toContainEqual(startsAfter);
     expect(findings(at)).not.toContainEqual(hardDown);
     writeFileSync(newest, `${row(at.now - 400, 'complete')}\n${row(at.now - 50, 'complete')}\n`);
+    expect(findings(at)).toContainEqual(hardDown);
+  });
+
+  test('a failure from before the call log the ladder reads isn\'t called hard-down when that log\'s last turn failed too', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'journal.txt'), '');
+    exhausted(at, at.now - 300);
+    const before = join(at.work, 'data', 'llm-calls.2026-10-30T00-00-00.jsonl');
+    writeFileSync(before, `${row(at.now - 200, 'stream')}\n`);
+    utimesSync(before, at.now - 200, at.now - 200);
+    const started = new Date((at.now - 100) * 1000).toISOString().replace(/:/g, '-').replace('.', '-');
+    const newest = join(at.work, 'data', `llm-calls.${started}.jsonl`);
+    writeFileSync(newest, `${row(at.now - 50, 'stream', { stop_reason: null, error: 'overloaded' })}\n`);
+    expect(findings(at)).toContainEqual(startsAfter);
+    expect(findings(at)).not.toContainEqual(hardDown);
+    const earlier = new Date((at.now - 400) * 1000).toISOString().replace(/:/g, '-').replace('.', '-');
+    renameSync(newest, join(at.work, 'data', `llm-calls.${earlier}.jsonl`));
     expect(findings(at)).toContainEqual(hardDown);
   });
 

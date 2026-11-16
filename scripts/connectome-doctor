@@ -376,6 +376,12 @@ llm_unsure = False
 newer_unread = False
 llm_unread = None
 LLM_WINDOW = 30_000_000
+
+
+def started_of(name):
+    named = re.fullmatch(r"llm-calls\.(\d{4}-\d\d-\d\d)T(\d\d)-(\d\d)-(\d\d)(?:-(\d{3}))?Z?\.jsonl", name)
+    return parse_iso(f"{named[1]}T{named[2]}:{named[3]}:{named[4]}.{named[5] or '000'}Z") if named else None
+
 try:
     data_dir_why = (None if stat.S_ISDIR(os.stat(data_dir).st_mode)
                     else f"{data_dir}, the data directory, isn't a directory")
@@ -465,8 +471,7 @@ if llm_files:
     elif llm_unread is not None:
         llm_detail = f"the newest call log, {llm_files[-1]}, can't be read ({llm_unread})"
     else:
-        named = re.fullmatch(r"llm-calls\.(\d{4}-\d\d-\d\d)T(\d\d)-(\d\d)-(\d\d)(?:-(\d{3}))?Z?\.jsonl", llm_files[-1])
-        started = parse_iso(f"{named[1]}T{named[2]}:{named[3]}:{named[4]}.{named[5] or '000'}Z") if named else None
+        started = started_of(llm_files[-1])
         since = "since the host last started" + (f" at {hhmm(started)}" if started else "")
         seen = ([f"{others} other model call(s)"] if others else []) + ([f"{pokes} keepalive poke(s)"] if pokes else [])
         whole = where == "the newest file"
@@ -646,17 +651,18 @@ for where, found, why, unread in sources:
 if times or untimed:
     failed_at = max(times) if times else None
     timed = " whose time is known" if untimed else ""
+    read_from = window_from if turn_ts is None else started_of(llm_files[-1]) if llm_files else None
     if failed_at is not None and turn_ok and turn_ts is not None and turn_ts > failed_at:
         warn(f"last inference failure{timed} {age(failed_at)}: a later call, at {hhmm(turn_ts)}, succeeded; the call log "
              "doesn't say whose, so whether the agent that failed has recovered isn't known" + (
                  "; newer rows of the call log can't be read, so whether a call after it failed isn't known"
                  if newer_unread else ""))
     elif failed_at is not None and (INFERENCE in unknown or newer_unread or (
-            turn_ts is None and window_from is not None and window_from > failed_at)):
+            read_from is not None and read_from > failed_at)):
         why = (unseen_why if INFERENCE in unknown
                else "newer rows of the call log can't be read" if newer_unread and turn_ts is not None
                else "rows of the call log can't be read" if newer_unread
-               else f"the call log read here starts at {hhmm(window_from)}, after it")
+               else f"the call log read here starts at {hhmm(read_from)}, after it")
         warn(f"inference failures, the last{timed} {age(failed_at)}; whether a turn has succeeded since isn't known, "
              f"since {why}")
     elif failed_at is not None:
