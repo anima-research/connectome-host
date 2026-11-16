@@ -213,18 +213,20 @@ describe('setup--discord', () => {
   });
 
   test('it follows no redirect, which would carry the token wherever it points', async () => {
-    const discord = fakeDiscord([HOME], { '/users/@me': () => new Response(null, { status: 301, headers: { location: 'https://elsewhere.example/' } }) });
+    const redirecting = fakeDiscord([HOME], { '/users/@me': () => new Response(null, { status: 301, headers: { location: 'https://elsewhere.example/' } }) });
+    expect((await read(install(redirecting).module)).error).toBe('Discord answered 301 to GET /users/@me with something other ' +
+      'than JSON, so the read stopped there. Tell the person what it answered.');
+    const discord = fakeDiscord([HOME]);
     const redirects: Array<RequestRedirect | undefined> = [];
     const watched = { fetch: (async (input: string, init?: RequestInit) => {
       redirects.push(init?.redirect);
       return discord.fetch(input, init);
     }) as typeof fetch };
-    expect((await read(install(watched).module)).error).toBe('Discord answered 301 to GET /users/@me with something other ' +
-      'than JSON, so the read stopped there. Tell the person what it answered.');
-    expect((await read(install(fakeDiscord([HOME])).module)).success).toBe(true);
-    await read(install(watched).module, { server: '100' });
-    expect(redirects.length).toBeGreaterThan(0);
-    expect(new Set(redirects)).toEqual(new Set(['manual']));
+    const { module } = install(watched);
+    for (const input of [{}, { server: '100' }, { server: '100', username: 'ada' }]) expect((await read(module, input)).success).toBe(true);
+    expect(discord.asked).toContain('/applications/@me');
+    expect(discord.asked).toContain('/guilds/100/channels');
+    expect(redirects).toEqual(discord.asked.map(() => 'manual'));
   });
 
   test('a call outside its shapes is refused, and Discord isn\'t asked', async () => {
