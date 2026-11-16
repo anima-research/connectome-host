@@ -121,10 +121,10 @@ async function host() {
 }
 
 describe('/sweep, the list and its words', () => {
-  test('with no name it lists the sweeps it is given, and this release ships with none', async () => {
+  test('with no name it lists the sweeps it is given, and the host\'s /sweep lists this release\'s', async () => {
     const h = await host();
     expect(said(h.sweep())).toContain('test-notes: Rewrites the test notes.');
-    expect(said(handleCommand('/sweep', h.app))).toBe('This release knows no sweep.');
+    expect(said(handleCommand('/sweep', h.app))).toStartWith('The sweeps this release knows:\n  unstick-fix-11-16: ');
   });
 
   test('a name it doesn\'t know is refused, naming the sweeps it knows', async () => {

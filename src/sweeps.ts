@@ -1,4 +1,5 @@
 import type { StoredMessage } from '@animalabs/context-manager';
+import { UNSTICK_FIX_11_16 } from './sweep-unstick-fix-11-16.js';
 
 /**
  * A named rewrite of rows already stored, run by `connectome sweep NAME`
@@ -13,7 +14,7 @@ export interface Sweep {
   rewrite(row: StoredMessage): { kind: string; text: string } | null;
 }
 
-export const SWEEPS: readonly Sweep[] = [];
+export const SWEEPS: readonly Sweep[] = [UNSTICK_FIX_11_16];
 
 export function sweepNames(sweeps: readonly Sweep[]): string[] {
   if (sweeps.length === 0) return ['This release knows no sweep.'];

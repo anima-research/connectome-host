@@ -955,7 +955,7 @@ function sweepCtx(root: string, argv: string[]) {
   return { ctx: { root, argv, out: (line: string) => { out.push(line); }, err: (line: string) => { err.push(line); } }, out, err };
 }
 
-test('sweep with no name lists the sweeps the release knows, this release none, and looks for no host', async () => {
+test('sweep with no name lists the sweeps the release knows and looks for no host', async () => {
   const { root, data } = install();
   const { path } = writeInstallCommand(root, '');
   let connections = 0;
@@ -964,7 +964,7 @@ test('sweep with no name lists the sweeps the release knows, this release none, 
   });
   const listed = await run(path, ['sweep'], root);
   expect(listed.status).toBe(0);
-  expect(listed.out).toBe('This release knows no sweep.\n');
+  expect(listed.out).toStartWith('The sweeps this release knows:\n  unstick-fix-11-16: ');
   const given = sweepCtx(root, []);
   expect(await sweep(given.ctx, NOTES)).toBe(0);
   expect(given.out).toEqual(['The sweeps this release knows:', '  test-notes: Rewrites the test notes.']);
@@ -980,7 +980,7 @@ test('sweep with a name the release doesn\'t know, or a word it doesn\'t take, i
   });
   const unknown = await run(path, ['sweep', 'test-notes'], root);
   expect(unknown.status).toBe(2);
-  expect(unknown.err).toBe('connectome: no sweep is named test-notes.\nThis release knows no sweep.\n');
+  expect(unknown.err).toStartWith('connectome: no sweep is named test-notes.\nThe sweeps this release knows:\n  unstick-fix-11-16: ');
   for (const words of [['other'], ['test-notes', '--wirte'], ['test-notes', '--write', 'now']]) {
     const given = sweepCtx(root, words);
     expect(await sweep(given.ctx, NOTES)).toBe(2);
