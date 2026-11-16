@@ -1,10 +1,12 @@
 import { existsSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { bunBelowFloor } from '../bun-floor.js';
 import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 import { makeSpawnHelperExecutable, nodePtyDir } from '../setup/node-pty.js';
 import { SERVERS, SETUP_BUN_FLOOR, SHELL_NODE_TOP, installedVersion, packageJson } from '../setup/packages.js';
-import { ended, realWorld, withoutKeys, type SetupWorld } from '../setup/world.js';
+import { SHOWN_FILE } from '../setup/commands-shown.js';
+import { withoutDotenv } from '../setup/secrets.js';
+import { ended, realWorld, type SetupWorld } from '../setup/world.js';
 import { writeTextAtomic } from '../update/contract.js';
 import { shellWord } from '../update/launcher.js';
 import type { CliCommand, CliContext } from './connectome.js';
@@ -13,7 +15,7 @@ import { shownToPerson } from './shown.js';
 
 export const SHELL_USAGE = 'connectome shell install';
 
-export type ShellWorld = Pick<SetupWorld, 'platform' | 'env' | 'bun' | 'hasSudo' | 'hasNode' | 'run'>;
+export type ShellWorld = Pick<SetupWorld, 'platform' | 'env' | 'cwd' | 'bun' | 'hasSudo' | 'hasNode' | 'run'>;
 
 const SHELL = SERVERS.shell;
 // The 1.x line: the daemon, port and token that the resident's shell runs on are 1.x's.
@@ -54,7 +56,7 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
       `\`bun upgrade\` upgrades it, or the package manager that installed it does; then ${again}.`);
     return 1;
   }
-  const env = withoutKeys(world.env, []);
+  const env = withoutDotenv(world.env, world.cwd);
   const node = await world.run(['node', '--version'], { cwd: dir, env });
   const nodeVersion = node.status === 0 ? node.stdout.trim().replace(/^v/, '') : null;
   const getNode = `Install Node ${packageJson().engines.node.replace('>=', '')} or later, and at most Node ` +
@@ -95,7 +97,8 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
     const added = await world.run([world.bun.path, '--no-env-file', 'add', spec], { cwd: dir, env, show: true });
     if (added.status !== 0) {
       err(`\`bun --no-env-file add ${spec}\` didn't finish (${ended(added)}), so the resident's shell isn't installed. ` +
-        `Bun's own lines say why. Once that's put right, ${again}.`);
+        `${world.env[SHOWN_FILE] ? 'Setup\'s agent has Bun\'s own lines, which say why' : 'Bun\'s own lines say why'}. ` +
+        `Once that's put right, ${again}.`);
       return 1;
     }
     const now = installedVersion(dir, SHELL);
@@ -140,7 +143,6 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
   return 0;
 }
 
-/** Adds names to package.json's trustedDependencies, which Bun reads in place of its default list. */
 function addTrusted(file: string, names: string[]): string | null {
   let manifest: Record<string, unknown>;
   try {
@@ -163,7 +165,7 @@ const PTY_CHECK_MS = 30_000;
 
 function within(path: string, dir: string): boolean {
   const from = relative(dir, path);
-  return from !== '' && !from.startsWith('..') && !isAbsolute(from);
+  return from !== '' && from !== '..' && !from.startsWith(`..${sep}`) && !isAbsolute(from);
 }
 
 async function ptyWorks(world: ShellWorld, dir: string, env: Record<string, string>): Promise<string | null> {

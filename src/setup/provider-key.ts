@@ -1,9 +1,12 @@
+import { unwritableValue } from './secrets.js';
+
 export type KeyAnswer = { kind: 'accepted' } | { kind: 'refused' | 'unknown'; why: string };
 
 const REQUEST_LIMIT_MS = 15_000;
 
-/** One GET, with no redirect followed, since a redirect followed would carry the key wherever it points. */
-export async function answerOf(url: string, headers: Record<string, string>, fetch = globalThis.fetch): Promise<KeyAnswer> {
+export async function answerOf(url: string, headers: Record<string, string>, fetch = globalThis.fetch,
+  gateway?: string): Promise<KeyAnswer> {
+  const host = gateway ?? new URL(url).host;
   try {
     new Headers(headers);
   } catch {
@@ -14,14 +17,17 @@ export async function answerOf(url: string, headers: Record<string, string>, fet
     response = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_LIMIT_MS) });
   } catch (error) {
     const { name, code } = error as { name?: string; code?: string };
-    return { kind: 'unknown', why: `${new URL(url).host} couldn't be reached (${code ?? name ?? 'no answer'})` };
+    return { kind: 'unknown', why: `${host} couldn't be reached (${code ?? name ?? 'no answer'})` };
   }
   await response.body?.cancel();
   if (response.ok) return { kind: 'accepted' };
-  if (response.status === 401 || response.status === 403) {
-    return { kind: 'refused', why: `${new URL(url).host} refused it (${response.status})` };
+  if (response.status === 403 && gateway !== undefined) {
+    return { kind: 'unknown', why: `${host} answered 403, as a gateway can for a listing it doesn't serve` };
   }
-  return { kind: 'unknown', why: `${new URL(url).host} answered ${response.status}` };
+  if (response.status === 401 || response.status === 403) {
+    return { kind: 'refused', why: `${host} refused it (${response.status})` };
+  }
+  return { kind: 'unknown', why: `${host} answered ${response.status}` };
 }
 
 interface ProviderKey {
@@ -46,10 +52,16 @@ export const PROVIDER_KEYS: Readonly<Record<string, ProviderKey>> = {
   },
 };
 
-/** Asks the provider, at the base URL .env names for it if it names one, whether it accepts the key. */
 export function checkProviderKey(name: string, key: string, dotenv: ReadonlyMap<string, string>, fetch?: typeof globalThis.fetch):
   Promise<KeyAnswer> {
   const provider = PROVIDER_KEYS[name]!;
-  const base = (dotenv.get(provider.baseName) || provider.base).replace(/\/+$/, '');
-  return answerOf(`${base}${provider.path}`, provider.headers(key), fetch);
+  const given = dotenv.get(provider.baseName);
+  const unreadable = given ? unwritableValue(given) : null;
+  if (unreadable !== null) return Promise.resolve({ kind: 'unknown', why: `${provider.baseName} in .env can't be used: ${unreadable}` });
+  const base = (given || provider.base).replace(/\/+$/, '');
+  if (!URL.canParse(`${base}${provider.path}`)) {
+    return Promise.resolve({ kind: 'unknown', why: `${provider.baseName} in .env isn't a URL` });
+  }
+  return answerOf(`${base}${provider.path}`, provider.headers(key), fetch,
+    given ? `the host of ${provider.baseName} in .env` : undefined);
 }
