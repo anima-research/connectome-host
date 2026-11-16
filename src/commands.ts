@@ -317,7 +317,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
   const parts = command.slice(1).trim().split(/\s+/);
   const args = parts.slice(1);
   const refused = change ? refusedWhileSwitching(app, change) : null;
-  if (refused) return { lines: [{ text: refused, style: 'system' }] };
+  if (refused) return { lines: [{ text: refused, style: 'system' }], refused: true };
   const framework = app.framework;
   const requester = input.requester ?? HOST_COMMAND;
 
@@ -530,6 +530,7 @@ export function handleSweep(app: AppContext, args: string[], requester: Operator
     for (const row of cm.getAllMessages()) {
       if (seen.has(row.id)) continue;
       seen.add(row.id);
+      if (!row.content.every((block) => block.type === 'text')) continue;
       const next = sweep.rewrite(row);
       if (next === null) continue;
       const holders = live.filter((other) => other.getContextManager().windowStatusOf(row.id) === 'in').map((other) => other.name);
@@ -538,7 +539,7 @@ export function handleSweep(app: AppContext, args: string[], requester: Operator
   }
   if (found.length === 0) return { lines: [say(`Sweep ${name} finds no row to rewrite.`)] };
   const where = (row: (typeof found)[number]): string =>
-    `${row.kind} row of ${row.at.toISOString()}, in the window of ${row.holders.length > 0 ? row.holders.join(', ') : 'no agent'}`;
+    `${row.kind} row ${row.id} of ${row.at.toISOString()}, in the window of ${row.holders.length > 0 ? row.holders.join(', ') : 'no agent'}`;
   if (flag === undefined) {
     const earliest = new Map<string, Date>();
     for (const row of found) {
@@ -555,6 +556,15 @@ export function handleSweep(app: AppContext, args: string[], requester: Operator
           ? 'No agent\'s window holds these rows, so --write rewrites no prompt cache.'
           : `With --write, each of these agents has its prompt cache rewritten once, from its earliest row above: ${[...earliest].map(([agent, at]) => `${agent} (from ${at.toISOString()})`).join(', ')}.`),
       ],
+    };
+  }
+  const running = sessionChangesRunning(app);
+  if (running.length > 0) {
+    const names = running.join(', ');
+    const one = running.length === 1;
+    return {
+      lines: [say(`Sweep ${name} wrote nothing, since ${names} ${one ? 'is' : 'are'} still running. Run it again once ${names} ${one ? 'has' : 'have'} finished.`)],
+      refused: true,
     };
   }
   const lines: Line[] = [];
@@ -574,9 +584,10 @@ export function handleSweep(app: AppContext, args: string[], requester: Operator
       lines.push(say(`- rewrote the ${where(row)}.`));
     } catch (error) {
       failed += 1;
-      lines.push(say(`- left as it was, since its edit failed: the ${where(row)}: ${messageOf(error)}`));
+      lines.push(say(`- its edit failed, so it may or may not have changed: the ${where(row)}: ${messageOf(error)}`));
     }
   }
+  if (failed > 0) lines.push(say('Run the sweep again without --write to see whether a row whose edit failed is still listed.'));
   framework.recordOperatorAction({ kind: 'sweep', requester, params: { sweep: name }, result: { rewritten, leftForTurns, failed } });
   return {
     lines: [say(`Sweep ${name} rewrote ${rewritten} of ${found.length} ${found.length === 1 ? 'row' : 'rows'}.`), ...lines],

@@ -6,6 +6,7 @@ import { AgentFramework, asOwnRow } from '@animalabs/agent-framework';
 import type { StoredMessage } from '@animalabs/context-manager';
 import type { NormalizedRequest, NormalizedResponse, StreamEvent, YieldingStream } from '@animalabs/membrane';
 import { createBranchState, handleCommand, handleSweep } from '../src/commands.js';
+import { trackOperatorWork } from '../src/session-switch.js';
 import type { Sweep } from '../src/sweeps.js';
 
 // What `connectome sweep` asks of the running host: `/sweep NAME` shows the
@@ -151,12 +152,15 @@ describe('/sweep, the list and its words', () => {
     expect(said(handleCommand('/help', h.app))).toContain('/sweep [name [--write]]');
   });
 
-  test('while a session switch is under way, /sweep with a name is refused and writes nothing', async () => {
+  test('while a session switch is under way, /sweep with a name answers refused and writes nothing', async () => {
     const h = await host();
     const id = h.note('a', 1);
     (h.app as { switching?: boolean }).switching = true;
-    const answer = handleCommand('/sweep test-notes --write', h.app);
-    expect(said(answer)).toContain('a session switch is under way');
+    for (const command of ['/sweep test-notes --write', '/sweep test-notes']) {
+      const answer = handleCommand(command, h.app);
+      expect(answer.refused).toBe(true);
+      expect(said(answer)).toContain('a session switch is under way');
+    }
     expect(h.rowText('a', id)).toContain(OLD);
   });
 });
@@ -175,7 +179,7 @@ describe('/sweep NAME shows, and writes nothing', () => {
     expect(out).toContain('New words for note 2.');
     const stored = h.agent('a').getContextManager().getMessage(id as never)!;
     const line1 = answer.lines.map((l) => l.text).find((l) => l.includes('note 1.'))!;
-    expect(line1).toContain('test note row of ');
+    expect(line1).toContain(`test note row ${id} of `);
     expect(line1).toContain(new Date(stored.timestamp).toISOString());
     expect(line1).toContain(`${textOf(stored).length} characters now, ${'[test-note] New words for note 1.'.length} after`);
     expect(line1).toMatch(/in the window of [ab]/);
@@ -190,6 +194,16 @@ describe('/sweep NAME shows, and writes nothing', () => {
     const out = said(h.sweep('test-notes'));
     expect(out).toContain('in the window of no agent');
     expect(out).toContain('No agent\'s window holds these rows, so --write rewrites no prompt cache.');
+  });
+
+  test('a row holding a block other than text isn\'t given to the sweep: it isn\'t listed, and --write leaves it', async () => {
+    const h = await host();
+    const cm = h.agent('a').getContextManager();
+    const id = String(cm.addMessage('user', [{ type: 'thinking', thinking: 'zq-thought' }, ...text(`[test-note] ${OLD} for note 1.`)] as never,
+      asOwnRow({ system: true, kind: 'test-note', n: 1 }, 'a')));
+    expect(said(h.sweep('test-notes'))).toBe('Sweep test-notes finds no row to rewrite.');
+    expect(said(h.sweep('test-notes', '--write'))).toBe('Sweep test-notes finds no row to rewrite.');
+    expect(cm.getMessage(id as never)!.content.map((block) => block.type)).toEqual(['thinking', 'text']);
   });
 
   test('a row the sweep returns nothing for isn\'t listed, and with none it says so', async () => {
@@ -224,12 +238,39 @@ describe('/sweep NAME --write', () => {
     const id = h.note('b', 2);
     await h.turn('b');
     expect(JSON.stringify(h.requests.at(-1))).toContain(OLD);
-    expect(h.agent('a').getContextManager().getMessage(id as never)).not.toBeNull();
+    expect(h.framework.getAllAgents().map((agent) => agent.name)).toEqual(['a', 'b']);
+    expect(h.agent('a').getContextManager().getAllMessages().map((row) => String(row.id))).toContain(id);
+    const edited: string[] = [];
+    for (const name of ['a', 'b']) {
+      const cm = h.agent(name).getContextManager();
+      const edit = cm.editMessage.bind(cm);
+      cm.editMessage = (rowId, content) => { edited.push(name); edit(rowId, content); };
+    }
     expect(said(h.sweep('test-notes', '--write'))).toContain('rewrote 1 of 1 row.');
+    expect(edited).toEqual(['a']);
     await h.turn('b');
     const next = JSON.stringify(h.requests.at(-1));
     expect(next).toContain('New words for note 2.');
     expect(next).not.toContain(OLD);
+  });
+
+  test('while a command that changes the session is still running, --write is refused and writes nothing; a run without --write still answers', async () => {
+    const h = await host();
+    const id = h.note('a', 1);
+    let release!: () => void;
+    const running = trackOperatorWork(h.app, '/newtopic', new Promise<void>((resolve) => { release = resolve; }));
+    try {
+      const answer = h.sweep('test-notes', '--write');
+      expect(answer.refused).toBe(true);
+      expect(said(answer)).toBe('Sweep test-notes wrote nothing, since /newtopic is still running. Run it again once /newtopic has finished.');
+      expect(h.rowText('a', id)).toContain(OLD);
+      expect(h.operatorLog().filter((e) => e.kind === 'sweep')).toEqual([]);
+      expect(said(h.sweep('test-notes'))).toContain('would rewrite 1 row.');
+    } finally {
+      release();
+      await running;
+    }
+    expect(said(h.sweep('test-notes', '--write'))).toContain('rewrote 1 of 1 row.');
   });
 
   test('a second run finds nothing to rewrite', async () => {
@@ -280,7 +321,7 @@ describe('/sweep NAME --write', () => {
     }
   });
 
-  test('a row whose edit fails is named and left, and the rest are rewritten', async () => {
+  test('a row whose edit fails is named, without saying it is unchanged, and the rest are rewritten', async () => {
     const h = await host();
     const first = h.note('a', 1);
     const second = h.note('a', 2);
@@ -293,8 +334,10 @@ describe('/sweep NAME --write', () => {
     const answer = h.sweep('test-notes', '--write');
     expect(answer.refused).toBe(true);
     expect(said(answer)).toContain('rewrote 1 of 2 rows.');
-    expect(said(answer)).toContain('left as it was, since its edit failed');
+    expect(said(answer)).toContain('its edit failed, so it may or may not have changed');
+    expect(said(answer)).not.toContain('left as it was, since its edit failed');
     expect(said(answer)).toContain('the store refused this edit');
+    expect(said(answer)).toContain('Run the sweep again without --write to see whether a row whose edit failed is still listed.');
     expect(h.rowText('a', first)).toContain(OLD);
     expect(h.rowText('a', second)).toBe('[test-note] New words for note 2.');
     expect(h.operatorLog().find((e) => e.kind === 'sweep')).toMatchObject({ result: { rewritten: 1, leftForTurns: 0, failed: 1 } });
@@ -323,7 +366,9 @@ test('no answer holds a row\'s old text: the list, the write, a turn alive and a
     held.release();
     await turn;
   }
+  expect(said(answers[1]!)).toContain('rewrote 1 of 3 rows.');
+  expect(said(answers[1]!)).toContain('- rewrote the test note row');
   expect(said(answers[1]!)).toContain('since a turn of b is alive');
-  expect(said(answers[1]!)).toContain('since its edit failed');
+  expect(said(answers[1]!)).toContain('its edit failed');
   for (const answer of answers) expect(said(answer)).not.toContain(OLD);
 });
