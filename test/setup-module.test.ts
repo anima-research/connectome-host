@@ -105,6 +105,41 @@ describe('ask_secret', () => {
     expect((await call(direct.module, 'ask_secret', { name: 'ANTHROPIC_API_KEY', purpose: 'the key' })).success).toBe(false);
   });
 
+  test('asks nothing once the host stops, for a question that waited behind a command', async () => {
+    const { dir, module, shown, asked } = install({ answers: [TOKEN] });
+    const running = call(module, 'run', { command: 'sleep 60' });
+    const asking = call(module, 'ask_secret', { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+    for (let tries = 0; !shown.includes('Setup\'s agent runs:') && tries < 250; tries++) await Bun.sleep(5);
+    expect(shown).toContain('Setup\'s agent runs:');
+    await module.stop();
+    await running;
+    const result = await asking;
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('The host is stopping, so nothing was asked.');
+    expect(asked).toEqual([]);
+    expect(existsSync(join(dir, '.env'))).toBe(false);
+  });
+
+  test('stores nothing where the host stops while the secret is checked', async () => {
+    let reply: (response: Response) => void = () => {};
+    let checking = false;
+    const fetch = (() => {
+      checking = true;
+      return new Promise<Response>((resolve) => { reply = resolve; });
+    }) as unknown as typeof globalThis.fetch;
+    const { dir, module } = install({ answers: [KEY], fetch });
+    const asking = call(module, 'ask_secret', { name: 'OPENAI_API_KEY', purpose: 'an OpenAI key' });
+    for (let tries = 0; !checking && tries < 250; tries++) await Bun.sleep(5);
+    expect(checking).toBe(true);
+    await module.stop();
+    reply(new Response('{}'));
+    const result = await asking;
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('The host is stopping, so nothing was stored as OPENAI_API_KEY.');
+    expect(existsSync(join(dir, '.env'))).toBe(false);
+    expect(existsSync(join(dir, '.setup', 'stored-secrets.json'))).toBe(false);
+  });
+
   test('stores nothing when the person enters nothing', async () => {
     const { dir, module } = install({ answers: [''] });
     const result = await call(module, 'ask_secret', { name: 'MY_TOKEN', purpose: 'a token' });

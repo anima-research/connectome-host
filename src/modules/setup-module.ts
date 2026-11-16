@@ -254,6 +254,7 @@ export class SetupModule implements Module {
       return failed('ask_secret needs a name an environment variable can have: letters, digits and _, not starting with a digit.');
     }
     if (typeof purpose !== 'string' || purpose.trim() === '') return failed('ask_secret needs a purpose.');
+    if (this.stopping) return failed('The host is stopping, so nothing was asked.');
     const asker = this.config.asker();
     if (asker === null) return failed('There is no terminal here to ask the person on, so nothing was asked.');
     let value: string;
@@ -278,6 +279,7 @@ export class SetupModule implements Module {
       return failed(`Nothing was stored as ${name}: ${answer.why}. Tell the person, and ask them to check the key, ` +
         'and for a 403 the access its account has, before they give it again.');
     }
+    if (this.stopping) return failed(`The host is stopping, so nothing was stored as ${name}.`);
     this.stored.record(name);
     writeEnvValue(envFile, name, value);
     if (isShort(value)) {
