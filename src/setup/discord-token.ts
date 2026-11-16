@@ -1,109 +1,18 @@
-import { HOST_PACKAGE_JSON } from '../bun-floor-check.js';
-import { hostVersionOf } from '../update/update.js';
-import { JSON_TYPE, redirectTarget } from './provider-key.js';
-import { DISCORD_TOKEN, shownByName, type Secret } from './secrets.js';
+import { packageJson } from './packages.js';
+import { answerOf, type KeyAnswer } from './provider-key.js';
 
 export const DISCORD_API = 'https://discord.com/api/v10';
-const REQUEST_LIMIT_MS = 15_000;
 
-export type TokenCheck =
-  | { kind: 'accepted'; name: string; id: string }
-  | { kind: 'refused' }
-  | { kind: 'unsendable' }
-  | { kind: 'answered'; status: number; said: string | null; code?: string; retryAfter?: number }
-  | { kind: 'redirected'; status: number; to: string | null }
-  | { kind: 'unrecognized'; status: number; retryAfter?: number }
-  | { kind: 'unanswered'; timedOut: boolean; why: string };
-
-/** Discord asks API callers for a User-Agent naming their library; one with none can get a 403 unrelated to its
- *  permissions. */
-export function discordUserAgent(): string {
-  return `DiscordBot (https://github.com/anima-research/connectome-host, ${hostVersionOf(HOST_PACKAGE_JSON)})`;
-}
-
-export async function checkDiscordToken(
-  token: string,
-  options: { fetch?: typeof fetch; limitMs?: number; asking?: () => void } = {},
-): Promise<TokenCheck> {
-  const authorization = `Bot ${token}`;
-  try {
-    new Headers({ authorization });
-  } catch {
-    return { kind: 'unsendable' };
-  }
-  const userAgent = discordUserAgent();
-  options.asking?.();
-  const limitMs = options.limitMs ?? REQUEST_LIMIT_MS;
-  const unanswered = (error: unknown): TokenCheck => {
-    const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
-    const words = timedOut ? `no answer within ${limitMs / 1000} s`
-      : error instanceof Error ? error.message : String(error);
-    return { kind: 'unanswered', timedOut, why: hidden(words, token) };
-  };
-  let response: Response;
-  try {
-    response = await (options.fetch ?? fetch)(`${DISCORD_API}/users/@me`, {
-      headers: { authorization, 'user-agent': userAgent },
-      signal: AbortSignal.timeout(limitMs),
-      redirect: 'manual',
-    });
-  } catch (error) {
-    return unanswered(error);
-  }
-  if (response.status === 401) return refusedByType(response) ? { kind: 'refused' } : { kind: 'unrecognized', status: 401 };
-  if (response.status >= 300 && response.status < 400) {
-    const to = response.headers.get('location');
-    return { kind: 'redirected', status: response.status, to: to === null ? null : redirectTarget(hidden(to, token), DISCORD_API) };
-  }
-  let text: string;
-  try {
-    text = await response.text();
-  } catch (error) {
-    return unanswered(error);
-  }
-  let body: { id?: unknown; username?: unknown; bot?: unknown; message?: unknown; code?: unknown; retry_after?: unknown } | undefined;
-  try {
-    body = JSON.parse(text) as typeof body;
-  } catch {
-    body = undefined;
-  }
-  if (response.ok && typeof body?.id === 'string' && typeof body.username === 'string' && body.bot === true) {
-    return { kind: 'accepted', name: hidden(body.username, token), id: hidden(body.id, token) };
-  }
-  const wait = retryWait(response, body);
-  const after = wait === undefined ? {} : { retryAfter: wait };
-  if (body === undefined) return { kind: 'unrecognized', status: response.status, ...after };
-  const said = typeof body?.message === 'string' ? hidden(body.message, token) : null;
+/** What a request to Discord's API with a bot token carries. */
+export function discordHeaders(token: string): Record<string, string> {
   return {
-    kind: 'answered', status: response.status, said,
-    ...(body?.code !== undefined ? { code: hidden(String(body.code), token) } : {}), ...after,
+    authorization: `Bot ${token}`,
+    // Discord asks an API caller for a User-Agent that names its library, and can refuse a call without one.
+    'user-agent': `DiscordBot (https://github.com/anima-research/connectome-host, ${packageJson().version})`,
   };
 }
 
-export function refusedByType(response: Response): boolean {
-  const type = response.headers.get('content-type');
-  return type === null || JSON_TYPE.test(type.trim());
-}
-
-export function retryWait(response: Response, body: unknown): number | undefined {
-  if (response.status !== 429) return undefined;
-  const said = (body as { retry_after?: unknown } | null | undefined)?.retry_after;
-  if (typeof said === 'number' && Number.isFinite(said)) return said;
-  const header = response.headers.get('retry-after')?.trim() ?? '';
-  return /^\d+$/.test(header) ? Number(header) : undefined;
-}
-
-// Its ASCII letters in any case, since a server that puts the token in a URL's host gives it back lowercased.
-export function hidden(words: string, token: string): string {
-  return shownByName(words, [{ name: DISCORD_TOKEN, value: token }]);
-}
-
-export function sentToken(given: string): string {
-  return given.replace(/^(Bot|Bearer)\s*/i, '');
-}
-
-export function withSentForms(secret: Secret): Secret[] {
-  if (secret.name !== DISCORD_TOKEN) return [secret];
-  const sent = sentToken(secret.value);
-  return [secret, ...[sent, sent.trim()].filter((value) => value !== '').map((value) => ({ name: secret.name, value }))];
+/** Asks Discord whether it accepts a bot token, as the token's own bot user. */
+export function checkDiscordToken(token: string, fetch?: typeof globalThis.fetch): Promise<KeyAnswer> {
+  return answerOf(`${DISCORD_API}/users/@me`, discordHeaders(token), fetch);
 }

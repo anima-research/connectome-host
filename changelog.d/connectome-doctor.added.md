@@ -3,5 +3,5 @@
   - The host: whether a host answers on the install's socket, with its pid and recipe.
   - The recipe: with a host, the one it loaded; with none, whether the recipe that the service's unit names loads, with `.env`'s values and doctor's own environment over them.
   - The model calls: the host's counts of each agent's failed model calls in a row, and of its refusals, with the command that lists the failures in the host's log. It prints no failure's text, since it can quote the model provider.
-  - The Discord token: whether Discord accepts the `DISCORD_TOKEN` in `.env`, with the bot's name.
+  - The Discord token: whether Discord accepts the `DISCORD_TOKEN` in `.env`.
 - `connectome doctor` hides each secret that setup stored in every line it prints. Where it can't read those secrets, it says why and runs no check.

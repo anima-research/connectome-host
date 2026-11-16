@@ -2,11 +2,10 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { doctor, secretsStep, type DoctorParts } from '../src/cli/doctor.js';
+import { doctor, type DoctorParts } from '../src/cli/doctor.js';
 import { openHost } from '../src/cli/host-socket.js';
 import type { Ran } from '../src/cli/service-manager.js';
 import { machine } from '../src/cli/service.js';
-import { DotenvReadError } from '../src/setup/secrets.js';
 import { plist, serviceUnits, systemdUnit } from '../src/cli/service-unit.js';
 
 const TOKEN = 'discord-token-value-1234';
@@ -164,7 +163,7 @@ describe('connectome doctor: the frame', () => {
       '✓ The host answers: pid 4242, recipe Ember.',
       '✓ The host loaded Ember when it started.',
       '✓ ember: no failed model call in a row.',
-      '✓ Discord accepts the token: the bot is ember-bot.',
+      '✓ Discord accepts the token.',
       'Doctor found no problem.',
       expect.stringMatching(/^Where an incoming message stops, the ladder shows: python3 \S+connectome-doctor \S+ connectome-ember\.service$/),
     ]);
@@ -172,11 +171,13 @@ describe('connectome doctor: the frame', () => {
   });
 
   test('when the stored secrets can\'t be read, it says why with a next step, runs no check and exits 1', async () => {
-    const at = install({ env: `DISCORD_TOKEN="${TOKEN}"\r\n` });
+    const at = install();
+    rmSync(join(at.work, '.env'));
+    mkdirSync(join(at.work, '.env'));
     const r = await run(at, { states: RUNNING, health: HEALTHY });
     expect(r.status).toBe(1);
-    expect(r.lines[1]).toStartWith(`✗ Doctor can't read the stored secrets that it hides: ${join(at.work, '.env')}, line 1, holds an ASCII control character`);
-    expect(r.lines[2]).toBe(`  Next: correct ${join(at.work, '.env')}, then run doctor again.`);
+    expect(r.lines[1]).toBe(`✗ Doctor can't read the stored secrets that it hides: ${join(at.work, '.env')} can't be read (EISDIR).`);
+    expect(r.lines[2]).toBe('  Next: put right what it names, then run doctor again.');
     expect(r.lines[3]).toBe('Doctor stops here and runs no check.');
     expect(r.lines).toHaveLength(4);
   });
@@ -186,31 +187,19 @@ describe('connectome doctor: the frame', () => {
     writeFileSync(join(at.work, '.setup', 'stored-secrets.json'), '{}');
     const r = await run(at, { states: RUNNING, health: HEALTHY });
     expect(r.lines.slice(1)).toEqual([
-      `✗ Doctor can't read the stored secrets that it hides: ${join(at.work, '.setup', 'stored-secrets.json')} isn't the list ` +
-        'of the names of the secrets setup stored, such as ["DISCORD_TOKEN"].',
+      `✗ Doctor can't read the stored secrets that it hides: ${join(at.work, '.setup', 'stored-secrets.json')} isn't a JSON ` +
+        'list of names.',
       '  Next: put right what it names, then run doctor again.',
       'Doctor stops here and runs no check.',
     ]);
     expect(r.status).toBe(1);
   });
 
-  test('where Bun couldn\'t read the dotenv files, the next step is the command that shows Bun\'s own error', () => {
-    const error = new DotenvReadError('Bun couldn\'t read the dotenv files in /x in its development mode (exit 1)',
-      'env -u BUN_OPTIONS -u NODE_ENV /usr/bin/bun --config=/dev/null -e 0');
-    expect(secretsStep(error, '/x')).toBe('run `env -u BUN_OPTIONS -u NODE_ENV /usr/bin/bun --config=/dev/null -e 0` in /x ' +
-      'to see why, correct what it shows, then run doctor again.');
-  });
-
   test('every line hides the stored secrets by name', async () => {
     const at = install();
-    BOTS[`Bot ${TOKEN}`] = `bot-${KEY}`;
-    try {
-      const r = await run(at, { states: RUNNING, health: HEALTHY });
-      expect(r.out).toContain('the bot is bot-<ANTHROPIC_API_KEY>.');
-      expect(r.out).not.toContain(KEY);
-    } finally {
-      BOTS[`Bot ${TOKEN}`] = 'ember-bot';
-    }
+    const r = await run(at, { states: RUNNING, health: { agents: [agent(`ember-${KEY}`)] } });
+    expect(r.out).toContain('✓ ember-<ANTHROPIC_API_KEY>: no failed model call in a row.');
+    expect(r.out).not.toContain(KEY);
   });
 });
 
@@ -490,35 +479,39 @@ describe('connectome doctor: check 5, the Discord token', () => {
     const at = install({ env: 'DISCORD_TOKEN="a-wrong-token-value"\n' });
     const r = await run(at, { states: RUNNING, health: HEALTHY });
     expect(r.lines.slice(5, 7)).toEqual([
-      '✗ Discord refuses the token.',
+      '✗ The token in .env isn\'t accepted: discord.com refused it (401).',
       '  Next: store the bot token from the Developer Portal\'s Bot page with ' +
         `\`${join(at.root, 'connectome')} setup discord\`, which stores it in ${join(at.work, '.env')}, then restart the ` +
         `service and run \`${join(at.root, 'connectome')} doctor\` again.`,
     ]);
   });
 
-  test('a token written with its Bot prefix is sent without it', async () => {
+  test('a token written into .env with a Bot prefix is sent as stored, which Discord refuses', async () => {
     const at = install({ env: `DISCORD_TOKEN="Bot ${TOKEN}"\n` });
-    expect((await run(at, { states: RUNNING, health: HEALTHY })).lines[5]).toBe('✓ Discord accepts the token: the bot is ember-bot.');
+    expect((await run(at, { states: RUNNING, health: HEALTHY })).lines[5])
+      .toBe('✗ The token in .env isn\'t accepted: discord.com refused it (401).');
   });
 
   test('a token that can\'t be sent is a problem', async () => {
     const at = install({ env: 'DISCORD_TOKEN="tok\u2603en"\n' });
     const r = await run(at, { states: RUNNING, health: HEALTHY });
-    expect(r.lines[5]).toBe('✗ The token in .env can\'t be sent: it holds a character that a header can\'t carry.');
+    expect(r.lines[5]).toBe('✗ The token in .env isn\'t accepted: it holds a character a request header can\'t carry, so it ' +
+      'can\'t be sent.');
   });
 
   test('an answer doctor can\'t read leaves the check not made, with its kind', async () => {
     const at = install();
     const down = (async () => new Response('busy', { status: 503 })) as unknown as typeof fetch;
     expect((await run(at, { states: RUNNING, health: HEALTHY, fetch: down })).lines[5])
-      .toBe('– Discord gave no answer that doctor could read (an answer of 503).');
-    const unanswered = (async () => { throw new Error('getaddrinfo ENOTFOUND discord.com'); }) as unknown as typeof fetch;
+      .toBe('– Discord gave no answer that doctor could read: discord.com answered 503.');
+    const unanswered = (async () => {
+      throw Object.assign(new Error('getaddrinfo ENOTFOUND discord.com'), { code: 'ENOTFOUND' });
+    }) as unknown as typeof fetch;
     expect((await run(at, { states: RUNNING, health: HEALTHY, fetch: unanswered })).lines[5])
-      .toBe('– Discord gave no answer that doctor could read (getaddrinfo ENOTFOUND discord.com).');
+      .toBe('– Discord gave no answer that doctor could read: discord.com couldn\'t be reached (ENOTFOUND).');
     const moved = (async () => new Response(null, { status: 301, headers: { location: 'https://discord.com/elsewhere' } })) as unknown as typeof fetch;
     expect((await run(at, { states: RUNNING, health: HEALTHY, fetch: moved })).lines[5])
-      .toBe('– Discord gave no answer that doctor could read (a redirect, 301).');
+      .toBe('– Discord gave no answer that doctor could read: discord.com answered 301.');
   });
 });
 

@@ -7,11 +7,11 @@ import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { ContractError, RESTART_EXIT_CODE, SUPERVISED_ENV, installPaths, writeTextAtomic } from '../update/contract.js';
 import { lingerOf } from '../setup/linger.js';
-import { StoredSecrets, envForm, envLink, readEnvFile, writeEnvValue } from '../setup/secrets.js';
+import { StoredSecrets, readEnvFile, writeEnvValue } from '../setup/secrets.js';
 import { readRecipeDocument } from '../recipe-document.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
-import { INSTALL_COMMAND, shellWord, typedCommand } from '../update/typed-command.js';
+import { INSTALL_COMMAND, shellWord } from '../update/install-command-name.js';
 import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/systemd-units.js';
 import { lastingPath, lookup, serviceBun, type BunLookup } from '../update/service-bun.js';
 import {
@@ -130,14 +130,14 @@ export async function runService(given: CliContext, sys: ServiceSystem = machine
   const ctx = shownToPerson(given, sys.env);
   const [verb, ...rest] = ctx.argv;
   if (verb === 'install' && rest.length === 1) return installService(ctx, sys);
-  ctx.err(`Usage: ${serviceUsage(typedCommand(ctx.root!, sys.env.PATH))}`);
+  ctx.err(`Usage: ${serviceUsage(shellWord(join(ctx.root!, INSTALL_COMMAND)))}`);
   return 2;
 }
 
 export async function installService(ctx: CliContext, sys: ServiceSystem = machine()): Promise<number> {
   const root = ctx.root!;
   const given = ctx.argv[1]!;
-  const cmd = typedCommand(root, sys.env.PATH);
+  const cmd = shellWord(join(root, INSTALL_COMMAND));
   try {
     const recipe = /^https?:\/\//.test(given) ? given : resolve(sys.cwd, given);
     return await install(ctx, sys, root, recipe, cmd);
@@ -222,23 +222,6 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   if (manager === 'systemd-user') noOtherUnit(ctx, work, names, sys, env);
   await noOtherHost(root, dataDir, manager, names.host, sys, env);
   const envFile = join(work, '.env');
-  if (shellBin !== null) {
-    const link = envLink(envFile);
-    if (link !== null) {
-      throw new Refusal(`${link.message}. Replace the link with the file it leads to, if that's there, or take it away, ` +
-        'then repeat this service install command with the same recipe. Nothing was written.');
-    }
-    let outside: Error | null;
-    try {
-      outside = envForm(envFile);
-    } catch (error) {
-      throw new Refusal(`${errorText(error)}. Nothing was written.`);
-    }
-    if (outside !== null) {
-      throw new Refusal(`${outside.message}. Then repeat this service install command with the same recipe. ` +
-        'Nothing was written.');
-    }
-  }
   const shell = shellBin === null ? null : await shellPlan(sys, work, shellBin);
   if (shell !== null) {
     if (!shell.newPort && !(await sys.portFree(Number(shell.port))) && !shellRuns(sys, manager, env, names.shell)) {
@@ -561,7 +544,7 @@ async function awaitReady(root: string, manager: Manager, unit: ServiceUnit, sys
     await sys.sleep(Math.min(1_000, Math.max(until - sys.now(), 0)));
     if (sys.now() >= until) {
       return { late: `no host said it was ready within ${READY_WAIT_MS / 1000} s: ${last}. It may still be starting: ` +
-        `${typedCommand(root, sys.env.PATH)} alone says whether its host answers.` };
+        `${shellWord(join(root, INSTALL_COMMAND))} alone says whether its host answers.` };
     }
   }
 }
@@ -817,7 +800,12 @@ function shellOf(work: string, sys: ServiceSystem): string | null {
 
 async function shellPlan(sys: ServiceSystem, work: string, bin: string): Promise<ShellPlan> {
   const file = join(work, '.env');
-  const known = readEnvFile(file);
+  let known: Map<string, string>;
+  try {
+    known = readEnvFile(file);
+  } catch (error) {
+    throw new Refusal(`${errorText(error)}. Nothing was written.`);
+  }
   let port = known.get('SESSION_SERVER_PORT');
   if (port && (!/^\d+$/.test(port) || !Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535)) {
     throw new Refusal(`SESSION_SERVER_PORT in ${file} isn't an integer from 1 to 65535. ` +

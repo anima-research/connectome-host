@@ -1,60 +1,49 @@
-import { DISCORD_API, discordUserAgent, hidden, refusedByType, retryWait } from './discord-token.js';
+import { DISCORD_API, discordHeaders } from './discord-token.js';
 
-export const VIEW_CHANNEL = 1n << 10n;
-export const SEND_MESSAGES = 1n << 11n;
-export const TEXT_CHANNEL_TYPES = [0, 5];
+const VIEW_CHANNEL = 1n << 10n;
+const SEND_MESSAGES = 1n << 11n;
 const ADMINISTRATOR = 1n << 3n;
-const EVERY_PERMISSION = (1n << 64n) - 1n;
+const TEXT_CHANNEL_TYPES = [0, 5];
+// Discord's most for one page of a bot's servers (https://discord.com/developers/docs/resources/user#get-current-user-guilds).
 const GUILD_PAGE = 200;
 const REQUEST_LIMIT_MS = 15_000;
 
-export type DiscordFailure =
-  | { kind: 'unanswered'; path: string; timedOut: boolean; why: string }
-  | { kind: 'redirected'; path: string; status: number }
-  | { kind: 'unrecognized'; path: string; status: number; ok: boolean; retryAfter?: number }
-  | { kind: 'refused'; path: string }
-  | { kind: 'answered'; path: string; status: number; said: string | null; code?: string; retryAfter?: number };
+/** Where a read stopped: the path, and Discord's status and numeric code, or why there was no answer. */
+export interface DiscordFailure {
+  path: string;
+  status: number | null;
+  code?: number;
+  retryAfter?: number;
+  unreadable?: true;
+  why?: string;
+}
 
 export class DiscordFailed extends Error {
   constructor(readonly failure: DiscordFailure) {
-    super(`Discord's answer to GET ${failure.path}: ${failure.kind}`);
+    super(`Discord's answer to GET ${failure.path}`);
     this.name = 'DiscordFailed';
   }
 }
 
-export interface DiscordReader {
-  limitMs: number;
-  get<T>(path: string): Promise<T>;
-}
+/** GETs from Discord's API with a bot token, following no redirect; `last` is the path asked last. */
+export class DiscordReader {
+  last = '';
 
-export function discordReader(token: string, options: { fetch: typeof fetch; limitMs?: number }): DiscordReader {
-  const limitMs = options.limitMs ?? REQUEST_LIMIT_MS;
-  const userAgent = discordUserAgent();
-  const get = async <T>(path: string): Promise<T> => {
-    const unanswered = (error: unknown): DiscordFailed => {
-      const timedOut = error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
-      const why = error instanceof Error ? error.message : String(error);
-      return new DiscordFailed({ kind: 'unanswered', path, timedOut, why: hidden(why, token) });
-    };
-    let res: Response;
-    try {
-      res = await options.fetch(DISCORD_API + path, {
-        headers: { authorization: `Bot ${token}`, 'user-agent': userAgent },
-        signal: AbortSignal.timeout(limitMs),
-        redirect: 'manual',
-      });
-    } catch (error) {
-      throw unanswered(error);
-    }
-    if (res.status >= 300 && res.status < 400) throw new DiscordFailed({ kind: 'redirected', path, status: res.status });
-    if (res.status === 401) {
-      throw new DiscordFailed(refusedByType(res) ? { kind: 'refused', path } : { kind: 'unrecognized', path, status: 401, ok: false });
-    }
+  constructor(private readonly token: string, private readonly fetchFn: typeof globalThis.fetch = globalThis.fetch) {}
+
+  async get<T>(path: string): Promise<T> {
+    this.last = path;
+    let response: Response;
     let text: string;
     try {
-      text = await res.text();
+      const fetch = this.fetchFn;
+      response = await fetch(DISCORD_API + path, {
+        headers: discordHeaders(this.token), redirect: 'manual', signal: AbortSignal.timeout(REQUEST_LIMIT_MS),
+      });
+      text = await response.text();
     } catch (error) {
-      throw unanswered(error);
+      const { name, code } = error as { name?: string; code?: string };
+      throw new DiscordFailed({ path, status: null, why: code ?? name ?? 'no answer' });
     }
     let body: unknown;
     try {
@@ -62,82 +51,80 @@ export function discordReader(token: string, options: { fetch: typeof fetch; lim
     } catch {
       body = undefined;
     }
-    const wait = retryWait(res, body);
-    const after = wait === undefined ? {} : { retryAfter: wait };
-    if (body === undefined) throw new DiscordFailed({ kind: 'unrecognized', path, status: res.status, ok: res.ok, ...after });
-    if (!res.ok) {
-      const said = body as { message?: unknown; code?: unknown } | null;
-      throw new DiscordFailed({
-        kind: 'answered', path, status: res.status,
-        said: typeof said?.message === 'string' ? hidden(said.message, token) : null,
-        ...(said?.code !== undefined ? { code: hidden(String(said.code), token) } : {}),
-        ...after,
-      });
-    }
-    return body as T;
-  };
-  return { limitMs, get };
-}
-
-export interface Overwrite { id: string; type: number; allow: string; deny: string }
-export interface Channel {
-  id: string;
-  name: string;
-  type: number;
-  position?: number;
-  parent_id?: string | null;
-  permission_overwrites?: Overwrite[];
-}
-export interface BotGuild {
-  id: string;
-  name: string;
-  botOwns: boolean;
-  roles: Map<string, bigint>;
-  botRoles: string[];
-  channels: Channel[];
-}
-
-export async function botGuilds(reader: DiscordReader, botId: string): Promise<BotGuild[]> {
-  const joined: Array<{ id: string; name: string; owner?: boolean }> = [];
-  for (;;) {
-    const after = joined.length === 0 ? '' : `&after=${joined[joined.length - 1]!.id}`;
-    const page = await reader.get<typeof joined>(`/users/@me/guilds?limit=${GUILD_PAGE}${after}`);
-    joined.push(...page);
-    if (page.length < GUILD_PAGE) break;
+    if (response.ok && body !== undefined) return body as T;
+    const said = body as { code?: unknown; retry_after?: unknown } | null | undefined;
+    const header = Number(response.headers.get('retry-after'));
+    const retryAfter = typeof said?.retry_after === 'number' ? said.retry_after : header > 0 ? header : undefined;
+    throw new DiscordFailed({
+      path, status: response.status,
+      ...(typeof said?.code === 'number' ? { code: said.code } : {}),
+      ...(retryAfter === undefined ? {} : { retryAfter }),
+      ...(body === undefined ? { unreadable: true } : {}),
+    });
   }
-  const guilds: BotGuild[] = [];
-  for (const { id, name, owner } of joined) guilds.push(await botGuild(reader, botId, { id, name, botOwns: owner === true }));
-  return guilds;
 }
 
-export async function botGuild(reader: DiscordReader, botId: string, guild: { id: string; name: string; botOwns: boolean }): Promise<BotGuild> {
-  const roles = new Map((await reader.get<Array<{ id: string; permissions: string }>>(`/guilds/${guild.id}/roles`))
-    .map((r) => [r.id, BigInt(r.permissions)] as const));
-  const member = await reader.get<{ roles: string[] }>(`/guilds/${guild.id}/members/${botId}`);
-  const channels = await reader.get<Channel[]>(`/guilds/${guild.id}/channels`);
-  return { ...guild, roles, botRoles: member.roles, channels };
+interface DiscordMember { user: { id: string; username: string; global_name?: string | null }; nick?: string | null }
+interface Overwrite { id: string; type: number; allow: string; deny: string }
+interface Channel {
+  id: string; name: string; type: number; position?: number; parent_id?: string | null; permission_overwrites?: Overwrite[];
 }
 
-export function channelPermissions(guild: BotGuild, botId: string, channel: Channel): bigint {
-  if (guild.botOwns) return EVERY_PERMISSION;
-  let base = guild.roles.get(guild.id) ?? 0n;
-  for (const role of guild.botRoles) base |= guild.roles.get(role) ?? 0n;
-  if ((base & ADMINISTRATOR) !== 0n) return EVERY_PERMISSION;
+export function memberOf(member: DiscordMember) {
+  return { id: member.user.id, username: member.user.username, displayName: member.user.global_name ?? null, nickname: member.nick ?? null };
+}
+
+export async function botServers(reader: DiscordReader): Promise<string[]> {
+  const ids: string[] = [];
+  for (;;) {
+    const after = ids.length === 0 ? '' : `&after=${ids[ids.length - 1]}`;
+    const page = await reader.get<Array<{ id: string }>>(`/users/@me/guilds?limit=${GUILD_PAGE}${after}`);
+    ids.push(...page.map((guild) => guild.id));
+    if (page.length < GUILD_PAGE) return ids;
+  }
+}
+
+/** A server with its owner and its text and announcement channels, in Discord's order, each with whether the bot can send there. */
+export async function serverOf(reader: DiscordReader, id: string, botId: string) {
+  const guild = await reader.get<{ name: string; owner_id: string }>(`/guilds/${id}`);
+  const roles = new Map((await reader.get<Array<{ id: string; permissions: string }>>(`/guilds/${id}/roles`))
+    .map((role) => [role.id, BigInt(role.permissions)] as const));
+  const botRoles = (await reader.get<{ roles: string[] }>(`/guilds/${id}/members/${botId}`)).roles;
+  const all = await reader.get<Channel[]>(`/guilds/${id}/channels`);
+  const owner = await reader.get<DiscordMember>(`/guilds/${id}/members/${guild.owner_id}`);
+  let base = roles.get(id) ?? 0n;
+  for (const role of botRoles) base |= roles.get(role) ?? 0n;
+  const every = guild.owner_id === botId || (base & ADMINISTRATOR) !== 0n;
+  const byId = new Map(all.map((channel) => [channel.id, channel] as const));
+  const channels = all.filter((channel) => TEXT_CHANNEL_TYPES.includes(channel.type))
+    .map((channel) => {
+      const category = channel.parent_id ? byId.get(channel.parent_id) : undefined;
+      const perms = every ? VIEW_CHANNEL | SEND_MESSAGES : permissionsIn(channel, base, id, botRoles, botId);
+      return {
+        at: [category?.position ?? -1, channel.position ?? 0],
+        channel: { id: channel.id, name: channel.name, category: category?.name ?? null,
+          send: (perms & VIEW_CHANNEL) !== 0n && (perms & SEND_MESSAGES) !== 0n },
+      };
+    })
+    .sort((a, b) => a.at[0]! - b.at[0]! || a.at[1]! - b.at[1]!)
+    .map((each) => each.channel);
+  return { id, name: guild.name, owner: memberOf(owner), channels };
+}
+
+/** Discord's order for a channel's overwrites: @everyone's, then the bot's roles' together, then the bot's own. */
+function permissionsIn(channel: Channel, base: bigint, everyone: string, botRoles: string[], botId: string): bigint {
   const overwrites = channel.permission_overwrites ?? [];
-  const apply = (perms: bigint, allow: bigint, deny: bigint): bigint => (perms & ~deny) | allow;
+  const apply = (perms: bigint, allow: bigint, deny: bigint) => (perms & ~deny) | allow;
   let perms = base;
-  const everyone = overwrites.find((o) => o.type === 0 && o.id === guild.id);
-  if (everyone) perms = apply(perms, BigInt(everyone.allow), BigInt(everyone.deny));
+  const all = overwrites.find((o) => o.type === 0 && o.id === everyone);
+  if (all) perms = apply(perms, BigInt(all.allow), BigInt(all.deny));
   let allow = 0n;
   let deny = 0n;
-  for (const o of overwrites) {
-    if (o.type === 0 && o.id !== guild.id && guild.botRoles.includes(o.id)) {
-      allow |= BigInt(o.allow);
-      deny |= BigInt(o.deny);
-    }
+  for (const o of overwrites.filter((o) => o.type === 0 && o.id !== everyone && botRoles.includes(o.id))) {
+    allow |= BigInt(o.allow);
+    deny |= BigInt(o.deny);
   }
   perms = apply(perms, allow, deny);
   const own = overwrites.find((o) => o.type === 1 && o.id === botId);
-  if (own) perms = apply(perms, BigInt(own.allow), BigInt(own.deny));
-  return perms;
+  return own ? apply(perms, BigInt(own.allow), BigInt(own.deny)) : perms;
 }
