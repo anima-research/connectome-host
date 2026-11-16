@@ -172,7 +172,8 @@ describe("the web UI's own entry during a session switch", () => {
 
   test("while a switch's quiesce holds the host, its own rollback, suppress, pin and settings changes are refused and change nothing, while a read and a Resume aren't, and a rollback goes once it has resumed", async () => {
     const quiescedRefusal = (what: string) => `${what} refused: this host is quiesced for a release switch. If that switch ` +
-      'goes ahead, its stop can cut a change to the session off. Nothing changed; try again once that quiesce has ended.';
+      'goes ahead, its stop can cut a change to the session off. Nothing changed; try again once that quiesce has ended. ' +
+      'Where a switch that has ended left it behind, `/update restart resume` ends it.';
     const reached: string[] = [];
     let mode: { quiesced: boolean; reason?: string; drained: boolean } = { quiesced: true, reason: switchQuiesceReason('0.15.0'), drained: true };
     webUiModule.setApp(hostApp({
