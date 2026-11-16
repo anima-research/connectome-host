@@ -561,6 +561,12 @@ describe('connectome doctor: the closing line', () => {
     expect(r.lines.at(-1)).toEndWith(` ${at.work} ${HOST} --data-dir ${join(top, 'elsewhere')}`);
   });
 
+  test('where doctor\'s environment has no XDG_RUNTIME_DIR, the ladder line sets it, as its systemctl lines do', async () => {
+    const at = install();
+    const r = await run(at, { states: RUNNING, health: HEALTHY, env: { XDG_RUNTIME_DIR: '' } });
+    expect(r.lines.at(-1)).toMatch(/^Where an incoming message stops, the ladder shows: XDG_RUNTIME_DIR=\/run\/user\/1000 python3 /);
+  });
+
   test('on launchd there is no ladder line', async () => {
     const at = install({ launchd: true });
     const r = await run(at, { states: { [LABEL]: 'running' }, health: HEALTHY });

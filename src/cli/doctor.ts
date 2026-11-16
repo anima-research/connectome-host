@@ -110,7 +110,7 @@ export async function doctor(
     ? `Doctor found no problem.${unchecked}`
     : `Doctor found ${report.problems} problem${report.problems === 1 ? '' : 's'}, marked ✗.${unchecked}`);
   if (report.problems === 0 && units?.manager === 'systemd-user' && commands !== null) {
-    report.line(`Where an incoming message stops, the ladder shows: ${ladderLine(root, work, units.host)}`);
+    report.line(`Where an incoming message stops, the ladder shows: ${ladderLine(sys, root, work, units.host)}`);
   }
   return report.problems === 0 ? 0 : 1;
 }
@@ -336,10 +336,10 @@ function movedDataDir(root: string, work: string): string | null {
   return resolve(dataDir) !== join(work, 'data') ? dataDir : null;
 }
 
-function ladderLine(root: string, work: string, unit: ServiceUnit): string {
+function ladderLine(sys: ServiceSystem, root: string, work: string, unit: ServiceUnit): string {
   const dataDir = movedDataDir(root, work);
   const args = [LADDER, work, unit.name, ...(dataDir !== null ? ['--data-dir', dataDir] : [])];
-  return `python3 ${args.map(shellWord).join(' ')}`;
+  return `${sys.env.XDG_RUNTIME_DIR ? '' : `XDG_RUNTIME_DIR=/run/user/${sys.uid} `}python3 ${args.map(shellWord).join(' ')}`;
 }
 
 function iso(ms: number): string {
