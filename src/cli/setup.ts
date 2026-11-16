@@ -1,12 +1,12 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { bunBelowFloor } from '../bun-floor.js';
 import { ANTHROPIC_API } from '../setup/key-check.js';
 import { SERVERS, SETUP_BUN_FLOOR, SHELL_NODE_TOP, installedVersion, packageJson } from '../setup/packages.js';
-import { readEnvFile, unwritableValue, writeEnvValue } from '../setup/secrets.js';
+import { DOTENV_FILES, readEnvFile, unwritableValue, withoutDotenv, writeEnvValue } from '../setup/secrets.js';
 import { macSessionCheck, ended, realWorld, withoutKeys, type SetupWorld } from '../setup/world.js';
-import { readCurrent, readRecord, releaseDir, type InstallRecord } from '../update/contract.js';
+import { WRITE_RECORD_AGAIN, readCurrent, readRecord, releaseDir, type InstallRecord } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
 import { INSTALL_COMMAND } from './install-command.js';
@@ -22,6 +22,7 @@ const PACKAGE = '@animalabs/connectome-host';
 const SURFACE = 'discord';
 const BOOT_TIMEOUT_MS = 60_000;
 const OWN_USER = 'connectome';
+const MARK = 'made-by-connectome-setup';
 const NOT_FOR_THE_AGENT = [
   'CONNECTOME_INSTALL_ROOT', 'MODEL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'ANTHROPIC_BASE_URL',
   'MCPL_AGENT_OVERLAY_FILE',
@@ -38,8 +39,11 @@ export function firstLine(): string {
 function entriesOf(dir: string): string[] {
   try {
     return readdirSync(dir);
-  } catch {
-    return [];
+  } catch (error) {
+    const { code, message } = error as NodeJS.ErrnoException;
+    if (code === 'ENOENT') return [];
+    throw new Error(`${dir} can't be listed (${code ?? message}), so setup can't tell whether it holds other files. ` +
+      'Make it a directory you can list, and run setup again.');
   }
 }
 
@@ -50,13 +54,17 @@ function nearestDirectory(dir: string): string {
 }
 
 function setupsOwn(dir: string): boolean {
-  return existsSync(join(dir, '.setup')) || existsSync(join(dir, ROOT_IN_WORKDIR, 'install.json'));
+  return existsSync(join(dir, '.setup', MARK)) || existsSync(join(dir, ROOT_IN_WORKDIR, 'install.json'));
 }
 
 export function setupDirectory(cwd: string, home: string | undefined): string {
-  if (entriesOf(cwd).length === 0 || setupsOwn(cwd)) return cwd;
-  return home !== undefined && isAbsolute(home) && statSync(home, { throwIfNoEntry: false })?.isDirectory()
-    ? join(home, 'resident') : cwd;
+  try {
+    if (setupsOwn(cwd) || entriesOf(cwd).length === 0) return cwd;
+    return home !== undefined && isAbsolute(home) && statSync(home, { throwIfNoEntry: false })?.isDirectory()
+      ? join(home, 'resident') : cwd;
+  } catch {
+    return cwd;
+  }
 }
 
 export async function setup(ctx: CliContext & { root: string }, world: SetupWorld = realWorld()): Promise<number> {
@@ -91,11 +99,13 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     return 1;
   }
   out(own
-    ? `Setup ran in ${dir} before. Its agent picks up where it stopped, and can change with you what it set up.`
+    ? `Setup ran in ${dir} before. Its agent can change with you what it set up.`
     : `The resident will live in ${dir}${dir === world.cwd ? '' : `, since ${world.cwd} holds other files`}. Its ` +
       `service will be named after the directory's name, ${basename(dir)}.`);
   const recordPath = join(root, 'install.json');
-  if (!existsSync(recordPath) && offersOwnUser(world)) {
+  const linger = world.lingerOf(world.user);
+  const ownUserShown = !existsSync(recordPath) && offersOwnUser(world, linger);
+  if (ownUserShown) {
     adviseOwnUser(world, out);
     out('To give it that user, answer no: setup then says how to go on there.');
     const go = await yesNo(world, `Go on as ${world.user}? (yes/no) [yes] `, true);
@@ -112,7 +122,6 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       return 0;
     }
   }
-  const linger = world.lingerOf(world.user);
   const session = world.platform === 'darwin' ? world.macSession() : undefined;
   if (linger === null && world.platform === 'linux') {
     out('This machine doesn\'t run systemd, so the resident can\'t run as a systemd user service here, the way its ' +
@@ -140,7 +149,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       `values from the packages' install scripts, and this is Bun ${world.bun.version}. ${upgrade}`);
     return 1;
   }
-  const env = withoutKeys(world.env, []);
+  const env = withoutDotenv(world.env, world.cwd);
   const node = await world.run(['node', '--version'], { cwd: nearestDirectory(dir), env });
   const nodeVersion = node.status === 0 ? node.stdout.trim().replace(/^v/, '') : null;
   const nodeFloor = pkg.engines.node.replace('>=', '');
@@ -156,8 +165,23 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     err(`connectome-host needs Node ${nodeFloor} or later, and this is Node ${nodeVersion}. ${getNode}`);
     return 1;
   }
+  const lostData = join(dir, 'data');
+  const lostDataHeld = !existsSync(recordPath) && entriesOf(lostData).length > 0;
+  if (lostDataHeld) {
+    out(`${lostData} holds a resident's data, and there's no install record (${recordPath}), as after the install ` +
+      `is removed. A new install made now runs this setup's release, ${pkg.version}, on that data. If the install had ` +
+      'updated to a later release, answer no, and run that release\'s setup here instead: ' +
+      `\`bunx ${PACKAGE}@<that version> setup ${SURFACE}\`.`);
+    const go = await yesNo(world, `Make a new install of ${pkg.version} on that data? (yes/no) [no] `, false);
+    if (go === null) return stopped(out);
+    if (!go) {
+      out('Nothing was installed here.');
+      return 0;
+    }
+  }
 
   mkdirSync(join(dir, '.setup'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, '.setup', MARK), '');
   const wanted = [
     ...installedVersion(dir, PACKAGE) === pkg.version ? [] : [`${PACKAGE}@${pkg.version}`],
     ...installedVersion(dir, SERVERS.discord) === null ? [SERVERS.discord] : [],
@@ -174,8 +198,19 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
 
   const record = readRecord<InstallRecord>(recordPath, 'install record');
-  const dataDir = record?.dataDir ?? join(dir, 'data');
-  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  if (record !== null && (typeof record.dataDir !== 'string' || record.dataDir === '')) {
+    err(`The install record at ${recordPath} names no data directory, so setup stops here. ${WRITE_RECORD_AGAIN}`);
+    return 1;
+  }
+  const dataDir = resolve(dir, record?.dataDir ?? 'data');
+  if (record === null) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  else if (statSync(dataDir, { throwIfNoEntry: false })?.isDirectory() !== true) {
+    err(`${recordPath} names ${dataDir} as its data directory, and no directory is there, as after the install is ` +
+      'moved. A host started now would begin with an empty one, so setup stops here. Put that directory back, or ' +
+      `write its present absolute path into ${recordPath} as dataDir, or make an empty directory there to start the ` +
+      'resident with no memory. Then run setup again.');
+    return 1;
+  }
   const ownSetup = join(dir, RELEASE_HOST, 'src', 'update', 'setup.ts');
   out(record === null
     ? `Setting up ${root}, the folder the resident's host runs from, which later updates install into. It starts as a ` +
@@ -184,14 +219,17 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   const made = await world.run([world.bun.path, '--no-env-file', ownSetup, '--root', root], {
     cwd: dir, env: { ...withoutKeys(env, ['CONNECTOME_INSTALL_ROOT']), DATA_DIR: dataDir },
   });
-  if (made.status !== 0) {
+  const residentBefore = record !== null || lostDataHeld;
+  if (made.status !== 0 || residentBefore) {
     for (const line of `${made.stdout}\n${made.stderr}`.split('\n')) if (line.trim() !== '') out(line);
+  }
+  if (made.status !== 0) {
     err(`The install's own setup (${ownSetup}) didn't finish (${ended(made)}). Once what the lines above say is put ` +
       'right, run setup again.');
     return 1;
   }
   const command = shellWord(join(root, INSTALL_COMMAND));
-  if (record === null) out(`This install's own command is ${command}.`);
+  if (!residentBefore) out(`This install's own command is ${command}.`);
 
   const running = readCurrent(root);
   if (running === null) throw new Error(`the install at ${root} has no current release after its own setup`);
@@ -240,7 +278,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
   out(`The installed host (${running}) starts.`);
 
-  const key = await keyFor(world, out, err, join(dir, '.env'), model);
+  const key = await keyFor(world, env, out, err, join(dir, '.env'), model);
   if (key === null) return stopped(out);
   out(costLine(model));
 
@@ -253,7 +291,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     argv: [world.bun.path, '--no-env-file', entry, setupRecipe, '--no-tui'],
     cwd: join(dir, '.setup'),
     env: {
-      ...withoutKeys(env, NOT_FOR_THE_AGENT),
+      ...withoutKeys(env, [...NOT_FOR_THE_AGENT, ...Object.keys(env).filter((name) => name.startsWith('CONNECTOME_SETUP_'))]),
       ANTHROPIC_API_KEY: key.key,
       ...(key.baseUrl === undefined ? {} : { ANTHROPIC_BASE_URL: key.baseUrl }),
       DATA_DIR: join(dir, '.setup'),
@@ -264,7 +302,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       CONNECTOME_SETUP_GUIDE: join(release, RELEASE_HOST, 'docs', 'AGENT-ONBOARDING.md'),
       CONNECTOME_SETUP_USER: world.user,
       CONNECTOME_SETUP_COMMAND: command,
-      ...offersOwnUser(world, linger) ? { CONNECTOME_SETUP_OWN_USER_LINE: OWN_USER_LINE } : {},
+      ...ownUserShown ? { CONNECTOME_SETUP_OWN_USER_LINE: OWN_USER_LINE } : {},
       ...linger === false ? { CONNECTOME_SETUP_LINGER_LINE: lingerLine(world) } : {},
       ...world.timeZone ? { CONNECTOME_SETUP_TIME_ZONE: world.timeZone } : {},
       ...session === undefined ? {} : { CONNECTOME_SETUP_MAC_SESSION: session ?? '0' },
@@ -278,7 +316,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
 
 function dotenvLines(dir: string): string {
   const lines: string[] = [];
-  for (const file of ['.env.development.local', '.env.local', '.env.development', '.env']) {
+  for (const file of DOTENV_FILES) {
     let values: Map<string, string>;
     try {
       values = readEnvFile(join(dir, file));
@@ -294,14 +332,32 @@ function dotenvLines(dir: string): string {
 }
 
 async function keyFor(
-  world: SetupWorld, out: (line: string) => void, err: (line: string) => void, envFile: string, model: string,
+  world: SetupWorld, env: Record<string, string>, out: (line: string) => void, err: (line: string) => void,
+  envFile: string, model: string,
 ): Promise<{ key: string; baseUrl?: string } | null> {
   const stored = readEnvFile(envFile);
   const baseUrl = stored.get('ANTHROPIC_BASE_URL') || undefined;
+  const unreadable = baseUrl === undefined ? null : unwritableValue(baseUrl);
+  if (unreadable !== null) {
+    err(`ANTHROPIC_BASE_URL in ${envFile} can't be used: ${unreadable}. Write the URL out whole, or take that line away ` +
+      'to use Anthropic\'s own API, then run setup again.');
+    return null;
+  }
+  if (baseUrl !== undefined && !URL.canParse(baseUrl)) {
+    err(`ANTHROPIC_BASE_URL in ${envFile} is ${JSON.stringify(baseUrl)}, which isn't a URL. Correct it, or take that ` +
+      'line away to use Anthropic\'s own API, then run setup again.');
+    return null;
+  }
   let key: string | null = stored.get('ANTHROPIC_API_KEY') || null;
   let from = key === null ? null : `the ANTHROPIC_API_KEY in ${envFile}`;
-  const exported = world.env.ANTHROPIC_API_KEY?.trim();
-  if (key === null && exported) {
+  const exported = env.ANTHROPIC_API_KEY?.trim();
+  const gateway = baseUrl === undefined && Boolean(env.ANTHROPIC_BASE_URL?.trim());
+  if (key === null && gateway) {
+    out(`An ANTHROPIC_BASE_URL is exported in this shell, and ${envFile} sets none. Setup, its agent and the resident ` +
+      `take a base URL from ${envFile} alone, so setup offers no exported key, and checks the key it asks for at ` +
+      `Anthropic's own API. To go on with that gateway, write ANTHROPIC_BASE_URL into ${envFile}, and run setup again.`);
+  }
+  if (key === null && exported && !gateway) {
     const use = await yesNo(world, 'An ANTHROPIC_API_KEY is exported in this shell. Use it for setup\'s agent? Setup ' +
       `writes it to ${envFile}, readable by you alone. The resident uses it too, unless you change it. (yes/no) [yes] `, true);
     if (use === null) return null;
@@ -350,7 +406,7 @@ async function yesNo(world: SetupWorld, question: string, enter: boolean): Promi
   }
 }
 
-function offersOwnUser(world: SetupWorld, linger = world.lingerOf(world.user)): boolean {
+function offersOwnUser(world: SetupWorld, linger: boolean | null): boolean {
   return world.platform === 'linux' && world.hasSudo && linger !== null && world.user !== OWN_USER;
 }
 
@@ -380,7 +436,6 @@ function adviseOwnUser(world: SetupWorld, out: (line: string) => void): void {
   }
 }
 
-// From five test setups on claude-opus-5-5, with a tester as the person, at Anthropic's list prices.
 const WALKS_MODEL = 'claude-opus-5-5';
 
 export function costLine(model: string): string {

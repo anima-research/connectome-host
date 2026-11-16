@@ -3,10 +3,6 @@ import type { Writable } from 'node:stream';
 
 type Echoing = Interface & { _writeToOutput?: (text: string) => void; history?: string[] };
 
-/**
- * Asks for one line on readline's terminal with nothing typed shown, and takes it out of readline's history. The
- * line goes to no other 'line' listener. Resolves null where the terminal closes first.
- */
 export function askHidden(rl: Interface, output: Writable, label: string): Promise<string | null> {
   const echoing = rl as Echoing;
   const write = echoing._writeToOutput;

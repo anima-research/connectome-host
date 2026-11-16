@@ -521,8 +521,8 @@ export function setup(options: SetupOptions): void {
     '--extra-state <another place>`, one --extra-state for each. It can run while the service runs: it leaves the ' +
     'running host as it is, and the next update copies the places it records.');
   const bun = serviceBun(process.execPath, process.env.PATH ?? '');
-  say(`The service starts the host with \`${shellWord(bun)} ${shellWord(entry)}\`, followed by the arguments ` +
-    `it gives the host${settingUp ? ' now; set that, and restart it' : ''}.`);
+  say(`This install's service is to start the host with \`${shellWord(bun)} ${shellWord(entry)}\`, followed by ` +
+    `the arguments it gives the host${settingUp ? ' now; set that, and restart it' : ''}.`);
   say(`This install's own command is ${command.path}.`);
   if (command.pathLine !== null) {
     say('To type it as `connectome` from anywhere, put its directory on your PATH, and in ~/.bashrc (or your ' +

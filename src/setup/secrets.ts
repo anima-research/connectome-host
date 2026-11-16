@@ -5,7 +5,6 @@ import { writeJsonAtomic, writeTextAtomic } from '../update/contract.js';
 
 export const DISCORD_TOKEN = 'DISCORD_TOKEN';
 
-// The providers' credentials and base URLs, which setup hides by name though it didn't store them.
 export const PROVIDER_SECRETS = [
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'OPENAI_API_KEY',
   'OPENROUTER_API_KEY', 'OPENAI_COMPATIBLE_API_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
@@ -29,7 +28,6 @@ export function isShort(value: string): boolean {
   return [...value].length < SHORT_CHARACTERS;
 }
 
-/** Why setup can't write a value as NAME="value", or null where it can. */
 export function unwritableValue(value: string): string | null {
   if (value === '') return 'it is empty';
   if (/[\u0000-\u001f\u007f]/.test(value)) return 'it holds a line break, a tab or another control character';
@@ -52,7 +50,31 @@ export function readEnvFile(path: string): Map<string, string> {
   return new Map(Object.entries(parseEnv(textOf(path))).filter((entry): entry is [string, string] => entry[1] !== undefined));
 }
 
-/** Writes NAME="value" in place of every line that sets NAME, readable by its owner alone. */
+// The dotenv files Bun 1.4.4 loads from the directory a program starts in, where NODE_ENV isn't set, the one whose
+// value wins first.
+export const DOTENV_FILES = ['.env.development.local', '.env.local', '.env.development', '.env'];
+
+// And those it loads in place of development's where NODE_ENV is production or test. It loads any other NODE_ENV as
+// development.
+const DOTENV_FILES_IN_ANY_MODE = [...DOTENV_FILES, '.env.production.local', '.env.production', '.env.test.local', '.env.test'];
+
+export function withoutDotenv(env: Record<string, string | undefined>, dir: string): Record<string, string> {
+  const set = new Set<string>();
+  for (const file of DOTENV_FILES_IN_ANY_MODE) {
+    let values: Map<string, string>;
+    try {
+      values = readEnvFile(join(dir, file));
+    } catch (error) {
+      throw new Error(`${(error as Error).message}. Bun may have loaded it, and what it runs is given none of the ` +
+        'names a dotenv file sets, so this stops here. Make it a file you can read, or move it away, and run this again.');
+    }
+    for (const name of values.keys()) set.add(name);
+  }
+  const kept: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) if (value !== undefined && !set.has(name)) kept[name] = value;
+  return kept;
+}
+
 export function writeEnvValue(path: string, name: string, value: string): void {
   const why = unwritableValue(value);
   if (why !== null) throw new Error(`${name} can't be written to ${path}: ${why}`);
@@ -62,7 +84,6 @@ export function writeEnvValue(path: string, name: string, value: string): void {
   writeTextAtomic(path, `${[...lines, `${name}="${value}"`].join('\n')}\n`, 0o600);
 }
 
-/** The names of the secrets setup stored, kept in the install directory's .setup. */
 export class StoredSecrets {
   private readonly file: string;
 
@@ -73,7 +94,12 @@ export class StoredSecrets {
   names(): string[] {
     const text = textOf(this.file);
     if (text === '') return [];
-    const names: unknown = JSON.parse(text);
+    let names: unknown;
+    try {
+      names = JSON.parse(text);
+    } catch {
+      names = null;
+    }
     if (!Array.isArray(names) || !names.every((name) => typeof name === 'string')) {
       throw new Error(`${this.file} isn't a JSON list of names`);
     }
@@ -88,10 +114,6 @@ export class StoredSecrets {
   }
 }
 
-/**
- * Each secret setup knows of, by its name, with the value .env and the environment give it, as stored. A value
- * shorter than SHORT_CHARACTERS isn't hidden: the person is told so when it's stored.
- */
 export function storedSecrets(dir: string, env: Record<string, string | undefined>): Secret[] {
   const names = new Set([...PROVIDER_SECRETS, ...new StoredSecrets(join(dir, '.setup')).names()]);
   const stored = readEnvFile(join(dir, '.env'));
@@ -104,7 +126,6 @@ export function storedSecrets(dir: string, env: Record<string, string | undefine
   return secrets.sort((a, b) => b.value.length - a.value.length);
 }
 
-/** The text with each secret's value, as stored, replaced by <NAME>. */
 export function shownByName(text: string, secrets: readonly Secret[]): string {
   for (const { name, value } of secrets) text = text.split(value).join(`<${name}>`);
   return text;
