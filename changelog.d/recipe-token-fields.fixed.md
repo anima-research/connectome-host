@@ -5,7 +5,7 @@
   so the next start ran on the default where the operator wrote a number
   (every subagent spawned without its own `maxTokens` on the framework's
   4,096). A `0`, a negative number, a fraction or a string in any of the three
-  loads as before; what the start's `[fit]` line says about the two agent
+  gets no new check; what the start's `[fit]` line says about the two agent
   fields is unchanged where the host knows the model's window, and on a
   provider or model it knows no window for the line now names an
   `agent.maxTokens` that isn't a positive number, an `agent.contextBudgetTokens`

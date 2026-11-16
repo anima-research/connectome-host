@@ -330,7 +330,7 @@ export function recipeFit(recipe: Recipe, model: string): RecipeFit {
     const reply = effectiveMaxTokens(recipe);
     const noRoom = unreadable === undefined && isTokenSize(budget) && budget - reply <= 0
       ? `Recipe agent.contextBudgetTokens (${n(budget)}) is no more than agent.maxTokens (${n(reply)}), which the host keeps ` +
-        'out of the budget for the reply, so no conversation fits in the compile.'
+        'out of the budget for the reply, so the budget leaves the conversation no room.'
       : undefined;
     return notChecked((provider === 'anthropic'
       ? `The host has no window for ${show(model)}.`

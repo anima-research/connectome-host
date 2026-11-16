@@ -765,7 +765,7 @@ describe('where the host knows no window', () => {
   test('without a window, a budget no greater than agent.maxTokens is named, as the room check refuses it where the window is known', async () => {
     const noRoom = (budget: number, reply: number) =>
       `Recipe agent.contextBudgetTokens (${budget.toLocaleString('en-US')}) is no more than agent.maxTokens (${reply.toLocaleString('en-US')}), ` +
-      'which the host keeps out of the budget for the reply, so no conversation fits in the compile.';
+      'which the host keeps out of the budget for the reply, so the budget leaves the conversation no room.';
     for (const [agent, sentence] of [
       [{ contextBudgetTokens: 0 }, noRoom(0, 16_384)],
       [{ contextBudgetTokens: -1 }, noRoom(-1, 16_384)],
