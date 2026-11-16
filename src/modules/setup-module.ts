@@ -21,11 +21,9 @@ export interface SecretAsker {
 }
 
 export interface SetupModuleConfig {
-  /** The install's directory, where commands run and .env is. */
   dir: string;
   env: Record<string, string | undefined>;
   asker: () => SecretAsker | null;
-  /** A line for the person's terminal. */
   show: (line: string) => void;
   fetch?: typeof fetch;
 }

@@ -2,7 +2,6 @@ export const ANTHROPIC_API = 'https://api.anthropic.com';
 
 export type KeyCheck = { ok: true } | { ok: false; said: string };
 
-// What each status most often means for this call. A provider's own words aren't shown.
 const MEANS: Record<number, string> = {
   400: 'a new account with no credit is the likeliest cause',
   401: 'the key was refused: check that it was copied whole',
@@ -12,7 +11,6 @@ const MEANS: Record<number, string> = {
   529: 'the API is overloaded: try again in a few minutes',
 };
 
-/** One call to the model the agent runs on, with the key, at the base URL if one is given. */
 export async function checkKey(options: { key: string; model: string; baseUrl?: string; fetch?: typeof fetch }):
   Promise<KeyCheck> {
   const base = (options.baseUrl ?? ANTHROPIC_API).replace(/\/+$/, '');

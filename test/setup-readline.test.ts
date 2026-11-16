@@ -8,11 +8,6 @@ import { readEnvFile } from '../src/setup/secrets.js';
 const INDEX_PATH = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'src', 'index.ts');
 const SECRET = 'typed-hidden-0123456789';
 
-// The probe keeps the message setup opens the conversation with, and how many of the agent's inferences the log
-// holds in the microtask after each turn's inference:completed, where the host reads a refusal. As the framework hands
-// it the opening message, it asks the person for a secret through setup's own tool, and the framework waits for its
-// onProcess before the turn, as a turn waits for a tool's result. On the agent's second turn it asks for the
-// conversation to end, as setup--finished does.
 const EXTENSION = `
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

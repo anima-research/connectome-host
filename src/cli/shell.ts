@@ -143,7 +143,6 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
   return 0;
 }
 
-/** Adds names to package.json's trustedDependencies, which Bun reads in place of its default list. */
 function addTrusted(file: string, names: string[]): string | null {
   let manifest: Record<string, unknown>;
   try {

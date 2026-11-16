@@ -5,7 +5,6 @@ import { writeJsonAtomic, writeTextAtomic } from '../update/contract.js';
 
 export const DISCORD_TOKEN = 'DISCORD_TOKEN';
 
-// The providers' credentials and base URLs, which setup hides by name though it didn't store them.
 export const PROVIDER_SECRETS = [
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_CREDENTIALS_FILE', 'OPENAI_API_KEY',
   'OPENROUTER_API_KEY', 'OPENAI_COMPATIBLE_API_KEY', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
@@ -29,7 +28,6 @@ export function isShort(value: string): boolean {
   return [...value].length < SHORT_CHARACTERS;
 }
 
-/** Why setup can't write a value as NAME="value", or null where it can. */
 export function unwritableValue(value: string): string | null {
   if (value === '') return 'it is empty';
   if (/[\u0000-\u001f\u007f]/.test(value)) return 'it holds a line break, a tab or another control character';
@@ -56,7 +54,6 @@ export function readEnvFile(path: string): Map<string, string> {
 // value wins first.
 export const DOTENV_FILES = ['.env.development.local', '.env.local', '.env.development', '.env'];
 
-/** env, less each name that a dotenv file in dir sets where env holds that file's value. */
 export function withoutDotenv(env: Record<string, string | undefined>, dir: string): Record<string, string> {
   const kept: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) if (value !== undefined) kept[name] = value;
@@ -72,7 +69,6 @@ export function withoutDotenv(env: Record<string, string | undefined>, dir: stri
   return kept;
 }
 
-/** Writes NAME="value" in place of every line that sets NAME, readable by its owner alone. */
 export function writeEnvValue(path: string, name: string, value: string): void {
   const why = unwritableValue(value);
   if (why !== null) throw new Error(`${name} can't be written to ${path}: ${why}`);
@@ -82,7 +78,6 @@ export function writeEnvValue(path: string, name: string, value: string): void {
   writeTextAtomic(path, `${[...lines, `${name}="${value}"`].join('\n')}\n`, 0o600);
 }
 
-/** The names of the secrets setup stored, kept in the install directory's .setup. */
 export class StoredSecrets {
   private readonly file: string;
 
@@ -108,10 +103,6 @@ export class StoredSecrets {
   }
 }
 
-/**
- * Each secret setup knows of, by its name, with the value .env and the environment give it, as stored. A value
- * shorter than SHORT_CHARACTERS isn't hidden: the person is told so when it's stored.
- */
 export function storedSecrets(dir: string, env: Record<string, string | undefined>): Secret[] {
   const names = new Set([...PROVIDER_SECRETS, ...new StoredSecrets(join(dir, '.setup')).names()]);
   const stored = readEnvFile(join(dir, '.env'));
@@ -124,7 +115,6 @@ export function storedSecrets(dir: string, env: Record<string, string | undefine
   return secrets.sort((a, b) => b.value.length - a.value.length);
 }
 
-/** The text with each secret's value, as stored, replaced by <NAME>. */
 export function shownByName(text: string, secrets: readonly Secret[]): string {
   for (const { name, value } of secrets) text = text.split(value).join(`<${name}>`);
   return text;

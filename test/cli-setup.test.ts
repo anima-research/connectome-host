@@ -22,7 +22,6 @@ function scratch(): string {
   return dir;
 }
 
-/** A machine for the script: each program it runs answers as the steps below say. */
 function machine(dir: string, opts: {
   answers?: string[]; hidden?: string[]; keys?: KeyCheck[]; env?: Record<string, string>; platform?: NodeJS.Platform;
   sudo?: boolean; linger?: boolean | null; macSession?: string | null; bun?: string; hasNode?: boolean;

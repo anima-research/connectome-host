@@ -2,7 +2,6 @@ export type KeyAnswer = { kind: 'accepted' } | { kind: 'refused' | 'unknown'; wh
 
 const REQUEST_LIMIT_MS = 15_000;
 
-/** One GET, with no redirect followed, since a redirect followed would carry the key wherever it points. */
 export async function answerOf(url: string, headers: Record<string, string>, fetch = globalThis.fetch,
   forbiddenUnknown = false): Promise<KeyAnswer> {
   try {
@@ -50,7 +49,6 @@ export const PROVIDER_KEYS: Readonly<Record<string, ProviderKey>> = {
   },
 };
 
-/** Asks the provider, at the base URL .env names for it if it names one, whether it accepts the key. */
 export function checkProviderKey(name: string, key: string, dotenv: ReadonlyMap<string, string>, fetch?: typeof globalThis.fetch):
   Promise<KeyAnswer> {
   const provider = PROVIDER_KEYS[name]!;

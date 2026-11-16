@@ -392,7 +392,6 @@ function adviseOwnUser(world: SetupWorld, out: (line: string) => void): void {
   }
 }
 
-// From five test setups on claude-opus-5-5, with a tester as the person, at Anthropic's list prices.
 const WALKS_MODEL = 'claude-opus-5-5';
 
 export function costLine(model: string): string {

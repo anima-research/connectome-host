@@ -37,7 +37,6 @@ export interface PipedTurns {
   switched(): void;
 }
 
-/** The longest a line waits for its turn, unless the wait is given none (null). */
 export const PIPED_TURN_CAP_MS = 120_000;
 
 export function createPipedTurns(
