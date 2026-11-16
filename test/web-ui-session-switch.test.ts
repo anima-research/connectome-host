@@ -170,11 +170,12 @@ describe("the web UI's own entry during a session switch", () => {
     }
   }, TEST_MS);
 
-  test("while a switch's quiesce holds the host, its own rollback, suppress, pin and settings changes are refused and change nothing, while a read and a Resume aren't, and a rollback goes once it has resumed", async () => {
+  test("while a switch's quiesce holds the host, its own rollback, suppress, pin and settings changes, and a fleet child's stop and restart, are refused and change nothing, while a read and a Resume aren't, and a rollback goes once it has resumed", async () => {
     const quiescedRefusal = (what: string) => `${what} refused: this host is quiesced for a release switch. If that switch ` +
       'goes ahead, its stop can cut a change to the session off. Nothing changed; try again once that quiesce has ended. ' +
       'Where a switch that has ended left it behind, `/update restart resume` ends it.';
     const reached: string[] = [];
+    const modules: unknown[] = [];
     let mode: { quiesced: boolean; reason?: string; drained: boolean } = { quiesced: true, reason: switchQuiesceReason('0.15.0'), drained: true };
     webUiModule.setApp(hostApp({
       getHostModeStatus: () => mode,
@@ -184,6 +185,7 @@ describe("the web UI's own entry during a session switch", () => {
       resetAgentRuntimeSettings: () => { reached.push('settings-reset'); },
       cancelAgentRuntimeSettingsTransition: () => { reached.push('settings-cancel-transition'); },
       resume: async () => { mode = { quiesced: false, drained: true }; return mode; },
+      getAllModules: () => modules,
     }, false, [], {
       cm: {
         pinRange: () => { reached.push('pin-add'); return 'pin-1'; },
@@ -191,6 +193,7 @@ describe("the web UI's own entry during a session switch", () => {
         listPins: () => [],
       },
     }) as never);
+    modules.push({ name: 'fleet', handleToolCall: async (call: { name: string }) => { reached.push(`fleet ${call.name}`); return { success: true }; } });
     const client = await connect();
     try {
       for (const op of ['rollback', 'suppress'] as const) {
@@ -206,6 +209,12 @@ describe("the web UI's own entry during a session switch", () => {
         client.send({ type: op, ...fields[op], sessionId: 's1' });
         expect(await client.next(`the ${op} refusal`, (r) => r.type === 'error' && String(r.message).startsWith(`${op} refused`))).toEqual({
           type: 'error', message: quiescedRefusal(op),
+        });
+      }
+      for (const op of ['fleet-stop', 'fleet-restart'] as const) {
+        client.send({ type: op, name: 'kid' });
+        expect(await client.next(`the ${op} refusal`, (r) => r.type === 'command-result')).toEqual({
+          type: 'command-result', lines: [{ text: quiescedRefusal(`${op} kid`), style: 'tool' }],
         });
       }
       expect(reached).toEqual([]);
