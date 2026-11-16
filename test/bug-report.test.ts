@@ -530,6 +530,26 @@ describe('the mode', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('a headless.log that rolled over live is read with headless.log.1 back to that file\'s marker, so the run\'s earlier lines count', () => {
+    const dir = canaryDataDir();
+    try {
+      mkdirSync(dir, { recursive: true });
+      // An older run, then this run's boot and early lines, in the file the rollover moved aside.
+      writeFileSync(join(dir, 'headless.log.1'), '\n--- session 2026-10-11T22:00:00.000Z ---\n[mcpl] older run\n\n--- session 2026-10-11T23:30:00.000Z ---\nFailed to connect MCPL server "x": refused\n[mcpl] a\n[gate] b\n');
+      writeFileSync(join(dir, 'headless.log'), '\n--- session 2026-10-11T23:31:00.000Z ---\n[2026-10-11T23:31:00.000Z] headless.log rolled over at 67108864 bytes; the lines before this are in headless.log.1\n[mcpl] c\n');
+      const facts = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
+      expect(facts.hostErrors?.log).toBe('headless.log.1 + headless.log');
+      expect(facts.hostErrors?.tags).toEqual([['mcpl', 2], ['gate', 1]]);
+      // Without the notice (a rollover at start, or none), headless.log.1 is left alone.
+      writeFileSync(join(dir, 'headless.log'), '\n--- session 2026-10-11T23:31:00.000Z ---\n[mcpl] c\n');
+      const plain = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
+      expect(plain.hostErrors?.log).toBe('headless.log');
+      expect(plain.hostErrors?.tags).toEqual([['mcpl', 1]]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('who runs it', () => {
