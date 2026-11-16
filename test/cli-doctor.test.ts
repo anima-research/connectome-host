@@ -103,6 +103,11 @@ function fakeHost(at: Install, health: unknown, opts: { agent?: string } = {}) {
           const msg = JSON.parse(line) as { type: string; op?: string; corrId?: string };
           if (msg.type !== 'panel-request') continue;
           if (health === 'silent') continue;
+          if (msg.op !== 'health') {
+            socket.write(JSON.stringify({ type: 'panel-response', corrId: msg.corrId, op: msg.op, ok: false,
+              error: `unknown panel op: ${msg.op}` }) + '\n');
+            continue;
+          }
           socket.write(JSON.stringify(health === 'refused'
             ? { type: 'panel-response', corrId: msg.corrId, op: msg.op, ok: false, error: 'unknown panel op: health' }
             : { type: 'panel-response', corrId: msg.corrId, op: msg.op, ok: true, data: health }) + '\n');
