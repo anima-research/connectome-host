@@ -246,8 +246,12 @@ describe('connectome doctor: check 1, the service', () => {
       `✗ The service ${HOST} is activating (auto-restart).`,
       `  Next: systemd is changing its state now, so read its log with \`journalctl --user -u ${HOST} -f\`, and run doctor again in a minute.`,
       expect.stringMatching(/^✗ No host answers: /),
-      `  Next: it may still be starting, so run doctor again in a minute. Its log: \`journalctl --user -u ${HOST} -f\``,
+      `  Next: it may be starting or stopping, so run doctor again in a minute. Its log: \`journalctl --user -u ${HOST} -f\``,
     ]);
+    const stopping = await run(at, { states: { [HOST]: 'deactivating/stop-sigterm' } });
+    expect(stopping.lines[1]).toBe(`✗ The service ${HOST} is deactivating (stop-sigterm).`);
+    expect(stopping.lines[4]).toBe(
+      `  Next: it may be starting or stopping, so run doctor again in a minute. Its log: \`journalctl --user -u ${HOST} -f\``);
   });
 
   test('where systemd can\'t be asked, it gives systemd\'s words and the question to ask', async () => {

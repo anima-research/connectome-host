@@ -117,7 +117,7 @@ export async function doctor(
 }
 
 function checkService(report: Report, sys: ServiceSystem, typed: string, units: ServiceUnits | null,
-  commands: ServiceCommands | null): boolean | null {
+  commands: ServiceCommands | null): boolean | 'changing' | null {
   if (units === null) {
     report.check('–', 'Not checked: no service can be installed here.');
     return null;
@@ -127,7 +127,7 @@ function checkService(report: Report, sys: ServiceSystem, typed: string, units: 
     return null;
   }
   const env = childEnv(sys);
-  let hostRuns: boolean | null = null;
+  let hostRuns: boolean | 'changing' | null = null;
   for (const unit of [...commands.units].reverse()) {
     const state = unitState(sys, env, units, unit);
     const log = unit.name === units.host.name ? commands.log : units.manager === 'systemd-user'
@@ -141,7 +141,7 @@ function checkService(report: Report, sys: ServiceSystem, typed: string, units: 
         ? `systemd is changing its state now, so read its log with \`${log}\`, and run doctor again in a minute.`
         : `start it with \`${commands.start}\`, and read its log with \`${log}\`.`);
     }
-    if (unit.name === units.host.name) hostRuns = 'unasked' in state ? null : state.runs || state.changing;
+    if (unit.name === units.host.name) hostRuns = 'unasked' in state ? null : state.changing ? 'changing' : state.runs;
   }
   return hostRuns;
 }
@@ -175,7 +175,7 @@ function unitState(sys: ServiceSystem, env: Record<string, string>, units: Servi
 }
 
 async function reachHost(report: Report, parts: DoctorParts, root: string, typed: string, installable: boolean,
-  commands: ServiceCommands | null, runs: boolean | null): Promise<HostClient | null> {
+  commands: ServiceCommands | null, runs: boolean | 'changing' | null): Promise<HostClient | null> {
   let reached: HostClient | NoHost;
   try {
     reached = await parts.openHost(root);
@@ -196,6 +196,7 @@ async function reachHost(report: Report, parts: DoctorParts, root: string, typed
       `${shellWord(bun)} ${shellWord(join(root, 'start.js'))} <recipe> --headless\``
     : commands === null ? `\`${typed} service install <recipe>\``
     : runs === true ? `it may still be starting, so run doctor again in a minute. Its log: \`${commands.log}\``
+    : runs === 'changing' ? `it may be starting or stopping, so run doctor again in a minute. Its log: \`${commands.log}\``
     : runs === false ? `start the service with \`${commands.start}\`.`
     : 'its service manager couldn\'t be asked whether the service runs, so ask it as the line for the service says, ' +
       'then run doctor again.';
