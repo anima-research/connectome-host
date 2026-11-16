@@ -144,8 +144,8 @@ export class SetupModule implements Module {
       },
       {
         name: 'finished',
-        description: 'Say that setup is finished, once the person has nothing more to set up. The conversation ends ' +
-          'when this turn ends, so say whatever is left to say in this same turn.',
+        description: 'Say that setup is finished, once the person has nothing more to set up. In readline mode, the ' +
+          'conversation ends when this turn ends, so say whatever is left to say in this same turn.',
         inputSchema: { type: 'object', properties: {} },
       },
     ];
@@ -155,7 +155,7 @@ export class SetupModule implements Module {
     const input = call.input as Record<string, unknown>;
     if (call.name === 'finished') {
       this.finishRequested = true;
-      return { success: true, data: 'The conversation ends when this turn ends.' };
+      return { success: true, data: 'In readline mode, the conversation ends when this turn ends.' };
     }
     if (call.name !== 'run' && call.name !== 'ask_secret') return unknownToolResult(this, call.name);
     const turn = this.queue.then(() => (call.name === 'run' ? this.run(input) : this.askSecret(input)));
@@ -188,7 +188,7 @@ export class SetupModule implements Module {
     }
     try {
       const ran = await this.spawned(command, env, timeoutMs);
-      const text = readFileSync(file, 'utf-8');
+      const text = saidIn(file);
       if (text !== '') {
         this.config.show('It said:');
         for (const line of shownByName(text, secrets).replace(/\n$/, '').split('\n')) this.config.show(`  ${shown(line)}`);
@@ -238,6 +238,7 @@ export class SetupModule implements Module {
       // A process the command started can hold its output open after the command ends.
       child.once('exit', (code, signalled) => {
         clearTimeout(timer);
+        if (group !== undefined && ending === undefined) this.groups.delete(group);
         const drained = setTimeout(() => finish(code, signalled), DRAIN_MS);
         child.once('close', () => {
           clearTimeout(drained);
@@ -291,6 +292,15 @@ export class SetupModule implements Module {
 
 function failed(error: string): ToolResult {
   return { success: false, error, isError: true };
+}
+
+function saidIn(file: string): string {
+  try {
+    return readFileSync(file, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return '';
+    throw error;
+  }
 }
 
 function signal(group: number, name: NodeJS.Signals): void {

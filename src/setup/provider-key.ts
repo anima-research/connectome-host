@@ -3,7 +3,8 @@ export type KeyAnswer = { kind: 'accepted' } | { kind: 'refused' | 'unknown'; wh
 const REQUEST_LIMIT_MS = 15_000;
 
 export async function answerOf(url: string, headers: Record<string, string>, fetch = globalThis.fetch,
-  forbiddenUnknown = false): Promise<KeyAnswer> {
+  gateway?: string): Promise<KeyAnswer> {
+  const host = gateway ?? new URL(url).host;
   try {
     new Headers(headers);
   } catch {
@@ -14,17 +15,17 @@ export async function answerOf(url: string, headers: Record<string, string>, fet
     response = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_LIMIT_MS) });
   } catch (error) {
     const { name, code } = error as { name?: string; code?: string };
-    return { kind: 'unknown', why: `${new URL(url).host} couldn't be reached (${code ?? name ?? 'no answer'})` };
+    return { kind: 'unknown', why: `${host} couldn't be reached (${code ?? name ?? 'no answer'})` };
   }
   await response.body?.cancel();
   if (response.ok) return { kind: 'accepted' };
-  if (response.status === 403 && forbiddenUnknown) {
-    return { kind: 'unknown', why: `${new URL(url).host} answered 403, as a gateway can for a listing it doesn't serve` };
+  if (response.status === 403 && gateway !== undefined) {
+    return { kind: 'unknown', why: `${host} answered 403, as a gateway can for a listing it doesn't serve` };
   }
   if (response.status === 401 || response.status === 403) {
-    return { kind: 'refused', why: `${new URL(url).host} refused it (${response.status})` };
+    return { kind: 'refused', why: `${host} refused it (${response.status})` };
   }
-  return { kind: 'unknown', why: `${new URL(url).host} answered ${response.status}` };
+  return { kind: 'unknown', why: `${host} answered ${response.status}` };
 }
 
 interface ProviderKey {
@@ -57,5 +58,6 @@ export function checkProviderKey(name: string, key: string, dotenv: ReadonlyMap<
   if (!URL.canParse(`${base}${provider.path}`)) {
     return Promise.resolve({ kind: 'unknown', why: `${provider.baseName} in .env isn't a URL` });
   }
-  return answerOf(`${base}${provider.path}`, provider.headers(key), fetch, Boolean(given));
+  return answerOf(`${base}${provider.path}`, provider.headers(key), fetch,
+    given ? `the host of ${provider.baseName} in .env` : undefined);
 }

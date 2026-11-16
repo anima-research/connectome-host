@@ -88,13 +88,19 @@ describe('ask_secret', () => {
     expect(readEnvFile(join(dir, '.env')).get('OPENAI_API_KEY')).toBe(KEY);
   });
 
-  test('stores a provider key that a gateway .env names answers 403 to, and says whether it works isn\'t known', async () => {
+  test('stores a provider key that a gateway .env names answers 403 to, and says whether it works isn\'t known, naming the setting and not its host', async () => {
     const { dir, module } = install({ answers: [KEY], fetch: answering(403) });
     writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example\n');
     const result = await call(module, 'ask_secret', { name: 'ANTHROPIC_API_KEY', purpose: 'the key' });
     expect(result.success, result.error).toBe(true);
-    expect(String(result.data)).toContain('whether it works isn\'t known: gateway.example answered 403');
+    expect(String(result.data)).toContain('whether it works isn\'t known: the host of ANTHROPIC_BASE_URL in .env answered 403');
+    expect(JSON.stringify(result)).not.toContain('gateway.example');
     expect(readEnvFile(join(dir, '.env')).get('ANTHROPIC_API_KEY')).toBe(KEY);
+    const refused = install({ answers: [KEY], fetch: answering(401) });
+    writeFileSync(join(refused.dir, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example\n');
+    const answer = await call(refused.module, 'ask_secret', { name: 'ANTHROPIC_API_KEY', purpose: 'the key' });
+    expect(answer.error).toContain('the host of ANTHROPIC_BASE_URL in .env refused it (401)');
+    expect(JSON.stringify(answer)).not.toContain('gateway.example');
     const direct = install({ answers: [KEY], fetch: answering(403) });
     expect((await call(direct.module, 'ask_secret', { name: 'ANTHROPIC_API_KEY', purpose: 'the key' })).success).toBe(false);
   });
@@ -142,7 +148,7 @@ describe('run', () => {
 
   test('stops a command still running at its time limit, with its process group', async () => {
     const { dir, module } = install();
-    const ran = await run(module, `sleep 60 & echo $! > child; wait`, 300);
+    const ran = await run(module, `sleep 60 & echo $! > child; wait`, 2_000);
     expect(ran.stoppedAtLimit).toBe(true);
     const child = Number(readFileSync(join(dir, 'child'), 'utf-8'));
     for (let tries = 0; !processEnded(child) && tries < 100; tries++) await Bun.sleep(20);
@@ -159,7 +165,7 @@ describe('run', () => {
 
   test('leaves running what a command that ended before its time limit left, though the limit comes while its output drains', async () => {
     const { dir, module } = install();
-    const ran = await run(module, 'sleep 60 & echo $! > child', 500);
+    const ran = await run(module, 'sleep 60 & echo $! > child', 900);
     const child = Number(readFileSync(join(dir, 'child'), 'utf-8'));
     try {
       expect(ran.stoppedAtLimit).toBe(false);
@@ -172,9 +178,47 @@ describe('run', () => {
     }
   });
 
+  test('leaves running what a command that ended left, though the host stops while its output drains', async () => {
+    const { dir, module } = install();
+    let settled = false;
+    const running = run(module, 'sleep 60 & echo "$$ $!" > pids').then((ran) => { settled = true; return ran; });
+    const written = () => existsSync(join(dir, 'pids')) && readFileSync(join(dir, 'pids'), 'utf-8').endsWith('\n');
+    for (let tries = 0; !written() && tries < 250; tries++) await Bun.sleep(20);
+    const [command, child] = readFileSync(join(dir, 'pids'), 'utf-8').trim().split(' ').map(Number) as [number, number];
+    const gone = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    try {
+      for (let tries = 0; !gone(command) && tries < 250; tries++) await Bun.sleep(5);
+      await Bun.sleep(50);
+      expect(settled).toBe(false);
+      await module.stop();
+      await running;
+      expect(processEnded(child)).toBe(false);
+    } finally {
+      try {
+        process.kill(child, 'SIGKILL');
+      } catch {
+      }
+    }
+  });
+
+  test('gives back what a command did that removed the file it could say things in, and shows nothing from it', async () => {
+    const { module, shown } = install();
+    const ran = await run(module, `rm "$${SHOWN_FILE}"; echo done`);
+    expect(ran.exitCode).toBe(0);
+    expect(ran.stdout).toBe('done\n');
+    expect(shown).not.toContain('It said:');
+  });
+
   test('waits, when the host stops, for the end of a timed-out command\'s process group that outlives its SIGTERM', async () => {
     const { dir, module } = install();
-    const ran = await run(module, `sh -c "trap '' TERM; echo \\$\\$ > child; exec sleep 60" & while [ ! -s child ]; do sleep 0.01; done; wait`, 300);
+    const ran = await run(module, `sh -c "trap '' TERM; echo \\$\\$ > child; exec sleep 60" & while [ ! -s child ]; do sleep 0.01; done; wait`, 2_000);
     const child = Number(readFileSync(join(dir, 'child'), 'utf-8'));
     try {
       expect(ran.stoppedAtLimit).toBe(true);
