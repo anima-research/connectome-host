@@ -230,13 +230,15 @@ async function checkRecipe(report: Report, parts: DoctorParts, root: string, hos
   }
   const recipe = /^https?:\/\//.test(named) ? named
     : resolve(read.workingDirectory === '~' ? parts.sys.home : read.workingDirectory, named);
-  let dataDir: string | null = null;
+  let dataDir: string;
   try {
     dataDir = dataDirOf(root);
   } catch {
-    dataDir = null;
+    report.check('–', 'Not checked: the install record can\'t be read, as the host\'s line says, so the data directory the ' +
+      'service starts the host with isn\'t known.');
+    return;
   }
-  const env = { ...Object.fromEntries(dotenv), ...parts.sys.env, ...dataDir === null ? {} : { DATA_DIR: dataDir } };
+  const env = { ...Object.fromEntries(dotenv), ...parts.sys.env, DATA_DIR: dataDir };
   try {
     await within(parts.recipeLimitMs, (async () => {
       const document = await readRecipeDocument(recipe);

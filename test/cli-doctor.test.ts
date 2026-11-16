@@ -373,6 +373,16 @@ describe('connectome doctor: check 3, the recipe', () => {
     expect((await run(at)).lines[5]).toBe('– Not checked: the service\'s unit names the recipe, and no service is installed.');
   });
 
+  test('with no host and an install record that can\'t be read, the recipe isn\'t checked, since its data directory isn\'t known', async () => {
+    const at = install();
+    rmSync(join(at.root, 'install.json'));
+    const r = await run(at, { states: { [HOST]: 'inactive/dead' } });
+    expect(r.lines[3]).toStartWith('✗ No host answers: This install has no record at ');
+    expect(r.lines[5]).toBe('– Not checked: the install record can\'t be read, as the host\'s line says, so the data directory the ' +
+      'service starts the host with isn\'t known.');
+    expect(r.out).not.toContain('loads.');
+  });
+
   test('with no host, the recipe that the unit names loads', async () => {
     const at = install();
     expect((await run(at, { states: { [HOST]: 'inactive/dead' } })).lines[5]).toBe(`✓ ${join(at.work, 'recipe.json')} loads.`);
