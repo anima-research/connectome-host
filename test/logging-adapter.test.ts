@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { LoggingAnthropicAdapter } from '../src/logging-adapter.js';
+import { LoggingAnthropicAdapter, claudeGeneration } from '../src/logging-adapter.js';
 import { cacheLineageKey, Membrane, NativeFormatter } from '@animalabs/membrane';
 import type { ProviderCallRecord } from '../src/call-ledger.js';
 import type { ProviderRequest, ProviderResponse } from '@animalabs/membrane';
@@ -112,12 +112,40 @@ describe('LoggingAnthropicAdapter.withEffort', () => {
     expect(extra.keep).toBe(1);
   });
 
-  test('drops levels the model rejects rather than bricking its turns', () => {
+  test('drops levels the model is known to reject rather than bricking its turns, by generation, not by a row per model', () => {
     expect(withEffort('high', { ...baseRequest, model: 'claude-haiku-4-5' }).extra).toBeUndefined();
+    expect(withEffort('low', { ...baseRequest, model: 'claude-haiku-4-5-20251001' }).extra).toBeUndefined();
+    expect(withEffort('low', { ...baseRequest, model: 'claude-sonnet-4-5-20250929' }).extra).toBeUndefined();
+    expect(withEffort('low', { ...baseRequest, model: 'claude-sonnet-4-20250514' }).extra).toBeUndefined();
+    expect(withEffort('low', { ...baseRequest, model: 'claude-opus-4-1-20250805' }).extra).toBeUndefined();
+    expect(withEffort('low', { ...baseRequest, model: 'claude-3-5-sonnet-20241022' }).extra).toBeUndefined();
     expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeUndefined();
+    expect(withEffort('xhigh', { ...baseRequest, model: 'claude-sonnet-4-6' }).extra).toBeUndefined();
     expect(withEffort('max', { ...baseRequest, model: 'claude-opus-4-5' }).extra).toBeUndefined();
+    expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-4-5-20251101' }).extra).toBeUndefined();
+    expect(withEffort('high', { ...baseRequest, model: 'claude-opus-4-5-20251101' }).extra).toBeDefined();
     expect(withEffort('max', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeDefined();
+    expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-4-7' }).extra).toBeDefined();
+    expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-4-8' }).extra).toBeDefined();
     expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-5-5' }).extra).toBeDefined();
+    // Haiku 5.5 takes all five (Anthropic's effort page), and needed no row to.
+    for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      expect(withEffort(level, { ...baseRequest, model: 'claude-haiku-5-5' }).extra).toEqual({ output_config: { effort: level } });
+    }
+    expect(withEffort('max', { ...baseRequest, model: 'us.anthropic.claude-haiku-5-5-v1:0' }).extra).toBeDefined();
+    expect(withEffort('low', { ...baseRequest, model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0' }).extra).toBeUndefined();
+  });
+
+  test('claudeGeneration reads the generation off the id', () => {
+    const cases: Array<[string, number | undefined]> = [
+      ['claude-haiku-4-5-20251001', 4.5], ['claude-sonnet-4-5-20250929', 4.5], ['claude-opus-4-5-20251101', 4.5],
+      ['claude-opus-4-20250514', 4], ['claude-sonnet-4-20250514', 4], ['claude-opus-4-1-20250805', 4.1],
+      ['claude-3-5-sonnet-20241022', 3.5], ['claude-3-haiku-20240307', 3], ['claude-opus-4-6', 4.6], ['claude-sonnet-4-6', 4.6],
+      ['claude-opus-4-7', 4.7], ['claude-opus-4-8', 4.8], ['claude-sonnet-5', 5], ['claude-haiku-5-5', 5.5], ['claude-opus-5-5', 5.5],
+      ['claude-fable-5-1', Infinity], ['claude-mythos-preview', Infinity], ['us.anthropic.claude-haiku-4-5-20251001-v1:0', 4.5],
+      ['gpt-5.6-sol', undefined], ['', undefined],
+    ];
+    for (const [model, generation] of cases) expect([model, claudeGeneration(model)]).toEqual([model, generation]);
   });
 
   test('never sends a level outside the known set, whatever the model', () => {
