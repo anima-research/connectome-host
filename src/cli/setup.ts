@@ -177,8 +177,8 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   const made = await world.run([world.bun.path, '--no-env-file', ownSetup, '--root', root], {
     cwd: dir, env: { ...withoutKeys(env, ['CONNECTOME_INSTALL_ROOT']), DATA_DIR: dataDir },
   });
-  for (const line of `${made.stdout}\n${made.stderr}`.split('\n')) if (line.trim() !== '') out(line);
   if (made.status !== 0) {
+    for (const line of `${made.stdout}\n${made.stderr}`.split('\n')) if (line.trim() !== '') out(line);
     err(`The install's own setup (${ownSetup}) didn't finish (${ended(made)}). Once what the lines above say is put ` +
       'right, run setup again.');
     return 1;

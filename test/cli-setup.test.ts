@@ -93,7 +93,7 @@ async function runSetup(dir: string, world: SetupWorld, argv = ['discord']) {
 }
 
 describe('a first setup', () => {
-  test('installs, starts the host once, checks the typed key, keeps it, and starts the agent, in that order', async () => {
+  test('installs, starts the host once, checks the typed key, keeps it, and starts the agent, in that order, showing none of the install\'s own setup lines', async () => {
     const dir = scratch();
     const m = machine(dir, { hidden: [KEY] });
     const { status, out, err } = await runSetup(dir, m.world);
@@ -106,6 +106,7 @@ describe('a first setup', () => {
       'To go on with setup'].map(at);
     expect(order.every((index, i) => index >= 0 && (i === 0 || index > order[i - 1]!))).toBe(true);
     expect(m.ran.find((argv) => argv[2] === 'add')).toEqual(['bun', '--no-env-file', 'add', `${HOST}@${VERSION}`, '@animalabs/discord-mcpl']);
+    expect(out).not.toContain(`Set up ${join(dir, 'connectome-host')}.`);
     expect(m.checked).toEqual([KEY]);
     expect(readFileSync(join(dir, '.env'), 'utf-8')).toBe(`ANTHROPIC_API_KEY="${KEY}"\n`);
     expect(statSync(join(dir, '.env')).mode & 0o777).toBe(0o600);
