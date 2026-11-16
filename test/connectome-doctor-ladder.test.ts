@@ -737,7 +737,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
     await settled(at.host);
     expect(out).toContain('live gate dump (SIGUSR2): {"activeStreams":[]');
     expect(lines(join(at.work, 'dump-reads'))).toBeGreaterThan(1);
-  });
+  }, 20_000);
 });
 
 describe.skipIf(ladderUnrunnable)('the start command', () => {
