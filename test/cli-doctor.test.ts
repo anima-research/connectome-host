@@ -382,6 +382,14 @@ describe('connectome doctor: check 3, the recipe', () => {
     expect((await run(at)).lines[5]).toBe('– Not checked: the service\'s unit names the recipe, and no service is installed.');
   });
 
+  test('on launchd, with the agent loaded and stopped and no host, the start is launchctl\'s and the recipe the plist names loads', async () => {
+    const at = install({ launchd: true });
+    const r = await run(at, { states: { [LABEL]: 'loaded' } });
+    expect(r.lines[3]).toStartWith('✗ No host answers: ');
+    expect(r.lines[4]).toStartWith(`  Next: start the service with \`launchctl kickstart gui/1000/${LABEL} 2>/dev/null || launchctl bootstrap gui/1000 `);
+    expect(r.lines[5]).toBe(`✓ ${join(at.work, 'recipe.json')} loads.`);
+  });
+
   test('with no host and an install record that can\'t be read, the recipe isn\'t checked, since its data directory isn\'t known', async () => {
     const at = install();
     rmSync(join(at.root, 'install.json'));
