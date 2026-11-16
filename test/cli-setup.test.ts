@@ -404,6 +404,20 @@ describe('refusals', () => {
     expect(m.launched).toEqual([]);
   });
 
+  test('an install record whose data directory isn\'t there stops setup, which makes none in its place', async () => {
+    const dir = scratch();
+    expect((await runSetup(dir, machine(dir, { hidden: [KEY] }).world)).status).toBe(0);
+    const record = join(dir, 'connectome-host', 'install.json');
+    const data = JSON.parse(readFileSync(record, 'utf-8')).dataDir as string;
+    rmSync(data, { recursive: true, force: true });
+    const again = machine(dir, { hidden: [KEY] });
+    const { status, err } = await runSetup(dir, again.world);
+    expect(status).toBe(1);
+    expect(err.join('\n')).toContain(`${record} names ${data} as its data directory, and no directory is there`);
+    expect(existsSync(data)).toBe(false);
+    expect(again.launched).toEqual([]);
+  });
+
   test('a damaged install record, saying what couldn\'t be read', async () => {
     const dir = scratch();
     mkdirSync(join(dir, 'connectome-host'));

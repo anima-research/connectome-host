@@ -87,6 +87,17 @@ describe('ask_secret', () => {
     expect(readEnvFile(join(dir, '.env')).get('OPENAI_API_KEY')).toBe(KEY);
   });
 
+  test('stores a provider key that a gateway .env names answers 403 to, and says whether it works isn\'t known', async () => {
+    const { dir, module } = install({ answers: [KEY], fetch: answering(403) });
+    writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example\n');
+    const result = await call(module, 'ask_secret', { name: 'ANTHROPIC_API_KEY', purpose: 'the key' });
+    expect(result.success, result.error).toBe(true);
+    expect(String(result.data)).toContain('whether it works isn\'t known: gateway.example answered 403');
+    expect(readEnvFile(join(dir, '.env')).get('ANTHROPIC_API_KEY')).toBe(KEY);
+    const direct = install({ answers: [KEY], fetch: answering(403) });
+    expect((await call(direct.module, 'ask_secret', { name: 'ANTHROPIC_API_KEY', purpose: 'the key' })).success).toBe(false);
+  });
+
   test('stores nothing when the person enters nothing', async () => {
     const { dir, module } = install({ answers: [''] });
     const result = await call(module, 'ask_secret', { name: 'MY_TOKEN', purpose: 'a token' });
@@ -109,6 +120,14 @@ describe('run', () => {
     const env = (await run(module, 'env')).stdout;
     expect(env).not.toContain('DISCORD_TOKEN=');
     expect(env).not.toContain('DATA_DIR=');
+    expect(env).toContain('KEPT=yes');
+  });
+
+  test('leaves out of the command\'s environment a name that holds a stored value under another name', async () => {
+    const { module } = install({ answers: [TOKEN], env: { ALIAS: TOKEN, KEPT: 'yes' } });
+    await call(module, 'ask_secret', { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+    const env = (await run(module, 'env')).stdout;
+    expect(env).not.toContain('ALIAS=');
     expect(env).toContain('KEPT=yes');
   });
 

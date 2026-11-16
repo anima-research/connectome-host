@@ -3,7 +3,8 @@ export type KeyAnswer = { kind: 'accepted' } | { kind: 'refused' | 'unknown'; wh
 const REQUEST_LIMIT_MS = 15_000;
 
 /** One GET, with no redirect followed, since a redirect followed would carry the key wherever it points. */
-export async function answerOf(url: string, headers: Record<string, string>, fetch = globalThis.fetch): Promise<KeyAnswer> {
+export async function answerOf(url: string, headers: Record<string, string>, fetch = globalThis.fetch,
+  forbiddenUnknown = false): Promise<KeyAnswer> {
   try {
     new Headers(headers);
   } catch {
@@ -18,6 +19,9 @@ export async function answerOf(url: string, headers: Record<string, string>, fet
   }
   await response.body?.cancel();
   if (response.ok) return { kind: 'accepted' };
+  if (response.status === 403 && forbiddenUnknown) {
+    return { kind: 'unknown', why: `${new URL(url).host} answered 403, as a gateway can for a listing it doesn't serve` };
+  }
   if (response.status === 401 || response.status === 403) {
     return { kind: 'refused', why: `${new URL(url).host} refused it (${response.status})` };
   }
@@ -55,5 +59,5 @@ export function checkProviderKey(name: string, key: string, dotenv: ReadonlyMap<
   if (!URL.canParse(`${base}${provider.path}`)) {
     return Promise.resolve({ kind: 'unknown', why: `${provider.baseName} in .env, ${JSON.stringify(given)}, isn't a URL` });
   }
-  return answerOf(`${base}${provider.path}`, provider.headers(key), fetch);
+  return answerOf(`${base}${provider.path}`, provider.headers(key), fetch, Boolean(given));
 }

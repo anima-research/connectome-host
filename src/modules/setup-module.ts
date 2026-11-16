@@ -183,8 +183,9 @@ export class SetupModule implements Module {
     const file = join(said, 'said');
     writeFileSync(file, '', { mode: 0o600 });
     const env: Record<string, string> = { [SHOWN_FILE]: file };
+    const values = new Set(secrets.map((secret) => secret.value));
     for (const [name, value] of Object.entries(this.config.env)) {
-      if (value !== undefined && !hidden.has(name) && !NOT_FOR_COMMANDS(name)) env[name] = value;
+      if (value !== undefined && !hidden.has(name) && !NOT_FOR_COMMANDS(name) && !values.has(value)) env[name] = value;
     }
     try {
       const ran = await this.spawned(command, env, timeoutMs);

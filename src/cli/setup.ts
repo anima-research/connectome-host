@@ -175,7 +175,14 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
 
   const record = readRecord<InstallRecord>(recordPath, 'install record');
   const dataDir = record?.dataDir ?? join(dir, 'data');
-  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  if (record === null) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  else if (statSync(dataDir, { throwIfNoEntry: false })?.isDirectory() !== true) {
+    err(`${recordPath} names ${dataDir} as its data directory, and no directory is there, as after the install is ` +
+      'moved. A host started now would begin with an empty one, so setup stops here. Put that directory back, or ' +
+      `write its present absolute path into ${recordPath} as dataDir, or make an empty directory there to start the ` +
+      'resident with no memory. Then run setup again.');
+    return 1;
+  }
   const ownSetup = join(dir, RELEASE_HOST, 'src', 'update', 'setup.ts');
   out(record === null
     ? `Setting up ${root}, the folder the resident's host runs from, which later updates install into. It starts as a ` +
