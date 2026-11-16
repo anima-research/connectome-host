@@ -60,8 +60,18 @@ function managerRun(at: Install, states: States): (command: string, args: string
       if (state === 'unloaded') return { status: 113, stdout: '', stderr: 'Could not find service' };
       return { status: 0, stdout: state === 'running' ? '{\n\t"PID" = 4242;\n};\n' : '{\n\t"LastExitStatus" = 256;\n};\n', stderr: '' };
     }
-    if (command === 'plutil' && args[0] === '-type') return { status: 0, stdout: 'string\n', stderr: '' };
-    if (command === 'plutil' && args[0] === '-extract') return { status: 0, stdout: `${at.work}\n`, stderr: '' };
+    if (command === 'plutil') {
+      const units = serviceUnits(at.root, at.platform, at.home)!;
+      const plists = [units.host.file, units.shell.file];
+      const [verb, key, ...rest] = args;
+      const file = rest.at(-1)!;
+      if (verb === '-lint') return { status: 0, stdout: `${key}: OK\n`, stderr: '' };
+      if (key !== 'WorkingDirectory' || !plists.includes(file)) {
+        return { status: 1, stdout: '', stderr: `No value at that key path or invalid key path: ${key}` };
+      }
+      if (verb === '-type' && rest.length === 1) return { status: 0, stdout: 'string\n', stderr: '' };
+      if (verb === '-extract' && rest.join(' ') === `raw -o - ${file}`) return { status: 0, stdout: `${at.work}\n`, stderr: '' };
+    }
     return { status: 2, stdout: '', stderr: `unexpected: ${command} ${args.join(' ')}` };
   };
 }
