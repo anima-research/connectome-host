@@ -163,6 +163,33 @@ describe('a first setup', () => {
     expect(out.at(-1)).toBe('Setup stopped. Run it again in this directory to go on.');
     expect(m.launched).toEqual([]);
   });
+
+  test('runs node --version for real when the resident\'s directory doesn\'t exist yet, in its nearest parent, and in the directory once it exists', async () => {
+    const home = scratch();
+    const typedIn = join(home, 'project');
+    mkdirSync(typedIn);
+    writeFileSync(join(typedIn, 'notes.txt'), '');
+    const dir = join(home, 'resident');
+    const withRealNode = (hidden: string[]) => {
+      const m = machine(typedIn, { hidden, env: { PATH: process.env.PATH ?? '' } });
+      const fake = m.world.run;
+      const spawned: string[] = [];
+      m.world.run = async (argv, options) => {
+        if (argv[0] !== 'node') return fake(argv, options);
+        spawned.push(options.cwd);
+        return realWorld().run(argv, options);
+      };
+      return { world: m.world, spawned };
+    };
+    const first = withRealNode([KEY]);
+    const { status, err } = await runSetup(dir, first.world);
+    expect(err).toEqual([]);
+    expect(status).toBe(0);
+    expect(first.spawned).toEqual([home]);
+    const again = withRealNode([]);
+    expect((await runSetup(dir, again.world)).status).toBe(0);
+    expect(again.spawned).toEqual([dir]);
+  });
 });
 
 test('the machine has a Node only where PATH finds a node that isn\'t the running Bun', () => {

@@ -43,6 +43,12 @@ function entriesOf(dir: string): string[] {
   }
 }
 
+function nearestDirectory(dir: string): string {
+  let at = dir;
+  while (!statSync(at, { throwIfNoEntry: false })?.isDirectory() && dirname(at) !== at) at = dirname(at);
+  return at;
+}
+
 function setupsOwn(dir: string): boolean {
   return existsSync(join(dir, '.setup')) || existsSync(join(dir, ROOT_IN_WORKDIR, 'install.json'));
 }
@@ -135,7 +141,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     return 1;
   }
   const env = withoutKeys(world.env, []);
-  const node = await world.run(['node', '--version'], { cwd: dir, env });
+  const node = await world.run(['node', '--version'], { cwd: nearestDirectory(dir), env });
   const nodeVersion = node.status === 0 ? node.stdout.trim().replace(/^v/, '') : null;
   const nodeFloor = pkg.engines.node.replace('>=', '');
   const getNode = `Install Node ${nodeFloor} or later, and at most Node ${SHELL_NODE_TOP} if the resident may get a ` +
