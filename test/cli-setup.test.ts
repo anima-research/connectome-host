@@ -197,6 +197,18 @@ describe('a first setup', () => {
     expect(exported.asked.some((question) => question.includes('typed hidden'))).toBe(false);
   });
 
+  test('asks for no exported key where the key came from a dotenv file where setup was typed', async () => {
+    const dir = scratch();
+    const project = scratch();
+    writeFileSync(join(project, 'package.json'), '{}');
+    writeFileSync(join(project, '.env.local'), 'ANTHROPIC_API_KEY=sk-ant-project-0123456789\n');
+    const m = machine(dir, { hidden: [KEY], env: { ANTHROPIC_API_KEY: 'sk-ant-project-0123456789' } });
+    m.world.cwd = project;
+    expect((await runSetup(dir, m.world)).status).toBe(0);
+    expect(m.asked.some((question) => question.includes('exported'))).toBe(false);
+    expect(m.checked).toEqual([KEY]);
+  });
+
   test('asks again after a key the check refuses, with the house\'s words for its status', async () => {
     const dir = scratch();
     const m = machine(dir, { hidden: ['sk-ant-wrong-0123456', KEY], keys: [{ ok: false, said: 'api.anthropic.com answered 401: the key was refused: check that it was copied whole.' }] });
@@ -415,6 +427,19 @@ describe('refusals', () => {
     expect(err.join('\n')).toContain(`${record} names ${data} as its data directory, and no directory is there`);
     expect(existsSync(data)).toBe(false);
     expect(again.launched).toEqual([]);
+  });
+
+  test('an install record\'s relative data directory is the one beside the install, from any directory', async () => {
+    const dir = scratch();
+    expect((await runSetup(dir, machine(dir, { hidden: [KEY] }).world)).status).toBe(0);
+    const record = join(dir, 'connectome-host', 'install.json');
+    writeFileSync(record, JSON.stringify({ ...JSON.parse(readFileSync(record, 'utf-8')), dataDir: 'data' }));
+    const again = machine(dir, { hidden: [KEY] });
+    again.world.cwd = scratch();
+    const { status, err } = await runSetup(dir, again.world);
+    expect(err).toEqual([]);
+    expect(status).toBe(0);
+    expect(again.envs[again.ran.findIndex((argv) => argv[2]?.endsWith(join('src', 'update', 'setup.ts')))]!.DATA_DIR).toBe(join(dir, 'data'));
   });
 
   test('a damaged install record, saying what couldn\'t be read', async () => {

@@ -32,7 +32,8 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 30 * 60_000;
 // Each stream keeps at most 2 * KEPT_BYTES, so the two, as text, fit in one tool result with room for its JSON:
 // agent-framework 0.33.0 caps a tool result at 24,000 characters by default (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS,
-// in its src/tool-result-history.ts).
+// in its src/tool-result-history.ts). JSON writes a control character as six characters, so output that is mostly
+// control characters can pass that cap, and the framework then cuts the result's end and says how long it was.
 const KEPT_BYTES = 4 * 1024;
 const KILL_GRACE_MS = 5_000;
 const DRAIN_MS = 1_000;
@@ -212,16 +213,20 @@ export class SetupModule implements Module {
       const group = child.pid;
       if (group !== undefined) this.groups.add(group);
       let stoppedAtLimit = false;
+      let ending: Promise<void> | undefined;
       const timer = setTimeout(() => {
         stoppedAtLimit = true;
-        if (group !== undefined) void endGroup(group);
+        if (group !== undefined) ending = endGroup(group);
       }, limit);
       let finished = false;
       const finish = (exitCode: number | null, signalled: string | null) => {
         if (finished) return;
         finished = true;
         clearTimeout(timer);
-        if (group !== undefined) this.groups.delete(group);
+        if (group !== undefined) {
+          if (ending === undefined) this.groups.delete(group);
+          else void ending.then(() => this.groups.delete(group));
+        }
         child.stdout.destroy();
         child.stderr.destroy();
         done({ exitCode, signal: signalled, stoppedAtLimit, stdout, stderr });
@@ -232,6 +237,7 @@ export class SetupModule implements Module {
       });
       // A process the command started can hold its output open after the command ends.
       child.once('exit', (code, signalled) => {
+        clearTimeout(timer);
         const drained = setTimeout(() => finish(code, signalled), DRAIN_MS);
         child.once('close', () => {
           clearTimeout(drained);
@@ -268,7 +274,8 @@ export class SetupModule implements Module {
       : Object.hasOwn(PROVIDER_KEYS, name) ? await checkProviderKey(name, value, readEnvFile(envFile), this.config.fetch)
         : null;
     if (answer?.kind === 'refused') {
-      return failed(`Nothing was stored as ${name}: ${answer.why}. Tell the person, and ask them to copy it again.`);
+      return failed(`Nothing was stored as ${name}: ${answer.why}. Tell the person, and ask them to check the key, ` +
+        'and for a 403 the access its account has, before they give it again.');
     }
     this.stored.record(name);
     writeEnvValue(envFile, name, value);

@@ -860,11 +860,7 @@ async function runPiped(app: AppContext) {
     const finished = (): boolean => (app.framework.getModule(SETUP_MODULE) as SetupModule | undefined)?.finishRequested === true;
     endIfFinished = () => { if (!closed && finished()) rl.close(); };
     const promptOrEnd = (): void => {
-      if (closed) return;
-      if (finished()) {
-        rl.close();
-        return;
-      }
+      if (closed || finished()) return;
       rl.prompt();
       atPrompt = true;
     };

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { bunBelowFloor } from '../bun-floor.js';
 import { HOST_TRUSTED, defaultTrusted } from '../setup/default-trusted.js';
 import { makeSpawnHelperExecutable, nodePtyDir } from '../setup/node-pty.js';
@@ -165,7 +165,7 @@ const PTY_CHECK_MS = 30_000;
 
 function within(path: string, dir: string): boolean {
   const from = relative(dir, path);
-  return from !== '' && !from.startsWith('..') && !isAbsolute(from);
+  return from !== '' && from !== '..' && !from.startsWith(`..${sep}`) && !isAbsolute(from);
 }
 
 async function ptyWorks(world: ShellWorld, dir: string, env: Record<string, string>): Promise<string | null> {

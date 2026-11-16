@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { bunBelowFloor } from '../bun-floor.js';
 import { ANTHROPIC_API } from '../setup/key-check.js';
 import { SERVERS, SETUP_BUN_FLOOR, SHELL_NODE_TOP, installedVersion, packageJson } from '../setup/packages.js';
@@ -174,7 +174,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
 
   const record = readRecord<InstallRecord>(recordPath, 'install record');
-  const dataDir = record?.dataDir ?? join(dir, 'data');
+  const dataDir = resolve(dir, record?.dataDir ?? 'data');
   if (record === null) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   else if (statSync(dataDir, { throwIfNoEntry: false })?.isDirectory() !== true) {
     err(`${recordPath} names ${dataDir} as its data directory, and no directory is there, as after the install is ` +
@@ -247,7 +247,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
   out(`The installed host (${running}) starts.`);
 
-  const key = await keyFor(world, out, err, join(dir, '.env'), model);
+  const key = await keyFor(world, env, out, err, join(dir, '.env'), model);
   if (key === null) return stopped(out);
   out(costLine(model));
 
@@ -301,7 +301,8 @@ function dotenvLines(dir: string): string {
 }
 
 async function keyFor(
-  world: SetupWorld, out: (line: string) => void, err: (line: string) => void, envFile: string, model: string,
+  world: SetupWorld, env: Record<string, string>, out: (line: string) => void, err: (line: string) => void,
+  envFile: string, model: string,
 ): Promise<{ key: string; baseUrl?: string } | null> {
   const stored = readEnvFile(envFile);
   const baseUrl = stored.get('ANTHROPIC_BASE_URL') || undefined;
@@ -312,7 +313,7 @@ async function keyFor(
   }
   let key: string | null = stored.get('ANTHROPIC_API_KEY') || null;
   let from = key === null ? null : `the ANTHROPIC_API_KEY in ${envFile}`;
-  const exported = world.env.ANTHROPIC_API_KEY?.trim();
+  const exported = env.ANTHROPIC_API_KEY?.trim();
   if (key === null && exported) {
     const use = await yesNo(world, 'An ANTHROPIC_API_KEY is exported in this shell. Use it for setup\'s agent? Setup ' +
       `writes it to ${envFile}, readable by you alone. The resident uses it too, unless you change it. (yes/no) [yes] `, true);

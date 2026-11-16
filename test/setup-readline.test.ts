@@ -21,7 +21,11 @@ export function register(api, config) {
     async stop() {},
     async handleToolCall() { return { success: false, error: 'no tools' }; },
     async onProcess(event) {
-      if (event.type === 'external-message' && event.source === 'cli' && event.content === config.hold) {
+      if (event.type === 'external-message' && event.source === 'cli' && event.content === config.finishHold) {
+        framework.getModule('setup').finishRequested = true;
+      }
+      if (event.type === 'external-message' && event.source === 'cli' &&
+        (event.content === config.hold || event.content === config.finishHold)) {
         writeFileSync(join(config.dir, 'holding.txt'), '');
         while (!existsSync(join(config.dir, 'release.txt'))) await Bun.sleep(25);
       }
@@ -97,7 +101,7 @@ test('setup\'s conversation opens with setup\'s message, asks hidden, has its ow
     expect(lines()).toContain('--- In setup ---');
     terminal.write('goodbye\r');
     expect(await host.exited).toBe(0);
-    expect(lines().some((line) => line.startsWith('Shutting down'))).toBe(true);
+    await until(() => lines().some((line) => line.startsWith('Shutting down')), 'the closing line', () => screen);
     expect(readFileSync(join(dir, 'logged.txt'), 'utf-8')).toBe('1\n2\n');
   } finally {
     if (host.exitCode === null) host.kill('SIGKILL');
@@ -137,6 +141,47 @@ test('setup\'s conversation ends after the turn that finished, when the line it 
     const ended = await Promise.race([host.exited, Bun.sleep(20_000).then(() => 'still open after 20 s')]);
     expect(ended).toBe(0);
     expect(readFileSync(join(dir, 'logged.txt'), 'utf-8')).toBe('1\n2\n3\n');
+  } finally {
+    if (host.exitCode === null) host.kill('SIGKILL');
+    await host.exited;
+    if (!terminal.closed) terminal.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test('setup\'s conversation ends only once the turn that finished has its words out, when a blank line comes during it', async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'setup-readline-')));
+  const extension = join(dir, 'probe.ts');
+  writeFileSync(extension, EXTENSION);
+  const recipe = join(dir, 'recipe.json');
+  writeFileSync(recipe, JSON.stringify({
+    name: 'Setup readline test',
+    agent: { name: 'setup', provider: 'mock', systemPrompt: 'A mock setup agent.', mock: { echoMode: true } },
+    modules: { setup: true, subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+    extensions: { probe: { kind: 'module', path: extension, config: { dir, finishHold: 'last-words', finishAt: 99 } } },
+  }));
+  let screen = '';
+  const decoder = new TextDecoder();
+  const terminal = new Bun.Terminal({ cols: 200, rows: 50, data: (_t, data) => { screen += decoder.decode(data, { stream: true }); } });
+  const host = Bun.spawn([process.execPath, INDEX_PATH, recipe, '--no-tui'], {
+    cwd: dir, env: { ...process.env, DATA_DIR: dir, CONNECTOME_SETUP_DIR: dir, TERM: 'xterm-256color' }, terminal,
+  });
+  const lines = () => rendered(screen);
+  try {
+    await until(() => screen.includes('PROBE_TOKEN (a probe), typed hidden'), 'hidden question', () => screen);
+    terminal.write(`${SECRET}\r`);
+    await until(() => lines().at(-1) === '> ' && existsSync(join(dir, 'asked.json')), 'the stored secret and a prompt', () => screen);
+    terminal.write('last-words\r');
+    await until(() => existsSync(join(dir, 'holding.txt')), 'the finishing turn held', () => screen);
+    terminal.write('\r');
+    await Bun.sleep(300);
+    writeFileSync(join(dir, 'release.txt'), '');
+    const ended = await Promise.race([host.exited, Bun.sleep(20_000).then(() => 'still open after 20 s')]);
+    expect(ended).toBe(0);
+    await until(() => screen.includes('Shutting down'), 'the closing line', () => screen);
+    const answered = screen.search(/\[Echo\][^\n]*last-words/);
+    expect(answered).toBeGreaterThanOrEqual(0);
+    expect(answered).toBeLessThan(screen.indexOf('Shutting down'));
   } finally {
     if (host.exitCode === null) host.kill('SIGKILL');
     await host.exited;

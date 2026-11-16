@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { shell, type ShellWorld } from '../src/cli/shell.js';
@@ -113,6 +113,20 @@ test('installs node-pty once more where a pty doesn\'t open, and says what to in
   const still = await install(broken);
   expect(still.status).toBe(1);
   expect(still.err[0]).toContain('`apt install build-essential python3`');
+});
+
+test('takes a node-pty under a directory whose name starts with two dots for one inside the install\'s directory', async () => {
+  const m = machine({ installed: '1.7.3', pty: [{ status: 1, stdout: '', stderr: 'Error: no prebuilt binary\n' }, ok()] });
+  const shellDir = join(m.dir, '..pkgs', 'term-sessions-mcp');
+  mkdirSync(join(shellDir, 'node_modules', 'node-pty'), { recursive: true });
+  writeFileSync(join(shellDir, 'package.json'), JSON.stringify({ version: '1.7.3' }));
+  writeFileSync(join(shellDir, 'node_modules', 'node-pty', 'package.json'), '{}');
+  rmSync(join(m.dir, 'node_modules', 'term-sessions-mcp'), { recursive: true });
+  symlinkSync(shellDir, join(m.dir, 'node_modules', 'term-sessions-mcp'));
+  const { status, err } = await install(m);
+  expect(err).toEqual([]);
+  expect(status).toBe(0);
+  expect(m.ran).toContainEqual(['bun', '--no-env-file', 'install']);
 });
 
 test('says plainly where there\'s no Node on PATH, or only Bun\'s own stand-in for it', async () => {

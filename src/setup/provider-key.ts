@@ -55,7 +55,7 @@ export function checkProviderKey(name: string, key: string, dotenv: ReadonlyMap<
   const given = dotenv.get(provider.baseName);
   const base = (given || provider.base).replace(/\/+$/, '');
   if (!URL.canParse(`${base}${provider.path}`)) {
-    return Promise.resolve({ kind: 'unknown', why: `${provider.baseName} in .env, ${JSON.stringify(given)}, isn't a URL` });
+    return Promise.resolve({ kind: 'unknown', why: `${provider.baseName} in .env isn't a URL` });
   }
   return answerOf(`${base}${provider.path}`, provider.headers(key), fetch, Boolean(given));
 }

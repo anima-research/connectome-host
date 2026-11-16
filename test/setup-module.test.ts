@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ToolCall, ToolResult } from '@animalabs/agent-framework';
@@ -78,12 +78,13 @@ describe('ask_secret', () => {
     expect(readEnvFile(join(dir, '.env')).get('OPENAI_API_KEY')).toBe(KEY);
   });
 
-  test('stores a provider key whose base URL in .env isn\'t a URL, and says why whether it works isn\'t known', async () => {
+  test('stores a provider key whose base URL in .env isn\'t a URL, and says why whether it works isn\'t known, without the URL', async () => {
     const { dir, module } = install({ answers: [KEY] });
-    writeFileSync(join(dir, '.env'), 'OPENAI_BASE_URL=not-a-url\n');
+    writeFileSync(join(dir, '.env'), 'OPENAI_BASE_URL=not-a-valid-secret-url\n');
     const result = await call(module, 'ask_secret', { name: 'OPENAI_API_KEY', purpose: 'an OpenAI key' });
     expect(result.success, result.error).toBe(true);
-    expect(String(result.data)).toContain('whether it works isn\'t known: OPENAI_BASE_URL in .env, "not-a-url", isn\'t a URL.');
+    expect(String(result.data)).toContain('whether it works isn\'t known: OPENAI_BASE_URL in .env isn\'t a URL.');
+    expect(JSON.stringify(result)).not.toContain('not-a-valid-secret-url');
     expect(readEnvFile(join(dir, '.env')).get('OPENAI_API_KEY')).toBe(KEY);
   });
 
@@ -156,10 +157,43 @@ describe('run', () => {
     expect((await running).exitCode).not.toBe(0);
   });
 
+  test('leaves running what a command that ended before its time limit left, though the limit comes while its output drains', async () => {
+    const { dir, module } = install();
+    const ran = await run(module, 'sleep 60 & echo $! > child', 500);
+    const child = Number(readFileSync(join(dir, 'child'), 'utf-8'));
+    try {
+      expect(ran.stoppedAtLimit).toBe(false);
+      expect(processEnded(child)).toBe(false);
+    } finally {
+      try {
+        process.kill(child, 'SIGKILL');
+      } catch {
+      }
+    }
+  });
+
+  test('waits, when the host stops, for the end of a timed-out command\'s process group that outlives its SIGTERM', async () => {
+    const { dir, module } = install();
+    const ran = await run(module, `sh -c "trap '' TERM; echo \\$\\$ > child; exec sleep 60" & while [ ! -s child ]; do sleep 0.01; done; wait`, 300);
+    const child = Number(readFileSync(join(dir, 'child'), 'utf-8'));
+    try {
+      expect(ran.stoppedAtLimit).toBe(true);
+      await module.stop();
+      for (let tries = 0; !processEnded(child) && tries < 10; tries++) await Bun.sleep(20);
+      expect(processEnded(child)).toBe(true);
+    } finally {
+      try {
+        process.kill(child, 'SIGKILL');
+      } catch {
+      }
+    }
+  }, 20_000);
+
   test('kills, when the host stops, what in a command\'s process group outlives SIGTERM after the command ends', async () => {
     const { dir, module } = install();
-    const running = run(module, `sh -c "trap '' TERM; exec sleep 60" & echo $! > child; wait`);
-    for (let tries = 0; !existsSync(join(dir, 'child')) && tries < 100; tries++) await Bun.sleep(20);
+    const running = run(module, `sh -c "trap '' TERM; echo \\$\\$ > child; exec sleep 60" & wait`);
+    const written = () => existsSync(join(dir, 'child')) && readFileSync(join(dir, 'child'), 'utf-8').endsWith('\n');
+    for (let tries = 0; !written() && tries < 100; tries++) await Bun.sleep(20);
     const child = Number(readFileSync(join(dir, 'child'), 'utf-8'));
     try {
       await module.stop();
@@ -207,6 +241,15 @@ describe('run', () => {
     await asking;
     expect((await running).stdout).toBe('after\n');
   });
+});
+
+test('names the list of stored secrets when it isn\'t JSON, and runs nothing', async () => {
+  const { dir, module } = install();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'stored-secrets.json'), '["DISCORD_TO');
+  const ran = call(module, 'run', { command: 'touch ran' });
+  await expect(ran).rejects.toThrow(`${join(dir, '.setup', 'stored-secrets.json')} isn't a JSON list of names`);
+  expect(existsSync(join(dir, 'ran'))).toBe(false);
 });
 
 test('finished asks for the conversation to end after this turn, and records nothing', async () => {

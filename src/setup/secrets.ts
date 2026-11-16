@@ -88,7 +88,12 @@ export class StoredSecrets {
   names(): string[] {
     const text = textOf(this.file);
     if (text === '') return [];
-    const names: unknown = JSON.parse(text);
+    let names: unknown;
+    try {
+      names = JSON.parse(text);
+    } catch {
+      names = null;
+    }
     if (!Array.isArray(names) || !names.every((name) => typeof name === 'string')) {
       throw new Error(`${this.file} isn't a JSON list of names`);
     }
