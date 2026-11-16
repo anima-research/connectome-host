@@ -464,8 +464,16 @@ describe('connectome doctor: check 4, the model calls', () => {
     expect(r.lines.slice(4, 6)).toEqual([
       '✗ ember\'s last 3 turns failed at the model call, the latest at 2026-11-14T10:05:00.000Z.',
       '  Next: each failure\'s reason is in the host\'s log, in a line that starts `[inference-failed] agent=ember`. They can ' +
-        `quote the model provider, so doctor doesn't print them: \`journalctl --user -u ${HOST} -g '\\[inference-failed\\] agent=ember '\` lists them.`,
+        `quote the model provider, so doctor doesn't print them: \`journalctl --user -u ${HOST} --no-pager | grep -F -- '[inference-failed] agent=ember '\` lists them.`,
     ]);
+  });
+
+  test('the command that lists the failures matches an agent\'s name as it is written, not as a pattern', async () => {
+    const at = install();
+    const r = await run(at, { states: RUNNING, health: { agents: [agent('em(b)er+', {
+      consecutiveInferenceFailures: 2, lastInference: { startedAt: STARTED, failedAt: FAILED },
+    })] } });
+    expect(r.out).toContain(`\`journalctl --user -u ${HOST} --no-pager | grep -F -- '[inference-failed] agent=em(b)er+ '\` lists them.`);
   });
 
   test('one failed turn reads in the singular, and on launchd the command greps the agent log', async () => {

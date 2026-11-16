@@ -319,7 +319,7 @@ function failureSearch(units: ServiceUnits | null, commands: ServiceCommands | n
   if (units === null || commands === null) return '.';
   const line = `[inference-failed] agent=${agent} `;
   return units.manager === 'systemd-user'
-    ? `: \`journalctl --user -u ${units.host.name} -g ${shellWord(line.replace(/[[\]]/g, '\\$&'))}\` lists them.`
+    ? `: \`journalctl --user -u ${units.host.name} --no-pager | grep -F -- ${shellWord(line)}\` lists them.`
     : `: \`grep -F -- ${shellWord(line)} ${shellWord(join(units.work, 'logs', 'agent.log'))}\` lists them.`;
 }
 
