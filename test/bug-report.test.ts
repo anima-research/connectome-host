@@ -811,6 +811,12 @@ describe('the running setup and the saved file', () => {
     expect(setupFacts({}, { agent: {}, modules: ['setup'], wake: false })).toMatchObject({ modules: ['setup'], customModules: 0 });
   });
 
+  test('the fetch module is named as one of the host\'s own, from the recipe and from the running setup', () => {
+    const recipe = { agent: { provider: 'anthropic', model: 'claude-opus-4-6' }, modules: { fetch: { local: true } } };
+    expect(setupFacts(recipe)).toMatchObject({ modules: ['fetch'], customModules: 0 });
+    expect(setupFacts(recipe, { agent: {}, modules: ['fetch', 'workspace'], wake: false })).toMatchObject({ modules: ['fetch', 'workspace'], customModules: 0 });
+  });
+
   test("when the file can't be saved, the output says so and promises nothing of it", () => {
     const dir = scratch();
     const previous = process.env.DATA_DIR;
