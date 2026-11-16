@@ -62,8 +62,9 @@ export function createPipedTurns(
         if (typeof event.content === 'string' && event.content !== '') out.write(event.content);
         return;
       case 'inference:tool_calls_yielded': {
-        const calls = ((event.calls as Array<{ name: string }> | undefined) ?? []).filter((c) => !showsItself(c.name));
-        if (calls.length > 0) out.log(`\n[tools] ${calls.map((c) => c.name).join(', ')}`);
+        const calls = (event.calls as Array<{ name: string }> | undefined) ?? [];
+        const listed = calls.filter((c) => !showsItself(c.name));
+        if (listed.length > 0 || calls.length === 0) out.log(`\n[tools] ${listed.map((c) => c.name).join(', ')}`);
         else out.write('\n');
         return;
       }

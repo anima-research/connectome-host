@@ -777,14 +777,14 @@ async function runPiped(app: AppContext) {
         turns.switched();
         const switched = await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
         console.log(switched ? 'Session switched.' : switchLeftForStop(app.sessionManager.getActiveSession()));
-        await afterSwitch();
+        if (switched) await afterSwitch();
       }
     } else {
       app.framework.pushEvent({
         type: 'external-message', source: 'cli',
         content: trimmed, metadata: {}, triggerInference: true,
       });
-      await turns.waitForTurn(setup ? null : undefined);
+      await turns.waitForTurn(setup && !batch ? null : undefined);
     }
     return false;
   }

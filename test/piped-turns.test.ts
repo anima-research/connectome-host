@@ -119,8 +119,11 @@ describe('a wait given no cap', () => {
     const capped = setUp();
     const gaveUp = capped.turns.waitForTurn(10);
     capped.emit('inference:started');
-    await Bun.sleep(50);
-    expect(await settled(gaveUp)).toBe(true);
+    let bound: Timer | undefined;
+    await Promise.race([gaveUp, new Promise((_, fail) => {
+      bound = setTimeout(() => fail(new Error('the capped wait didn\'t give up within 5 s')), 5_000);
+    })]);
+    clearTimeout(bound);
     expect(capped.out).toContain('err:(no answer after 0.01 s: going on without it)');
     const capless = setUp();
     const wait = capless.turns.waitForTurn(null);
@@ -146,6 +149,13 @@ describe('tools that show themselves', () => {
     emit('tool:started', { tool: 'setup--run', input: { command: 'ls' } });
     emit('inference:tool_calls_yielded', { calls: [{ name: 'setup--ask_secret' }] });
     expect(out).toEqual(['log:\n[tools] time--now', 'out:\n']);
+  });
+
+  test('leave a trace with no calls its [tools] line, as before', () => {
+    const { out, emit } = setUp();
+    emit('inference:tool_calls_yielded', { calls: [] });
+    emit('inference:tool_calls_yielded');
+    expect(out).toEqual(['log:\n[tools] ', 'log:\n[tools] ']);
   });
 });
 
