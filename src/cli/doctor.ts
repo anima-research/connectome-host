@@ -2,15 +2,13 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadRecipeDocument, readRecipeDocument } from '../recipe.js';
-import { checkDiscordToken, sentToken, withSentForms, type TokenCheck } from '../setup/discord-token.js';
-import {
-  DISCORD_TOKEN, DotenvReadError, EnvFormError, readEnvFile, shownByName, storedSecrets, type Secret,
-} from '../setup/secrets.js';
+import { checkDiscordToken } from '../setup/discord-token.js';
+import { DISCORD_TOKEN, readEnvFile, shownByName, storedSecrets, type Secret } from '../setup/secrets.js';
 import { shellWord } from '../update/launcher.js';
 import { serviceBun } from '../update/service-bun.js';
 import type { CliContext } from './connectome.js';
 import { dataDirOf, openHost, type HostClient, type NoHost } from './host-socket.js';
-import { INSTALL_COMMAND, typedCommand } from './install-command.js';
+import { INSTALL_COMMAND } from './install-command.js';
 import { agentState, childEnv, showUnit, systemctlLine } from './service-manager.js';
 import { machine, serviceCommands, type ServiceCommands, type ServiceSystem } from './service.js';
 import { readUnit, serviceUnits, type ServiceUnit, type ServiceUnits } from './service-unit.js';
@@ -64,7 +62,7 @@ export async function doctor(
   const root = ctx.root!;
   const work = dirname(root);
   const { sys } = parts;
-  const typed = typedCommand(root, sys.env.PATH);
+  const typed = shellWord(join(root, INSTALL_COMMAND));
   if (sys.uid === 0) {
     let owner: number | null = null;
     try {
@@ -84,12 +82,13 @@ export async function doctor(
   let secrets: Secret[];
   let dotenv: Map<string, string>;
   try {
-    secrets = storedSecrets(work, sys.env).flatMap(withSentForms);
+    secrets = storedSecrets(work, sys.env);
     dotenv = readEnvFile(envFile);
   } catch (error) {
     const report = new Report(ctx.out);
     report.line(`Checking the install at ${root}.`);
-    report.check('✗', `Doctor can't read the stored secrets that it hides: ${errorText(error)}.`, secretsStep(error, work));
+    report.check('✗', `Doctor can't read the stored secrets that it hides: ${errorText(error)}.`,
+      'put right what it names, then run doctor again.');
     report.line('Doctor stops here and runs no check.');
     return 1;
   }
@@ -114,14 +113,6 @@ export async function doctor(
     report.line(`Where an incoming message stops, the ladder shows: ${ladderLine(root, work, units.host)}`);
   }
   return report.problems === 0 ? 0 : 1;
-}
-
-export function secretsStep(error: unknown, work: string): string {
-  if (error instanceof DotenvReadError) {
-    return `run \`${error.command}\` in ${work} to see why, correct what it shows, then run doctor again.`;
-  }
-  if (error instanceof EnvFormError) return `correct ${join(work, '.env')}, then run doctor again.`;
-  return 'put right what it names, then run doctor again.';
 }
 
 function checkService(report: Report, sys: ServiceSystem, typed: string, units: ServiceUnits | null,
@@ -325,18 +316,10 @@ async function checkToken(report: Report, parts: DoctorParts, dotenv: Map<string
   const store = 'store the bot token from the Developer Portal\'s Bot page with ' +
     `\`${typed} setup discord\`, which stores it in ${join(work, '.env')}, then restart the service and run ` +
     `\`${typed} doctor\` again.`;
-  const check = await checkDiscordToken(sentToken(token), { fetch: parts.fetch });
-  if (check.kind === 'accepted') report.check('✓', `Discord accepts the token: the bot is ${check.name}.`);
-  else if (check.kind === 'refused') report.check('✗', 'Discord refuses the token.', store);
-  else if (check.kind === 'unsendable') {
-    report.check('✗', 'The token in .env can\'t be sent: it holds a character that a header can\'t carry.', store);
-  } else report.check('–', `Discord gave no answer that doctor could read (${unread(check)}).`);
-}
-
-function unread(check: Exclude<TokenCheck, { kind: 'accepted' | 'refused' | 'unsendable' }>): string {
-  if (check.kind === 'unanswered') return check.why;
-  if (check.kind === 'redirected') return `a redirect, ${check.status}`;
-  return `an answer of ${check.status}`;
+  const check = await checkDiscordToken(token, parts.fetch);
+  if (check.kind === 'accepted') report.check('✓', 'Discord accepts the token.');
+  else if (check.kind === 'refused') report.check('✗', `The token in .env isn't accepted: ${check.why}.`, store);
+  else report.check('–', `Discord gave no answer that doctor could read: ${check.why}.`);
 }
 
 /** The install record's data directory where it isn't `<work>/data`, the host's own default from `work`. */

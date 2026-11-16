@@ -331,7 +331,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
     }
 
     case 'help':
-      if (app.recipe.modules?.setup === true) {
+      if (app.recipe?.modules?.setup === true) {
         return {
           lines: [
             { text: '--- In setup ---', style: 'system' },
@@ -1663,8 +1663,8 @@ function storeTransition(cm: ContextManager, transition: string, metadata: Messa
  * them out), the session wasn't switched, the
  * host isn't stopping and the agent is still registered with this context;
  * otherwise nothing is stored, and the answer gives the summary back as a
- * /newtopic <text> to store it with, as written, or on one line where a
- * command is taken from one line (oneLine). The check of the branch and the
+ * /newtopic <text> to store it with, as written, or on one line where each
+ * line is read as its own input (oneLine). The check of the branch and the
  * strategy here is a backstop for a move after context-manager's own check,
  * and gives the summary back too.
  *

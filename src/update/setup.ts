@@ -36,7 +36,7 @@ import {
 import { copyTree, exists, makeDirs, removeTree, syncPath } from './data-swap.js';
 import { PACKAGE } from './install.js';
 import { HOST_ENTRY, LAUNCHER, isUnder } from './launcher.js';
-import { INSTALL_COMMAND, typedCommand, writeInstallCommand } from '../cli/install-command.js';
+import { INSTALL_COMMAND, writeInstallCommand } from '../cli/install-command.js';
 import { serviceBun } from './service-bun.js';
 import { type ServiceUnits, systemdUnits } from './systemd-units.js';
 
@@ -315,13 +315,9 @@ export function setup(options: SetupOptions): void {
       `host was started with if that isn't ${dataDir}, and --extra-state PATH added for each place of state kept ` +
       'outside the data directory that\'s there now: setup then makes the install afresh there, serving that data ' +
       'directory, with no journal or copy, so with no Go back, and starting the service again starts the new install, ' +
-      `since its path is the same, and \`${typedCommand(root)} service install <recipe>\` then writes the service ` +
-      'again, if that\'s what set it up. Those places: a setup run that ' +
-      `finished printed them after "${EXTRA_STATE_LINE}" ` +
-      '(`connectome setup` shows that block only at its end, only while the record still holds it, and not at all ' +
-      'when it holds none), ' +
-      `and the moved root's copy/copy.json, if it has updated, ${copyShows('which aren\'t given')} ` +
-      'A run that stopped partway may have written the record without printing them. ' +
+      `since its path is the same, and \`${shellWord(join(root, INSTALL_COMMAND))} service install <recipe>\` then writes ` +
+      'the service again, if that\'s what set it up. Those places: a setup run that finished printed them after ' +
+      `"${EXTRA_STATE_LINE}", and the moved root's copy/copy.json, if it has updated, ${copyShows('which aren\'t given')} ` +
       'If setup didn\'t make it, choose another --root.');
   }
   const link = `\`ln -sfn ${shellWord(join('releases', '<that release>'))} ${shellWord(paths.current)}\``;
