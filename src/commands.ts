@@ -269,7 +269,7 @@ function rollbackFailed(app: AppContext, from: string, failed: string, err: unkn
 }
 
 const CHANGES_THE_SESSION = new Set(['undo', 'redo', 'checkout', 'branchto', 'newtopic', 'nudge', 'puppet']);
-const CHANGES_THE_SESSION_GIVEN_A_VALUE = new Set(['checkpoint', 'restore', 'budget', 'sweep']);
+const CHANGES_THE_SESSION_GIVEN_A_VALUE = new Set(['checkpoint', 'restore', 'budget']);
 const SUBCOMMANDS_THAT_CHANGE_THE_SESSION = new Map([
   ['session', new Set(['rename', 'delete', 'rm'])],
   ['fleet', new Set(['stop', 'kill', 'restart'])],
@@ -317,7 +317,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
   const parts = command.slice(1).trim().split(/\s+/);
   const args = parts.slice(1);
   const refused = change ? refusedWhileSwitching(app, change) : null;
-  if (refused) return { lines: [{ text: refused, style: 'system' }], refused: true };
+  if (refused) return { lines: [{ text: refused, style: 'system' }] };
   const framework = app.framework;
   const requester = input.requester ?? HOST_COMMAND;
 
@@ -516,10 +516,21 @@ export function handleSweep(app: AppContext, args: string[], requester: Operator
   const say = (text: string): Line => ({ text, style: 'system' });
   const [name, flag, extra] = args;
   if (name === undefined) return { lines: sweepNames(sweeps).map(say) };
+  const switching = refusedWhileSwitching(app, '/sweep');
+  if (switching) return { lines: [say(switching)], refused: true };
   const sweep = sweeps.find((each) => each.name === name);
   if (sweep === undefined) return { lines: [`No sweep is named ${name}.`, ...sweepNames(sweeps)].map(say), refused: true };
   if ((flag !== undefined && flag !== '--write') || extra !== undefined) {
     return { lines: [say('Usage: /sweep [<name> [--write]]')], refused: true };
+  }
+  const running = flag === '--write' ? sessionChangesRunning(app) : [];
+  if (running.length > 0) {
+    const names = running.join(', ');
+    const one = running.length === 1;
+    return {
+      lines: [say(`Sweep ${name} wrote nothing, since ${names} ${one ? 'is' : 'are'} still running. Run it again once ${names} ${one ? 'has' : 'have'} finished.`)],
+      refused: true,
+    };
   }
   const framework = app.framework;
   const live = framework.getAllAgents().filter((agent) => !agent.getContextManager().isClosed());
@@ -556,15 +567,6 @@ export function handleSweep(app: AppContext, args: string[], requester: Operator
           ? 'No agent\'s window holds these rows, so --write rewrites no prompt cache.'
           : `With --write, each of these agents has its prompt cache rewritten once, from its earliest row above: ${[...earliest].map(([agent, at]) => `${agent} (from ${at.toISOString()})`).join(', ')}.`),
       ],
-    };
-  }
-  const running = sessionChangesRunning(app);
-  if (running.length > 0) {
-    const names = running.join(', ');
-    const one = running.length === 1;
-    return {
-      lines: [say(`Sweep ${name} wrote nothing, since ${names} ${one ? 'is' : 'are'} still running. Run it again once ${names} ${one ? 'has' : 'have'} finished.`)],
-      refused: true,
     };
   }
   const lines: Line[] = [];

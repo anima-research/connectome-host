@@ -67,9 +67,9 @@ export interface CommandOutputEvent {
 }
 
 /** The end of the answer to a `command` that carried a corrId, with the
- *  error when the command threw, and `refused` when `/update` answered
- *  that it didn't do what was asked; its lines say why. No other command
- *  sets it. */
+ *  error when the command threw, and `refused` when `/update` or `/sweep`
+ *  answered that it didn't do what was asked; its lines say why. No other
+ *  command sets it. */
 export interface CommandDoneEvent {
   type: 'command-done';
   corrId: string;

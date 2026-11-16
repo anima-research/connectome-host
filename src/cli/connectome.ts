@@ -390,9 +390,10 @@ export async function sweep(ctx: CliContext, sweeps: readonly Sweep[] = SWEEPS):
   const answer = await command(host, ['/sweep', ...ctx.argv].join(' '), (line) => ctx.out(line));
   host.close();
   if (answer.how === 'closed') {
-    ctx.err('connectome: the host closed the connection before its answer ended, so which rows it rewrote isn\'t ' +
-      'known here. The host stopping closes it, and so does another connectome command connecting. Run the sweep ' +
-      'again without --write to see what is left.');
+    ctx.err('connectome: the host closed the connection before its answer ended' +
+      (flag === '--write' ? ', so which rows it rewrote isn\'t known here' : '') +
+      '. The host stopping closes it, and so does another connectome command connecting.' +
+      (flag === '--write' ? ' Run the sweep again without --write to see what is left.' : ''));
     return 1;
   }
   if (answer.error !== undefined) {

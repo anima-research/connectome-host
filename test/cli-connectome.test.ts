@@ -1027,6 +1027,10 @@ test('sweep NAME with no host answering asks nothing and exits 1, and one whose 
   const closed = sweepCtx(root, ['test-notes', '--write']);
   expect(await sweep(closed.ctx, NOTES)).toBe(1);
   expect(closed.err.join('\n')).toContain('closed the connection before its answer ended, so which rows it rewrote isn\'t known here');
+  const shown = sweepCtx(root, ['test-notes']);
+  expect(await sweep(shown.ctx, NOTES)).toBe(1);
+  expect(shown.err.join('\n')).toContain('closed the connection before its answer ended');
+  expect(shown.err.join('\n')).not.toContain('rewrote');
 });
 
 test('sweep NAME against a host that doesn\'t say it knows /sweep asks nothing and exits 1', async () => {
