@@ -350,7 +350,7 @@ resident speaks to, and get no answer from any service.
    there too, a TTS relay connects to the relay the recipe names and signs in as the
    resident's bot, and an extension's code runs in the host's process. So a recipe whose
    strategy comes from an extension gets no pre-boot check this way. Where
-   `agent.systemPrompt` is a URL, or a `${…}` whose value is one, put the text it gives
+   `agent.systemPrompt` is a URL, or becomes one once its `${…}` are filled in, put the text it gives
    in its place, since the host fetches it as it loads the recipe. Then point every URL
    the copy still gives the host to connect to at `http://127.0.0.1:9`, where nothing
    answers, as `curl http://127.0.0.1:9/` failing to connect shows: an
@@ -387,7 +387,9 @@ resident speaks to, and get no answer from any service.
    turn asks OpenAI for a device-code login and waits for it. Where the resident's
    environment sets `MODEL`, give it too, since it changes what's compiled, and where it
    sets `COUNT_TOKENS_MODEL`, give that too, since `/debug/context/makeup` reports it as
-   the `countModel` you count against below. Give any other
+   the `countModel` you count against below. Where the copy names
+   `MCPL_AGENT_OVERLAY_FILE`, give it a file in the new, empty directory, as the observers
+   variable is, since its value is the agent overlay the host loads. Give any other
    variable the copy names as `${…}` too, since the host fills each from its environment
    and won't load a recipe naming one it can't, with a mock value where it's a
    credential, and, where it's a URL the host connects to, such as a provider's base URL

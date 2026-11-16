@@ -782,7 +782,7 @@ unknown-key warning, like those at the other levels.
   `tune_out` channels; **code execution** (top-level `codeExecution`) —
   JavaScript scripts that call the agent's tools, in a QuickJS engine
   (agent-framework 0.24); recommended for every resident, and off unless a
-  recipe turns it on (see "Code execution" above)
+  recipe turns it on (see "Code execution (`codeExecution`)" above)
 - **Activity** (`modules.activity`) typing indicators and a **TTS relay**
   (`modules.ttsRelay`) for voice clients
 - **Extensions** (top-level `extensions`) — local modules that register
