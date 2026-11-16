@@ -74,8 +74,9 @@ export const RETRIEVAL_MAX_TOKENS = 500;
 /**
  * The request fields of the module's two calls (concept extraction and
  * relevance), as its config shapes them: the model (the recipe's, the host's
- * auxiliary model where it supplied one, else the Haiku default), a 500-token
- * cap, `temperature: 0` unless `deterministic` is false, and the reasoning
+ * auxiliary model where it supplied one, else the Haiku default), the cap the
+ * config set (500 unless the host sized it for a reasoning model),
+ * `temperature: 0` unless `deterministic` is false, and the reasoning
  * effort as `providerParams` where one is set. Pure, so a test can read what
  * goes on the wire per route.
  */

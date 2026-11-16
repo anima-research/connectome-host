@@ -49,8 +49,9 @@ export function retrievalModuleConfig(membrane: Membrane, recipe: Recipe): Retri
   // concept extraction on Codex or OpenRouter sent the Haiku id, was
   // refused, and injected no lessons (#649). A model the host chose on the
   // Responses family gets a low effort, as the resident's own turns set one
-  // (and would otherwise run at the server's default); off anthropic and
-  // Bedrock the calls send no temperature, which `gpt-5`+ models refuse.
+  // (and would otherwise run at the server's default); where the host chose
+  // the model, on any route, the calls send no temperature, which `gpt-5`+
+  // and current Claude models refuse.
   // Shaped by who chose the model, not by the route (R3-1, R3-3): a model
   // the host steered the calls to gets the room and the parameters the
   // host's other small calls get; the module's Haiku default and a model the

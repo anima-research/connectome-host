@@ -908,7 +908,10 @@ export interface RecipeWake extends Partial<import('@animalabs/agent-framework')
    * (agent-framework's `GateOptions.judge`). Every key is optional, and
    * agent-framework's defaults apply where one is left out: Claude Haiku 5.5
    * on this host's provider, 90,000 input tokens, low effort, a 20 s timeout,
-   * and a wake when the judge fails.
+   * and a wake when the judge fails. Where the provider doesn't serve Claude
+   * ids, or the recipe sets `auxiliaryModel`, a left-out `model` is the
+   * host's auxiliary model (README, "auxiliaryModel"), and off `anthropic`
+   * and `bedrock` a left-out `effort` is `none`.
    */
   judge?: RecipeReplyJudge;
 }

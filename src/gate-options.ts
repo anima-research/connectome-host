@@ -17,7 +17,7 @@ import type { RecipeModules } from './recipe.js';
 export interface AuxiliarySteering {
   /** The model, where the recipe named one or the provider needs one (auxiliaryModelOverride). */
   model: string;
-  /** Whether the provider takes Anthropic's `output_config` (the `anthropic` and `bedrock` routes). */
+  /** Whether the route takes Anthropic's `output_config` (`anthropic`, `bedrock`) and the model takes an effort (modelAcceptsEffort). */
   anthropicEffort: boolean;
 }
 
@@ -32,9 +32,9 @@ export function gateOptionsFor(
   // The reply judge and the suppression review default to Claude Haiku 5.5
   // and a low effort in agent-framework, sent as Anthropic's `output_config`.
   // Where the recipe's provider doesn't serve that id, each gets the host's
-  // auxiliary model unless the recipe names its own, and, off the routes that
-  // take `output_config`, `effort: 'none'` (which sends none) unless the
-  // recipe set one; a judge the recipe turned off stays off. (#650 R2-1)
+  // auxiliary model unless the recipe names its own, and, where the route
+  // doesn't take `output_config` or the model takes no effort, `effort:
+  // 'none'` (which sends none) unless the recipe set one; a judge the recipe turned off stays off. (#650 R2-1)
   const steerJudge = steering !== undefined && judge?.enabled !== false;
   const judgeModel = steerJudge && judge?.model === undefined ? { model: steering.model } : {};
   const judgeEffort = steerJudge && !steering.anthropicEffort && judge?.effort === undefined ? { effort: 'none' as const } : {};

@@ -50,7 +50,8 @@ export function auxiliaryModel(recipe: Recipe): string {
 /**
  * What the gate's reply judge and suppression review are steered with: the
  * override, where there is one, and whether the route takes Anthropic's
- * `output_config` (gateOptionsFor sends `effort: 'none'` elsewhere).
+ * `output_config` and the model takes an effort, by the host's own table
+ * (gateOptionsFor sends `effort: 'none'` otherwise).
  */
 export function auxiliarySteering(recipe: Recipe): { model: string; anthropicEffort: boolean } | undefined {
   const model = auxiliaryModelOverride(recipe);
@@ -74,9 +75,10 @@ function hostChoseModel(recipe: Recipe): boolean {
  * - no temperature: Anthropic's current models and every `gpt-5`+ model
  *   refuse one with a 400, and the naming call's 0.8 was not worth that on
  *   any route; the model's default samples;
- * - `maxTokens`: the caller's cap on the `anthropic` and Bedrock routes, else
- *   at least AUXILIARY_REASONING_ROOM, so a model that reasons before it
- *   answers has an answer left;
+ * - `maxTokens`: the caller's cap for the Haiku 4.5 default on the `anthropic`
+ *   and Bedrock routes, else at least AUXILIARY_REASONING_ROOM, so a model
+ *   that reasons before it answers (a named Claude id may get adaptive
+ *   thinking from the host's adapter) has an answer left;
  * - on the Responses-family routes (`openai-responses`, `openai-codex`), a
  *   low reasoning effort, where the model is the one the host chose, the
  *   resident's, which takes it (the resident's turns run at `high`); a model

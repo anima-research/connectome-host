@@ -103,6 +103,8 @@ serve it, and goes to the resident's own model on every other provider, at
 that model's price; a recipe that wants them cheaper names a smaller model its
 provider serves (`"auxiliaryModel": "anthropic/claude-haiku-4.5"` on
 OpenRouter, say). On the `anthropic` route the key is for a Claude id only.
+The fetch tool's summarising model is set separately (`modules.fetch.model`),
+and off `anthropic` a recipe with the tool on must name one.
 
 Every string value may reference the environment as `${VAR}` or
 `${VAR:-default}`; a missing required variable fails the load, naming it.

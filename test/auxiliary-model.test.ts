@@ -109,6 +109,8 @@ describe('auxiliaryRequest: what the request carries per route (R1-2)', () => {
   test('OpenRouter and openai-compatible: the resident\'s model and room to reason, nothing the adapter would not forward', () => {
     expect(auxiliaryRequest(recipe({ provider: 'openrouter', model: 'openai/gpt-5.6-sol' }), 40))
       .toEqual({ config: { model: 'openai/gpt-5.6-sol', maxTokens: AUXILIARY_REASONING_ROOM } });
+    expect(auxiliaryRequest(recipe({ provider: 'openai-compatible', model: 'local-llama', baseUrl: 'http://localhost:11434/v1' }), 40))
+      .toEqual({ config: { model: 'local-llama', maxTokens: AUXILIARY_REASONING_ROOM } });
   });
 });
 
