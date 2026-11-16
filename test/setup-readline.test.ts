@@ -8,10 +8,12 @@ import { readEnvFile } from '../src/setup/secrets.js';
 const INDEX_PATH = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'src', 'index.ts');
 const SECRET = 'typed-hidden-0123456789';
 
-// The probe keeps the message setup opens the conversation with. On the agent's first turn it asks the person for a
-// secret through setup's own tool, and on its second it asks for the conversation to end, as setup--finished does.
+// The probe keeps the message setup opens the conversation with, and how many of the agent's inferences the log
+// holds in the microtask after each turn's inference:completed, where the host reads a refusal. On the agent's first
+// turn it asks the person for a secret through setup's own tool, and on its second it asks for the conversation to
+// end, as setup--finished does.
 const EXTENSION = `
-import { writeFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 console.error('[probe-early] a line before readline mode starts');
 export function register(api, config) {
@@ -28,6 +30,10 @@ export function register(api, config) {
     setFramework(framework) {
       let turns = 0;
       framework.onTrace((event) => {
+        if (event.type === 'inference:completed' && event.agentName === 'setup') {
+          queueMicrotask(() => appendFileSync(join(config.dir, 'logged.txt'),
+            framework.queryInferenceLogs({ agentName: 'setup', limit: 100 }).entries.length + '\\n'));
+        }
         if (event.type !== 'inference:started' || event.agentName !== 'setup') return;
         turns++;
         const setup = framework.getModule('setup');
@@ -91,6 +97,7 @@ test('setup\'s conversation opens with setup\'s message, asks hidden, has its ow
     terminal.write('goodbye\r');
     expect(await host.exited).toBe(0);
     expect(lines().some((line) => line.startsWith('Shutting down'))).toBe(true);
+    expect(readFileSync(join(dir, 'logged.txt'), 'utf-8')).toBe('1\n2\n');
   } finally {
     if (host.exitCode === null) host.kill('SIGKILL');
     await host.exited;
