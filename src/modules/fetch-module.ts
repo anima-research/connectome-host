@@ -90,7 +90,7 @@ export function fetchModuleConfig(membrane: Membrane, recipe: RecipeModules['fet
   };
 }
 
-/** Most images the answering model may look at in one call. */
+/** Most images the answering model may ask for in one call, shown or not. */
 const IMAGES_PER_CALL = 4;
 /** Most times in one call it may ask for images before it must answer. */
 const IMAGE_ROUNDS = 3;
@@ -112,7 +112,8 @@ const VIEW_IMAGE: ModelTool = {
 
 /** The web addresses of the images a part of a document names, in order, each once. */
 export function imageAddresses(part: string): string[] {
-  const found = Array.from(part.matchAll(/!\[[^\]\n]*\]\((https?:\/\/[^)\s]+)\)/gi), (match) => match[1]!);
+  // Up to the first ]( on its line, since a description can hold square brackets of its own.
+  const found = Array.from(part.matchAll(/!\[[^\n]*?\]\((https?:\/\/[^)\s]+)\)/gi), (match) => match[1]!);
   return [...new Set(found)];
 }
 
@@ -476,26 +477,36 @@ export class FetchModule implements Module {
    * What the answering model gets for asking to see an image: the image, or
    * words saying why not. Only an address the part it was given names is
    * fetched, so a page can't have it reach for anything the page didn't
-   * already point at, and only so many to a call.
+   * already point at, and only so many to a call, counted by the asking: a
+   * page of addresses that fail can't keep a call fetching.
    */
-  private async imageFor(input: Record<string, unknown>, offered: readonly string[], looked: string[]): Promise<{ content: string | ContentBlock[]; isError?: boolean }> {
+  private async imageFor(
+    input: unknown,
+    offered: readonly string[],
+    seen: { tried: string[]; looked: string[] },
+  ): Promise<{ content: string | ContentBlock[]; isError?: boolean }> {
     const refused = (why: string) => ({ content: why, isError: true });
-    const address = typeof input.url === 'string' ? input.url.trim() : '';
+    const given = (input as { url?: unknown } | null)?.url;
+    const address = typeof given === 'string' ? given.trim() : '';
     if (!offered.includes(address)) return refused('That is not the address of an image in the document. Give one exactly as the document has it, or answer without it.');
-    if (looked.includes(address)) return refused('You have already been shown that image, above.');
-    if (looked.length >= IMAGES_PER_CALL) return refused(`No more than ${IMAGES_PER_CALL} images can be looked at for one request. Answer from what you have seen.`);
+    if (seen.looked.includes(address)) return refused('You have already been shown that image, above.');
+    if (seen.tried.includes(address)) return refused('You have already asked for that image, and it could not be shown.');
+    if (seen.tried.length >= IMAGES_PER_CALL) return refused(`No more than ${IMAGES_PER_CALL} images can be asked for with one request. Answer from what you have seen.`);
+    seen.tried.push(address);
     let got;
     try {
       got = await httpGet(new URL(address), { ...this.reach(), timeoutMs: IMAGE_TIMEOUT_MS, maxBytes: IMAGE_MAX_BYTES, readBinary: true });
     } catch (error) {
-      if (!(error instanceof FetchRefusal)) throw error;
-      return refused(`The image couldn't be fetched: ${error.message}`);
+      // A refusal says why in its own words. The other way to fail here is an address the page wrote that isn't one.
+      if (error instanceof FetchRefusal) return refused(`The image couldn't be fetched: ${error.message}`);
+      if (error instanceof TypeError) return refused("The image couldn't be fetched: its address doesn't parse as one.");
+      throw error;
     }
     if (got.status < 200 || got.status >= 300) return refused(`The image couldn't be fetched: its server answered HTTP ${got.status}.`);
     if (got.cut) return refused(`The image is larger than the ${IMAGE_MAX_BYTES} bytes that can be looked at.`);
     const type = imageType(got.body);
     if (type === undefined) return refused('What is at that address is not a PNG, JPEG, GIF or WebP image, so it can\'t be shown.');
-    looked.push(address);
+    seen.looked.push(address);
     return { content: [{ type: 'image', source: { type: 'base64', data: got.body.toString('base64'), mediaType: type } }] };
   }
 
@@ -584,7 +595,9 @@ export class FetchModule implements Module {
     }];
     const leadIn = `${shownAddress(document.name)} was read, but the separate model didn't answer`;
     const instead = 'Leave out prompt to read the text itself.';
-    const looked: string[] = [];
+    const seen = { tried: [] as string[], looked: [] as string[] };
+    // What it wrote in every turn, since it can say part of its answer in the turn it asks for an image in.
+    const said: string[] = [];
     let response;
     for (let round = 0; ; round++) {
       const request: NormalizedRequest = {
@@ -602,23 +615,25 @@ export class FetchModule implements Module {
         const reason = (error instanceof Error ? error.message : String(error)).replace(/[.\s]+$/, '');
         return { ok: false, error: `${leadIn}: ${reason}. ${instead} If it keeps failing, whoever runs this host can set modules.fetch.model.` };
       }
+      const wrote = response.content
+        .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+        .map((block) => block.text)
+        .join('')
+        .trim();
+      if (wrote !== '') said.push(wrote);
       const asks = looking ? response.content.filter((block): block is Extract<ContentBlock, { type: 'tool_use' }> => block.type === 'tool_use') : [];
       if (asks.length === 0) break;
       if (round >= IMAGE_ROUNDS) return { ok: false, error: `${leadIn}: it kept asking to see images instead. ${instead}` };
       const shown: ContentBlock[] = [];
       for (const ask of asks) {
-        const outcome = ask.name === VIEW_IMAGE.name ? await this.imageFor(ask.input, offered, looked) : { content: 'There is no such tool.', isError: true };
+        const outcome = ask.name === VIEW_IMAGE.name ? await this.imageFor(ask.input, offered, seen) : { content: 'There is no such tool.', isError: true };
         shown.push({ type: 'tool_result', toolUseId: ask.id, toolName: ask.name, ...outcome });
       }
       messages.push({ participant: ANSWERER, content: response.content }, { participant: 'user', content: shown });
     }
     if (response.stopReason === 'refusal') return { ok: false, error: `${leadIn}: it refused. ${instead}` };
-    const text = response.content
-      .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
-      .map((block) => block.text)
-      .join('')
-      .trim();
+    const text = said.join('\n\n');
     if (text === '') return { ok: false, error: `${leadIn}: its reply was empty. ${instead}` };
-    return { ok: true, text, cutOff: response.stopReason === 'max_tokens', looked };
+    return { ok: true, text, cutOff: response.stopReason === 'max_tokens', looked: seen.looked };
   }
 }

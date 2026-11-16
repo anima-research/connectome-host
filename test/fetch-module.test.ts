@@ -63,6 +63,8 @@ beforeAll(async () => {
     else if (path === '/gallery') send(200, 'text/html', `<html><body><p>Six pictures.</p>${[1, 2, 3, 4, 5, 6].map((n) => `<img src="/pic${n}.png">`).join('')}</body></html>`);
     else if (path === '/chart.png' || /^\/pic\d\.png$/.test(path)) send(200, 'image/png', PNG);
     else if (path === '/other.png') send(200, 'image/png', Buffer.concat([PNG, Buffer.alloc(4_000_000)]));
+    else if (path === '/broken-gallery') send(200, 'text/html', `<html><body><p>Six that fail.</p>${[1, 2, 3, 4, 5, 6].map((n) => `<img src="/broken${n}.png">`).join('')}</body></html>`);
+    else if (path === '/bad-address') send(200, 'text/markdown', 'A picture: ![](http://[not-an-address)');
     else if (path === '/odd-images') send(200, 'text/html', '<html><body><p>Odd ones.</p><img alt="a page" src="/page"><img alt="gone" src="/gone.png"><img alt="big" src="/other.png"></body></html>');
     else send(404, 'text/plain', 'nope');
   });
@@ -77,7 +79,7 @@ afterAll(() => {
 
 const at = (path: string) => `http://127.0.0.1:${port}${path}`;
 
-type Reply = string | Error | { text?: string; stopReason: string } | { asks: string[] };
+type Reply = string | Error | { text?: string; stopReason: string } | { asks: string[]; saying?: string };
 
 /** A model's turn that asks to see images, one tool call for each address. */
 const asking = (...addresses: string[]): Reply => ({ asks: addresses });
@@ -91,7 +93,8 @@ function model(replies: Reply[] = []) {
       const next = replies.shift() ?? 'the answer';
       if (next instanceof Error) throw next;
       if (typeof next === 'object' && 'asks' in next) {
-        return { content: next.asks.map((url) => ({ type: 'tool_use', id: `ask-${asked++}`, name: 'view_image', input: { url } })), stopReason: 'tool_use' };
+        const calls = next.asks.map((url) => ({ type: 'tool_use', id: `ask-${asked++}`, name: 'view_image', input: { url } }));
+        return { content: [...(next.saying === undefined ? [] : [{ type: 'text', text: next.saying }]), ...calls], stopReason: 'tool_use' };
       }
       const { text, stopReason } = typeof next === 'string' ? { text: next, stopReason: 'end_turn' } : next;
       return { content: text === undefined ? [] : [{ type: 'text', text }], stopReason };
@@ -1007,12 +1010,14 @@ describe('looking at a page\'s images', () => {
     expect(result.structured).toMatchObject({ imagesViewed: [at('/chart.png')] });
   });
 
-  test('a question the text answers fetches no image, and the result says nothing of looking', async () => {
-    const before = hits['/chart.png'] ?? 0;
+  test('a model that answers from the text is offered the tool and fetches no image, and the result says nothing of looking', async () => {
+    const before = [hits['/chart.png'] ?? 0, hits['/other.png'] ?? 0, hits['/icon.png'] ?? 0];
     const { call, calls } = await withImages(['from the text alone']);
     const result = await call({ source: at('/chart-page'), prompt: 'q' });
     expect(calls).toHaveLength(1);
-    expect(hits['/chart.png'] ?? 0).toBe(before);
+    // The tool was there to use: nothing is fetched because the model didn't ask, not because it couldn't.
+    expect(calls[0]!.tools!.map((tool) => tool.name)).toEqual(['view_image']);
+    expect([hits['/chart.png'] ?? 0, hits['/other.png'] ?? 0, hits['/icon.png'] ?? 0]).toEqual(before);
     expect(textOf(result)).not.toContain('looked at');
     expect(result.structured).not.toHaveProperty('imagesViewed');
   });
@@ -1021,6 +1026,7 @@ describe('looking at a page\'s images', () => {
     const before = hits['/page'] ?? 0;
     const { call, calls } = await withImages([asking(at('/page'), 'http://169.254.169.254/latest/meta-data/', `${at('/chart.png')}?leak=the+request`), 'answer']);
     const result = await call({ source: at('/chart-page'), prompt: 'q' });
+    expect(results(calls[1]!)).toHaveLength(3);
     for (const one of results(calls[1]!)) {
       expect(one.isError).toBe(true);
       expect(one.content).toContain('not the address of an image in the document');
@@ -1053,6 +1059,36 @@ describe('looking at a page\'s images', () => {
     expect(textOf(result)).toContain(`It looked at 4 of the page's images: ${pics.slice(0, 4).join(', ')}.`);
   });
 
+  test('images that fail count toward the four, so a page of them can\'t keep a call fetching', async () => {
+    const broken = [1, 2, 3, 4, 5, 6].map((n) => at(`/broken${n}.png`));
+    const { call, calls } = await withImages([asking(...broken), asking(broken[0]!), 'answer']);
+    const result = await call({ source: at('/broken-gallery'), prompt: 'q' });
+    expect(broken.map((address) => hits[new URL(address).pathname] ?? 0)).toEqual([1, 1, 1, 1, 0, 0]);
+    const first = results(calls[1]!);
+    for (const one of first.slice(0, 4)) expect(one).toMatchObject({ isError: true, content: expect.stringContaining('HTTP 404') });
+    for (const one of first.slice(4)) expect(one).toMatchObject({ isError: true, content: expect.stringContaining('No more than 4 images') });
+    // One that failed isn't fetched again for the asking.
+    expect(results(calls[2]!)[0]).toMatchObject({ isError: true, content: expect.stringContaining('already asked for that image') });
+    expect(hits['/broken1.png']).toBe(1);
+    expect(textOf(result)).not.toContain('looked at');
+  });
+
+  test('an address the page wrote that isn\'t one, or a call with no input, is told to the model and doesn\'t fail the read', async () => {
+    const { call, calls } = await withImages([asking('http://[not-an-address'), 'answer']);
+    const result = await call({ source: at('/bad-address'), prompt: 'q' });
+    expect(result.success).toBe(true);
+    expect(results(calls[1]!)[0]).toMatchObject({ isError: true, content: expect.stringContaining("doesn't parse") });
+    const { mod } = await started({ images: true });
+    const direct = await (mod as unknown as { imageFor(input: unknown, offered: string[], seen: object): Promise<{ isError?: boolean }> }).imageFor(null, [], { tried: [], looked: [] });
+    expect(direct.isError).toBe(true);
+  });
+
+  test('what the model writes in the turn it asks in is part of its answer', async () => {
+    const { call } = await withImages([{ asks: [at('/chart.png')], saying: 'The totals are 3, 9 and 5.' }, 'The tallest bar is blue.']);
+    const answer = textOf(await call({ source: at('/chart-page'), prompt: 'q' }));
+    expect(answer).toMatch(/<answer-([0-9a-f]{12})>\nThe totals are 3, 9 and 5\.\n\nThe tallest bar is blue\.\n<\/answer-\1>/);
+  });
+
   test('a model that keeps asking instead of answering is an error after three rounds', async () => {
     const { call, calls } = await withImages([1, 2, 3, 4].map((n) => asking(at(`/pic${n}.png`))));
     const result = await call({ source: at('/gallery'), prompt: 'q' });
@@ -1072,12 +1108,26 @@ describe('looking at a page\'s images', () => {
   test('an image is held to the address guard its page is', async () => {
     const { mod } = await started({ images: true, allowPrivateNetwork: false });
     const before = hits['/chart.png'] ?? 0;
-    const looked: string[] = [];
-    const outcome = await (mod as unknown as { imageFor(input: object, offered: string[], looked: string[]): Promise<{ content: unknown; isError?: boolean }> })
-      .imageFor({ url: at('/chart.png') }, [at('/chart.png')], looked);
+    const seen = { tried: [] as string[], looked: [] as string[] };
+    const outcome = await (mod as unknown as { imageFor(input: object, offered: string[], seen: object): Promise<{ content: unknown; isError?: boolean }> })
+      .imageFor({ url: at('/chart.png') }, [at('/chart.png')], seen);
     expect(outcome).toMatchObject({ isError: true, content: expect.stringContaining('private or local address') });
-    expect(looked).toEqual([]);
+    expect(seen).toEqual({ tried: [at('/chart.png')], looked: [] });
     expect(hits['/chart.png'] ?? 0).toBe(before);
+  });
+
+  test('the tool\'s calls go through that one guarded way to an image, and no other', async () => {
+    const { membrane, calls } = model([asking(at('/chart.png')), 'answer']);
+    const { mod, call } = await started({ membrane, images: true });
+    const way = spyOn(mod as unknown as { imageFor: (...args: unknown[]) => unknown }, 'imageFor');
+    try {
+      await call({ source: at('/chart-page'), prompt: 'q' });
+      expect(way).toHaveBeenCalledTimes(1);
+      expect(way.mock.calls[0]![0]).toEqual({ url: at('/chart.png') });
+      expect(calls).toHaveLength(2);
+    } finally {
+      way.mockRestore();
+    }
   });
 
   test('the tool description tells the agent the other model can look', async () => {
@@ -1088,6 +1138,8 @@ describe('looking at a page\'s images', () => {
   test('imageAddresses finds each web image a part names, once, in order', () => {
     const part = 'a ![one](https://x.test/1.png) b ![](https://x.test/2.png) c ![one again](https://x.test/1.png) [a link](https://x.test/3.png) ![local](pics/4.png)';
     expect(imageAddresses(part)).toEqual(['https://x.test/1.png', 'https://x.test/2.png']);
+    // A description with square brackets of its own.
+    expect(imageAddresses('![Sales [2025]](https://x.test/sales.png) and ![a [b] c](https://x.test/abc.png)')).toEqual(['https://x.test/sales.png', 'https://x.test/abc.png']);
   });
 
   test('imageType goes by the bytes', () => {

@@ -178,8 +178,14 @@ function followable(raw: string | null): string | null {
   }
 }
 
-/** An address as it goes between markdown's round brackets: its own are percent-encoded, so one of them can't end it early. encodeURIComponent leaves them be. */
-const inBrackets = (address: string): string => address.replace(/[()]/g, (bracket) => (bracket === '(' ? '%28' : '%29'));
+/**
+ * An address as it goes between markdown's round brackets: its own are
+ * percent-encoded, so one of them can't end it early, and so is a bar, which a
+ * table cell would otherwise escape with a backslash that is then part of the
+ * address. encodeURIComponent leaves the brackets be.
+ */
+const ENCODED: Record<string, string> = { '(': '%28', ')': '%29', '|': '%7C' };
+const inBrackets = (address: string): string => address.replace(/[()|]/g, (mark) => ENCODED[mark]!);
 
 const service = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', emDelimiter: '*', bulletListMarker: '-' });
 
@@ -202,8 +208,9 @@ service.addRule('followable-link', {
 /** Whether an image's own size says it is an icon, a spacer or a tracking pixel: under 50 pixels either way. One that states no size isn't judged. */
 function isSmall(image: DomNode): boolean {
   return ['width', 'height'].some((side) => {
-    const size = Number.parseInt(image.getAttribute?.(side) ?? '', 10);
-    return size >= 0 && size < 50;
+    // A number of pixels and nothing else: 10% is a share of the page, not ten pixels.
+    const written = (image.getAttribute?.(side) ?? '').trim();
+    return /^\d+$/.test(written) && Number(written) < 50;
   });
 }
 
@@ -213,9 +220,10 @@ service.addRule('followable-image', {
     const element = asDom(node);
     const alt = (element.getAttribute?.('alt') ?? '').replace(/\s+/g, ' ').trim();
     // A data: address is the image itself, and can run to megabytes of base64.
-    // For a reader that can look, a page that loads its images late names them in data-src.
-    const src = followable(element.getAttribute?.('src') ?? null)
-      ?? (keepImages ? followable(element.getAttribute?.('data-src') ?? null) : null);
+    // For a reader that can look, a page that loads its images late names the
+    // real one in data-src, with a placeholder in src, so data-src comes first.
+    const src = (keepImages ? followable(element.getAttribute?.('data-src') ?? null) : null)
+      ?? followable(element.getAttribute?.('src') ?? null);
     if (src === null) return alt;
     // HTML's empty alt marks an image as decoration, and a text reader gets
     // nothing from its address. A reader that can look gets it all the same,

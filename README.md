@@ -844,18 +844,23 @@ address, `![alt](address)`, and one with no alt text is left out. With
 { "modules": { "fetch": { "images": true } } }
 ```
 
-- The page keeps the address of every image, alt text or not, except one whose
-  own `width` or `height` is under 50 pixels, an icon or a tracking pixel. A
-  page that loads its images late is read by its `data-src`.
-- The answering model gets one tool, `view_image`, and uses it where the
-  request needs what an image shows. A request the text answers fetches none.
-- It may look at four images in one call, each at most 3.5 MB, PNG, JPEG, GIF
-  or WebP by their bytes. The result's note names the ones it looked at.
+- The page keeps the address of an image with no alt text too, unless its own
+  `width` or `height` is a number of pixels under 50, an icon or a tracking
+  pixel. An image with alt text is kept whatever its size, as it is without
+  this option. Where an image has a `data-src`, as one loaded late has, that
+  is its address.
+- The answering model gets one tool, `view_image`, and is told to use it only
+  where the request needs what an image shows.
+- It may ask for four images in one call, shown or not, each at most 3.5 MB,
+  PNG, JPEG, GIF or WebP by their bytes. The result's note names the ones it
+  looked at.
 - Only an address the part of the page it was given names is fetched, exactly
-  as written, so a page can't have it request anything the page didn't already
-  point at, and each image is held to the address guard its page is. Which of
-  a page's images it asks for is the model's choice, so a page that sets out
-  to could learn a little of the request from that choice: a few bits a call.
+  as written, and each request, with any redirect its server answers with, is
+  held to the address guard its page is. So a page can't have the model
+  request an address the page didn't already point at. Which of a page's
+  images it asks for, and in what order, is the model's choice, and the page's
+  server sees it: a page that sets out to, by naming many images, could learn
+  some tens of bits of the request a call that way.
 - Set `model` to one that takes images. A workspace file's images are not
   looked at, and a direct read (no `prompt`) returns addresses, not pictures.
 

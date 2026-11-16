@@ -217,6 +217,15 @@ describe('htmlToMarkdown', () => {
     expect(await htmlToMarkdown(html, 'https://x.test/', { images: true })).toBe('![](https://x.test/chart.png)![logo](https://x.test/logo.png)![](https://x.test/late.png)');
     // Without it, as before: only what has alt text, and no data-src.
     expect(await htmlToMarkdown(html, 'https://x.test/')).toBe('![logo](https://x.test/logo.png)');
+    // A placeholder in src gives way to the real image in data-src, and a width that is a share of the page isn't a small one.
+    const late = page('<img src="/placeholder.gif" data-src="/real.png"><img src="/wide.png" width="10%">');
+    expect(await htmlToMarkdown(late, 'https://x.test/', { images: true })).toBe('![](https://x.test/real.png)![](https://x.test/wide.png)');
+    expect(await htmlToMarkdown(page('<img alt="a" src="/placeholder.gif" data-src="/real.png">'), 'https://x.test/')).toBe('![a](https://x.test/placeholder.gif)');
+  });
+
+  test('a bar in an image\'s address is encoded, so a table cell doesn\'t put a backslash into it', async () => {
+    const markdown = await htmlToMarkdown(page('<table><tr><td>k</td><td>v</td></tr><tr><td>pic</td><td><img alt="p" src="https://x.test/a|b.png"></td></tr></table>'), undefined);
+    expect(markdown).toContain('![p](https://x.test/a%7Cb.png)');
   });
 
   test('an image embedded as data keeps its alt text and not its megabytes', async () => {
