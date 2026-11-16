@@ -389,6 +389,12 @@ describe.skipIf(ladderUnrunnable)('where the ladder reads a unit\'s output', () 
     expect(foundIn(out)).toContainEqual(`connectome-test.service's unit file, ${unitFile}, can't be read (Is a directory), so whether it sends the host's ` +
         'output to a file isn\'t known');
     expect(out).toContain('400 prompt is too long');
+    const missing = `connectome-test.service's unit file, ${unitFile}, can't be read (No such file or directory), so whether it sends ` +
+      'the host\'s output to a file isn\'t known';
+    rmSync(unitFile, { recursive: true });
+    expect(foundIn(ladder(at).out)).toContainEqual(missing);
+    symlinkSync(join(at.work, 'nowhere'), unitFile);
+    expect(foundIn(ladder(at).out)).toContainEqual(missing);
   });
 });
 

@@ -178,7 +178,7 @@ journal = journal_entries(journal_text)
 jts = (journal_entries(last_entry) or [(None, None)])[-1][0]
 log_redirect = None
 frag = sh(f"systemctl --user show {unit} -p FragmentPath --value")
-if frag and os.path.exists(frag):
+if frag:
     frag_text, frag_why = read_text(frag)
     if frag_text is None:
         warn(f"{unit}'s unit file, {frag}, can't be read ({frag_why}), so whether it sends the host's output to a file "
