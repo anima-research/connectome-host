@@ -8,7 +8,7 @@
  *   /branches      — List all Chronicle branches
  *   /checkout N    — Switch to named branch
  *   /branchto M    — Roll the record back to a message, on a new branch
- *   /history [n]   — Show the last n messages (20 by default)
+ *   /history [n]   — Show the last n messages (20 by default, at most 500; /find for older)
  *   /lessons       — Show current lesson library
  *   /status        — Show agent/module status
  *   /clear         — Clear conversation display
@@ -44,6 +44,7 @@ import { EXACT_VERSION } from './update/install.js';
 import { HOST_STOPPING, SWITCH_UNDER_WAY, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork } from './session-switch.js';
 import { hostUpdate, type UpdateAnswer } from './update/update.js';
 import { goBackLines, goBackUnread, statusLines } from './web/update-text.js';
+import { HISTORY_PAGE_MAX } from './web/protocol.js';
 import { agentActivity, type AgentRetrying } from './web/agent-activity.js';
 
 interface AppContext {
@@ -347,7 +348,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
           { text: '  /restore [name]        Roll back to a checkpoint on a new branch, or to its branch head (no name: list checkpoints)', style: 'system' },
           { text: '  /branches              List Chronicle branches and checkpoints', style: 'system' },
           { text: '  /checkout <name>       Switch to branch', style: 'system' },
-          { text: '  /history [n]           Show the last n messages (20 by default)', style: 'system' },
+          { text: '  /history [n]           Show the last n messages (20 by default, at most 500; /find for older)', style: 'system' },
           { text: '  /find <text>           Search messages for text', style: 'system' },
           { text: '  /branchto <msgId>      Roll back to a message, on a new branch', style: 'system' },
           { text: '  /mcp list              List MCPL servers', style: 'system' },
@@ -1536,37 +1537,33 @@ function handleBranchTo(app: AppContext, messageId: string | undefined, requeste
   return { lines: [{ text: `Branching at [${messageId}] -> "${newBranchName}"...`, style: 'system' }], asyncWork };
 }
 
-/** The most /history shows at once: the Web UI's history page maximum. */
-const HISTORY_MAX = 500;
-
 /** /history: the command agent's context, which /branchto looks its ids up in. */
 function handleHistory(app: AppContext, countArg?: string): CommandResult {
   const cm = commandAgent(app)?.getContextManager();
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
-  // A count that isn't decimal digits coming to a whole number above 0 is
-  // refused, naming it: "1e309" read as Infinity and slice(-Infinity) printed
-  // the whole store, one line per message, in the command's result, and "abc",
-  // "0" or "-5" fell back to 20 without a word. Digits only, not Number()'s
-  // grammar: "0x10" and "1e3" are refused as /budget refuses them (#669).
+  // A count that doesn't come to a whole number above 0 is refused, naming
+  // it: "1e309" read as Infinity and slice(-Infinity) printed the whole store,
+  // one line per message, in the command's result, and "abc", "0" or "-5"
+  // fell back to 20 without a word. The grammar is digits with an optional
+  // leading + and a decimal part of zeros ("20", "+20", "20.0"), which main
+  // read too; exponents, other signs, 0x, separators and words are refused.
+  // #669's parseTokenCount(arg, 'none') reads the same and replaces this once
+  // one of the two lands.
   let count = 20;
   if (countArg !== undefined) {
-    if (!/^\d+$/.test(countArg) || !Number.isSafeInteger(Number(countArg)) || Number(countArg) === 0) {
+    const match = /^\+?(\d*)(?:\.(\d*))?$/.exec(countArg);
+    const whole = match?.[1] ?? '';
+    const fraction = (match?.[2] ?? '').replace(/0+$/, '');
+    if (!match || whole === '' || fraction !== '' || !/[1-9]/.test(whole)) {
       return { lines: [{ text: `Invalid message count: "${countArg}". Examples: 20, 200`, style: 'system' }] };
     }
-    count = Number(countArg);
+    // Past the cap every count means the cap, so a long digit string needs no exactness.
+    count = Math.min(Number(whole), HISTORY_PAGE_MAX);
   }
 
   const { messages } = cm.queryMessages({});
   const lines: Line[] = [{ text: `--- History (${messages.length} messages) ---`, style: 'system' }];
-
-  // The result is one message to one client, so it is capped where the Web
-  // UI's own history paging is (HISTORY_PAGE_MAX in web-ui-module): /history
-  // 5000 on a 4,590-message store printed 4,590 lines, 151 KB (#666).
-  if (count > HISTORY_MAX) {
-    lines.push({ text: `Showing the last ${HISTORY_MAX} of ${count} asked; the Web UI's history view pages further back.`, style: 'system' });
-    count = HISTORY_MAX;
-  }
 
   const recent = messages.slice(-count);
   for (const msg of recent) {
@@ -1582,6 +1579,14 @@ function handleHistory(app: AppContext, countArg?: string): CommandResult {
     });
   }
 
+  // The result goes to the requester alone and is capped where the Web UI's
+  // history paging is: /history 5000 on a 4,590-message store printed 4,590
+  // lines, 151 KB (#666). The line about the cap comes last, after the rows,
+  // and only where rows were held back: through fleet--command the output is
+  // one event a line in a 500-entry buffer, so a line put first is evicted.
+  if (count === HISTORY_PAGE_MAX && messages.length > HISTORY_PAGE_MAX) {
+    lines.push({ text: `Showing the last ${HISTORY_PAGE_MAX} of ${messages.length}; /find <text> searches them all.`, style: 'system' });
+  }
   return { lines };
 }
 
