@@ -624,7 +624,7 @@ export class HostUpdate {
         'says what\'s out, with its notes link.');
     }
     return notesAnswer(notesPath(setup.here.root, installed), setup.running, installed, version,
-      Math.min(NOTES_BUDGET, cap ?? NOTES_BUDGET));
+      cap ?? NOTES_BUDGET);
   }
 
   private installedTarget(): string | null {

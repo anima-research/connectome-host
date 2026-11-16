@@ -1291,6 +1291,22 @@ test("notes keep to the call's own cap where the agent's is lower than 24,000 ch
   expect(text(await notes({ action: 'notes', version: '0.16.0' }, 50))).not.toContain('a line of notes');
 });
 
+test("notes keep to the call's own cap where it's higher than 24,000 characters, and to 24,000 where the call carries none", async () => {
+  const { root } = installRunning0141(['0.17.0']);
+  const sections = [section('0.17.0', longNotes('seventeen', 300)), section('0.16.0', longNotes('sixteen', 180)),
+    section('0.15.0', longNotes('fifteen', 180))];
+  placeNotes(root, '0.17.0', sections.join(''));
+  const host = residentHost({ root, versions: ['0.14.1', '0.15.0', '0.16.0', '0.17.0'] });
+  const notes = (resultMaxChars?: number) => host.module.handleToolCall({
+    id: `call-${Math.random()}`, name: 'update', input: { action: 'notes' }, callerAgentName: 'resident',
+    ...(resultMaxChars !== undefined ? { resultMaxChars } : {}),
+  });
+  const whole = text(await notes(40_000));
+  expect(whole.length).toBeGreaterThan(24_000);
+  expect(whole).toContain('the last line of fifteen');
+  expect(text(await notes())).toContain('(24,000 characters), so here is each release\'s size');
+});
+
 test('notes with a version gives that release\'s notes whole, and none of the others', async () => {
   const { root } = installRunning0141(['0.17.0']);
   const sixteen = section('0.16.0', longNotes('sixteen', 180));
