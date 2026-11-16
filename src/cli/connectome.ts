@@ -79,8 +79,8 @@ export const COMMANDS: CliCommand[] = [
       'this release knows. With a name, the host shows each row that sweep would rewrite and its new text, never its ' +
       'old text, and writes nothing. With --write, the host rewrites them, and leaves a row as it was while a turn of ' +
       'an agent whose window holds it is alive. A name this release doesn\'t know, or another word, is a usage error, ' +
-      'which exits 2 before any host is looked for. It exits 1 when no host answers, when the host refuses, or when ' +
-      '--write left a row as it was.',
+      'which exits 2 before any host is looked for. It exits 1 when no host answers, when the running host is an ' +
+      'earlier release that doesn\'t know /sweep, when the host refuses, or when --write left a row as it was.',
     run: (ctx) => sweep(ctx),
   },
 ];
@@ -381,11 +381,10 @@ export async function sweep(ctx: CliContext, sweeps: readonly Sweep[] = SWEEPS):
   const host = await reach(ctx);
   if (host === null) return 1;
   if ('reason' in host) return noHost(ctx, host);
-  if (host.ready.turnWork === undefined) {
+  if (host.ready.sweep !== true) {
     host.close();
     ctx.err('connectome: nothing was asked: the running host is an older release than this command, and it ' +
-      'doesn\'t mark where a command\'s answer ends, so this couldn\'t tell when to stop reading. ' +
-      `${thisRelease(ctx.root!)} Then connectome sweep works.`);
+      `doesn't know /sweep. ${thisRelease(ctx.root!)} Then connectome sweep works.`);
     return 1;
   }
   const answer = await command(host, ['/sweep', ...ctx.argv].join(' '), (line) => ctx.out(line));

@@ -139,6 +139,14 @@ test('a session switch before any client connects leaves the first client the ne
   });
 });
 
+test('the ready event says the host knows /sweep', async () => {
+  await withChild(async (open) => {
+    const client = await open();
+    const ready = client.events.find(event => event.type === 'lifecycle' && event.phase === 'ready')!;
+    expect(ready.sweep).toBe(true);
+  });
+});
+
 test('a turn the framework ran and finished at boot, before the socket listened, ends in an idle the first client meets: ready says idle, or lifecycle:idle follows it', async () => {
   await withChild(async (open, dir) => {
     const client = await open();

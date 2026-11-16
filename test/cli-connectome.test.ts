@@ -1000,7 +1000,7 @@ test('sweep NAME asks the host /sweep with the same words and prints its answer,
     reply({ type: 'command-output', text: 'Sweep test-notes rewrote 1 of 2 rows.', style: 'system', corrId: message.corrId });
     reply({ type: 'command-output', text: 'Another client\'s line.', style: 'system', corrId: 'someone-else' });
     reply({ type: 'command-done', corrId: message.corrId, ...(String(message.command).endsWith('--write') ? { refused: true } : {}) });
-  });
+  }, { pid: 4242, dataDir: data, recipe: 'Resident', turnWork: false, agent: 'resident', sweep: true });
   const shown = sweepCtx(root, ['test-notes']);
   expect(await sweep(shown.ctx, NOTES)).toBe(0);
   expect(shown.out).toEqual(['Sweep test-notes rewrote 1 of 2 rows.']);
@@ -1019,7 +1019,7 @@ test('sweep NAME with no host answering asks nothing and exits 1, and one whose 
     if (message.type !== 'command') return;
     if (closing) socket.end();
     else reply({ type: 'command-done', corrId: message.corrId, error: 'the store is closed' });
-  });
+  }, { pid: 4242, dataDir: data, recipe: 'Resident', turnWork: false, agent: 'resident', sweep: true });
   const failed = sweepCtx(root, ['test-notes', '--write']);
   expect(await sweep(failed.ctx, NOTES)).toBe(1);
   expect(failed.err).toEqual(['connectome: the host\'s sweep command failed: the store is closed']);
@@ -1027,6 +1027,21 @@ test('sweep NAME with no host answering asks nothing and exits 1, and one whose 
   const closed = sweepCtx(root, ['test-notes', '--write']);
   expect(await sweep(closed.ctx, NOTES)).toBe(1);
   expect(closed.err.join('\n')).toContain('closed the connection before its answer ended, so which rows it rewrote isn\'t known here');
+});
+
+test('sweep NAME against a host that doesn\'t say it knows /sweep asks nothing and exits 1', async () => {
+  const { root, data } = install();
+  const asked: string[] = [];
+  await fakeHost(data, (message, reply) => {
+    if (message.type !== 'command') return;
+    asked.push(String(message.command));
+    reply({ type: 'command-output', text: 'Unknown command: /sweep. Type /help.', style: 'system', corrId: message.corrId });
+    reply({ type: 'command-done', corrId: message.corrId });
+  }, { pid: 4242, dataDir: data, recipe: 'Resident', turnWork: true, agent: 'resident' });
+  const given = sweepCtx(root, ['test-notes', '--write']);
+  expect(await sweep(given.ctx, NOTES)).toBe(1);
+  expect(asked).toEqual([]);
+  expect(given.err.join('\n')).toContain('the running host is an older release than this command, and it doesn\'t know /sweep');
 });
 
 function offerGoBack(root: string, data: string): void {

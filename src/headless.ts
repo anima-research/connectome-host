@@ -714,6 +714,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       idle: hadAtLeastOneInference && idleEmitted,
       turnWork,
       agent: primaryAgentName,
+      sweep: true,
     });
 
     // The first client then hears the boot it missed, oldest first and each
