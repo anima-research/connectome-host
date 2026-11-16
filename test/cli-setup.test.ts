@@ -121,6 +121,23 @@ describe('a first setup', () => {
     });
   });
 
+  test('gives the agent each dotenv file that sets MODEL or MCPL_AGENT_OVERLAY_FILE, in Bun\'s order, and names one it can\'t read', async () => {
+    const dir = scratch();
+    mkdirSync(join(dir, '.setup'));
+    writeFileSync(join(dir, '.env.local'), 'OTHER=1\nMCPL_AGENT_OVERLAY_FILE=overlay.json\n');
+    mkdirSync(join(dir, '.env.development'));
+    writeFileSync(join(dir, '.env'), 'MODEL=""\n');
+    const m = machine(dir, { hidden: [KEY] });
+    expect((await runSetup(dir, m.world)).status).toBe(0);
+    expect(readFileSync(join(dir, '.env'), 'utf-8')).toBe(`MODEL=""\nANTHROPIC_API_KEY="${KEY}"\n`);
+    expect(m.launched[0]!.env.CONNECTOME_SETUP_DOTENV)
+      .toBe('.env.local MCPL_AGENT_OVERLAY_FILE "overlay.json"; .env.development unreadable; .env MODEL ""');
+    const none = scratch();
+    const plain = machine(none, { hidden: [KEY] });
+    expect((await runSetup(none, plain.world)).status).toBe(0);
+    expect(plain.launched[0]!.env).not.toHaveProperty('CONNECTOME_SETUP_DOTENV');
+  });
+
   test('says the least and the most that setup\'s agent cost in five test setups', async () => {
     const dir = scratch();
     const { out } = await runSetup(dir, machine(dir, { hidden: [KEY] }).world);
