@@ -867,6 +867,18 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s data directory', () => {
     expect(out).toContain('stop=end_turn');
   });
 
+  test('--data-dir with no directory after it stops with a usage line, rather than reading INSTALL_DIR/data', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    for (const args of [[at.work, 'connectome-test.service', '--data-dir'], ['--data-dir', '', at.work, 'connectome-test.service']]) {
+      const ran = spawnSync('python3', [LADDER, ...args], {
+        encoding: 'utf-8', env: { ...process.env, PATH: `${at.bins}:${process.env.PATH}` }, timeout: 30_000,
+      });
+      expect(ran.stderr).toContain('connectome-doctor: --data-dir needs a directory after it');
+      expect(ran.stdout).not.toContain('pipeline ladder');
+      expect(ran.status).toBe(2);
+    }
+  });
+
   test('a model call that answered with no stop reason in its record says it answered, not stop=None, and one that failed says only its error', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     const answered = { timestamp: new Date().toISOString(), kind: 'stream', rawResponse: { status: 'completed' } };

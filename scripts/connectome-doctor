@@ -100,6 +100,9 @@ argv = iter(sys.argv[1:])
 for a in argv:
     if a == "--data-dir":
         data_dir = next(argv, None)
+        if not data_dir:
+            print("connectome-doctor: --data-dir needs a directory after it", file=sys.stderr)
+            sys.exit(2)
     else:
         args.append(a)
 install_dir = os.path.expanduser(args[0] if len(args) > 0 else "~/mythos-cm")
