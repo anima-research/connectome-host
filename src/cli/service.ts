@@ -8,6 +8,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { ContractError, RESTART_EXIT_CODE, SUPERVISED_ENV, installPaths, writeTextAtomic } from '../update/contract.js';
 import { shellWord } from '../update/launcher.js';
 import { lingerOf } from '../setup/linger.js';
+import { SHELL_NODE_TOP } from '../setup/packages.js';
 import { StoredSecrets, readEnvFile, writeEnvValue } from '../setup/secrets.js';
 import { readRecipeDocument } from '../recipe-document.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
@@ -409,7 +410,8 @@ function shellLost(sys: ServiceSystem, env: Record<string, string>, manager: Man
     const shown = showUnit(sys, env, unit.name, ['ActiveState', 'SubState', 'InvocationID']);
     if (typeof shown === 'string') return `whether ${daemon} still runs can't be told: ${shown}.`;
     const again = shown.get('InvocationID') !== started;
-    if (RUNNING.has(shown.get('ActiveState') ?? '') && !again) return null;
+    const up = RUNNING.has(shown.get('ActiveState') ?? '') && shown.get('SubState') !== 'auto-restart';
+    if (up && !again) return null;
     return `${daemon} didn't stay up after this run started it: systemd shows it ${stateOf(shown)}` +
       `${again ? ', in a later start than this run\'s' : ''}.`;
   }
@@ -794,7 +796,8 @@ function shellOf(work: string, sys: ServiceSystem): string | null {
   }
   if (sys.which('node', lastingPath(sys.env.PATH ?? '', sys.bun, sys)) === null) {
     throw new Refusal(`${SHELL_PACKAGE} is installed in ${work}, for the resident's shell, and its daemon runs on Node, ` +
-      'but no node is on this PATH. Nothing was written.');
+      `but this PATH has no node, apart from Bun's own stand-in for one. Install Node, at most Node ${SHELL_NODE_TOP}, ` +
+      'where this PATH finds it, then repeat this service install command. Nothing was written.');
   }
   return resolve(pkg, bin);
 }

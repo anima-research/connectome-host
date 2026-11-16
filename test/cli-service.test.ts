@@ -141,6 +141,7 @@ class FakeSystemd {
   checkedEnvironment: string[][] = [];
   calls: string[] = [];
   crashing = new Set<string>();
+  restartWait = new Set<string>();
   deactivating = new Set<string>();
   exiting = new Set<string>();
   failOnce = new Map<string, string>();
@@ -297,6 +298,8 @@ class FakeSystemd {
     }
     const foreign = this.foreign.get(unit);
     const running = this.running.has(unit);
+    // systemd 257 shows a unit in its wait to start again as activating (auto-restart), with the invocation that ended.
+    const waiting = running && this.restartWait.has(unit);
     const values: Record<string, string> = loaded || foreign
       ? {
         LoadState: 'loaded',
@@ -304,10 +307,10 @@ class FakeSystemd {
         FragmentPath: loaded?.fragment ?? foreign!.fragment,
         Restart: loaded?.restart ?? 'always',
         ...(loaded?.statuses ?? {}),
-        ActiveState: this.deactivating.has(unit) ? 'deactivating' : crashing ? 'activating' : running ? 'active'
-          : this.exiting.has(unit) ? 'failed' : 'inactive',
-        SubState: this.deactivating.has(unit) ? 'stop-sigterm' : crashing ? 'auto-restart' : running ? 'running'
-          : this.exiting.has(unit) ? 'failed' : 'dead',
+        ActiveState: this.deactivating.has(unit) ? 'deactivating' : crashing || waiting ? 'activating'
+          : running ? 'active' : this.exiting.has(unit) ? 'failed' : 'inactive',
+        SubState: this.deactivating.has(unit) ? 'stop-sigterm' : crashing || waiting ? 'auto-restart'
+          : running ? 'running' : this.exiting.has(unit) ? 'failed' : 'dead',
         NRestarts: String(this.nrestarts.get(unit) ?? 0),
         ExecMainStartTimestamp: this.latest.has(unit)
           ? 'Mon ' + new Date(STARTED_AT * 1000).toISOString().slice(0, 19).replace('T', ' ') + ' UTC' : '',
@@ -571,7 +574,8 @@ test('a shell whose only node on PATH is in that temporary directory, the bun in
   const f = fake(at, { bun, node: null, env: { PATH: `${standIn}:${at.root}:/usr/bin:/bin` },
     files: { [join(standIn, 'bun')]: bun, [join(standIn, 'node')]: bun } });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.err.join('\n')).toContain('no node is on this PATH');
+  expect(f.err.join('\n')).toContain('this PATH has no node, apart from Bun\'s own stand-in for one. Install Node, at most ' +
+    'Node 24, where this PATH finds it, then repeat this service install command.');
   nothingWritten(at);
 });
 
@@ -2520,6 +2524,15 @@ test('a refusal after the shell\'s settings are kept, such as the restart policy
   expect(readEnvFile(join(at.work, '.env')).has('SESSION_SERVER_TOKEN')).toBe(true);
   expect(f.systemd.starts).toEqual([]);
   expect([...f.out, ...f.err].join('\n')).not.toContain('With a shell');
+});
+
+test('a shell daemon that systemd waits to start again, still with this run\'s invocation, fails the install', async () => {
+  const at = install('My Resident', { shell: true });
+  const f = fake(at);
+  f.systemd.restartWait.add(SHELL);
+  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
+  expect(f.err.join('\n')).toContain(`the resident's shell daemon, ${SHELL}, didn't stay up after this run started it: ` +
+    'systemd shows it activating (auto-restart).');
 });
 
 for (const platform of ['linux', 'darwin'] as const) test(platform + ' a shell daemon that has stopped by the time its host answers fails the install, which names the shell\'s log', async () => {
