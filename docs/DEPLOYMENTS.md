@@ -370,7 +370,12 @@ trial that ends before its commit does, so its fallback runs. Under systemd,
 a service, and sets the line only for one that restarts the host on both. A
 service written by hand needs the line and both restarts. A host without
 the line, or run in a terminal, refuses the agent's restart and says why;
-the person's own `/update` and buttons don't need the line.
+the person's own `/update` and buttons don't need the line. While the
+agent's restart stays armed, each try, about once a minute, connects again
+to a fleet child whose socket another client took, and a child's socket
+keeps one client. So a person connected to a fleet child's socket loses
+that connection at each try, until the restart goes ahead or the agent's `lifecycle--update cancel`
+or the person's own Restart ends the wait.
 
 **Updating.** Update, Restart with its three ways on when turns don't end,
 and Go back are each an `/update` command and, in the Web UI, a button.
@@ -417,7 +422,14 @@ reasons unless the grant holds `ops` too.
   now and cut those turns off (`/update restart now`), or call it off
   (`/update restart resume`, which also ends a switch's quiesce left on a
   host after an earlier try). Scripts a turn left running in the background
-  aren't waited for, and the stop ends them. Then the host stops, and its
+  aren't waited for, and the stop ends them. Just before the stop, the switch
+  asks its fleet children once more. It doesn't wait for a turn on a child
+  that started after that look asked the others, or that a resume reached
+  after it, whether the child's person's or one this host sent earlier, such
+  as at its start. A quiesce that an MCPL server asks for with `host/command`
+  while the switch's quiesce holds a host is taken into that quiesce, since
+  agent-framework keeps the reason a quiesced host has, so ending the
+  switch's quiesce ends it too. Then the host stops, and its
   next start, which the service makes, copies the data, starts the new
   release on trial, and commits once that release has opened its stores and
   connected each MCPL server it's configured with that the release before it

@@ -74,7 +74,9 @@ const UPDATE_DESCRIPTION =
   '- notes: the release notes up to the one installed; with `version`, one release\'s.\n' +
   '- install: installs the newest release beside yours, which runs on.\n' +
   '- restart: arms a restart onto the newest release installed. It begins at the host\'s first quiet moment and asks ' +
-  'nobody: your turn ends as it would, as does every other agent\'s on this host and its fleet children.\n' +
+  'nobody: your turn ends as it would, as does every other agent\'s on this host, and so does each turn going on a fleet ' +
+  'child when the switch asks it. A turn that a fleet child begins after the switch last asked its children isn\'t ' +
+  'waited for.\n' +
   '- cancel: disarms an armed restart before it begins, whoever armed it.\n' +
   '`version`, with restart, is the release you looked at: if it would go to another by then, nothing is armed. ' +
   'Restart needs a headless host started with `CONNECTOME_SUPERVISED=1`; elsewhere it refuses and ' +

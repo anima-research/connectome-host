@@ -1367,8 +1367,8 @@ export interface RecipeModules {
 
   /**
    * The agent's own update (`lifecycle--update`). Off by default. The agent
-   * can check for, install, restart onto or go back from a release of its
-   * own install, as `/update` does. A restart or Go back begins at the
+   * can check for, install and restart onto a release of its own install,
+   * as `/update` does; going back stays the person's. A restart begins at the
    * host's first quiet moment, as `QUIET_MOMENT` in `src/web/update-text.ts`
    * says, though no sooner than a minute after a try that found something
    * still going, and is armed only on a host whose environment at its start holds

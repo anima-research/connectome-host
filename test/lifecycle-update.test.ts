@@ -274,7 +274,9 @@ for (const [kind, options, command] of [
     const items = actionItems(raw);
     expect(Object.keys(items)).toEqual(['check', 'notes', 'install', 'restart', 'cancel']);
     for (const [action, words] of [
-      ['restart', 'your turn ends as it would, as does every other agent\'s on this host and its fleet children'],
+      ['restart', 'your turn ends as it would, as does every other agent\'s on this host, and so does each turn going on a ' +
+        'fleet child when the switch asks it. A turn that a fleet child begins after the switch last asked its children ' +
+        'isn\'t waited for.'],
       ['cancel', 'before it begins, whoever armed it'],
     ] as const) {
       expect({ action, says: items[action]?.includes(words) }).toEqual({ action, says: true });
