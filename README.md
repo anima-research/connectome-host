@@ -848,7 +848,9 @@ address, `![alt](address)`, and one with no alt text is left out. With
   `width` or `height` is a number of pixels under 50, an icon or a tracking
   pixel. An image with alt text is kept whatever its size, as it is without
   this option. Where an image has a `data-src`, as one loaded late has, that
-  is its address.
+  is its address. A page's first 64 images are the ones that can be looked at,
+  and only a page served as HTML has any: one served as markdown or plain text
+  is read as text.
 - The answering model gets one tool, `view_image`, and is told to use it only
   where the request needs what an image shows.
 - It may ask for four images in one call, shown or not, each at most 3.5 MB,

@@ -33,7 +33,7 @@ import type {
 } from '@animalabs/agent-framework';
 import type { ContentBlock, Membrane, NormalizedMessage, NormalizedRequest, ToolDefinition as ModelTool } from '@animalabs/membrane';
 import type { RecipeModules } from '../recipe.js';
-import { decodeText, htmlToMarkdown, isHtmlPath, isHtmlType, looksBinary, looksLikeScriptShell, mediaType } from './fetch-convert.js';
+import { decodeText, htmlToMarkdown, htmlToPage, isHtmlPath, isHtmlType, looksBinary, looksLikeScriptShell, mediaType, type PageImage } from './fetch-convert.js';
 import { FetchRefusal, httpGet, shownAddress, type HttpGetOptions } from './fetch-http.js';
 import { workspaceReadFields } from '../workspace-read-result.js';
 import { unknownToolResult } from './unknown-tool.js';
@@ -105,17 +105,10 @@ const VIEW_IMAGE: ModelTool = {
   description: "Look at one of the images the document names. Use it only where the request needs what an image shows.",
   inputSchema: {
     type: 'object',
-    properties: { url: { type: 'string', description: 'The image address, exactly as the document gives it between the round brackets of ![…](…).' } },
+    properties: { url: { type: 'string', description: 'The image address, exactly as the document writes it between the round brackets of ![…](…).' } },
     required: ['url'],
   },
 };
-
-/** The web addresses of the images a part of a document names, in order, each once. */
-export function imageAddresses(part: string): string[] {
-  // Up to the first ]( on its line, since a description can hold square brackets of its own.
-  const found = Array.from(part.matchAll(/!\[[^\n]*?\]\((https?:\/\/[^)\s]+)\)/gi), (match) => match[1]!);
-  return [...new Set(found)];
-}
 
 /** The kind of image bytes are, among those a model takes, by how they begin: what a server calls them isn't asked. */
 export function imageType(bytes: Buffer): 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | undefined {
@@ -141,6 +134,8 @@ interface Document {
   scriptShell: boolean;
   /** What the workspace said of the copy it read, such as which one it is. */
   note?: string;
+  /** The web images a page's markdown names, as its conversion listed them, where the recipe lets the answering model look. */
+  images?: PageImage[];
 }
 
 interface Snapshot {
@@ -475,20 +470,21 @@ export class FetchModule implements Module {
 
   /**
    * What the answering model gets for asking to see an image: the image, or
-   * words saying why not. Only an address the part it was given names is
+   * words saying why not. Only an image the part it was given names is
    * fetched, so a page can't have it reach for anything the page didn't
    * already point at, and only so many to a call, counted by the asking: a
    * page of addresses that fail can't keep a call fetching.
    */
   private async imageFor(
     input: unknown,
-    offered: readonly string[],
+    offered: readonly PageImage[],
     seen: { tried: string[]; looked: string[] },
   ): Promise<{ content: string | ContentBlock[]; isError?: boolean }> {
     const refused = (why: string) => ({ content: why, isError: true });
     const given = (input as { url?: unknown } | null)?.url;
-    const address = typeof given === 'string' ? given.trim() : '';
-    if (!offered.includes(address)) return refused('That is not the address of an image in the document. Give one exactly as the document has it, or answer without it.');
+    const image = typeof given === 'string' ? offered.find(({ written }) => written === given.trim()) : undefined;
+    if (image === undefined) return refused('That is not the address of an image in the document. Give one exactly as the document has it, or answer without it.');
+    const { address } = image;
     if (seen.looked.includes(address)) return refused('You have already been shown that image, above.');
     if (seen.tried.includes(address)) return refused('You have already asked for that image, and it could not be shown.');
     if (seen.tried.length >= IMAGES_PER_CALL) return refused(`No more than ${IMAGES_PER_CALL} images can be asked for with one request. Answer from what you have seen.`);
@@ -497,10 +493,8 @@ export class FetchModule implements Module {
     try {
       got = await httpGet(new URL(address), { ...this.reach(), timeoutMs: IMAGE_TIMEOUT_MS, maxBytes: IMAGE_MAX_BYTES, readBinary: true });
     } catch (error) {
-      // A refusal says why in its own words. The other way to fail here is an address the page wrote that isn't one.
-      if (error instanceof FetchRefusal) return refused(`The image couldn't be fetched: ${error.message}`);
-      if (error instanceof TypeError) return refused("The image couldn't be fetched: its address doesn't parse as one.");
-      throw error;
+      if (!(error instanceof FetchRefusal)) throw error;
+      return refused(`The image couldn't be fetched: ${error.message}`);
     }
     if (got.status < 200 || got.status >= 300) return refused(`The image couldn't be fetched: its server answered HTTP ${got.status}.`);
     if (got.cut) return refused(`The image is larger than the ${IMAGE_MAX_BYTES} bytes that can be looked at.`);
@@ -539,7 +533,9 @@ export class FetchModule implements Module {
       // Whole: the server was reached and its answer read, so this isn't led with "Nothing was fetched".
       throw new FetchRefusal(`${shownAddress(got.url)} answered HTTP ${got.status}, so there is no page to read.${sent}`, true);
     }
-    const text = html ? await htmlToMarkdown(decoded, got.url, { images: this.config.images === true }) : decoded;
+    const looking = this.config.images === true;
+    const page = html ? await htmlToPage(decoded, got.url, { images: looking }) : { markdown: decoded, images: [] };
+    const text = page.markdown;
     return {
       text,
       name: got.url,
@@ -548,6 +544,7 @@ export class FetchModule implements Module {
       contentType: type,
       status: got.status,
       scriptShell: html && looksLikeScriptShell(decoded, text),
+      ...(looking && page.images.length > 0 ? { images: page.images } : {}),
     };
   }
 
@@ -581,8 +578,9 @@ export class FetchModule implements Module {
     const extent = whole
       ? `This is the whole ${document.kind}.`
       : `This is only part of the ${document.kind}: characters ${from} to ${end} of ${document.text.length}${document.cut ? ', and it goes on past that' : ''}.`;
-    // The images it may ask to see: those this part of a page names, where the recipe lets it look at all.
-    const offered = this.config.images && document.kind === 'page' ? imageAddresses(part) : [];
+    // The images it may ask to see: those the page's conversion listed whose
+    // address this part holds as it was written, where the recipe lets it look at all.
+    const offered = this.config.images ? (document.images ?? []).filter((image) => part.includes(`](${image.written})`)) : [];
     const looking = offered.length > 0;
     const messages: NormalizedMessage[] = [{
       participant: 'user',
@@ -596,8 +594,11 @@ export class FetchModule implements Module {
     const leadIn = `${shownAddress(document.name)} was read, but the separate model didn't answer`;
     const instead = 'Leave out prompt to read the text itself.';
     const seen = { tried: [] as string[], looked: [] as string[] };
+    // A failure after it asked for images says which, since one of them may be why.
+    const asked = (): string => seen.tried.length === 0 ? '' : ` It had asked to see ${seen.tried.map(shownAddress).join(', ')}.`;
     // What it wrote in every turn, since it can say part of its answer in the turn it asks for an image in.
     const said: string[] = [];
+    let last = '';
     let response;
     for (let round = 0; ; round++) {
       const request: NormalizedRequest = {
@@ -613,17 +614,25 @@ export class FetchModule implements Module {
       } catch (error) {
         // The provider's own words, without a full stop of theirs before ours.
         const reason = (error instanceof Error ? error.message : String(error)).replace(/[.\s]+$/, '');
-        return { ok: false, error: `${leadIn}: ${reason}. ${instead} If it keeps failing, whoever runs this host can set modules.fetch.model.` };
+        // After an image was shown, the image is the likeliest thing its provider wouldn't take.
+        const advice = seen.looked.length > 0
+          ? 'If an image is what its provider refused, ask again in a way that needs no image.'
+          : 'If it keeps failing, whoever runs this host can set modules.fetch.model.';
+        return { ok: false, error: `${leadIn}: ${reason}.${asked()} ${instead} ${advice}` };
       }
-      const wrote = response.content
+      if (response.stopReason === 'refusal') return { ok: false, error: `${leadIn}: it refused.${asked()} ${instead}` };
+      last = response.content
         .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
         .map((block) => block.text)
         .join('')
         .trim();
-      if (wrote !== '') said.push(wrote);
-      const asks = looking ? response.content.filter((block): block is Extract<ContentBlock, { type: 'tool_use' }> => block.type === 'tool_use') : [];
+      if (last !== '') said.push(last);
+      // A turn cut off at its length limit may hold half a call: nothing in it is acted on.
+      const asks = looking && response.stopReason !== 'max_tokens'
+        ? response.content.filter((block): block is Extract<ContentBlock, { type: 'tool_use' }> => block.type === 'tool_use')
+        : [];
       if (asks.length === 0) break;
-      if (round >= IMAGE_ROUNDS) return { ok: false, error: `${leadIn}: it kept asking to see images instead. ${instead}` };
+      if (round >= IMAGE_ROUNDS) return { ok: false, error: `${leadIn}: it kept asking to see images instead.${asked()} ${instead}` };
       const shown: ContentBlock[] = [];
       for (const ask of asks) {
         const outcome = ask.name === VIEW_IMAGE.name ? await this.imageFor(ask.input, offered, seen) : { content: 'There is no such tool.', isError: true };
@@ -631,9 +640,8 @@ export class FetchModule implements Module {
       }
       messages.push({ participant: ANSWERER, content: response.content }, { participant: 'user', content: shown });
     }
-    if (response.stopReason === 'refusal') return { ok: false, error: `${leadIn}: it refused. ${instead}` };
-    const text = said.join('\n\n');
-    if (text === '') return { ok: false, error: `${leadIn}: its reply was empty. ${instead}` };
-    return { ok: true, text, cutOff: response.stopReason === 'max_tokens', looked: seen.looked };
+    // The turn that ends it is the one that answers: what it wrote on the way to an empty one isn't an answer.
+    if (last === '') return { ok: false, error: `${leadIn}: its reply was empty.${asked()} ${instead}` };
+    return { ok: true, text: said.join('\n\n'), cutOff: response.stopReason === 'max_tokens', looked: seen.looked };
   }
 }

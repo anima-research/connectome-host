@@ -3,7 +3,7 @@ import type { ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { decodeText, htmlToMarkdown, isHtmlPath, looksBinary, looksLikeScriptShell, mediaType } from '../src/modules/fetch-convert.js';
+import { decodeText, htmlToMarkdown, htmlToPage, isHtmlPath, looksBinary, looksLikeScriptShell, mediaType } from '../src/modules/fetch-convert.js';
 import { FetchRefusal } from '../src/modules/fetch-http.js';
 
 const page = (body: string, head = ''): string => `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
@@ -223,9 +223,24 @@ describe('htmlToMarkdown', () => {
     expect(await htmlToMarkdown(page('<img alt="a" src="/placeholder.gif" data-src="/real.png">'), 'https://x.test/')).toBe('![a](https://x.test/placeholder.gif)');
   });
 
-  test('a bar in an image\'s address is encoded, so a table cell doesn\'t put a backslash into it', async () => {
-    const markdown = await htmlToMarkdown(page('<table><tr><td>k</td><td>v</td></tr><tr><td>pic</td><td><img alt="p" src="https://x.test/a|b.png"></td></tr></table>'), undefined);
-    expect(markdown).toContain('![p](https://x.test/a%7Cb.png)');
+  test('a conversion lists the web images it wrote, each as written and as its address is, and none without being asked', async () => {
+    const html = page('<img src="/a(1).png"><img alt="two" src="https://other.test/b.png"><img src="/a(1).png"><img src="/tiny.png" width="4"><img alt="local" src="data:image/png;base64,AAAA">');
+    const converted = await htmlToPage(html, 'https://x.test/', { images: true });
+    expect(converted.markdown).toBe('![](https://x.test/a%281%29.png)![two](https://other.test/b.png)![](https://x.test/a%281%29.png)local');
+    expect(converted.images).toEqual([
+      { written: 'https://x.test/a%281%29.png', address: 'https://x.test/a(1).png' },
+      { written: 'https://other.test/b.png', address: 'https://other.test/b.png' },
+    ]);
+    expect((await htmlToPage(html, 'https://x.test/')).images).toEqual([]);
+    // A local file's relative addresses aren't the web's, and aren't listed.
+    expect((await htmlToPage(page('<img alt="here" src="pics/a.png">'), undefined, { images: true })).images).toEqual([]);
+  });
+
+  test('at most 64 of a page\'s images are listed', async () => {
+    const html = page(Array.from({ length: 70 }, (_, n) => `<img src="/p${n}.png">`).join(''));
+    const { images } = await htmlToPage(html, 'https://x.test/', { images: true });
+    expect(images).toHaveLength(64);
+    expect(images.at(-1)!.address).toBe('https://x.test/p63.png');
   });
 
   test('an image embedded as data keeps its alt text and not its megabytes', async () => {

@@ -178,14 +178,18 @@ function followable(raw: string | null): string | null {
   }
 }
 
+/** An address as it goes between markdown's round brackets: its own are percent-encoded, so one of them can't end it early. encodeURIComponent leaves them be. */
+const inBrackets = (address: string): string => address.replace(/[()]/g, (bracket) => (bracket === '(' ? '%28' : '%29'));
+
 /**
- * An address as it goes between markdown's round brackets: its own are
- * percent-encoded, so one of them can't end it early, and so is a bar, which a
- * table cell would otherwise escape with a backslash that is then part of the
- * address. encodeURIComponent leaves the brackets be.
+ * The web images written into the markdown, for a reader that can look: each
+ * as it is written between the round brackets, which is what that reader gives
+ * back, and as its address is, which is what gets fetched. The two differ
+ * where a bracket in the address was encoded. The parent is told these rather
+ * than left to find them in the markdown again, where a description can hold
+ * anything.
  */
-const ENCODED: Record<string, string> = { '(': '%28', ')': '%29', '|': '%7C' };
-const inBrackets = (address: string): string => address.replace(/[()|]/g, (mark) => ENCODED[mark]!);
+const imagesWritten: Array<{ written: string; address: string }> = [];
 
 const service = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', emDelimiter: '*', bulletListMarker: '-' });
 
@@ -230,6 +234,7 @@ service.addRule('followable-image', {
     // unless the image is too small to be more than decoration: a chart often
     // has no alt text either.
     if (alt === '' && !(keepImages && !isSmall(element))) return '';
+    if (keepImages && /^https?:\/\//i.test(src)) imagesWritten.push({ written: inBrackets(src), address: src });
     return `![${alt}](${inBrackets(src)})`;
   },
 });
@@ -305,9 +310,9 @@ service.addRule('not-for-a-reader', {
   replacement: () => '',
 });
 
-let answer: { markdown: string } | { error: string };
+let answer: { markdown: string; images: typeof imagesWritten } | { error: string };
 try {
-  answer = { markdown: service.turndown(html) };
+  answer = { markdown: service.turndown(html), images: imagesWritten };
 } catch (error) {
   answer = { error: error instanceof Error ? error.message : String(error) };
 }

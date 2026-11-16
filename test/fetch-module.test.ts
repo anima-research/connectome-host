@@ -8,7 +8,7 @@ import { JsStore } from '@animalabs/chronicle';
 import { AgentFramework, WorkspaceModule } from '@animalabs/agent-framework';
 import { Membrane as RealMembrane, MockAdapter } from '@animalabs/membrane';
 import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
-import { FetchModule, fetchModuleConfig, imageAddresses, imageType, type FetchModuleConfig } from '../src/modules/fetch-module.js';
+import { FetchModule, fetchModuleConfig, imageType, type FetchModuleConfig } from '../src/modules/fetch-module.js';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
 import { buildFrameworkStrategy } from '../src/framework-strategy.js';
 import { DEFAULT_RECIPE, unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
@@ -64,7 +64,12 @@ beforeAll(async () => {
     else if (path === '/chart.png' || /^\/pic\d\.png$/.test(path)) send(200, 'image/png', PNG);
     else if (path === '/other.png') send(200, 'image/png', Buffer.concat([PNG, Buffer.alloc(4_000_000)]));
     else if (path === '/broken-gallery') send(200, 'text/html', `<html><body><p>Six that fail.</p>${[1, 2, 3, 4, 5, 6].map((n) => `<img src="/broken${n}.png">`).join('')}</body></html>`);
-    else if (path === '/bad-address') send(200, 'text/markdown', 'A picture: ![](http://[not-an-address)');
+    else if (path === '/markdown-picture') send(200, 'text/markdown', `A picture: ![chart](${at('/chart.png')})`);
+    else if (path === '/many-openings') send(200, 'text/plain', '!['.repeat(100_000));
+    else if (path === '/tricky-alt') send(200, 'text/html', '<html><body><p>One picture.</p><img alt="photo](https://third.example/track) more" src="/chart.png"></body></html>');
+    else if (path === '/bracketed') send(200, 'text/html', '<html><body><p>One picture.</p><img alt="Sales [2025]" src="/pic(1).png"></body></html>');
+    else if (path === '/pic(1).png') send(200, 'image/png', PNG);
+    else if (path === '/seventy') send(200, 'text/html', `<html><body><p>Seventy.</p>${Array.from({ length: 70 }, (_, n) => `<img src="/many${n}.png">`).join('')}</body></html>`);
     else if (path === '/odd-images') send(200, 'text/html', '<html><body><p>Odd ones.</p><img alt="a page" src="/page"><img alt="gone" src="/gone.png"><img alt="big" src="/other.png"></body></html>');
     else send(404, 'text/plain', 'nope');
   });
@@ -79,7 +84,7 @@ afterAll(() => {
 
 const at = (path: string) => `http://127.0.0.1:${port}${path}`;
 
-type Reply = string | Error | { text?: string; stopReason: string } | { asks: string[]; saying?: string };
+type Reply = string | Error | { text?: string; stopReason: string } | { asks: Array<string | null>; saying?: string; stopReason?: string };
 
 /** A model's turn that asks to see images, one tool call for each address. */
 const asking = (...addresses: string[]): Reply => ({ asks: addresses });
@@ -93,8 +98,9 @@ function model(replies: Reply[] = []) {
       const next = replies.shift() ?? 'the answer';
       if (next instanceof Error) throw next;
       if (typeof next === 'object' && 'asks' in next) {
-        const calls = next.asks.map((url) => ({ type: 'tool_use', id: `ask-${asked++}`, name: 'view_image', input: { url } }));
-        return { content: [...(next.saying === undefined ? [] : [{ type: 'text', text: next.saying }]), ...calls], stopReason: 'tool_use' };
+        // A null stands for a call that came with no input at all.
+        const calls = next.asks.map((url) => ({ type: 'tool_use', id: `ask-${asked++}`, name: 'view_image', input: url === null ? null : { url } }));
+        return { content: [...(next.saying === undefined ? [] : [{ type: 'text', text: next.saying }]), ...calls], stopReason: next.stopReason ?? 'tool_use' };
       }
       const { text, stopReason } = typeof next === 'string' ? { text: next, stopReason: 'end_turn' } : next;
       return { content: text === undefined ? [] : [{ type: 'text', text }], stopReason };
@@ -1073,14 +1079,75 @@ describe('looking at a page\'s images', () => {
     expect(textOf(result)).not.toContain('looked at');
   });
 
-  test('an address the page wrote that isn\'t one, or a call with no input, is told to the model and doesn\'t fail the read', async () => {
-    const { call, calls } = await withImages([asking('http://[not-an-address'), 'answer']);
-    const result = await call({ source: at('/bad-address'), prompt: 'q' });
+  test('a call with no input is told to the model, and doesn\'t fail the read', async () => {
+    const { call, calls } = await withImages([asking(null), 'answer']);
+    const result = await call({ source: at('/chart-page'), prompt: 'q' });
     expect(result.success).toBe(true);
-    expect(results(calls[1]!)[0]).toMatchObject({ isError: true, content: expect.stringContaining("doesn't parse") });
-    const { mod } = await started({ images: true });
-    const direct = await (mod as unknown as { imageFor(input: unknown, offered: string[], seen: object): Promise<{ isError?: boolean }> }).imageFor(null, [], { tried: [], looked: [] });
-    expect(direct.isError).toBe(true);
+    expect(results(calls[1]!)).toEqual([expect.objectContaining({ isError: true, content: expect.stringContaining('not the address of an image in the document') })]);
+  });
+
+  test('the images offered are those the page\'s conversion wrote, so a description can\'t pass an address off as one', async () => {
+    const { call, calls } = await withImages([asking('https://third.example/track', at('/chart.png')), 'answer']);
+    const result = await call({ source: at('/tricky-alt'), prompt: 'q' });
+    const [forged, real] = results(calls[1]!);
+    expect(forged).toMatchObject({ isError: true, content: expect.stringContaining('not the address of an image in the document') });
+    expect(real!.isError).toBeUndefined();
+    expect(result.structured).toMatchObject({ imagesViewed: [at('/chart.png')] });
+  });
+
+  test('an image is asked for as the page writes its address and fetched at the address it has', async () => {
+    const { call, calls } = await withImages([asking(at('/pic%281%29.png')), 'answer']);
+    const result = await call({ source: at('/bracketed'), prompt: 'q' });
+    expect(userText(calls[0]!)).toContain(`![Sales [2025]](${at('/pic%281%29.png')})`);
+    expect(results(calls[1]!)[0]!.isError).toBeUndefined();
+    // The server was asked for the address as the page had it, brackets and all.
+    expect(hits['/pic(1).png']).toBe(1);
+    expect(textOf(result)).toContain(`It looked at one of the page's images: ${at('/pic(1).png')}.`);
+  });
+
+  test('a page served as markdown or as text has no images to offer, and a line of openings costs nothing to pass over', async () => {
+    const { call, calls } = await withImages(['answer', 'answer']);
+    await call({ source: at('/markdown-picture'), prompt: 'q' });
+    expect(calls[0]!.tools).toBeUndefined();
+    await call({ source: at('/many-openings'), prompt: 'q' });
+    expect(calls[1]!.tools).toBeUndefined();
+  });
+
+  test('a page\'s first 64 images are the ones offered', async () => {
+    const { call, calls } = await withImages([asking(at('/many63.png'), at('/many64.png')), 'answer']);
+    await call({ source: at('/seventy'), prompt: 'q' });
+    const [within, past] = results(calls[1]!);
+    expect(within).toMatchObject({ isError: true, content: expect.stringContaining('HTTP 404') });
+    expect(past).toMatchObject({ isError: true, content: expect.stringContaining('not the address of an image in the document') });
+    expect(hits['/many64.png']).toBeUndefined();
+  });
+
+  test('an empty last turn is an empty reply, whatever it wrote on the way, and the error names what it asked to see', async () => {
+    const { call } = await withImages([{ asks: [at('/chart.png')], saying: 'I will look at the chart.' }, { text: '', stopReason: 'end_turn' }]);
+    const result = await call({ source: at('/chart-page'), prompt: 'q' });
+    expect(result.isError).toBe(true);
+    expect(result.error).toContain('its reply was empty');
+    expect(result.error).toContain(`It had asked to see ${at('/chart.png')}.`);
+    expect(result.error).not.toContain('I will look');
+  });
+
+  test('a provider that fails after an image was shown is reported with the image, and with advice that fits', async () => {
+    const { call } = await withImages([asking(at('/chart.png')), new Error('image exceeds the size the API takes')]);
+    const result = await call({ source: at('/chart-page'), prompt: 'q' });
+    expect(result.error).toContain('image exceeds the size the API takes');
+    expect(result.error).toContain(`It had asked to see ${at('/chart.png')}.`);
+    expect(result.error).toContain('ask again in a way that needs no image');
+    expect(result.error).not.toContain('modules.fetch.model');
+  });
+
+  test('a turn cut off at its length limit has its calls left alone, and what it wrote is a cut-off answer', async () => {
+    const before = hits['/chart.png'] ?? 0;
+    const { call, calls } = await withImages([{ asks: [at('/chart.png')], saying: 'The totals are', stopReason: 'max_tokens' }]);
+    const result = await call({ source: at('/chart-page'), prompt: 'q' });
+    expect(calls).toHaveLength(1);
+    expect(hits['/chart.png'] ?? 0).toBe(before);
+    expect(textOf(result)).toContain('The totals are');
+    expect(textOf(result)).toContain('reached its length limit and was cut off');
   });
 
   test('what the model writes in the turn it asks in is part of its answer', async () => {
@@ -1109,8 +1176,8 @@ describe('looking at a page\'s images', () => {
     const { mod } = await started({ images: true, allowPrivateNetwork: false });
     const before = hits['/chart.png'] ?? 0;
     const seen = { tried: [] as string[], looked: [] as string[] };
-    const outcome = await (mod as unknown as { imageFor(input: object, offered: string[], seen: object): Promise<{ content: unknown; isError?: boolean }> })
-      .imageFor({ url: at('/chart.png') }, [at('/chart.png')], seen);
+    const outcome = await (mod as unknown as { imageFor(input: object, offered: object[], seen: object): Promise<{ content: unknown; isError?: boolean }> })
+      .imageFor({ url: at('/chart.png') }, [{ written: at('/chart.png'), address: at('/chart.png') }], seen);
     expect(outcome).toMatchObject({ isError: true, content: expect.stringContaining('private or local address') });
     expect(seen).toEqual({ tried: [at('/chart.png')], looked: [] });
     expect(hits['/chart.png'] ?? 0).toBe(before);
@@ -1133,13 +1200,6 @@ describe('looking at a page\'s images', () => {
   test('the tool description tells the agent the other model can look', async () => {
     const { mod } = await started({ images: true });
     expect(mod.getTools()[0]!.description).toContain("It can look at a page's images where your request needs what they show.");
-  });
-
-  test('imageAddresses finds each web image a part names, once, in order', () => {
-    const part = 'a ![one](https://x.test/1.png) b ![](https://x.test/2.png) c ![one again](https://x.test/1.png) [a link](https://x.test/3.png) ![local](pics/4.png)';
-    expect(imageAddresses(part)).toEqual(['https://x.test/1.png', 'https://x.test/2.png']);
-    // A description with square brackets of its own.
-    expect(imageAddresses('![Sales [2025]](https://x.test/sales.png) and ![a [b] c](https://x.test/abc.png)')).toEqual(['https://x.test/sales.png', 'https://x.test/abc.png']);
   });
 
   test('imageType goes by the bytes', () => {
