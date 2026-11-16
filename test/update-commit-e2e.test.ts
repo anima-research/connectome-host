@@ -11,6 +11,7 @@ import {
   appendJournal, childrenFilePath, copyItemName, copyLabelPath, installPaths, moveCurrent, readCurrent, readJournal,
   readRecord, switchQuiesceReason, writeJsonAtomic, type ChildrenFile,
 } from '../src/update/contract.js';
+import { releaseEntry } from '../src/update/launcher.js';
 import type { SwitchRequest } from '../src/update/quiesce.js';
 import { TRIAL_LOG_LINES, type TrialLog } from '../src/update/trial-log.js';
 import { hostModeRecord, writeHostModeRecord } from './host-mode-record.js';
@@ -474,6 +475,33 @@ describe("a host's update, on a real start", () => {
       "Asking the host to restart. If it goes ahead, new turns are held, and turns in progress get up to 2 min to end…",
       "Stopping to switch to 9.9.10: the host's next start does it, which a service set up for updates makes by itself.",
     ]);
+  }, 60_000);
+
+  test("/update back that the Web UI's own controls send is answered in the page's words, and one typed in its command box in /update's", async () => {
+    const { dir, root, index } = install();
+    onTrial(dir, root);
+    mkdirSync(dirname(releaseEntry(root, '9.9.8')), { recursive: true });
+    writeFileSync(releaseEntry(root, '9.9.8'), '');
+    const { stderr, stdout } = startHost(dir, index, root, { webui: { host: '127.0.0.1', port: 0 } });
+    const listening = /\[webui\] listening on http:\/\/127\.0\.0\.1:(\d+)/;
+    await until(() => listening.test(stdout()), 30_000, `the host says where its Web UI listens (stderr: ${stderr().slice(-1500)})`);
+    const port = Number(listening.exec(stdout())![1]);
+    const frames: Array<{ type?: string; corrId?: string; lines?: Array<{ text: string }> }> = [];
+    const page = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    page.onmessage = (event) => { frames.push(JSON.parse(String(event.data))); };
+    try {
+      await until(() => frames.some((frame) => frame.type === 'welcome'), 15_000, 'the Web UI welcomes the page');
+      page.send(JSON.stringify({ type: 'command', command: '/update back', corrId: 'control', page: true }));
+      page.send(JSON.stringify({ type: 'command', command: '/update back', corrId: 'typed' }));
+      const answer = (corrId: string) => frames.find((frame) => frame.type === 'command-result' && frame.corrId === corrId)
+        ?.lines?.map((line) => line.text) ?? [];
+      await until(() => answer('control').length > 0 && answer('typed').length > 0, 15_000, 'both answers');
+      expect(answer('control')).toContainEqual(expect.stringMatching(/^- Keep the newer data: 9\.9\.8 runs on the data as it is now/));
+      expect(answer('control').join('\n')).not.toContain('/update');
+      expect(answer('typed')).toContainEqual(expect.stringMatching(/^- \/update back keep: 9\.9\.8 runs on the data as it is now/));
+    } finally {
+      page.close();
+    }
   }, 60_000);
 
   // Readline mode needs a terminal, which util-linux's `script` gives it; macOS's

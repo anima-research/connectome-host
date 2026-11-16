@@ -212,7 +212,7 @@ describe('before a switch, check says what going back can cost', () => {
     }
   });
 
-  test("the Web UI's Restart dialog gives it too, above its button and before the notes", () => {
+  test("restartLines, which the Web UI's Restart dialog shows, gives it too, before the notes", () => {
     const lines = restartLines({ ...base, check: read, installed: '0.13.1' }) ?? [];
     const at = lines.indexOf(line('0.12.1', PAGE_WAYS.restore));
     expect({ at: at >= 0, beforeNotes: at < lines.findIndex((each) => each.startsWith('Notes: ')) })
