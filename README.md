@@ -780,6 +780,7 @@ unknown-key warning, like those at the other levels.
 - **Fleets** (opt-in, `modules.fleet`) — a conductor launches and supervises other recipes as headless child processes; one agent tree across processes in both UIs ([`docs/fleet-protocol.md`](docs/fleet-protocol.md))
 - **Subagent forking** (opt-in, `modules.subagents`) — spawn/fork parallel in-process agents, shown in the fleet tree (Tab)
 - **Persistent lessons** (opt-in, `modules.lessons`) — knowledge store with confidence scores and tags. Automatic retrieval-injection of lessons into context (`modules.retrieval`) is a separate opt-in — it adds per-turn context churn and retrieval-model calls, so enable it only for agents that actually curate a lesson library
+- **Fetch** (opt-in, `modules.fetch`) — `fetch--fetch` reads a web page as text, with HTML turned into markdown, whole or through a small model that answers a prompt. Set `local: true` to let it read workspace files too, within what the mounts allow. See [below](#the-fetch-tool)
 
 For `openai-responses` and `openai-codex`, an object-valued
 `modules.retrieval` can set `reasoningEffort` (`none`, `minimal`, `low`,
@@ -797,6 +798,71 @@ sets it, none for `passthrough`), and with `modules.subagents` on, a subagent's
 or a fork's 10,000. For a strategy an extension registers, retrieval knows only
 the recipe's `agent.strategy.maxMessageTokens`, so set it there if that strategy
 cuts long messages, or its cut can fall mid-lesson.
+
+### The fetch tool
+
+`modules.fetch` gives the agent one tool, `fetch--fetch`, which reads a document
+as text. Its `source` is an `http://` or `https://` address, or with `local` on,
+a workspace path too:
+
+```json
+{ "modules": { "fetch": { "local": true } } }
+```
+
+Without a `prompt` the tool returns the text itself, 20,000 characters at a
+time, or fewer where the agent's inline result limit
+(`toolResultInlineMaxChars`) is lower: the part is shortened, down to one
+character, so that the result fits and the note that says how to read on
+arrives with the text. With one, a separate small model reads up to 100,000 characters
+and answers, so a long document stays out of the agent's context. Every result
+says which part was read and gives the `offset` to read on from.
+
+| Option | Default | What it does |
+|---|---|---|
+| `model` | `claude-haiku-4-5-20251001` | The model that answers `prompt`. A recipe whose `agent.provider` is neither `anthropic` nor `mock` must set it, and is refused at load without it |
+| `local` | `false` | Lets `source` be a workspace path. The file is read with the workspace's own `read`, so the agent gets the copy `workspace--read` shows, a write not yet on disk included, under the same mounts, includes, symlink policy and size limit. Needs `modules.workspace`. It makes fetch a reader of those files in its own right: an agent whose `allowedTools` lists `fetch--fetch` reads them with it, whether or not `workspace--read` is on that list |
+| `allowPrivateNetwork` | `false` | Lets web addresses reach private and local addresses, such as loopback, the LAN or a tailnet |
+| `maxBytes` | 5 MiB | Most bytes of one document to read, up to 64 MiB. Past it, the tool reads the start and says the rest is out of reach. A workspace file is read whole by the workspace, up to its mount's `maxFileSize`, and the tool keeps the first `maxBytes` of it |
+
+The module's tools are named `fetch--…`. A server in `mcpServers` named `fetch`
+doesn't clash with them, since its tools are `mcpl--fetch--…`, but one that sets
+`toolPrefix` to `fetch` does, and the host then stops at start saying so.
+
+On the network, the tool decides what it may reach by the address it would
+connect to, on every redirect, so a public name that resolves to a private
+address is refused like the address itself. What it refuses is private and
+local address ranges, the host's own addresses, and cloud platforms' metadata
+addresses. It can't tell an internal service on a publicly routable address,
+or a NAT router's public address, from the internet, so keep such services
+behind their own authentication. It sends no credentials and doesn't run
+JavaScript.
+
+HTML is converted in a separate process, which is killed once it passes 15
+seconds or 1 GiB, refusing the page; two convert at once and sixteen more may
+wait. The separate process is there for those limits. It starts with an empty
+environment, so code in it that reads its own environment finds no
+credentials, but it runs as the host's user and isn't a sandbox.
+
+In a result, the document's text, or the small model's answer, comes between
+tags that carry a code new to each call (`<document-…>`, `<answer-…>`), so text
+a page wrote can't pass for one of the tool's own lines.
+
+A first read
+is always fresh. Only reads with an `offset` use a copy of the page, kept for
+the agent that fetched it for up to 15 minutes, so the parts read from one copy
+fit together; where no copy is
+kept any more, the part comes from a fresh fetch and its result says the parts
+may not line up. A workspace file is read as the workspace has it on each
+call, with no copy kept. The tool reads text only, and reports a binary
+document's type instead.
+
+Text an element marks as not shown is left out of the markdown: the `hidden`
+attribute, `aria-hidden="true"`, and a `style` attribute's `display: none` or
+`visibility: hidden` or `collapse`. That removes the commonest hiding place for instructions
+aimed at a model, and no more: a stylesheet's rules aren't read, and text kept
+from the eye another way (opacity, size, colour, position) comes through. The
+model that answers a `prompt` is told to treat the document as data and to
+report instructions it finds there.
 
 ### Shared instructions
 
