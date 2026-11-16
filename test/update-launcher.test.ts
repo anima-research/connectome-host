@@ -2549,7 +2549,7 @@ describe('the lock', () => {
     }
     expect(why).toContain(`moved another process's lock to ${aside}, and couldn't put it back, since ${lock} is there again.`);
     expect(why).toContain('Each of the two files names a process that may be running in this install: stop each that is, ' +
-      'remove both files, and run this again.');
+      'and first any service that would start it again, then remove both files, and run this again.');
     expect(readRecord<{ v: 1; pid: number }>(aside, 'lock')?.pid).toBe(5151);
     expect(readRecord<{ v: 1; pid: number }>(lock, 'lock')?.pid).toBe(6161);
   });

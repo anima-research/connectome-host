@@ -21,6 +21,8 @@ describe('the key check', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe('https://gateway.example/v1/messages');
     expect(calls[0]!.init.redirect).toBe('manual');
+    expect(calls[0]!.init.method).toBe('POST');
+    expect(new Headers(calls[0]!.init.headers).get('x-api-key')).toBe('k');
     expect(JSON.parse(String(calls[0]!.init.body)).model).toBe('claude-opus-5-5');
   });
 
@@ -54,5 +56,14 @@ describe('the checks as a secret is entered', () => {
     const { fetch, calls } = answering(200);
     await checkProviderKey('OPENROUTER_API_KEY', 'k', new Map([['OPENROUTER_BASE_URL', 'https://router.example/api/v1/']]), fetch);
     expect(calls[0]!.url).toBe('https://router.example/api/v1/key');
+  });
+
+  test('checks nothing at a base URL in .env that holds a $, which Bun reads otherwise, and says so', async () => {
+    const { fetch, calls } = answering(200);
+    expect(await checkProviderKey('ANTHROPIC_API_KEY', 'k', new Map([['ANTHROPIC_BASE_URL', 'https://${GATEWAY}/v1']]), fetch)).toEqual({
+      kind: 'unknown',
+      why: 'ANTHROPIC_BASE_URL in .env can\'t be used: it holds a double quote, a $ or a backslash, which Bun can read in a .env line otherwise than typed',
+    });
+    expect(calls).toEqual([]);
   });
 });

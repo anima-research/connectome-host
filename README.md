@@ -29,7 +29,8 @@ bunx @animalabs/connectome-host setup discord
 
 Setup puts the resident in the directory you run it in where that's empty
 or already the resident's, and in `~/resident` otherwise, and says which
-before it asks anything.
+before it asks anything. Where `~/resident` holds other files and isn't the
+resident's either, setup stops and says so.
 
 If `bunx` doesn't have the package yet, it first downloads it and what it
 depends on, showing its own progress, before setup says anything.

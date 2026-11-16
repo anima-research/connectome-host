@@ -18,7 +18,6 @@ export interface RunOptions {
   cwd: string;
   env: Record<string, string>;
   timeoutMs?: number;
-  /** The program's output goes to the person's terminal, not into Ran. */
   show?: boolean;
 }
 
@@ -28,7 +27,6 @@ export interface AgentLaunch {
   env: Record<string, string>;
 }
 
-/** What setup reads of the machine and does on it, so a test can give it another. */
 export interface SetupWorld {
   terminal: boolean;
   platform: NodeJS.Platform;
@@ -37,10 +35,8 @@ export interface SetupWorld {
   cwd: string;
   bun: { path: string; version: string };
   hasSudo: boolean;
-  /** Whether PATH finds a node that isn't the running Bun's own stand-in for one. */
   hasNode(path: string | undefined): boolean;
   lingerOf(user: string): boolean | null;
-  /** null while the user is logged in to the Mac's graphical session, and what the check gave otherwise. */
   macSession(): string | null;
   timeZone: string | undefined;
   userExists(user: string): boolean | null;

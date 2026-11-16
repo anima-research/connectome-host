@@ -11,7 +11,6 @@ export function discordHeaders(token: string): Record<string, string> {
   };
 }
 
-/** Asks Discord whether it accepts a bot token, as the token's own bot user. */
 export function checkDiscordToken(token: string, fetch?: typeof globalThis.fetch): Promise<KeyAnswer> {
   return answerOf(`${DISCORD_API}/users/@me`, discordHeaders(token), fetch);
 }
