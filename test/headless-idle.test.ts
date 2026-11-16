@@ -114,9 +114,22 @@ async function firstIdle(dir: string, closed: Promise<unknown>): Promise<number>
 }
 
 async function idleAfterQuiet(hold: string): Promise<void> {
-  const { dir, child, closed } = start('quiet-idle', hold);
+  const released = ['turn', 'gated', 'queue', 'subagent-active', 'subagent-queued'].includes(hold);
+  const { dir, child, closed } = start('quiet-idle', hold, released ? { FIXTURE_HOLD_UNTIL_RELEASED: '1' } : {});
   try {
-    const idleAt = await firstIdle(dir, closed);
+    let idleAt: number;
+    if (released) {
+      const watching = await client(dir, closed);
+      await watching.next('ready');
+      writeFileSync(join(dir, 'go'), '');
+      await heldFor(dir, closed, CONFIRM_MS);
+      expect(watching.count('idle')).toBe(0);
+      writeFileSync(join(dir, 'release-hold'), '');
+      idleAt = Number((await watching.next('idle')).ts);
+      watching.close();
+    } else {
+      idleAt = await firstIdle(dir, closed);
+    }
     expect(idleAt - quietFrom(dir)).toBeGreaterThanOrEqual(CONFIRM_MS);
   } finally {
     child.kill('SIGTERM');
