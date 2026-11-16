@@ -310,22 +310,32 @@ async function checkCalls(report: Report, parts: DoctorParts, host: HostClient |
 function countsOf(data: unknown): AgentCounts[] {
   const agents = (data as { agents?: unknown } | null)?.agents;
   if (!Array.isArray(agents)) throw new Error('its answer has no list of agents');
-  const time = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const time = (value: unknown): number | null => {
+    if (value === undefined || value === null) return null;
+    if (typeof value === 'number' && Number.isFinite(new Date(value).getTime())) return value;
+    throw new Error('an agent in its answer has a time that isn\'t one');
+  };
   return agents.map((agent: unknown) => {
     const { name, consecutiveInferenceFailures: failures, lastInference, refusalStats } = (agent ?? {}) as Record<string, unknown>;
     if (typeof name !== 'string' || typeof failures !== 'number' || !Number.isInteger(failures) || failures < 0) {
       throw new Error('an agent in its answer has no name or no count of failed turns');
     }
     const last = lastInference !== null && typeof lastInference === 'object' ? lastInference as Record<string, unknown> : null;
-    const refused = refusalStats !== null && typeof refusalStats === 'object' ? refusalStats as Record<string, unknown> : null;
-    const total = refused?.total;
-    const lastAt = time(refused?.lastAt);
+    let refusals: AgentCounts['refusals'] = null;
+    if (refusalStats !== undefined && refusalStats !== null) {
+      const { total, lastAt } = (typeof refusalStats === 'object' ? refusalStats : {}) as Record<string, unknown>;
+      const at = time(lastAt);
+      if (typeof total !== 'number' || !Number.isInteger(total) || total < 0 || (total > 0 && at === null)) {
+        throw new Error('an agent in its answer has refusal counts with no total or no time of the last');
+      }
+      if (total > 0 && at !== null) refusals = { total, lastAt: at };
+    }
     return {
       name,
       failures,
       lastCall: last === null ? null : time(last.startedAt),
       failedAt: last === null ? null : time(last.failedAt),
-      refusals: typeof total === 'number' && total > 0 && lastAt !== null ? { total, lastAt } : null,
+      refusals,
     };
   });
 }

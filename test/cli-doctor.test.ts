@@ -567,6 +567,20 @@ describe('connectome doctor: check 4, the model calls', () => {
       .toBe('– Not checked: the host didn\'t give its counts of model calls: its answer has no list of agents.');
     expect((await run(at, { states: RUNNING, health: { agents: [{ name: 'ember' }] } })).lines[4])
       .toBe('– Not checked: the host didn\'t give its counts of model calls: an agent in its answer has no name or no count of failed turns.');
+    const refusals = '– Not checked: the host didn\'t give its counts of model calls: an agent in its answer has refusal counts with ' +
+      'no total or no time of the last.';
+    for (const refusalStats of [{ total: 2, lastCategory: 'cyber' }, { lastAt: FAILED }, 'two']) {
+      const r = await run(at, { states: RUNNING, health: { agents: [agent('ember', { refusalStats })] } });
+      expect(r.lines[4], JSON.stringify(refusalStats)).toBe(refusals);
+    }
+    const times = '– Not checked: the host didn\'t give its counts of model calls: an agent in its answer has a time that isn\'t one.';
+    for (const extra of [{ lastInference: { startedAt: 1e100 } },
+      { consecutiveInferenceFailures: 1, lastInference: { startedAt: STARTED, failedAt: 1e100 } },
+      { refusalStats: { total: 1, lastAt: -1e100 } }, { refusalStats: { total: 2, lastAt: 'yesterday' } }]) {
+      const r = await run(at, { states: RUNNING, health: { agents: [agent('ember', extra)] } });
+      expect(r.lines[4], JSON.stringify(extra)).toBe(times);
+      expect(r.status).toBe(0);
+    }
   });
 
   test('a failure with no time, on a host with no service, gives no time and no command', async () => {
