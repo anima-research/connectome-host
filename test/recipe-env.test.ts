@@ -134,6 +134,18 @@ describe('loadRecipe — end-to-end with env substitution', () => {
     await expect(loadRecipeDocument(document, recipePath, { fetchSystemPrompt: false, env: {} })).rejects.toThrow(/SERVICE_TOKEN/);
   });
 
+  test('a recipe loaded for another process checks its fit against that process\'s MODEL, not this one\'s', async () => {
+    writeFileSync(recipePath, JSON.stringify({ name: 'Env Test',
+      agent: { systemPrompt: '', model: 'claude-opus-4-6', contextBudgetTokens: 400_000 } }), 'utf-8');
+    const document = await readRecipeDocument(recipePath);
+    process.env.MODEL = 'claude-opus-4-6';
+    await expect(loadRecipeDocument(document, recipePath, { env: { MODEL: 'claude-haiku-4-5' } }))
+      .rejects.toThrow('claude-haiku-4-5 is MODEL in the environment');
+    process.env.MODEL = 'claude-haiku-4-5';
+    const { recipe } = await loadRecipeDocument(document, recipePath, { env: { MODEL: 'claude-opus-4-6' } });
+    expect(recipe.agent.contextBudgetTokens).toBe(400_000);
+  });
+
   describe('${VAR:-default} syntax', () => {
     test('uses default when var unset', () => {
       delete process.env.LATER_SET;
