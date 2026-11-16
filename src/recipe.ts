@@ -1036,6 +1036,14 @@ export interface RecipeModules {
     allowPrivateNetwork?: boolean;
     /** Most bytes of one document to read. Defaults to 5 MiB, at most 64 MiB. */
     maxBytes?: number;
+    /**
+     * Let the model that answers `prompt` look at a page's images: it is given
+     * a tool that fetches one the page names, under the same address guard as
+     * the page, a few to a call. Off by default, since it makes requests the
+     * page chooses and costs image tokens, and the model must be one that
+     * takes images.
+     */
+    images?: boolean;
   };
   /**
    * The gate (wake rules). `true` or left out: on, with the rules the agent
@@ -2137,7 +2145,7 @@ const RECIPE_MODULE_KEYS = [
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
   'channelMode', 'selfRestart', 'heartbeat', 'fetch',
 ] as const;
-const RECIPE_FETCH_KEYS = ['model', 'local', 'allowPrivateNetwork', 'maxBytes'] as const;
+const RECIPE_FETCH_KEYS = ['model', 'local', 'allowPrivateNetwork', 'maxBytes', 'images'] as const;
 /** The most a recipe can ask for: past this, little HTML would convert within its memory limit anyway. */
 const MAX_FETCH_MAX_BYTES = 64 * 1024 * 1024;
 const RECIPE_KV_UNIFIED_KEYS = [
@@ -2318,7 +2326,10 @@ function validateRecipeFetch(fetch: unknown, workspace: unknown, provider: unkno
   if (fetch !== true && (fetch === null || typeof fetch !== 'object' || Array.isArray(fetch))) {
     throw new Error(`Recipe modules.fetch is ${JSON.stringify(fetch)}; it must be a boolean or object.`);
   }
-  const { model, local, allowPrivateNetwork, maxBytes } = (fetch === true ? {} : fetch) as Record<string, unknown>;
+  const { model, local, allowPrivateNetwork, maxBytes, images } = (fetch === true ? {} : fetch) as Record<string, unknown>;
+  if (images !== undefined && typeof images !== 'boolean') {
+    throw new Error(`Recipe modules.fetch.images is ${JSON.stringify(images)}; it must be a boolean.`);
+  }
   if (model !== undefined && (typeof model !== 'string' || !model.trim())) {
     throw new Error(`Recipe modules.fetch.model is ${JSON.stringify(model)}; it must be a non-empty string.`);
   }

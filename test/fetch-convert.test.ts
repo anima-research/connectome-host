@@ -212,6 +212,13 @@ describe('htmlToMarkdown', () => {
     expect(markdown).toBe('## Tasks\n\n[more](https://x.test/more)');
   });
 
+  test('for a reader that can look, an image with no alt text keeps its address, unless its own size says it is decoration', async () => {
+    const html = page('<img src="/chart.png"><img src="/icon.png" width="16" height="16"><img src="/pixel.gif" height="1"><img alt="logo" src="/logo.png" width="24"><img src="data:image/png;base64,AAAA" data-src="/late.png">');
+    expect(await htmlToMarkdown(html, 'https://x.test/', { images: true })).toBe('![](https://x.test/chart.png)![logo](https://x.test/logo.png)![](https://x.test/late.png)');
+    // Without it, as before: only what has alt text, and no data-src.
+    expect(await htmlToMarkdown(html, 'https://x.test/')).toBe('![logo](https://x.test/logo.png)');
+  });
+
   test('an image embedded as data keeps its alt text and not its megabytes', async () => {
     const markdown = await htmlToMarkdown(page(`<img alt="chart" src="data:image/png;base64,${'A'.repeat(200_000)}">`), 'https://x.test/');
     expect(markdown).toBe('chart');

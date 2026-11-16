@@ -338,6 +338,13 @@ describe('what comes back', () => {
     expect(closedEarly).toBe(before + 1);
   });
 
+  test('a clearly binary type is read when the caller asks for binary too, up to the byte limit', async () => {
+    const got = await httpGet(new URL(`http://127.0.0.1:${port}/png`), { ...onlyLoopback, readBinary: true, maxBytes: 100 });
+    expect(got.body.length).toBe(100);
+    expect(got.cut).toBe(true);
+    expect(got.binary).toBe(false);
+  });
+
   test('a clearly binary type is reported without being downloaded', async () => {
     const before = closedEarly;
     const got = await httpGet(new URL(`http://127.0.0.1:${port}/png`), onlyLoopback);

@@ -39,6 +39,12 @@ async function turnToConvert(): Promise<() => void> {
 export interface ConvertOptions {
   timeoutMs?: number;
   memoryLimitBytes?: number;
+  /**
+   * Keep the address of every image worth looking at, one with no alt text
+   * too, for a reader that can look. Without it an image with no alt text is
+   * left out, as decoration.
+   */
+  images?: boolean;
   /** Told of the process doing the work, so a test can check on it. */
   onChild?: (child: ChildProcess) => void;
 }
@@ -55,7 +61,7 @@ function convertInChild(html: string, baseUrl: string | undefined, options: Conv
     // separate process gives is the time and memory limits.
     const child = spawn(
       process.execPath,
-      ['--no-env-file', CHILD_PATH, JSON.stringify({ memoryLimitBytes, deadlineMs: timeoutMs + CHILD_GRACE_MS })],
+      ['--no-env-file', CHILD_PATH, JSON.stringify({ memoryLimitBytes, deadlineMs: timeoutMs + CHILD_GRACE_MS, images: options.images === true })],
       { cwd: dirname(CHILD_PATH), env: {}, stdio: ['pipe', 'pipe', 'ignore'] },
     );
     options.onChild?.(child);

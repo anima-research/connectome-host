@@ -18,7 +18,7 @@
 import { Worker } from 'node:worker_threads';
 import TurndownService from 'turndown';
 
-const { memoryLimitBytes, deadlineMs } = JSON.parse(process.argv[2]!) as { memoryLimitBytes: number; deadlineMs: number };
+const { memoryLimitBytes, deadlineMs, images: keepImages } = JSON.parse(process.argv[2]!) as { memoryLimitBytes: number; deadlineMs: number; images?: boolean };
 
 // It looks every 50 ms, so memory can pass the limit by what's taken in between,
 // and it times itself by performance.now(), which a change to the wall clock doesn't move.
@@ -199,15 +199,29 @@ service.addRule('followable-link', {
   },
 });
 
+/** Whether an image's own size says it is an icon, a spacer or a tracking pixel: under 50 pixels either way. One that states no size isn't judged. */
+function isSmall(image: DomNode): boolean {
+  return ['width', 'height'].some((side) => {
+    const size = Number.parseInt(image.getAttribute?.(side) ?? '', 10);
+    return size >= 0 && size < 50;
+  });
+}
+
 service.addRule('followable-image', {
   filter: 'img',
   replacement: (_content, node) => {
     const element = asDom(node);
     const alt = (element.getAttribute?.('alt') ?? '').replace(/\s+/g, ' ').trim();
     // A data: address is the image itself, and can run to megabytes of base64.
-    const src = followable(element.getAttribute?.('src') ?? null);
-    // HTML's empty alt marks an image as decoration, and a text reader gets nothing from its address.
-    if (src === null || alt === '') return alt;
+    // For a reader that can look, a page that loads its images late names them in data-src.
+    const src = followable(element.getAttribute?.('src') ?? null)
+      ?? (keepImages ? followable(element.getAttribute?.('data-src') ?? null) : null);
+    if (src === null) return alt;
+    // HTML's empty alt marks an image as decoration, and a text reader gets
+    // nothing from its address. A reader that can look gets it all the same,
+    // unless the image is too small to be more than decoration: a chart often
+    // has no alt text either.
+    if (alt === '' && !(keepImages && !isSmall(element))) return '';
     return `![${alt}](${inBrackets(src)})`;
   },
 });

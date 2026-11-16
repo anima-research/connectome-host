@@ -8,7 +8,7 @@ import { JsStore } from '@animalabs/chronicle';
 import { AgentFramework, WorkspaceModule } from '@animalabs/agent-framework';
 import { Membrane as RealMembrane, MockAdapter } from '@animalabs/membrane';
 import type { Membrane, NormalizedRequest } from '@animalabs/membrane';
-import { FetchModule, fetchModuleConfig, type FetchModuleConfig } from '../src/modules/fetch-module.js';
+import { FetchModule, fetchModuleConfig, imageAddresses, imageType, type FetchModuleConfig } from '../src/modules/fetch-module.js';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
 import { buildFrameworkStrategy } from '../src/framework-strategy.js';
 import { DEFAULT_RECIPE, unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
@@ -59,6 +59,11 @@ beforeAll(async () => {
     else if (path.startsWith('/page?')) send(200, 'text/plain', 't'.repeat(30_000));
     else if (path === '/shell') send(200, 'text/html', '<html><body><div id="root"></div><script src="/app.js"></script></body></html>');
     else if (path === '/to-page') { response.writeHead(302, { location: '/page' }); response.end(); }
+    else if (path === '/chart-page') send(200, 'text/html', '<html><body><p>The chart shows it.</p><img src="/chart.png"><img src="/icon.png" width="16" height="16"><img alt="described" src="/other.png"></body></html>');
+    else if (path === '/gallery') send(200, 'text/html', `<html><body><p>Six pictures.</p>${[1, 2, 3, 4, 5, 6].map((n) => `<img src="/pic${n}.png">`).join('')}</body></html>`);
+    else if (path === '/chart.png' || /^\/pic\d\.png$/.test(path)) send(200, 'image/png', PNG);
+    else if (path === '/other.png') send(200, 'image/png', Buffer.concat([PNG, Buffer.alloc(4_000_000)]));
+    else if (path === '/odd-images') send(200, 'text/html', '<html><body><p>Odd ones.</p><img alt="a page" src="/page"><img alt="gone" src="/gone.png"><img alt="big" src="/other.png"></body></html>');
     else send(404, 'text/plain', 'nope');
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -72,19 +77,31 @@ afterAll(() => {
 
 const at = (path: string) => `http://127.0.0.1:${port}${path}`;
 
-function model(replies: Array<string | Error | { text?: string; stopReason: string }> = []) {
+type Reply = string | Error | { text?: string; stopReason: string } | { asks: string[] };
+
+/** A model's turn that asks to see images, one tool call for each address. */
+const asking = (...addresses: string[]): Reply => ({ asks: addresses });
+
+function model(replies: Reply[] = []) {
   const calls: NormalizedRequest[] = [];
+  let asked = 0;
   const membrane = {
     complete: async (request: NormalizedRequest) => {
       calls.push(structuredClone(request));
       const next = replies.shift() ?? 'the answer';
       if (next instanceof Error) throw next;
+      if (typeof next === 'object' && 'asks' in next) {
+        return { content: next.asks.map((url) => ({ type: 'tool_use', id: `ask-${asked++}`, name: 'view_image', input: { url } })), stopReason: 'tool_use' };
+      }
       const { text, stopReason } = typeof next === 'string' ? { text: next, stopReason: 'end_turn' } : next;
       return { content: text === undefined ? [] : [{ type: 'text', text }], stopReason };
     },
   } as unknown as Membrane;
   return { membrane, calls };
 }
+
+/** A PNG as far as its first bytes say, which is as far as the tool asks. */
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('the rest of a picture')]);
 
 async function started(config: Partial<FetchModuleConfig> = {}, workspace: WorkspaceModule | null = null) {
   const { membrane, calls } = model();
@@ -855,6 +872,14 @@ describe('local files', () => {
     expect((await call({ source: ' ' })).error).toContain('source must be an address or a workspace path.');
   });
 
+  test('a local file\'s images are not looked at: no tool is offered for one', async () => {
+    writeFileSync(join(root, 'notes', 'pictured.html'), '<html><body><p>See it.</p><img alt="chart" src="https://x.test/chart.png"></body></html>');
+    const { call, calls } = await withLocal({ images: true });
+    await call({ source: 'notes/pictured.html', prompt: 'q' });
+    expect(userText(calls[0]!)).toContain('![chart](https://x.test/chart.png)');
+    expect(calls[0]!.tools).toBeUndefined();
+  });
+
   test('a host with no workspace says so', async () => {
     const { call } = await started({ local: true }, null);
     expect((await call({ source: 'notes/hello.txt' })).error).toContain('no workspace');
@@ -932,6 +957,149 @@ describe('a real host process', () => {
   }, 60_000);
 });
 
+describe('looking at a page\'s images', () => {
+  const withImages = async (replies: Reply[], config: Partial<FetchModuleConfig> = {}) => {
+    const { membrane, calls } = model(replies);
+    const { call } = await started({ membrane, images: true, ...config });
+    return { call, calls };
+  };
+  const results = (request: NormalizedRequest) => request.messages.at(-1)!.content as Array<{ type: string; toolUseId: string; content: unknown; isError?: boolean }>;
+
+  test('off unless the recipe turns it on: no tool is offered, and an image with no alt text is left out as before', async () => {
+    const { call, calls } = await started();
+    const result = await call({ source: at('/chart-page'), prompt: 'q' });
+    expect(calls[0]!.tools).toBeUndefined();
+    expect(userText(calls[0]!)).not.toContain('chart.png');
+    expect(textOf(result)).not.toContain('looked at');
+    const { mod } = await started();
+    expect(mod.getTools()[0]!.description).not.toContain('images');
+  });
+
+  test('on, the page keeps the address of an image with no alt text, but not of one too small to be more than decoration', async () => {
+    const { call } = await withImages([]);
+    const text = textOf(await call({ source: at('/chart-page') }));
+    expect(text).toContain(`![](${at('/chart.png')})`);
+    expect(text).toContain(`![described](${at('/other.png')})`);
+    expect(text).not.toContain('icon.png');
+  });
+
+  test('the model is offered the tool, asks for an image the page names, and is shown it', async () => {
+    const before = hits['/chart.png'] ?? 0;
+    const { call, calls } = await withImages([asking(at('/chart.png')), 'the bars rise']);
+    const result = await call({ source: at('/chart-page'), prompt: 'What does the chart show?' });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.tools!.map((tool) => tool.name)).toEqual(['view_image']);
+    expect(calls[0]!.toolMode).toBe('native');
+    expect(calls[0]!.system).toContain('view_image');
+    // The second request holds the first, the model's asking turn as its own, and the image as that call's result.
+    const [first, itsTurn, shown] = calls[1]!.messages;
+    expect(first).toEqual(calls[0]!.messages[0]!);
+    expect(itsTurn!.participant).toBe(calls[1]!.assistantParticipant!);
+    expect(itsTurn!.content[0]).toMatchObject({ type: 'tool_use', name: 'view_image', input: { url: at('/chart.png') } });
+    expect(shown!.participant).toBe('user');
+    expect(results(calls[1]!)).toEqual([{
+      type: 'tool_result', toolUseId: 'ask-0', toolName: 'view_image',
+      content: [{ type: 'image', source: { type: 'base64', data: PNG.toString('base64'), mediaType: 'image/png' } }],
+    }]);
+    expect((hits['/chart.png'] ?? 0) - before).toBe(1);
+    expect(textOf(result)).toContain('the bars rise');
+    expect(textOf(result)).toContain(`It looked at one of the page's images: ${at('/chart.png')}.`);
+    expect(result.structured).toMatchObject({ imagesViewed: [at('/chart.png')] });
+  });
+
+  test('a question the text answers fetches no image, and the result says nothing of looking', async () => {
+    const before = hits['/chart.png'] ?? 0;
+    const { call, calls } = await withImages(['from the text alone']);
+    const result = await call({ source: at('/chart-page'), prompt: 'q' });
+    expect(calls).toHaveLength(1);
+    expect(hits['/chart.png'] ?? 0).toBe(before);
+    expect(textOf(result)).not.toContain('looked at');
+    expect(result.structured).not.toHaveProperty('imagesViewed');
+  });
+
+  test('an address the page doesn\'t name is not fetched, whatever the model asks for', async () => {
+    const before = hits['/page'] ?? 0;
+    const { call, calls } = await withImages([asking(at('/page'), 'http://169.254.169.254/latest/meta-data/', `${at('/chart.png')}?leak=the+request`), 'answer']);
+    const result = await call({ source: at('/chart-page'), prompt: 'q' });
+    for (const one of results(calls[1]!)) {
+      expect(one.isError).toBe(true);
+      expect(one.content).toContain('not the address of an image in the document');
+    }
+    expect(hits['/page'] ?? 0).toBe(before);
+    expect(hits['/chart.png?leak=the+request']).toBeUndefined();
+    expect(textOf(result)).not.toContain('looked at');
+  });
+
+  test('what isn\'t an image, isn\'t there or is too large is told to the model in words, and none of it counts as looked at', async () => {
+    const { call, calls } = await withImages([asking(at('/page'), at('/gone.png'), at('/other.png')), 'answer']);
+    const result = await call({ source: at('/odd-images'), prompt: 'q' });
+    const [notImage, gone, big] = results(calls[1]!);
+    expect(notImage).toMatchObject({ isError: true, content: expect.stringContaining('not a PNG, JPEG, GIF or WebP image') });
+    expect(gone).toMatchObject({ isError: true, content: expect.stringContaining('HTTP 404') });
+    expect(big).toMatchObject({ isError: true, content: expect.stringContaining('larger than') });
+    expect(textOf(result)).not.toContain('looked at');
+  });
+
+  test('at most four images to a call, the same one once, and the note counts those shown', async () => {
+    const pics = [1, 2, 3, 4, 5, 6].map((n) => at(`/pic${n}.png`));
+    const { call, calls } = await withImages([asking(...pics.slice(0, 3)), asking(pics[0]!, ...pics.slice(3)), 'answer']);
+    const result = await call({ source: at('/gallery'), prompt: 'q' });
+    expect(results(calls[1]!).every((one) => !one.isError)).toBe(true);
+    const [again, fourth, fifth, sixth] = results(calls[2]!);
+    expect(again).toMatchObject({ isError: true, content: expect.stringContaining('already been shown') });
+    expect(fourth!.isError).toBeUndefined();
+    expect(fifth).toMatchObject({ isError: true, content: expect.stringContaining('No more than 4 images') });
+    expect(sixth!.isError).toBe(true);
+    expect(textOf(result)).toContain(`It looked at 4 of the page's images: ${pics.slice(0, 4).join(', ')}.`);
+  });
+
+  test('a model that keeps asking instead of answering is an error after three rounds', async () => {
+    const { call, calls } = await withImages([1, 2, 3, 4].map((n) => asking(at(`/pic${n}.png`))));
+    const result = await call({ source: at('/gallery'), prompt: 'q' });
+    expect(calls).toHaveLength(4);
+    expect(result.isError).toBe(true);
+    expect(result.error).toContain('it kept asking to see images instead');
+    expect(result.error).toContain('Leave out prompt to read the text itself.');
+  });
+
+  test('a page with no images in the part read offers no tool', async () => {
+    const { call, calls } = await withImages(['answer']);
+    await call({ source: at('/page'), prompt: 'q' });
+    expect(calls[0]!.tools).toBeUndefined();
+    expect(calls[0]!.system).not.toContain('view_image');
+  });
+
+  test('an image is held to the address guard its page is', async () => {
+    const { mod } = await started({ images: true, allowPrivateNetwork: false });
+    const before = hits['/chart.png'] ?? 0;
+    const looked: string[] = [];
+    const outcome = await (mod as unknown as { imageFor(input: object, offered: string[], looked: string[]): Promise<{ content: unknown; isError?: boolean }> })
+      .imageFor({ url: at('/chart.png') }, [at('/chart.png')], looked);
+    expect(outcome).toMatchObject({ isError: true, content: expect.stringContaining('private or local address') });
+    expect(looked).toEqual([]);
+    expect(hits['/chart.png'] ?? 0).toBe(before);
+  });
+
+  test('the tool description tells the agent the other model can look', async () => {
+    const { mod } = await started({ images: true });
+    expect(mod.getTools()[0]!.description).toContain("It can look at a page's images where your request needs what they show.");
+  });
+
+  test('imageAddresses finds each web image a part names, once, in order', () => {
+    const part = 'a ![one](https://x.test/1.png) b ![](https://x.test/2.png) c ![one again](https://x.test/1.png) [a link](https://x.test/3.png) ![local](pics/4.png)';
+    expect(imageAddresses(part)).toEqual(['https://x.test/1.png', 'https://x.test/2.png']);
+  });
+
+  test('imageType goes by the bytes', () => {
+    expect(imageType(PNG)).toBe('image/png');
+    expect(imageType(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toBe('image/jpeg');
+    expect(imageType(Buffer.from('GIF89a'))).toBe('image/gif');
+    expect(imageType(Buffer.from('RIFF\0\0\0\0WEBPVP8 ', 'latin1'))).toBe('image/webp');
+    expect(imageType(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'))).toBeUndefined();
+    expect(imageType(Buffer.from('RIFF\0\0\0\0WAVE', 'latin1'))).toBeUndefined();
+  });
+});
+
 describe('the recipe', () => {
   const recipe = (modules: Record<string, unknown>) => ({ name: 't', agent: { systemPrompt: 's' }, modules });
 
@@ -942,7 +1110,7 @@ describe('the recipe', () => {
   test('accepts a boolean or its options', () => {
     expect(validateRecipe(recipe({ fetch: true })).modules?.fetch).toBe(true);
     expect(validateRecipe(recipe({ fetch: false })).modules?.fetch).toBe(false);
-    const options = { model: 'm', local: true, allowPrivateNetwork: true, maxBytes: 1_000 };
+    const options = { model: 'm', local: true, allowPrivateNetwork: true, maxBytes: 1_000, images: true };
     expect(validateRecipe(recipe({ fetch: options })).modules?.fetch).toEqual(options);
     // The most it takes, itself included.
     expect(validateRecipe(recipe({ fetch: { maxBytes: 64 * 1024 * 1024 } })).modules?.fetch).toEqual({ maxBytes: 64 * 1024 * 1024 });
@@ -954,6 +1122,7 @@ describe('the recipe', () => {
     [{ fetch: { model: '' } }, 'modules.fetch.model'],
     [{ fetch: { local: 'yes' } }, 'modules.fetch.local'],
     [{ fetch: { allowPrivateNetwork: 1 } }, 'modules.fetch.allowPrivateNetwork'],
+    [{ fetch: { images: 'yes' } }, 'modules.fetch.images is "yes"; it must be a boolean'],
     [{ fetch: { maxBytes: 0 } }, 'modules.fetch.maxBytes'],
     [{ fetch: { maxBytes: 1.5 } }, 'modules.fetch.maxBytes'],
     [{ fetch: { maxBytes: 64 * 1024 * 1024 + 1 } }, 'modules.fetch.maxBytes'],
@@ -1001,6 +1170,7 @@ describe('the recipe', () => {
     const membrane = {} as Membrane;
     expect(fetchModuleConfig(membrane, true)).toEqual({ membrane });
     expect(fetchModuleConfig(membrane, { local: true, model: 'm' })).toEqual({ membrane, local: true, model: 'm' });
+    expect(fetchModuleConfig(membrane, { images: true })).toEqual({ membrane, images: true });
     // Only the module's own options are read from it, so nothing there can replace the membrane.
     expect(fetchModuleConfig(membrane, { membrane: 'nope' } as never)).toEqual({ membrane });
   });

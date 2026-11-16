@@ -799,6 +799,7 @@ says which part was read and gives the `offset` to read on from.
 | `model` | `claude-haiku-4-5-20251001` | The model that answers `prompt`. A recipe whose `agent.provider` is neither `anthropic` nor `mock` must set it, and is refused at load without it |
 | `local` | `false` | Lets `source` be a workspace path. The file is read with the workspace's own `read`, so the agent gets the copy `workspace--read` shows, a write not yet on disk included, under the same mounts, includes, symlink policy and size limit. Needs `modules.workspace`. It makes fetch a reader of those files in its own right: an agent whose `allowedTools` lists `fetch--fetch` reads them with it, whether or not `workspace--read` is on that list |
 | `allowPrivateNetwork` | `false` | Lets web addresses reach private and local addresses, such as loopback, the LAN or a tailnet |
+| `images` | `false` | Lets the model that answers `prompt` look at a web page's images. See [below](#looking-at-images) |
 | `maxBytes` | 5 MiB | Most bytes of one document to read, up to 64 MiB. Past it, the tool reads the start and says the rest is out of reach. A workspace file is read whole by the workspace, up to its mount's `maxFileSize`, and the tool keeps the first `maxBytes` of it |
 
 The module's tools are named `fetch--…`. A server in `mcpServers` named `fetch`
@@ -832,6 +833,31 @@ kept any more, the part comes from a fresh fetch and its result says the parts
 may not line up. A workspace file is read as the workspace has it on each
 call, with no copy kept. The tool reads text only, and reports a binary
 document's type instead.
+
+#### Looking at images
+
+By default the tool is text only: an image comes through as its alt text and
+address, `![alt](address)`, and one with no alt text is left out. With
+`images` on, the model that answers a `prompt` can look:
+
+```json
+{ "modules": { "fetch": { "images": true } } }
+```
+
+- The page keeps the address of every image, alt text or not, except one whose
+  own `width` or `height` is under 50 pixels, an icon or a tracking pixel. A
+  page that loads its images late is read by its `data-src`.
+- The answering model gets one tool, `view_image`, and uses it where the
+  request needs what an image shows. A request the text answers fetches none.
+- It may look at four images in one call, each at most 3.5 MB, PNG, JPEG, GIF
+  or WebP by their bytes. The result's note names the ones it looked at.
+- Only an address the part of the page it was given names is fetched, exactly
+  as written, so a page can't have it request anything the page didn't already
+  point at, and each image is held to the address guard its page is. Which of
+  a page's images it asks for is the model's choice, so a page that sets out
+  to could learn a little of the request from that choice: a few bits a call.
+- Set `model` to one that takes images. A workspace file's images are not
+  looked at, and a direct read (no `prompt`) returns addresses, not pictures.
 
 Text an element marks as not shown is left out of the markdown: the `hidden`
 attribute, `aria-hidden="true"`, and a `style` attribute's `display: none` or
