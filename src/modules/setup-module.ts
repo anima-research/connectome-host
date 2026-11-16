@@ -32,6 +32,9 @@ export interface SetupModuleConfig {
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 30 * 60_000;
+// Each stream keeps at most 2 * KEPT_BYTES, so the two, as text, fit in one tool result with room for its JSON:
+// agent-framework 0.33.0 caps a tool result at 24,000 characters by default (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS,
+// in its src/tool-result-history.ts).
 const KEPT_BYTES = 4 * 1024;
 const KILL_GRACE_MS = 5_000;
 const DRAIN_MS = 1_000;
@@ -97,11 +100,7 @@ export class SetupModule implements Module {
 
   async stop(): Promise<void> {
     this.stopping = true;
-    for (const group of this.groups) signal(group, 'SIGTERM');
-    for (const until = performance.now() + KILL_GRACE_MS; this.groups.size > 0 && performance.now() < until;) {
-      await Bun.sleep(50);
-    }
-    for (const group of this.groups) signal(group, 'SIGKILL');
+    await Promise.all([...this.groups].map(endGroup));
   }
 
   async onProcess(_event: ProcessEvent, _state: ProcessState): Promise<EventResponse> {
@@ -118,7 +117,8 @@ export class SetupModule implements Module {
           `keys. Where one of their values appears in the output exactly as stored, it comes back as <NAME>, unless ` +
           `it's shorter than ${SHORT_CHARACTERS} characters. A command still running at its ` +
           'time limit, or when the host stops, is stopped with its process group. A process it leaves running when it ' +
-          'ends keeps running, after the host ends too.',
+          'ends keeps running, after the host ends too, but setup closes the command\'s output about a second after ' +
+          'it ends, so give such a process output of its own, such as > file 2>&1.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -215,8 +215,7 @@ export class SetupModule implements Module {
       let stoppedAtLimit = false;
       const timer = setTimeout(() => {
         stoppedAtLimit = true;
-        if (group !== undefined) signal(group, 'SIGTERM');
-        setTimeout(() => { if (group !== undefined) signal(group, 'SIGKILL'); }, KILL_GRACE_MS).unref();
+        if (group !== undefined) void endGroup(group);
       }, limit);
       let finished = false;
       const finish = (exitCode: number | null, signalled: string | null) => {
@@ -293,4 +292,21 @@ function signal(group: number, name: NodeJS.Signals): void {
     process.kill(-group, name);
   } catch {
   }
+}
+
+function groupLives(group: number): boolean {
+  try {
+    process.kill(-group, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function endGroup(group: number): Promise<void> {
+  signal(group, 'SIGTERM');
+  for (const until = performance.now() + KILL_GRACE_MS; groupLives(group) && performance.now() < until;) {
+    await Bun.sleep(50);
+  }
+  if (groupLives(group)) signal(group, 'SIGKILL');
 }

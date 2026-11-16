@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import { bunBelowFloor } from '../bun-floor.js';
 import { ANTHROPIC_API } from '../setup/key-check.js';
 import { SERVERS, SETUP_BUN_FLOOR, SHELL_NODE_TOP, installedVersion, packageJson } from '../setup/packages.js';
-import { readEnvFile, unwritableValue, writeEnvValue } from '../setup/secrets.js';
+import { DOTENV_FILES, readEnvFile, unwritableValue, withoutDotenv, writeEnvValue } from '../setup/secrets.js';
 import { macSessionCheck, ended, realWorld, withoutKeys, type SetupWorld } from '../setup/world.js';
 import { readCurrent, readRecord, releaseDir, type InstallRecord } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
@@ -140,7 +140,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       `values from the packages' install scripts, and this is Bun ${world.bun.version}. ${upgrade}`);
     return 1;
   }
-  const env = withoutKeys(world.env, []);
+  const env = withoutDotenv(world.env, world.cwd);
   const node = await world.run(['node', '--version'], { cwd: nearestDirectory(dir), env });
   const nodeVersion = node.status === 0 ? node.stdout.trim().replace(/^v/, '') : null;
   const nodeFloor = pkg.engines.node.replace('>=', '');
@@ -253,7 +253,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     argv: [world.bun.path, '--no-env-file', entry, setupRecipe, '--no-tui'],
     cwd: join(dir, '.setup'),
     env: {
-      ...withoutKeys(env, NOT_FOR_THE_AGENT),
+      ...withoutKeys(env, [...NOT_FOR_THE_AGENT, ...Object.keys(env).filter((name) => name.startsWith('CONNECTOME_SETUP_'))]),
       ANTHROPIC_API_KEY: key.key,
       ...(key.baseUrl === undefined ? {} : { ANTHROPIC_BASE_URL: key.baseUrl }),
       DATA_DIR: join(dir, '.setup'),
@@ -278,7 +278,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
 
 function dotenvLines(dir: string): string {
   const lines: string[] = [];
-  for (const file of ['.env.development.local', '.env.local', '.env.development', '.env']) {
+  for (const file of DOTENV_FILES) {
     let values: Map<string, string>;
     try {
       values = readEnvFile(join(dir, file));
@@ -298,6 +298,11 @@ async function keyFor(
 ): Promise<{ key: string; baseUrl?: string } | null> {
   const stored = readEnvFile(envFile);
   const baseUrl = stored.get('ANTHROPIC_BASE_URL') || undefined;
+  if (baseUrl !== undefined && !URL.canParse(baseUrl)) {
+    err(`ANTHROPIC_BASE_URL in ${envFile} is ${JSON.stringify(baseUrl)}, which isn't a URL. Correct it, or take that ` +
+      'line away to use Anthropic\'s own API, then run setup again.');
+    return null;
+  }
   let key: string | null = stored.get('ANTHROPIC_API_KEY') || null;
   let from = key === null ? null : `the ANTHROPIC_API_KEY in ${envFile}`;
   const exported = world.env.ANTHROPIC_API_KEY?.trim();

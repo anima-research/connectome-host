@@ -30,6 +30,7 @@ function machine(dir: string, opts: {
 } = {}) {
   const asked: string[] = [];
   const ran: string[][] = [];
+  const envs: Array<Record<string, string>> = [];
   const launched: AgentLaunch[] = [];
   const checked: string[] = [];
   const answers = [...opts.answers ?? []];
@@ -53,6 +54,7 @@ function machine(dir: string, opts: {
     askHidden: async (label) => { asked.push(label); return hidden.shift() ?? null; },
     run: async (argv: string[], options: RunOptions) => {
       ran.push(argv);
+      envs.push(options.env);
       if (argv[0] === 'node') return opts.fails?.node ?? ok('v24.1.0\n');
       if (argv[2] === 'add') {
         if (opts.fails?.add) return opts.fails.add;
@@ -83,7 +85,7 @@ function machine(dir: string, opts: {
     checkKey: async ({ key }) => { checked.push(key); return keys.shift() ?? { ok: true }; },
     startAgent: async (launch) => { launched.push(launch); return 0; },
   };
-  return { world, asked, ran, launched, checked };
+  return { world, asked, ran, envs, launched, checked };
 }
 
 async function runSetup(dir: string, world: SetupWorld, argv = ['discord']) {
@@ -136,6 +138,40 @@ describe('a first setup', () => {
     const plain = machine(none, { hidden: [KEY] });
     expect((await runSetup(none, plain.world)).status).toBe(0);
     expect(plain.launched[0]!.env).not.toHaveProperty('CONNECTOME_SETUP_DOTENV');
+  });
+
+  test('stops at an ANTHROPIC_BASE_URL in .env that isn\'t a URL, naming it, before it asks for a key', async () => {
+    const dir = scratch();
+    mkdirSync(join(dir, '.setup'));
+    writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=not-a-url\n');
+    const m = machine(dir, { hidden: [KEY] });
+    const { status, err } = await runSetup(dir, m.world);
+    expect(status).toBe(1);
+    expect(err.join('\n')).toContain(`ANTHROPIC_BASE_URL in ${join(dir, '.env')} is "not-a-url", which isn't a URL. ` +
+      'Correct it, or take that line away to use Anthropic\'s own API, then run setup again.');
+    expect(m.launched).toEqual([]);
+  });
+
+  test('gives Bun\'s install, and the agent, none of the values Bun loaded from the dotenv files where it was typed', async () => {
+    const dir = scratch();
+    mkdirSync(join(dir, '.setup'));
+    writeFileSync(join(dir, '.env'), 'DISCORD_TOKEN="from-env-file"\nSHARED="file"\n');
+    writeFileSync(join(dir, '.env.local'), 'LOCAL_ONLY="from-local"\n');
+    const m = machine(dir, { hidden: [KEY], env: { DISCORD_TOKEN: 'from-env-file', LOCAL_ONLY: 'from-local', SHARED: 'exported' } });
+    expect((await runSetup(dir, m.world)).status).toBe(0);
+    const added = m.envs[m.ran.findIndex((argv) => argv[2] === 'add')]!;
+    expect(added).not.toHaveProperty('DISCORD_TOKEN');
+    expect(added).not.toHaveProperty('LOCAL_ONLY');
+    expect(added.SHARED).toBe('exported');
+    expect(m.launched[0]!.env).not.toHaveProperty('DISCORD_TOKEN');
+  });
+
+  test('gives the agent none of the CONNECTOME_SETUP_ settings the shell it was typed in exports', async () => {
+    const dir = scratch();
+    const m = machine(dir, { hidden: [KEY], env: { CONNECTOME_SETUP_LINGER_LINE: 'sudo rm -rf /', CONNECTOME_SETUP_X: '1' } });
+    expect((await runSetup(dir, m.world)).status).toBe(0);
+    expect(m.launched[0]!.env).not.toHaveProperty('CONNECTOME_SETUP_LINGER_LINE');
+    expect(m.launched[0]!.env).not.toHaveProperty('CONNECTOME_SETUP_X');
   });
 
   test('says the least and the most that setup\'s agent cost in five test setups', async () => {

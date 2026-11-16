@@ -52,6 +52,26 @@ export function readEnvFile(path: string): Map<string, string> {
   return new Map(Object.entries(parseEnv(textOf(path))).filter((entry): entry is [string, string] => entry[1] !== undefined));
 }
 
+// The dotenv files Bun 1.4.4 loads from the directory a program starts in, where NODE_ENV isn't set, the one whose
+// value wins first.
+export const DOTENV_FILES = ['.env.development.local', '.env.local', '.env.development', '.env'];
+
+/** env, less each name that a dotenv file in dir sets where env holds that file's value. */
+export function withoutDotenv(env: Record<string, string | undefined>, dir: string): Record<string, string> {
+  const kept: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) if (value !== undefined) kept[name] = value;
+  for (const file of DOTENV_FILES) {
+    let values: Map<string, string>;
+    try {
+      values = readEnvFile(join(dir, file));
+    } catch {
+      continue;
+    }
+    for (const [name, value] of values) if (kept[name] === value) delete kept[name];
+  }
+  return kept;
+}
+
 /** Writes NAME="value" in place of every line that sets NAME, readable by its owner alone. */
 export function writeEnvValue(path: string, name: string, value: string): void {
   const why = unwritableValue(value);

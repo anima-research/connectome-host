@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ToolCall, ToolResult } from '@animalabs/agent-framework';
@@ -69,12 +69,21 @@ describe('ask_secret', () => {
     expect(readEnvFile(join(dir, '.env')).has('DISCORD_TOKEN')).toBe(false);
   });
 
-  test('stores a key whose check gets no answer, and says whether it works isn\'t known, with the status', async () => {
+  test('stores a key whose check gets a 503, and says whether it works isn\'t known, with the status', async () => {
     const { dir, module } = install({ answers: [KEY], fetch: answering(503) });
     const result = await call(module, 'ask_secret', { name: 'OPENAI_API_KEY', purpose: 'an OpenAI key' });
     expect(result.success, result.error).toBe(true);
     expect(String(result.data)).toContain('isn\'t known');
     expect(String(result.data)).toContain('503');
+    expect(readEnvFile(join(dir, '.env')).get('OPENAI_API_KEY')).toBe(KEY);
+  });
+
+  test('stores a provider key whose base URL in .env isn\'t a URL, and says why whether it works isn\'t known', async () => {
+    const { dir, module } = install({ answers: [KEY] });
+    writeFileSync(join(dir, '.env'), 'OPENAI_BASE_URL=not-a-url\n');
+    const result = await call(module, 'ask_secret', { name: 'OPENAI_API_KEY', purpose: 'an OpenAI key' });
+    expect(result.success, result.error).toBe(true);
+    expect(String(result.data)).toContain('whether it works isn\'t known: OPENAI_BASE_URL in .env, "not-a-url", isn\'t a URL.');
     expect(readEnvFile(join(dir, '.env')).get('OPENAI_API_KEY')).toBe(KEY);
   });
 
@@ -127,6 +136,24 @@ describe('run', () => {
     await module.stop();
     expect((await running).exitCode).not.toBe(0);
   });
+
+  test('kills, when the host stops, what in a command\'s process group outlives SIGTERM after the command ends', async () => {
+    const { dir, module } = install();
+    const running = run(module, `sh -c "trap '' TERM; exec sleep 60" & echo $! > child; wait`);
+    for (let tries = 0; !existsSync(join(dir, 'child')) && tries < 100; tries++) await Bun.sleep(20);
+    const child = Number(readFileSync(join(dir, 'child'), 'utf-8'));
+    try {
+      await module.stop();
+      await running;
+      for (let tries = 0; !processEnded(child) && tries < 100; tries++) await Bun.sleep(20);
+      expect(processEnded(child)).toBe(true);
+    } finally {
+      try {
+        process.kill(child, 'SIGKILL');
+      } catch {
+      }
+    }
+  }, 20_000);
 
   test('gives back the first and last 4 KiB of a longer output, and says how much it left out', async () => {
     const { module } = install();

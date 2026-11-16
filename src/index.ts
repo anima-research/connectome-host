@@ -84,6 +84,7 @@ import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, batchEchoL
 import { createPipedTurns, switchFollowing, traceFollower } from './piped-turns.js';
 import { openReadlineTerminal, type ReadlineTerminal, type ShownPrompt } from './readline-terminal.js';
 import { opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts.js';
+import { TURN_SETTLED_TRACES } from './state/turn-trace.js';
 import { setCallLogPath } from './bug-report.js';
 import { SessionManager } from './session-manager.js';
 import { startFramework } from './start-framework.js';
@@ -727,6 +728,7 @@ async function runPiped(app: AppContext) {
   const { handleCommand } = await import('./commands.js');
 
   let say = (line: string): void => { console.error(line); };
+  let endIfFinished = (): void => {};
   let atPrompt = false;
   let onAlert: ((event: Record<string, unknown>) => void) | null = null;
   const setup = app.recipe.modules?.setup === true;
@@ -745,6 +747,7 @@ async function runPiped(app: AppContext) {
     if (setup && e.type === 'inference:completed' && e.agentName === app.agentName) {
       queueMicrotask(() => { if (refused()) say(REFUSED_TURN); });
     }
+    if (setup && TURN_SETTLED_TRACES.has(e.type) && e.agentName === app.agentName) queueMicrotask(() => endIfFinished());
   });
   traces.follow(app.framework);
   let afterSwitch = async (): Promise<void> => {};
@@ -854,9 +857,11 @@ async function runPiped(app: AppContext) {
         ask: (name, purpose) => askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone stores nothing)`),
       };
     }
+    const finished = (): boolean => (app.framework.getModule(SETUP_MODULE) as SetupModule | undefined)?.finishRequested === true;
+    endIfFinished = () => { if (!closed && finished()) rl.close(); };
     const promptOrEnd = (): void => {
       if (closed) return;
-      if ((app.framework.getModule(SETUP_MODULE) as SetupModule | undefined)?.finishRequested) {
+      if (finished()) {
         rl.close();
         return;
       }

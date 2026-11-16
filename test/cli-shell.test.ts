@@ -15,7 +15,7 @@ const ok = (stdout = ''): Ran => ({ status: 0, stdout, stderr: '' });
 const DEFAULT_TRUSTED = 'Default trusted dependencies (2):\n - esbuild\n - node-pty\n';
 
 function machine(opts: {
-  node?: string; installed?: string; pty?: Ran[]; env?: Record<string, string>; noNode?: boolean;
+  node?: string; installed?: string; pty?: Ran[]; env?: Record<string, string>; noNode?: boolean; addFails?: Ran;
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'cli-shell-'));
   dirs.push(dir);
@@ -27,21 +27,25 @@ function machine(opts: {
   }
   writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest));
   const ran: string[][] = [];
+  const envs: Array<Record<string, string>> = [];
   const pty = [...opts.pty ?? [ok()]];
   const world: ShellWorld = {
     platform: 'linux',
     env: { PATH: '/usr/bin:/bin', ...opts.env },
+    cwd: dir,
     bun: { path: 'bun', version: '1.4.4' },
     hasSudo: false,
     hasNode: () => !opts.noNode,
-    run: async (argv) => {
+    run: async (argv, options) => {
       ran.push(argv);
+      envs.push(options.env);
       if (argv[0] === 'node' && argv[1] === '--version') {
         return opts.noNode ? { status: 1, stdout: '', stderr: '' } : ok(`v${opts.node ?? '24.1.0'}\n`);
       }
       if (argv[0] === 'node') return pty.shift() ?? ok();
       if (argv[2] === 'pm') return ok(DEFAULT_TRUSTED);
       if (argv[2] === 'add') {
+        if (opts.addFails) return opts.addFails;
         const held = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8'));
         held.dependencies['term-sessions-mcp'] = '^1';
         writeFileSync(join(dir, 'package.json'), JSON.stringify(held));
@@ -51,7 +55,7 @@ function machine(opts: {
       return ok();
     },
   };
-  return { dir, world, ran };
+  return { dir, world, ran, envs };
 }
 
 async function install(m: ReturnType<typeof machine>) {
@@ -71,6 +75,26 @@ test('installs the shell where it is missing, with Bun\'s default trusted packag
     .toEqual(['esbuild', 'node-pty', 'term-sessions-mcp']);
   expect(m.ran).toContainEqual(['bun', '--no-env-file', 'add', 'term-sessions-mcp@^1']);
   expect(out.at(-1)).toStartWith(`A pty opens in ${m.dir}`);
+});
+
+test('gives Bun\'s install none of the values Bun loaded from the dotenv files where the command runs', async () => {
+  const m = machine({ env: { DISCORD_TOKEN: 'from-env-file', SHARED: 'exported' } });
+  writeFileSync(join(m.dir, '.env'), 'DISCORD_TOKEN="from-env-file"\nSHARED="file"\n');
+  expect((await install(m)).status).toBe(0);
+  const added = m.envs[m.ran.findIndex((argv) => argv[2] === 'add')]!;
+  expect(added).not.toHaveProperty('DISCORD_TOKEN');
+  expect(added.SHARED).toBe('exported');
+});
+
+test('says, under setup\'s agent, that the agent has Bun\'s lines when the install fails', async () => {
+  const failed: Ran = { status: 1, stdout: '', stderr: 'error: no registry' };
+  const plain = await install(machine({ addFails: failed }));
+  expect(plain.err.join('\n')).toContain('Bun\'s own lines say why.');
+  const shownDir = mkdtempSync(join(tmpdir(), 'cli-shell-shown-'));
+  dirs.push(shownDir);
+  const shownTo = join(shownDir, 'said');
+  const underSetup = await install(machine({ addFails: failed, env: { [SHOWN_FILE]: shownTo } }));
+  expect(underSetup.err.join('\n')).toContain('Setup\'s agent has Bun\'s own lines, which say why.');
 });
 
 test('leaves a 1.x shell as it is', async () => {

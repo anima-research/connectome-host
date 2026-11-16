@@ -50,6 +50,10 @@ export const PROVIDER_KEYS: Readonly<Record<string, ProviderKey>> = {
 export function checkProviderKey(name: string, key: string, dotenv: ReadonlyMap<string, string>, fetch?: typeof globalThis.fetch):
   Promise<KeyAnswer> {
   const provider = PROVIDER_KEYS[name]!;
-  const base = (dotenv.get(provider.baseName) || provider.base).replace(/\/+$/, '');
+  const given = dotenv.get(provider.baseName);
+  const base = (given || provider.base).replace(/\/+$/, '');
+  if (!URL.canParse(`${base}${provider.path}`)) {
+    return Promise.resolve({ kind: 'unknown', why: `${provider.baseName} in .env, ${JSON.stringify(given)}, isn't a URL` });
+  }
   return answerOf(`${base}${provider.path}`, provider.headers(key), fetch);
 }
