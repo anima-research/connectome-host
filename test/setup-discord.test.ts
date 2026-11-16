@@ -233,7 +233,7 @@ describe('setup--discord', () => {
       .toEqual(['/users/@me/guilds?limit=200', '/users/@me/guilds?limit=200&after=1199']);
   });
 
-  test('it follows no redirect, which would carry the token wherever it points', async () => {
+  test('it follows no redirect on any of its reads', async () => {
     const redirecting = fakeDiscord([HOME], { '/users/@me': () => new Response(null, { status: 301, headers: { location: 'https://elsewhere.example/' } }) });
     expect((await read(install(redirecting).module)).error).toBe('Discord answered 301 to GET /users/@me with something other ' +
       'than JSON, so the read stopped there. Tell the person what it answered.');
