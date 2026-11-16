@@ -288,9 +288,12 @@ describe('setup--discord', () => {
   test('a read asked for while a secret is being asked waits for its answer, through the one queue', async () => {
     let answer!: (value: string) => void;
     const typed = new Promise<string>((done) => { answer = done; });
+    let entered!: () => void;
+    const asking = new Promise<void>((done) => { entered = done; });
     const discord = fakeDiscord([HOME]);
-    const { module, shown } = install(discord, `DISCORD_TOKEN="${TOKEN}"\n`, () => ({ ask: () => typed }));
+    const { module, shown } = install(discord, `DISCORD_TOKEN="${TOKEN}"\n`, () => ({ ask: () => { entered(); return typed; } }));
     const asked = module.handleToolCall({ id: 'a1', name: 'ask_secret', input: { name: 'OTHER_SECRET', purpose: 'a test' } } as ToolCall);
+    await asking;
     const reading = read(module);
     await Bun.sleep(50);
     expect(shown).toEqual([]);
