@@ -78,7 +78,11 @@ function managerRun(at: Install, states: States): (command: string, args: string
 
 const BOTS: Record<string, string> = { [`Bot ${TOKEN}`]: 'ember-bot' };
 
-const discordFetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+const DISCORD_ME = 'https://discord.com/api/v10/users/@me';
+const discordFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+  if (String(input) !== DISCORD_ME || init?.redirect !== 'manual') {
+    return Response.json({ message: `stand-in: not the request doctor makes: ${String(input)}`, code: 0 }, { status: 400 });
+  }
   const name = BOTS[new Headers(init?.headers).get('authorization') ?? ''];
   if (name === undefined) return Response.json({ message: '401: Unauthorized', code: 0 }, { status: 401 });
   return Response.json({ id: '900', username: name, bot: true });
@@ -640,7 +644,9 @@ describe('connectome doctor: check 5, the Discord token', () => {
     }) as unknown as typeof fetch;
     expect((await run(at, { states: RUNNING, health: HEALTHY, fetch: unanswered })).lines[5])
       .toBe('– Discord gave no answer that doctor could read: discord.com couldn\'t be reached (ENOTFOUND).');
-    const moved = (async () => new Response(null, { status: 301, headers: { location: 'https://discord.com/elsewhere' } })) as unknown as typeof fetch;
+    const moved = (async (_input: string | URL | Request, init?: RequestInit) => init?.redirect === 'manual'
+      ? new Response(null, { status: 301, headers: { location: 'https://discord.com/elsewhere' } })
+      : Response.json({ id: '900', username: 'ember-bot', bot: true })) as unknown as typeof fetch;
     expect((await run(at, { states: RUNNING, health: HEALTHY, fetch: moved })).lines[5])
       .toBe('– Discord gave no answer that doctor could read: discord.com answered 301.');
   });
