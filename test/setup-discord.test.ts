@@ -169,6 +169,27 @@ describe('setup--discord', () => {
       .toEqual([{ id: '201', name: 'lobby', category: null, send: true }]);
   });
 
+  test('a channel\'s overwrites go in Discord\'s order: @everyone\'s, then the bot\'s roles\' together, then the bot\'s own', async () => {
+    const roles: FakeServer = {
+      id: '300', name: 'Roles', ownerId: '701', everyone: VIEW | SEND,
+      botRoles: [{ id: '310', permissions: 0 }],
+      members: [{ id: '701', username: 'adam.k' }, { id: '900', username: 'ember' }],
+      channels: [
+        { id: '301', name: 'role-allows', type: 0, position: 0, overwrites: [{ id: '300', type: 0, deny: SEND }, { id: '310', type: 0, allow: SEND }] },
+        { id: '302', name: 'bot-denies', type: 0, position: 1, overwrites: [{ id: '310', type: 0, allow: SEND }, { id: '900', type: 1, deny: SEND }] },
+        { id: '303', name: 'bot-allows', type: 0, position: 2, overwrites: [{ id: '310', type: 0, deny: SEND }, { id: '900', type: 1, allow: SEND }] },
+        { id: '304', name: 'role-denies', type: 0, position: 3, overwrites: [{ id: '310', type: 0, deny: SEND }] },
+      ],
+    };
+    const r = await read(install(fakeDiscord([roles])).module);
+    expect((r.data as { servers: Array<{ channels: unknown[] }> }).servers[0]!.channels).toEqual([
+      { id: '301', name: 'role-allows', category: null, send: true },
+      { id: '302', name: 'bot-denies', category: null, send: false },
+      { id: '303', name: 'bot-allows', category: null, send: true },
+      { id: '304', name: 'role-denies', category: null, send: false },
+    ]);
+  });
+
   test('given a server and a username, it asks Discord for up to 1,000 members, its most, whose username or nickname starts with it, and gives them', async () => {
     const discord = fakeDiscord([{ ...HOME, members: [...HOME.members, { id: '703', username: 'lovelace', global_name: 'Countess', nick: 'ada of the hall' }] }]);
     const { module } = install(discord);
