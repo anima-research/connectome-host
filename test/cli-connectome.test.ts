@@ -257,6 +257,23 @@ test('the package\'s bin, in a directory with an install, runs that install\'s o
     'happened isn\'t known here.');
 });
 
+test('the package\'s bin runs an install\'s own setup where its release has a setup agent, and the package\'s own setup otherwise', async () => {
+  const { work, root } = install();
+  writeInstallCommand(root, '');
+  const stub = stubPackage(root, 'export async function main(root: string, argv: string[]) { ' +
+    'console.log("own setup", JSON.stringify(argv)); return 7; }\n');
+  release(root, '0.15.0', stub);
+  moveCurrent(root, '0.15.0');
+  const without = await run(BIN, ['setup', 'discord'], work);
+  expect(without.out).not.toContain('own setup');
+  expect(without.err).toContain('connectome setup needs a person at a terminal');
+  mkdirSync(join(stub, 'recipes'));
+  writeFileSync(join(stub, 'recipes', 'setup.json'), '{}');
+  const withAgent = await run(BIN, ['setup', 'discord'], work);
+  expect(withAgent.status).toBe(7);
+  expect(withAgent.out).toContain('own setup ["setup","discord"]');
+});
+
 test('the package\'s bin, by an install without its own command, says so and how setup writes it', async () => {
   const { work, root, data } = install();
   const setup = join(REPO, 'src', 'update', 'setup.ts');
