@@ -290,13 +290,13 @@ describe('where the resident lives', () => {
     expect(m.ran).toEqual([]);
   });
 
-  test('says first that it goes on where it stopped, in a directory setup ran in, and installs nothing again', async () => {
+  test('says first that setup ran there before, in a directory setup ran in, and installs nothing again', async () => {
     const dir = scratch();
     await runSetup(dir, machine(dir, { hidden: [KEY] }).world);
     const again = machine(dir, { sudo: true });
     const { status, out } = await runSetup(dir, again.world);
     expect(status).toBe(0);
-    expect(out[0]).toBe(`Setup ran in ${dir} before. Its agent picks up where it stopped, and can change with you what it set up.`);
+    expect(out[0]).toBe(`Setup ran in ${dir} before. Its agent can change with you what it set up.`);
     expect(again.ran.some((argv) => argv[2] === 'add')).toBe(false);
     expect(again.asked).toEqual([]);
   });

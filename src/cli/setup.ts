@@ -91,7 +91,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     return 1;
   }
   out(own
-    ? `Setup ran in ${dir} before. Its agent picks up where it stopped, and can change with you what it set up.`
+    ? `Setup ran in ${dir} before. Its agent can change with you what it set up.`
     : `The resident will live in ${dir}${dir === world.cwd ? '' : `, since ${world.cwd} holds other files`}. Its ` +
       `service will be named after the directory's name, ${basename(dir)}.`);
   const recordPath = join(root, 'install.json');
