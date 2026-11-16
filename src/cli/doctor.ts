@@ -126,16 +126,18 @@ function checkService(report: Report, sys: ServiceSystem, typed: string, units: 
     return null;
   }
   const env = childEnv(sys);
-  const start = `start it with \`${commands.start}\`, and read its log with \`${commands.log}\`.`;
   let hostRuns: boolean | null = null;
   for (const unit of [...commands.units].reverse()) {
     const state = unitState(sys, env, units, unit);
+    const log = unit.name === units.host.name ? commands.log : units.manager === 'systemd-user'
+      ? `journalctl --user -u ${unit.name} -f` : `tail -f ${shellWord(join(units.work, 'logs', 'shell.log'))}`;
     if ('unasked' in state) {
       report.check('✗', state.unasked, `ask it yourself, as the user who runs the resident: \`${state.question}\``);
     } else if (state.runs) {
       report.check('✓', `The service ${unit.name} runs.`);
     } else {
-      report.check('✗', `The service ${unit.name} is ${state.state}.`, start);
+      report.check('✗', `The service ${unit.name} is ${state.state}.`,
+        `start it with \`${commands.start}\`, and read its log with \`${log}\`.`);
     }
     if (unit.name === units.host.name) hostRuns = 'unasked' in state ? null : state.runs;
   }

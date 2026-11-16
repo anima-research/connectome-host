@@ -242,8 +242,12 @@ describe('connectome doctor: check 1, the service', () => {
     expect(r.lines.slice(1, 4)).toEqual([
       `✓ The service ${HOST} runs.`,
       `✗ The service ${SHELL} is failed (failed).`,
-      `  Next: start it with \`systemctl --user start ${SHELL} ${HOST}\`, and read its log with \`journalctl --user -u ${HOST} -f\`.`,
+      `  Next: start it with \`systemctl --user start ${SHELL} ${HOST}\`, and read its log with \`journalctl --user -u ${SHELL} -f\`.`,
     ]);
+    const mac = install({ launchd: true, shell: true });
+    const stopped = await run(mac, { states: { [LABEL]: 'running', [`${LABEL}.shell`]: 'loaded' } });
+    expect(stopped.lines[2]).toBe(`✗ The service ${LABEL}.shell is loaded and not running, its last exit 256.`);
+    expect(stopped.lines[3]).toEndWith(`, and read its log with \`tail -f ${join(mac.work, 'logs', 'shell.log')}\`.`);
   });
 
   test('a running launch agent passes, and one loaded and not running is a problem with its last exit', async () => {
