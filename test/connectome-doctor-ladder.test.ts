@@ -116,7 +116,7 @@ async function install(opts: {
       opts.dumpReadFails
         ? '  "$unit -o cat --no-pager --since @"*) echo "Failed to open the journal: Permission denied" >&2; exit 1 ;;'
         : opts.dumpReadHangs ? '  "$unit -o cat --no-pager --since @"*) exec sleep 10 ;;'
-        : `  "$unit -o cat --no-pager --since @"*) awk -v since="\${8#@}" '$1 + 0 >= since { sub(/^[^ ]+ [^ ]+ [^ ]+ /, ""); print }' ${journal}; echo read >> ${join(work, 'dump-reads')} ;;`,
+        : `  "$unit -o cat --no-pager --since @"*) echo start >> ${join(work, 'dump-starts')}; awk -v since="\${8#@}" '$1 + 0 >= since { sub(/^[^ ]+ [^ ]+ [^ ]+ /, ""); print }' ${journal}; echo read >> ${join(work, 'dump-reads')} ;;`,
       '  *) echo "journalctl stand-in: arguments it doesn\'t answer: $*" >&2; exit 2 ;;',
       'esac',
     ].join('\n'));
@@ -692,7 +692,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
     expect(out).toMatch(/^live gate dump: SIGUSR2 couldn't be sent \(.+\)$/m);
     expect(out).toMatch(/=== findings ===[\s\S]*SIGUSR2 couldn't be sent \(.+\), so the gate dump isn't known/);
     expect(out).not.toContain('[diagnostics] line');
-    expect(lines(join(at.work, 'dump-reads'))).toBe(0);
+    expect(lines(join(at.work, 'dump-starts'))).toBe(0);
     expect(signalled(at.host)).toBe(false);
     expect(alive(at.host)).toBe(true);
   });
