@@ -100,7 +100,7 @@ export async function doctor(
   const commands = units === null ? null : serviceCommands(root, sys);
   const runs = checkService(report, sys, typed, units, commands);
   const host = await reachHost(report, parts, root, typed, units !== null, commands, runs);
-  await checkRecipe(report, parts, host, units, commands, dotenv);
+  await checkRecipe(report, parts, root, host, units, commands, dotenv);
   await checkCalls(report, parts, host, units, commands);
   if (host !== null) host.close();
   await checkToken(report, parts, dotenv, typed, work);
@@ -203,8 +203,8 @@ async function reachHost(report: Report, parts: DoctorParts, root: string, typed
   return null;
 }
 
-async function checkRecipe(report: Report, parts: DoctorParts, host: HostClient | null, units: ServiceUnits | null,
-  commands: ServiceCommands | null, dotenv: Map<string, string>): Promise<void> {
+async function checkRecipe(report: Report, parts: DoctorParts, root: string, host: HostClient | null,
+  units: ServiceUnits | null, commands: ServiceCommands | null, dotenv: Map<string, string>): Promise<void> {
   if (host !== null) {
     report.check('✓', `The host loaded ${host.ready.recipe} when it started.`);
     return;
@@ -229,7 +229,13 @@ async function checkRecipe(report: Report, parts: DoctorParts, host: HostClient 
   }
   const recipe = /^https?:\/\//.test(named) ? named
     : resolve(read.workingDirectory === '~' ? parts.sys.home : read.workingDirectory, named);
-  const env = { ...Object.fromEntries(dotenv), ...parts.sys.env };
+  let dataDir: string | null = null;
+  try {
+    dataDir = dataDirOf(root);
+  } catch {
+    dataDir = null;
+  }
+  const env = { ...Object.fromEntries(dotenv), ...parts.sys.env, ...dataDir === null ? {} : { DATA_DIR: dataDir } };
   try {
     await within(parts.recipeLimitMs, (async () => {
       const document = await readRecipeDocument(recipe);

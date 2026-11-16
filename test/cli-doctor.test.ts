@@ -385,6 +385,15 @@ describe('connectome doctor: check 3, the recipe', () => {
     expect(fromEnv.lines[5]).toEndWith('got "from-environment".');
   });
 
+  test('the loader gets the install\'s data directory as DATA_DIR, as the service\'s unit sets it, over doctor\'s own', async () => {
+    const recipe = JSON.stringify({ name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hi', proseRouting: '${DATA_DIR}' } });
+    const at = install({ recipe });
+    for (const env of [{}, { DATA_DIR: '/elsewhere' }]) {
+      const r = await run(at, { states: { [HOST]: 'inactive/dead' }, env });
+      expect(r.lines[5]).toEndWith(`got "${at.data}".`);
+    }
+  });
+
   test('a recipe that doesn\'t load gives the loader\'s words, with a stored secret in them hidden, and the next step', async () => {
     const recipe = JSON.stringify({ name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hi', proseRouting: '${DISCORD_TOKEN}' } });
     const at = install({ recipe });
