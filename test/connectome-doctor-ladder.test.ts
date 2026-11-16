@@ -413,8 +413,12 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
     const finding = /\* inference failures, the last \S+ ago, with no successful turn found since — if the reason repeats/;
     writeFileSync(calls, `${call(at.now - 25)}\n`);
     expect(ladder(at).out).toMatch(finding);
-    writeFileSync(calls, `${call(at.now - 5, '400 prompt is too long')}\n`);
-    expect(ladder(at).out).toMatch(finding);
+    const failedToo = new RegExp(`\\* inference failures, the last \\S+ ago, and the newest turn's model call, at ${stamp(at.now - 5)}, ` +
+      'failed too — if the reason repeats');
+    writeFileSync(calls, `${call(at.now - 25)}\n${call(at.now - 15)}\n${call(at.now - 5, '400 prompt is too long')}\n`);
+    const newestFailed = ladder(at).out;
+    expect(newestFailed).toMatch(failedToo);
+    expect(newestFailed).not.toContain('no successful turn found since');
     writeFileSync(calls, `${call(at.now - 25)}\n${call(at.now - 5, undefined, 'complete')}\n`);
     const compressed = ladder(at).out;
     expect(compressed).toMatch(finding);
@@ -423,7 +427,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
       kind: 'stream', rawResponse: { stop_reason: 'end_turn' }, ...fields });
     for (const failed of [later({ type: 'error' }), later({ error: 'overloaded' })]) {
       writeFileSync(calls, `${failed}\n`);
-      expect(ladder(at).out).toMatch(finding);
+      expect(ladder(at).out).toMatch(failedToo);
     }
   });
 
@@ -463,7 +467,8 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
     expect(out).toMatch(/inference failures, the last \S+ ago; whether a turn has succeeded since isn't known, since newer rows of the call log can't be read/);
     expect(out).not.toContain('with no successful turn found since');
     writeFileSync(calls, `${failed}\n`);
-    expect(ladder(at).out).toMatch(/\* inference failures, the last \S+ ago, with no successful turn found since/);
+    expect(ladder(at).out).toMatch(new RegExp(`\\* inference failures, the last \\S+ ago, and the newest turn's model call, ` +
+      `at ${stamp(at.now - 5)}, failed too`));
   });
 
   test('an exhausted inference that only failures.log still holds is a finding, with its time from the record', async () => {
@@ -1198,6 +1203,7 @@ describe.skipIf(ladderUnrunnable)('the ladder, its round on the review of 3c6be0
     JSON.stringify({ timestamp: new Date(s * 1000).toISOString(), kind, rawResponse });
   const findings = (at: Install): string[] => foundIn(ladder(at).out);
   const hardDown = expect.stringMatching(/^inference failures, the last \d+m ago, with no successful turn found since/);
+  const failedToo = expect.stringMatching(/^inference failures, the last \d+m ago, and the newest turn's model call, at \S+ \S+, failed too/);
   const startsAfter = expect.stringMatching(new RegExp('^inference failures, the last \\d+m ago; whether a turn has succeeded ' +
     'since isn\'t known, since the call log read here starts at \\S+ \\S+, after it$'));
 
@@ -1227,10 +1233,10 @@ describe.skipIf(ladderUnrunnable)('the ladder, its round on the review of 3c6be0
     const newest = join(at.work, 'data', `llm-calls.${started}.jsonl`);
     writeFileSync(newest, `${row(at.now - 50, 'stream', { stop_reason: null, error: 'overloaded' })}\n`);
     expect(findings(at)).toContainEqual(startsAfter);
-    expect(findings(at)).not.toContainEqual(hardDown);
+    expect(findings(at)).not.toContainEqual(failedToo);
     const earlier = new Date((at.now - 400) * 1000).toISOString().replace(/:/g, '-').replace('.', '-');
     renameSync(newest, join(at.work, 'data', `llm-calls.${earlier}.jsonl`));
-    expect(findings(at)).toContainEqual(hardDown);
+    expect(findings(at)).toContainEqual(failedToo);
   });
 
   test('a failure from before the last 30 MB of the call log isn\'t called hard-down either', async () => {
