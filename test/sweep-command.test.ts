@@ -9,12 +9,6 @@ import { createBranchState, handleCommand, handleSweep } from '../src/commands.j
 import { trackOperatorWork } from '../src/session-switch.js';
 import type { Sweep } from '../src/sweeps.js';
 
-// What `connectome sweep` asks of the running host: `/sweep NAME` shows the
-// rows a sweep would rewrite and writes nothing, and `/sweep NAME --write`
-// rewrites them. These run it on a real framework whose agents share the
-// residents' slot, with a sweep of the test's own: the mechanism ships with
-// no sweep.
-
 const OLD = 'ZQ-OLD-WORDS';
 const text = (t: string) => [{ type: 'text' as const, text: t }];
 const said = (r: { lines: Array<{ text: string }> }) => r.lines.map((l) => l.text).join('\n');
@@ -81,7 +75,6 @@ function provider() {
   return { membrane, requests, holdFor };
 }
 
-// A real framework's turns and stop run past bun's 5 s default on a loaded host.
 setDefaultTimeout(30_000);
 
 let cleanup: (() => Promise<void>) | undefined;
@@ -152,7 +145,7 @@ describe('/sweep, the list and its words', () => {
     expect(said(handleCommand('/help', h.app))).toContain('/sweep [name [--write]]');
   });
 
-  test('while a session switch is under way, /sweep with a name answers refused and writes nothing', async () => {
+  test('while a session switch is under way, /sweep with a name answers refused and writes nothing; another command\'s refusal stays unmarked', async () => {
     const h = await host();
     const id = h.note('a', 1);
     (h.app as { switching?: boolean }).switching = true;
@@ -162,6 +155,9 @@ describe('/sweep, the list and its words', () => {
       expect(said(answer)).toContain('a session switch is under way');
     }
     expect(h.rowText('a', id)).toContain(OLD);
+    const undo = handleCommand('/undo', h.app);
+    expect(said(undo)).toContain('a session switch is under way');
+    expect(undo.refused).toBeUndefined();
   });
 });
 
@@ -246,8 +242,12 @@ describe('/sweep NAME --write', () => {
       const edit = cm.editMessage.bind(cm);
       cm.editMessage = (rowId, content) => { edited.push(name); edit(rowId, content); };
     }
+    const before = h.agent('b').getContextManager().getMessage(id as never)!;
     expect(said(h.sweep('test-notes', '--write'))).toContain('rewrote 1 of 1 row.');
     expect(edited).toEqual(['a']);
+    const after = h.agent('b').getContextManager().getMessage(id as never)!;
+    expect(after.metadata).toEqual(before.metadata);
+    expect(after.timestamp).toEqual(before.timestamp);
     await h.turn('b');
     const next = JSON.stringify(h.requests.at(-1));
     expect(next).toContain('New words for note 2.');
@@ -263,6 +263,9 @@ describe('/sweep NAME --write', () => {
       const answer = h.sweep('test-notes', '--write');
       expect(answer.refused).toBe(true);
       expect(said(answer)).toBe('Sweep test-notes wrote nothing, since /newtopic is still running. Run it again once /newtopic has finished.');
+      const none = handleSweep(h.app, ['test-notes', '--write'], { via: 'test' }, [{ ...notes, rewrite: () => null }]);
+      expect(none.refused).toBe(true);
+      expect(said(none)).toContain('wrote nothing, since /newtopic is still running');
       expect(h.rowText('a', id)).toContain(OLD);
       expect(h.operatorLog().filter((e) => e.kind === 'sweep')).toEqual([]);
       expect(said(h.sweep('test-notes'))).toContain('would rewrite 1 row.');
@@ -335,6 +338,7 @@ describe('/sweep NAME --write', () => {
     expect(answer.refused).toBe(true);
     expect(said(answer)).toContain('rewrote 1 of 2 rows.');
     expect(said(answer)).toContain('its edit failed, so it may or may not have changed');
+    expect(answer.lines.map((l) => l.text).find((l) => l.includes('its edit failed'))).toContain(`row ${first} of `);
     expect(said(answer)).not.toContain('left as it was, since its edit failed');
     expect(said(answer)).toContain('the store refused this edit');
     expect(said(answer)).toContain('Run the sweep again without --write to see whether a row whose edit failed is still listed.');
