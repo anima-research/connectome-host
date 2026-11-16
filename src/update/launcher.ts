@@ -656,11 +656,11 @@ function refuse(root: string, ops: LauncherOps, step: JournalLine['step'], curre
   const what = mark.why === 'go-back' ? 'Go back' : 'switch';
   const { mark: markPath } = installPaths(root);
   const again = mark.why === 'go-back'
-    ? 'Go back in the Web UI, `/update back` in the host\'s terminal, or the install\'s own `connectome update back` in a ' +
+    ? `Go back in the Web UI, \`/update back\` in the host's terminal, or \`${installCommandAt(root)} update back\` in a ` +
       `shell. Where the host doesn't stay up, \`bun ${shellWord(join(root, ENTRY_POINT))} ${GO_BACK_FLAG}` +
       `${mark.keepData ? ` ${KEEP_DATA_FLAG}` : ''}\` asks its next ` +
       'start to go back'
-    : 'Restart in the Web UI, `/update restart` in the host\'s terminal, or the install\'s own `connectome update restart` in ' +
+    : `Restart in the Web UI, \`/update restart\` in the host's terminal, or \`${installCommandAt(root)} update restart\` in ` +
       'a shell';
   let dropped = `The request is dropped: once what refused it has cleared, ask again with ${again}.`;
   try {

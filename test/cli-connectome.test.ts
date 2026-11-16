@@ -1150,6 +1150,7 @@ test('update whose connection closes before its answer ends exits 1 and says how
   expect(ran.status).toBe(1);
   expect(ran.out).toBe('Asking the host to restart…\n');
   expect(ran.err).toContain('closed the connection before its answer ended, so how it ended isn\'t known');
+  expect(ran.err).toContain(`\`${path}\` says what runs now.`);
 });
 
 function farewellHost(data: string, said: { lines: string[]; refused?: boolean }): Promise<void> {

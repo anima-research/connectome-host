@@ -494,7 +494,7 @@ describe('a switch', () => {
       const said = reports.find((l) => l.includes("didn't go ahead"))!;
       expect(said).toMatch(r.says);
       expect(said).toContain('The request is dropped: once what refused it has cleared, ask again with ' +
-        'Restart in the Web UI, `/update restart` in the host\'s terminal, or the install\'s own `connectome update restart` in a shell.');
+        `Restart in the Web UI, \`/update restart\` in the host's terminal, or \`${shellWord(join(root, 'connectome'))} update restart\` in a shell.`);
       expect(said).not.toContain('..');
     });
   }
@@ -2443,8 +2443,8 @@ describe('a refused request', () => {
     expect(failed).toBe(true);
     expect(existsSync(installPaths(root).mark)).toBe(false);
     expect(reports.find((l) => l.includes("didn't go ahead"))).toContain('The request is dropped: once what refused it has ' +
-      'cleared, ask again with Restart in the Web UI, `/update restart` in the host\'s terminal, or the install\'s own ' +
-      '`connectome update restart` in a shell. Syncing its removal failed (EIO), so a power cut could bring the mark back, ' +
+      'cleared, ask again with Restart in the Web UI, `/update restart` in the host\'s terminal, or ' +
+      `\`${shellWord(join(root, 'connectome'))} update restart\` in a shell. Syncing its removal failed (EIO), so a power cut could bring the mark back, ` +
       'for the next start to try the request once more.');
   });
 
@@ -2456,7 +2456,7 @@ describe('a refused request', () => {
       await decide(root, ops());
       const said = reports.find((l) => l.includes("didn't go ahead"))!;
       expect(said).toContain('once what refused it has cleared, ask again with Go back in the Web UI, `/update back` in the ' +
-        'host\'s terminal, or the install\'s own `connectome update back` in a shell. Where the host doesn\'t stay up, ' +
+        `host's terminal, or \`${shellWord(join(root, 'connectome'))} update back\` in a shell. Where the host doesn't stay up, ` +
         `\`bun ${shellWord(join(root, ENTRY_POINT))} --go-back${keepData ? ' --keep-data' : ''}\` asks its next start to go back.`);
       expect(said).not.toContain('`--go-back` from a shell');
     });
