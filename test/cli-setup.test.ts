@@ -342,6 +342,27 @@ describe('where the resident lives', () => {
     expect(out[0]).toBe(`Setup ran in ${dir} before. Its agent can change with you what it set up.`);
   });
 
+  test('asks, with no as the default, before it makes an install on a data directory that holds files and no record', async () => {
+    const dir = ownDir();
+    mkdirSync(join(dir, 'data'));
+    writeFileSync(join(dir, 'data', 'store.json'), '{}');
+    const no = machine(dir, { hidden: [KEY], answers: [''] });
+    const { status, out } = await runSetup(dir, no.world);
+    expect(status).toBe(0);
+    expect(no.asked).toEqual([`Make a new install of ${VERSION} on that data? (yes/no) [no] `]);
+    expect(out.join('\n')).toContain(`${join(dir, 'data')} holds a resident's data, and there's no install record`);
+    expect(no.ran.some((argv) => argv[2] === 'add' || argv[2]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(false);
+    expect(existsSync(join(dir, 'connectome-host'))).toBe(false);
+    const yes = machine(dir, { hidden: [KEY], answers: ['yes'] });
+    expect((await runSetup(dir, yes.world)).status).toBe(0);
+    expect(yes.ran.some((argv) => argv[2]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(true);
+    const empty = ownDir();
+    mkdirSync(join(empty, 'data'));
+    const plain = machine(empty, { hidden: [KEY] });
+    expect((await runSetup(empty, plain.world)).status).toBe(0);
+    expect(plain.asked.some((question) => question.includes('on that data'))).toBe(false);
+  });
+
   test.skipIf(process.getuid?.() === 0)('stops where it can\'t list the directory, naming it, and makes nothing there', async () => {
     const home = scratch();
     const dir = scratch();

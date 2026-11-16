@@ -165,6 +165,19 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     err(`connectome-host needs Node ${nodeFloor} or later, and this is Node ${nodeVersion}. ${getNode}`);
     return 1;
   }
+  const lostData = join(dir, 'data');
+  if (!existsSync(recordPath) && entriesOf(lostData).length > 0) {
+    out(`${lostData} holds a resident's data, and there's no install record (${recordPath}), as after the install ` +
+      `is removed. A new install made now runs this setup's release, ${pkg.version}, on that data. If the install had ` +
+      'updated to a later release, answer no, and run that release\'s setup here instead: ' +
+      `\`bunx ${PACKAGE}@<that version> setup ${SURFACE}\`.`);
+    const go = await yesNo(world, `Make a new install of ${pkg.version} on that data? (yes/no) [no] `, false);
+    if (go === null) return stopped(out);
+    if (!go) {
+      out('Nothing was installed here.');
+      return 0;
+    }
+  }
 
   mkdirSync(join(dir, '.setup'), { recursive: true, mode: 0o700 });
   writeFileSync(join(dir, '.setup', MARK), '');
