@@ -795,6 +795,15 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s inference stage', () => {
     expect(out).not.toContain('stop=');
   });
 
+  test('a call logged with only its response\'s summary, as the Bedrock logger writes it, gives that stop reason', async () => {
+    const at = await install({ listens: true, mainPidNow: '0' });
+    writeFileSync(join(at.work, 'data', STARTED), `${JSON.stringify({
+      timestamp: new Date((at.now - 5) * 1000).toISOString(), kind: 'stream', response: { stopReason: 'refusal' } })}\n`);
+    const { out } = ladder(at);
+    expect(out).toMatch(/inference \(llm call\) .* stop=refusal$/m);
+    expect(out).toContain('last model response was a REFUSAL');
+  });
+
   test('a streamed call is the stage, though calls that aren\'t streamed came after it', async () => {
     const at = await install({ listens: true, mainPidNow: '0' });
     writeFileSync(join(at.work, 'data', STARTED),

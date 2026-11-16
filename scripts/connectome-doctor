@@ -450,6 +450,9 @@ if llm_files:
         llm_ts = parse_iso(str(call.get("timestamp", "")))
         resp = response_of(call)
         sr = resp.get("stop_reason")
+        summary = call.get("response")
+        if sr is None and isinstance(summary, dict):
+            sr = summary.get("stopReason")
         err = resp.get("error") or call.get("error")
         stop = "" if sr is None else f"stop={sr}  "
         if call.get("type") == "error" or err:
