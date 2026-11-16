@@ -29,7 +29,8 @@ bunx @animalabs/connectome-host setup discord
 
 Setup puts the resident in the directory you run it in where that's empty
 or already the resident's, and in `~/resident` otherwise, and says which
-before it asks anything.
+before it asks anything. Where `~/resident` holds other files and isn't the
+resident's either, setup stops and says so.
 
 If `bunx` doesn't have the package yet, it first downloads it and what it
 depends on, showing its own progress, before setup says anything.
@@ -1140,8 +1141,8 @@ the window again.
 
 While a session switch is under way, these are refused, each saying
 nothing changed: `/undo`, `/redo`, `/checkout`, `/branchto`, `/newtopic`,
-`/nudge`, `/puppet`, `/session rename`, `/session delete`, `/fleet stop` and
-`/fleet restart`, and `/checkpoint`, `/restore` and `/budget` given a name or
+`/nudge`, `/puppet`, `/session new`, `/session switch`, `/session rename`,
+`/session delete`, `/fleet stop` and `/fleet restart`, and `/checkpoint`, `/restore` and `/budget` given a name or
 a value. The forms of those three that only list or show answer as they do
 without a switch. The same goes for the fleet view's stop and restart keys,
 and for the Web UI's rollback, suppress, fleet stop and restart, host
@@ -1150,9 +1151,9 @@ made for a fleet child is passed on to it, and the child refuses it while
 its own session is switching, and while it is quiesced for a release
 switch. Once the switch has stopped the old
 session's framework, the Web UI answers "host not ready" until the next one
-is installed, as before. `/session new` and `/session switch` start no
-switch while one is under way, or while one of the commands above, given
-earlier, or one of these actions on this host is still running.
+is installed, as before. `/session new` and `/session switch` also start no
+switch while one of the commands above, given earlier, or one of these
+actions on this host is still running.
 
 ## TUI controls
 

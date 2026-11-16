@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ToolCall, ToolResult } from '@animalabs/agent-framework';
@@ -69,13 +69,75 @@ describe('ask_secret', () => {
     expect(readEnvFile(join(dir, '.env')).has('DISCORD_TOKEN')).toBe(false);
   });
 
-  test('stores a key whose check gets no answer, and says whether it works isn\'t known, with the status', async () => {
+  test('stores a key whose check gets a 503, and says whether it works isn\'t known, with the status', async () => {
     const { dir, module } = install({ answers: [KEY], fetch: answering(503) });
     const result = await call(module, 'ask_secret', { name: 'OPENAI_API_KEY', purpose: 'an OpenAI key' });
     expect(result.success, result.error).toBe(true);
     expect(String(result.data)).toContain('isn\'t known');
     expect(String(result.data)).toContain('503');
     expect(readEnvFile(join(dir, '.env')).get('OPENAI_API_KEY')).toBe(KEY);
+  });
+
+  test('stores a provider key whose base URL in .env isn\'t a URL, and says why whether it works isn\'t known, without the URL', async () => {
+    const { dir, module } = install({ answers: [KEY] });
+    writeFileSync(join(dir, '.env'), 'OPENAI_BASE_URL=not-a-valid-secret-url\n');
+    const result = await call(module, 'ask_secret', { name: 'OPENAI_API_KEY', purpose: 'an OpenAI key' });
+    expect(result.success, result.error).toBe(true);
+    expect(String(result.data)).toContain('whether it works isn\'t known: OPENAI_BASE_URL in .env isn\'t a URL.');
+    expect(JSON.stringify(result)).not.toContain('not-a-valid-secret-url');
+    expect(readEnvFile(join(dir, '.env')).get('OPENAI_API_KEY')).toBe(KEY);
+  });
+
+  test('stores a provider key that a gateway .env names answers 403 to, and says whether it works isn\'t known, naming the setting and not its host', async () => {
+    const { dir, module } = install({ answers: [KEY], fetch: answering(403) });
+    writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example\n');
+    const result = await call(module, 'ask_secret', { name: 'ANTHROPIC_API_KEY', purpose: 'the key' });
+    expect(result.success, result.error).toBe(true);
+    expect(String(result.data)).toContain('whether it works isn\'t known: the host of ANTHROPIC_BASE_URL in .env answered 403');
+    expect(JSON.stringify(result)).not.toContain('gateway.example');
+    expect(readEnvFile(join(dir, '.env')).get('ANTHROPIC_API_KEY')).toBe(KEY);
+    const refused = install({ answers: [KEY], fetch: answering(401) });
+    writeFileSync(join(refused.dir, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example\n');
+    const answer = await call(refused.module, 'ask_secret', { name: 'ANTHROPIC_API_KEY', purpose: 'the key' });
+    expect(answer.error).toContain('the host of ANTHROPIC_BASE_URL in .env refused it (401)');
+    expect(JSON.stringify(answer)).not.toContain('gateway.example');
+    const direct = install({ answers: [KEY], fetch: answering(403) });
+    expect((await call(direct.module, 'ask_secret', { name: 'ANTHROPIC_API_KEY', purpose: 'the key' })).success).toBe(false);
+  });
+
+  test('asks nothing once the host stops, for a question that waited behind a command', async () => {
+    const { dir, module, shown, asked } = install({ answers: [TOKEN] });
+    const running = call(module, 'run', { command: 'sleep 60' });
+    const asking = call(module, 'ask_secret', { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+    for (let tries = 0; !shown.includes('Setup\'s agent runs:') && tries < 250; tries++) await Bun.sleep(5);
+    expect(shown).toContain('Setup\'s agent runs:');
+    await module.stop();
+    await running;
+    const result = await asking;
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('The host is stopping, so nothing was asked.');
+    expect(asked).toEqual([]);
+    expect(existsSync(join(dir, '.env'))).toBe(false);
+  });
+
+  test('stores nothing where the host stops while the secret is checked', async () => {
+    let reply: (response: Response) => void = () => {};
+    let checking = false;
+    const fetch = (() => {
+      checking = true;
+      return new Promise<Response>((resolve) => { reply = resolve; });
+    }) as unknown as typeof globalThis.fetch;
+    const { dir, module } = install({ answers: [KEY], fetch });
+    const asking = call(module, 'ask_secret', { name: 'OPENAI_API_KEY', purpose: 'an OpenAI key' });
+    for (let tries = 0; !checking && tries < 250; tries++) await Bun.sleep(5);
+    expect(checking).toBe(true);
+    await module.stop();
+    reply(new Response('{}'));
+    const result = await asking;
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('The host is stopping, so nothing was stored as OPENAI_API_KEY.');
+    expect(existsSync(join(dir, '.env'))).toBe(false);
+    expect(existsSync(join(dir, '.setup', 'stored-secrets.json'))).toBe(false);
   });
 
   test('stores nothing when the person enters nothing', async () => {
@@ -103,6 +165,14 @@ describe('run', () => {
     expect(env).toContain('KEPT=yes');
   });
 
+  test('leaves out of the command\'s environment a name that holds a stored value under another name', async () => {
+    const { module } = install({ answers: [TOKEN], env: { ALIAS: TOKEN, KEPT: 'yes' } });
+    await call(module, 'ask_secret', { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
+    const env = (await run(module, 'env')).stdout;
+    expect(env).not.toContain('ALIAS=');
+    expect(env).toContain('KEPT=yes');
+  });
+
   test('gives each stored value back as its name, in what the command prints', async () => {
     const { module } = install({ answers: [TOKEN] });
     await call(module, 'ask_secret', { name: 'DISCORD_TOKEN', purpose: 'the bot token' });
@@ -113,7 +183,7 @@ describe('run', () => {
 
   test('stops a command still running at its time limit, with its process group', async () => {
     const { dir, module } = install();
-    const ran = await run(module, `sleep 60 & echo $! > child; wait`, 300);
+    const ran = await run(module, `sleep 60 & echo $! > child; wait`, 2_000);
     expect(ran.stoppedAtLimit).toBe(true);
     const child = Number(readFileSync(join(dir, 'child'), 'utf-8'));
     for (let tries = 0; !processEnded(child) && tries < 100; tries++) await Bun.sleep(20);
@@ -127,6 +197,95 @@ describe('run', () => {
     await module.stop();
     expect((await running).exitCode).not.toBe(0);
   });
+
+  test('leaves running what a command that ended before its time limit left, though the limit comes while its output drains', async () => {
+    const { dir, module } = install();
+    const ran = await run(module, 'sleep 60 & echo $! > child', 900);
+    const child = Number(readFileSync(join(dir, 'child'), 'utf-8'));
+    try {
+      expect(ran.stoppedAtLimit).toBe(false);
+      expect(processEnded(child)).toBe(false);
+    } finally {
+      try {
+        process.kill(child, 'SIGKILL');
+      } catch {
+      }
+    }
+  });
+
+  test('leaves running what a command that ended left, though the host stops while its output drains', async () => {
+    const { dir, module } = install();
+    let settled = false;
+    const running = run(module, 'sleep 60 & echo "$$ $!" > pids').then((ran) => { settled = true; return ran; });
+    const written = () => existsSync(join(dir, 'pids')) && readFileSync(join(dir, 'pids'), 'utf-8').endsWith('\n');
+    for (let tries = 0; !written() && tries < 250; tries++) await Bun.sleep(20);
+    const [command, child] = readFileSync(join(dir, 'pids'), 'utf-8').trim().split(' ').map(Number) as [number, number];
+    const gone = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    try {
+      for (let tries = 0; !gone(command) && tries < 250; tries++) await Bun.sleep(5);
+      await Bun.sleep(50);
+      expect(settled).toBe(false);
+      await module.stop();
+      await running;
+      expect(processEnded(child)).toBe(false);
+    } finally {
+      try {
+        process.kill(child, 'SIGKILL');
+      } catch {
+      }
+    }
+  });
+
+  test('gives back what a command did that removed the file it could say things in, and shows nothing from it', async () => {
+    const { module, shown } = install();
+    const ran = await run(module, `rm "$${SHOWN_FILE}"; echo done`);
+    expect(ran.exitCode).toBe(0);
+    expect(ran.stdout).toBe('done\n');
+    expect(shown).not.toContain('It said:');
+  });
+
+  test('waits, when the host stops, for the end of a timed-out command\'s process group that outlives its SIGTERM', async () => {
+    const { dir, module } = install();
+    const ran = await run(module, `sh -c "trap '' TERM; echo \\$\\$ > child; exec sleep 60" & while [ ! -s child ]; do sleep 0.01; done; wait`, 2_000);
+    const child = Number(readFileSync(join(dir, 'child'), 'utf-8'));
+    try {
+      expect(ran.stoppedAtLimit).toBe(true);
+      await module.stop();
+      for (let tries = 0; !processEnded(child) && tries < 10; tries++) await Bun.sleep(20);
+      expect(processEnded(child)).toBe(true);
+    } finally {
+      try {
+        process.kill(child, 'SIGKILL');
+      } catch {
+      }
+    }
+  }, 20_000);
+
+  test('kills, when the host stops, what in a command\'s process group outlives SIGTERM after the command ends', async () => {
+    const { dir, module } = install();
+    const running = run(module, `sh -c "trap '' TERM; echo \\$\\$ > child; exec sleep 60" & wait`);
+    const written = () => existsSync(join(dir, 'child')) && readFileSync(join(dir, 'child'), 'utf-8').endsWith('\n');
+    for (let tries = 0; !written() && tries < 100; tries++) await Bun.sleep(20);
+    const child = Number(readFileSync(join(dir, 'child'), 'utf-8'));
+    try {
+      await module.stop();
+      await running;
+      for (let tries = 0; !processEnded(child) && tries < 100; tries++) await Bun.sleep(20);
+      expect(processEnded(child)).toBe(true);
+    } finally {
+      try {
+        process.kill(child, 'SIGKILL');
+      } catch {
+      }
+    }
+  }, 20_000);
 
   test('gives back the first and last 4 KiB of a longer output, and says how much it left out', async () => {
     const { module } = install();
@@ -161,6 +320,15 @@ describe('run', () => {
     await asking;
     expect((await running).stdout).toBe('after\n');
   });
+});
+
+test('names the list of stored secrets when it isn\'t JSON, and runs nothing', async () => {
+  const { dir, module } = install();
+  mkdirSync(join(dir, '.setup'));
+  writeFileSync(join(dir, '.setup', 'stored-secrets.json'), '["DISCORD_TO');
+  const ran = call(module, 'run', { command: 'touch ran' });
+  await expect(ran).rejects.toThrow(`${join(dir, '.setup', 'stored-secrets.json')} isn't a JSON list of names`);
+  expect(existsSync(join(dir, 'ran'))).toBe(false);
 });
 
 test('finished asks for the conversation to end after this turn, and records nothing', async () => {

@@ -100,6 +100,9 @@ argv = iter(sys.argv[1:])
 for a in argv:
     if a == "--data-dir":
         data_dir = next(argv, None)
+        if not data_dir:
+            print("connectome-doctor: --data-dir needs a directory after it", file=sys.stderr)
+            sys.exit(2)
     else:
         args.append(a)
 install_dir = os.path.expanduser(args[0] if len(args) > 0 else "~/mythos-cm")
@@ -178,7 +181,7 @@ journal = journal_entries(journal_text)
 jts = (journal_entries(last_entry) or [(None, None)])[-1][0]
 log_redirect = None
 frag = sh(f"systemctl --user show {unit} -p FragmentPath --value")
-if frag and os.path.exists(frag):
+if frag:
     frag_text, frag_why = read_text(frag)
     if frag_text is None:
         warn(f"{unit}'s unit file, {frag}, can't be read ({frag_why}), so whether it sends the host's output to a file "
@@ -369,6 +372,7 @@ def response_of(row):
 llm_ts = None
 llm_detail = ""
 turn_ts = None
+turn_end = None
 turn_ok = False
 llm_window_from = None
 llm_written_at = None
@@ -376,6 +380,12 @@ llm_unsure = False
 newer_unread = False
 llm_unread = None
 LLM_WINDOW = 30_000_000
+
+
+def started_of(name):
+    named = re.fullmatch(r"llm-calls\.(\d{4}-\d\d-\d\d)T(\d\d)-(\d\d)-(\d\d)(?:-(\d{3}))?Z?\.jsonl", name)
+    return parse_iso(f"{named[1]}T{named[2]}:{named[3]}:{named[4]}.{named[5] or '000'}Z") if named else None
+
 try:
     data_dir_why = (None if stat.S_ISDIR(os.stat(data_dir).st_mode)
                     else f"{data_dir}, the data directory, isn't a directory")
@@ -441,6 +451,9 @@ if llm_files:
             continue
         call = r
         turn_ts = parse_iso(str(r.get("timestamp", "")))
+        took = r.get("durationMs")
+        turn_end = (turn_ts + took / 1000 if turn_ts is not None and isinstance(took, (int, float))
+                    and not isinstance(took, bool) and 0 <= took < float("inf") else turn_ts)
         turn_resp = response_of(r)
         turn_ok = not (r.get("type") == "error" or turn_resp.get("error") or r.get("error"))
         llm_window_from = None
@@ -450,6 +463,9 @@ if llm_files:
         llm_ts = parse_iso(str(call.get("timestamp", "")))
         resp = response_of(call)
         sr = resp.get("stop_reason")
+        summary = call.get("response")
+        if sr is None and isinstance(summary, dict):
+            sr = summary.get("stopReason")
         err = resp.get("error") or call.get("error")
         stop = "" if sr is None else f"stop={sr}  "
         if call.get("type") == "error" or err:
@@ -462,8 +478,7 @@ if llm_files:
     elif llm_unread is not None:
         llm_detail = f"the newest call log, {llm_files[-1]}, can't be read ({llm_unread})"
     else:
-        named = re.fullmatch(r"llm-calls\.(\d{4}-\d\d-\d\d)T(\d\d)-(\d\d)-(\d\d)(?:-(\d{3}))?Z?\.jsonl", llm_files[-1])
-        started = parse_iso(f"{named[1]}T{named[2]}:{named[3]}:{named[4]}.{named[5] or '000'}Z") if named else None
+        started = started_of(llm_files[-1])
         since = "since the host last started" + (f" at {hhmm(started)}" if started else "")
         seen = ([f"{others} other model call(s)"] if others else []) + ([f"{pokes} keepalive poke(s)"] if pokes else [])
         whole = where == "the newest file"
@@ -643,21 +658,24 @@ for where, found, why, unread in sources:
 if times or untimed:
     failed_at = max(times) if times else None
     timed = " whose time is known" if untimed else ""
-    if failed_at is not None and turn_ok and turn_ts is not None and turn_ts > failed_at:
-        warn(f"last inference failure{timed} {age(failed_at)}: a later call, at {hhmm(turn_ts)}, succeeded; the call log "
+    read_from = window_from if turn_ts is None else started_of(llm_files[-1]) if llm_files else None
+    if failed_at is not None and turn_ok and turn_end is not None and turn_end > failed_at:
+        warn(f"last inference failure{timed} {age(failed_at)}: a later call, at {hhmm(turn_end)}, succeeded; the call log "
              "doesn't say whose, so whether the agent that failed has recovered isn't known" + (
                  "; newer rows of the call log can't be read, so whether a call after it failed isn't known"
                  if newer_unread else ""))
     elif failed_at is not None and (INFERENCE in unknown or newer_unread or (
-            turn_ts is None and window_from is not None and window_from > failed_at)):
+            read_from is not None and read_from > failed_at)):
         why = (unseen_why if INFERENCE in unknown
                else "newer rows of the call log can't be read" if newer_unread and turn_ts is not None
                else "rows of the call log can't be read" if newer_unread
-               else f"the call log read here starts at {hhmm(window_from)}, after it")
+               else f"the call log read here starts at {hhmm(read_from)}, after it")
         warn(f"inference failures, the last{timed} {age(failed_at)}; whether a turn has succeeded since isn't known, "
              f"since {why}")
     elif failed_at is not None:
-        warn(f"inference failures, the last{timed} {age(failed_at)}, with no successful turn found since — if the reason "
+        found = (f"and the newest turn's model call, at {hhmm(turn_ts)}, failed too" if turn_ts is not None and not turn_ok
+                 else "with no successful turn found since")
+        warn(f"inference failures, the last{timed} {age(failed_at)}, {found} — if the reason "
              "repeats identically, the agent is hard-down until config changes (e.g. budget)")
     else:
         warn("inference failures present, and when the last was isn't known here, so neither is whether a turn has "

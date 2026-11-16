@@ -395,7 +395,7 @@ export async function update(ctx: CliContext, launcher: LauncherOps = machineOps
   if (answer.how === 'closed') {
     ctx.err('connectome: the host closed the connection before its answer ended, so how it ended isn\'t known ' +
       'here. A restart or a Go back closes it as the host stops, and so does another connectome command ' +
-      'connecting. `connectome` says what runs now.');
+      `connecting. \`${typed}\` says what runs now.`);
     return 1;
   }
   if (answer.error !== undefined) {

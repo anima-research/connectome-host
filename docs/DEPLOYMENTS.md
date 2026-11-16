@@ -105,6 +105,18 @@ gui/$(id -u)/<label>` shows, 5 s for these agents on macOS 26, and under
 systemd it's the unit's `TimeoutStopSec`, 90 s by default. The host's own stop
 has no time limit.
 
+Under the systemd unit, a host's fleet children end when the host exits. The
+unit's `KillMode=mixed` sends a stop's SIGTERM to the host alone, and SIGKILL to
+what is left once the host exits, a child it detached included. So when a
+fleet's parent exits without stopping its children, as at a crash, they are
+killed in the middle of what they do.
+
+On macOS, the host's log, `logs/agent.log`, and the shell daemon's,
+`logs/shell.log`, grow until someone cuts them. launchd appends to each and
+holds it open, so a log deleted while its service runs isn't written again
+until the next load. To cut one: stop the service with its stop line, move or
+delete the log, then start the service with its start line.
+
 A restart can make auxiliary model calls before any user message: agent-framework
 immediately drains restored Context Manager compression/merge debt. This happens only
 when the store has pending maintenance, and it is visible in the new process's
@@ -185,7 +197,8 @@ the working directory):
   started, else from the unit's journal: its lines since the unit's latest
   start that hold a delivery or a failure, which journalctl's `-g` picks
   out, and the time of its last entry. A journalctl that refuses `-g` leaves
-  those stages unseen, saying so. An earlier start's inference failures are
+  those stages unseen, saying so, and so does a unit whose start time systemd
+  doesn't give. An earlier start's inference failures are
   in `INSTALL_DIR/logs/failures.log`. Recent failures also come from that
   file: its records in its last 400 KB, of every kind but the subscription
   GC's `subscription-gc-close`. It
@@ -208,7 +221,8 @@ the working directory):
   line. `--data-dir`
   names the host's data directory, `INSTALL_DIR/data` when left out.
   The ladder cuts a message's preview at 40 characters, a model call's error
-  at 80 and each failure line at 150, and hides nothing.
+  at 80 and each line of its recent failures at 150. It quotes whole the line
+  of a reply whose delivery failed or wasn't confirmed, and hides nothing.
 
 ---
 
@@ -438,16 +452,19 @@ It copies the install as the first release of an install root,
 `start.js` there, with the install's own command, `connectome`, beside it.
 That command's `connectome setup` works in the directory that holds the
 install root, reading and writing its `.env`, `.setup`, `package.json` and
-`node_modules` there. So for a root anywhere but directly in the service's
-working directory, it sets up the root's parent instead: to use it, keep the
-root directly in the working directory, as the default root is.
+`node_modules` there, and it knows an install there only by a root named
+`connectome-host`. So to use it, keep the default root, `./connectome-host`.
+For a root of that name elsewhere, it sets up the root's parent instead; for a
+root with another name, it refuses where it hasn't run before.
 Give `--extra-state` for each place an MCPL server keeps its state outside
 the data directory, so each update copies it with the data.
 Then have the service start the host with `bun '<root>/start.js'`, followed by
 the arguments it gives the host now, and restart it. In a systemd unit,
 write each `%` in a path as `%%` and each `$` as `$$`, since systemd reads `%`
-as a specifier, and `${...}` as a variable, even between quotes. Setup
-says whether the
+as a specifier, and `${...}` as a variable, even between quotes. In the
+unit, as in a shell, write each `'` in the path as `'\''`. In the unit
+alone, write each `\` as `\\` too, since systemd reads a backslash as an
+escape even between single quotes. Setup says whether the
 service restarts the host when it exits with 75 and with 1, as a switch and
 its fallback need: systemd's `Restart=on-failure` does.
 
@@ -463,7 +480,12 @@ trial that ends before its commit does, so its fallback runs. Under systemd,
 a service, and sets the line only for one that restarts the host on both. A
 service written by hand needs the line and both restarts. A host without
 the line, or run in a terminal, refuses the agent's restart and says why;
-the person's own `/update` and buttons don't need the line.
+the person's own `/update` and buttons don't need the line. While the
+agent's restart stays armed, each try, about once a minute, connects again
+to a fleet child whose socket another client took, and a child's socket
+keeps one client. So a person connected to a fleet child's socket loses
+that connection at each try, until the restart goes ahead or the agent's `lifecycle--update cancel`
+or the person's own Restart ends the wait.
 
 **Updating.** Update, Restart with its three ways on when turns don't end,
 and Go back are each an `/update` command and, in the Web UI, a button.
@@ -510,7 +532,14 @@ reasons unless the grant holds `ops` too.
   now and cut those turns off (`/update restart now`), or call it off
   (`/update restart resume`, which also ends a switch's quiesce left on a
   host after an earlier try). Scripts a turn left running in the background
-  aren't waited for, and the stop ends them. Then the host stops, and its
+  aren't waited for, and the stop ends them. Just before the stop, the switch
+  asks its fleet children once more. It doesn't wait for a turn on a child
+  that started after that look asked the others, or that a resume reached
+  after it, whether the child's person's or one this host sent earlier, such
+  as at its start. A quiesce that an MCPL server asks for with `host/command`
+  while the switch's quiesce holds a host is taken into that quiesce, since
+  agent-framework keeps the reason a quiesced host has, so ending the
+  switch's quiesce ends it too. Then the host stops, and its
   next start, which the service makes, copies the data, starts the new
   release on trial, and commits once that release has opened its stores and
   connected each MCPL server it's configured with that the release before it
@@ -549,10 +578,10 @@ reasons unless the grant holds `ops` too.
   turns or holding them if its operator quiesced it (a switch's quiesce left
   behind ends at that start), or restoring the copy
   (`/update back restore`), which sets everything since aside, not deleted,
-  and brings the host back answering new turns, unless it had been quiesced
-  from the Web UI before the Restart that took the copy: then it comes back
-  holding them, and clicking "⏸ quiesced" in the Web UI's top bar lets them
-  through. Whether it's quiesced now makes no difference. Either way the
+  and brings the host back answering new turns, unless its operator had
+  quiesced it before the Restart that took the copy, from the Web UI or
+  through an MCPL server: then it comes back holding them, and clicking
+  "⏸ quiesced" in the Web UI's top bar lets them through. Whether it's quiesced now makes no difference. Either way the
   host first holds new turns and gives turns in progress up to 2 min to end,
   as Restart does, and records its connected servers for the older release's
   commit as Restart does, where that release reads the record. If the older release ends before its commit on

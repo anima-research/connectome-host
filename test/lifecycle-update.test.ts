@@ -11,6 +11,7 @@ import type { InstallOps } from '../src/update/install.js';
 import { RELEASE_HOST } from '../src/update/launcher.js';
 import { shellWord } from '../src/update/install-command-name.js';
 import type { SwitchFleet, SwitchRequest } from '../src/update/quiesce.js';
+import { NOT_THE_SWITCHS } from '../src/update/quiesce.js';
 import { HostUpdate, type SwitchFramework } from '../src/update/update.js';
 import { COMMAND_WAYS, PAGE_WAYS, cliWays, statusLines, type UpdateStatus } from '../src/web/update-text.js';
 import { answerToQuiesce } from './switch-answer-child.js';
@@ -120,6 +121,9 @@ function fleetChild(state: {
       if (request.op === 'resume') {
         await state.resumeHeld;
         if (state.resumes === false) return { ok: false, error: 'the socket closed' };
+        if (state.operator !== undefined && child.looks >= state.operator.fromLook) {
+          return { ok: true, data: { resumed: false, why: `${NOT_THE_SWITCHS} (${state.operator.reason ?? 'no reason'}), so it stays` } };
+        }
         child.quiesced = false;
         return { ok: true, data: { resumed: true } };
       }
@@ -198,10 +202,11 @@ function residentHost(options: {
 
 const text = (result: ToolResult): string => String(result.success ? result.data : result.error);
 const QUIET = 'first quiet moment, once nothing the host counts as in flight is still going here, such as a turn, ' +
-  'subagent run, background script, session switch, operator\'s work or credential action, and each fleet child says ' +
-  'nothing is going there, such as a turn, background script, operator\'s work or credential action, though a child on a ' +
+  'subagent run, background script, session switch, operator\'s work or credential action, and each fleet child it asks ' +
+  'says nothing is going there, such as a turn, background script, operator\'s work or credential action, though a child on a ' +
   'release that doesn\'t report its work outside turns says only that its turns and scripts are done';
 const RETRY = 'A try that finds something still going waits at least a minute before the next.';
+const UNASKED = 'A turn that a fleet child begins after the switch last asked its children isn\'t waited for.';
 const alwaysQuiet = () => true;
 
 async function until(done: () => boolean): Promise<void> {
@@ -274,7 +279,9 @@ for (const [kind, options, command] of [
     const items = actionItems(raw);
     expect(Object.keys(items)).toEqual(['check', 'notes', 'install', 'restart', 'cancel']);
     for (const [action, words] of [
-      ['restart', 'your turn ends as it would, as does every other agent\'s on this host and its fleet children'],
+      ['restart', 'your turn ends as it would, as does every other agent\'s on this host, and so does each turn going on a ' +
+        'fleet child when the switch asks it. A turn that a fleet child begins after the switch last asked its children ' +
+        'isn\'t waited for.'],
       ['cancel', 'before it begins, whoever armed it'],
     ] as const) {
       expect({ action, says: items[action]?.includes(words) }).toEqual({ action, says: true });
@@ -382,7 +389,9 @@ test('restart answers at once, says it waits for the host to be quiet and how to
   const host = residentHost({ root });
   const answer = await host.call({ action: 'restart' });
   expect(answer.success).toBe(true);
-  for (const words of ['0.15.0', 'quiet', QUIET, 'cancel', 'check', RETRY]) expect(text(answer)).toContain(words);
+  for (const words of ['0.15.0', 'quiet', QUIET, 'once every host it asked has said no turn is running there', UNASKED, 'cancel', 'check', RETRY]) {
+    expect(text(answer)).toContain(words);
+  }
   expect(text(answer)).toContain('If the host stops for any other reason first, nothing stays armed. An operator\'s own ' +
     'Restart or Go back also takes its place.');
   expect(toolDescription(host)).toContain('first quiet moment');
@@ -393,6 +402,7 @@ test('restart answers at once, says it waits for the host to be quiet and how to
   expect(check).toContain('armed');
   expect(check).toContain('2026-10-26T20:00:00.000Z');
   expect(check).toContain(QUIET);
+  expect(check).toContain(UNASKED);
   expect(check).toContain(RETRY);
 });
 
@@ -605,7 +615,7 @@ test('a child that doesn\'t take its resume after a try is named, in the try\'s 
     expect(said).not.toContain('so the switch\'s quiesce ended');
     expect(said).toContain('kid');
   }
-  expect(check).toContain(`An operator's ${shellWord(join(root, 'connectome'))} update restart resume ends it`);
+  expect(check).toContain(`An operator's ${shellWord(join(root, 'connectome'))} update restart resume tries again`);
   expect(check).not.toContain('/update');
 });
 
@@ -731,12 +741,15 @@ test('an operator who quiesces this host after the children\'s look, before the 
 });
 
 for (const [fromLook, when] of [[1, 'at the children\'s look'], [2, 'at the switch\'s own quiesce']] as const) {
-  test(`a fleet child quiesced by its operator holds an armed restart ${when}: nothing switches, this host is quiesced only if the switch's own quiesce began, it stays armed, and check names the child's hold`, async () => {
+  test(`a fleet child quiesced by its operator holds an armed restart ${when}: nothing switches, this host is quiesced only if the switch's own quiesce began, it stays armed, the child's hold stays and isn't reported as a quiesce the switch left, and check names it`, async () => {
     const { root } = installRunning0141(['0.15.0']);
-    const { fleet } = fleetChild({ busy: false, operator: { reason: 'maintenance', fromLook } });
+    const { fleet, child } = fleetChild({ busy: false, operator: { reason: 'maintenance', fromLook } });
     const host = residentHost({ root, fleet });
     await host.armed();
-    expect((await host.update.runArmed(alwaysQuiet)).done).toBe(false);
+    const answer = await host.update.runArmed(alwaysQuiet);
+    expect(answer.done).toBe(false);
+    expect(answer.lines.join('\n')).not.toContain('didn\'t reach every host');
+    expect(child.quiesced).toBe(true);
     expect(readMark(root)).toBeNull();
     expect(host.stops).toEqual([]);
     expect(host.serving()).toBe(true);
@@ -977,13 +990,14 @@ test('a restart of either kind waits alone: each refuses while the other is arme
   expect(state.isArmed()).toBe(true);
 });
 
-test('a call whose action or version the tool can\'t use, or a field it doesn\'t take, is refused, naming the field, and arms nothing', async () => {
+test('a call whose action or version the tool can\'t use, or a field it doesn\'t take, is refused, naming the field and what it was given, and arms nothing', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const host = residentHost({ root });
   for (const [input, field] of [
-    [{ action: 'reboot' }, '`action`'],
-    [{ action: 'back' }, '`action`'],
-    [{ action: 'restart', version: 'latest' }, '`version`'],
+    [{ action: 'reboot' }, '`action` must be one of check, notes, install, restart, cancel, not `reboot`,'],
+    [{ action: 'back' }, '`action` must be one of check, notes, install, restart, cancel, not `back`,'],
+    [{ action: 'restart', version: 'latest' }, '`version` must be an exact release, such as 0.15.0, not `latest`,'],
+    [{ action: 'restart', version: 'v0.15.0' }, '`version` must be an exact release, such as 0.15.0, not `v0.15.0`,'],
     [{ action: 'check', version: '0.15.0' }, '`version` goes with restart or notes'],
     [{ action: 'restart', data: 'keep' }, '`data`'],
     [{ action: 'restart', verison: '0.15.0' }, '`verison`'],
@@ -1172,20 +1186,22 @@ test('an arm refused while an operator\'s Restart waits on turns names wait, now
   await host.update.resume();
 });
 
-test('a cancel during an operator\'s resume leaves that resume holding the restart\'s place until it has answered', async () => {
+test('a cancel during an operator\'s resume answers once that resume has, naming a host it didn\'t reach, check keeps that, and the resume holds the restart\'s place until it has answered', async () => {
   const { root } = installRunning0141(['0.15.0']);
   let release: () => void = () => {};
-  const { fleet } = fleetChild({ busy: false, resumeHeld: new Promise((done) => { release = done; }) });
+  const { fleet } = fleetChild({ busy: false, resumes: false, resumeHeld: new Promise((done) => { release = done; }) });
   const host = residentHost({ root, fleet });
   await host.armed();
   const resuming = host.update.resume();
-  const cancelled = await host.call({ action: 'cancel' });
-  expect(cancelled.success).toBe(true);
-  expect(text(cancelled)).toContain('being ended already');
-  expect(host.update.armedSwitch()).toBeNull();
+  const cancelling = host.call({ action: 'cancel' });
   expect((await host.update.restartToInstalled()).lines.join(' ')).toContain('A switch\'s quiesce is being ended');
   release();
-  await resuming;
+  const [cancelled] = await Promise.all([cancelling, resuming]);
+  expect(cancelled.success).toBe(true);
+  expect(text(cancelled)).toContain('didn\'t reach every host: kid: the socket closed.');
+  expect(text(cancelled)).toContain('tries again, as does the host\'s next start.');
+  expect(host.update.armedSwitch()).toBeNull();
+  expect(text(await host.call({ action: 'check' }))).toContain('kid: the socket closed.');
   expect((await host.update.restartToInstalled()).lines.join(' ')).not.toContain('is being ended');
 });
 
@@ -1289,6 +1305,22 @@ test("notes keep to the call's own cap where the agent's is lower than 24,000 ch
   expect(text(cut)).toContain('The notes of 0.16.0, from ');
   expect(text(cut)).not.toContain('the last line of sixteen');
   expect(text(await notes({ action: 'notes', version: '0.16.0' }, 50))).not.toContain('a line of notes');
+});
+
+test("notes keep to the call's own cap where it's higher than 24,000 characters, and to 24,000 where the call carries none", async () => {
+  const { root } = installRunning0141(['0.17.0']);
+  const sections = [section('0.17.0', longNotes('seventeen', 300)), section('0.16.0', longNotes('sixteen', 180)),
+    section('0.15.0', longNotes('fifteen', 180))];
+  placeNotes(root, '0.17.0', sections.join(''));
+  const host = residentHost({ root, versions: ['0.14.1', '0.15.0', '0.16.0', '0.17.0'] });
+  const notes = (resultMaxChars?: number) => host.module.handleToolCall({
+    id: `call-${Math.random()}`, name: 'update', input: { action: 'notes' }, callerAgentName: 'resident',
+    ...(resultMaxChars !== undefined ? { resultMaxChars } : {}),
+  });
+  const whole = text(await notes(40_000));
+  expect(whole.length).toBeGreaterThan(24_000);
+  expect(whole).toContain('the last line of fifteen');
+  expect(text(await notes())).toContain('(24,000 characters), so here is each release\'s size');
 });
 
 test('notes with a version gives that release\'s notes whole, and none of the others', async () => {

@@ -16,7 +16,8 @@ import {
 import { candidateOf, rangeOf, readReleases, registryOf, type Release } from './releases.js';
 import { readTrialLog } from './trial-log.js';
 import {
-  ARMED_RETRY, ASKS_NOBODY, COMMAND_WAYS, GO_BACK_UNREAD, LAST_SWITCH, PHASE, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS, armedName,
+  ARMED_RETRY, ASKS_NOBODY, COMMAND_WAYS, GO_BACK_UNREAD, LAST_SWITCH, PHASE, QUIET_MOMENT, TOOL_CANCEL, TOOL_WAYS,
+  UNASKED_CHILD_TURN, armedName,
   bunUpgrade, busyLines, cliWays, deprecatedLine, heldLines, registryPassOn,
   notAnInstall, noticeLines, notesUrl, restartName, toolWays, type ArmedSwitch, type Check, type HostQuiet, type ReadCheck,
   type RestartState,
@@ -27,13 +28,20 @@ const CHECK_EVERY_MS = 24 * 60 * 60 * 1000;
 const RESTART_QUIESCE_MS = 120_000;
 const WAIT_LONGER_MS = 600_000;
 // Each try quiesces every fleet child, and agent-framework 0.33.0 waits up to
-// a second for a busy host to drain before it answers (QUIESCE_TIMEOUT_MIN_MS),
-// holding that child's new turns until the try ends its quiesce: once every
-// child has answered, which a child that doesn't answer makes up to 10 seconds
-// (quiesce.ts's ANSWER_MARGIN_MS), and then for the resumes. One try a minute
-// bounds that hold on a busy child to about a second a minute, or about 10
-// seconds a minute where a child doesn't answer.
+// a second for a busy host to drain before it answers (QUIESCE_TIMEOUT_MIN_MS).
+// A try that doesn't go ahead holds a child's new turns from its first ask
+// until its resume. It asks each child up to three times before the resume,
+// and waits up to 10 seconds for each answer and for the resume's (quiesce.ts's
+// ANSWER_MARGIN_MS). Before each, it connects again to a child whose socket
+// another client took, waiting up to 3 seconds for the connect and 3 for the
+// child's ready (fleet-module.ts's CONNECT_ANSWER_MS). One try a minute bounds
+// that hold to about a second a minute where each child answers within its
+// second, to about 40 seconds a minute where a child answers each ask and the
+// resume late, and to about a minute where it must also connect again each
+// time.
 const ARMED_RETRY_MS = 60_000;
+
+type EndedQuiesce = { ended: string[]; lines: string[]; stuck: number };
 
 export type SwitchFramework = QuiesceFramework & {
   listMcplServers(): ReadonlyArray<{ id: string; connected: boolean }>;
@@ -155,7 +163,7 @@ export class HostUpdate {
   private lastInstall: UpdateStatus['lastInstall'] = null;
   private restart: RestartState | null = null;
   private quiescedFramework: SwitchFramework | null = null;
-  private endingSwitchQuiesce = false;
+  private endingSwitchQuiesce: Promise<EndedQuiesce> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private serviceLine = false;
   private armed: ArmedSwitch | null = null;
@@ -356,10 +364,8 @@ export class HostUpdate {
     this.disarm(by ? `${by} cancelled it` : 'it was cancelled');
     const dropped = this.armedDropped!;
     const ended = await this.endLeftQuiesce();
-    if (ended !== null) dropped.reason += leftQuiesced(ended, false, this.hostWays());
-    return done(`${armedName(armed)} is disarmed, and nothing restarts for it.` + (ended === null
-      ? ' A switch\'s quiesce is being ended already, which also ends any quiesce an earlier try left.'
-      : leftQuiesced(ended, false, ways)));
+    dropped.reason += leftQuiesced(ended, false, this.hostWays());
+    return done(`${armedName(armed)} is disarmed, and nothing restarts for it.` + leftQuiesced(ended, false, ways));
   }
 
   switchUnderWay(): boolean | null {
@@ -430,7 +436,7 @@ export class HostUpdate {
     this.armed = { ...request, since: this.now().toISOString(), by, lastTry: null };
     this.armedDropped = null;
     return done(`${armedName(this.armed)} is armed. It begins at the host's first quiet moment, once ${QUIET_MOMENT}, ` +
-      `${ASKS_NOBODY}. ${ARMED_RETRY} The host then stops, and its service starts it again on ${request.to}. If the host ` +
+      `${ASKS_NOBODY}. ${UNASKED_CHILD_TURN} ${ARMED_RETRY} The host then stops, and its service starts it again on ${request.to}. If the host ` +
       'stops for any other reason first, nothing stays armed. An operator\'s own ' +
       'Restart or Go back also takes its place. Until the host next starts, or until you arm another, check says when ' +
       'one didn\'t go ahead for another reason, and why. ' +
@@ -485,18 +491,18 @@ export class HostUpdate {
     this.disarm(reason);
     const ended = await this.endLeftQuiesce();
     const dropped = this.armedDropped!;
-    if (ended !== null) dropped.reason += leftQuiesced(ended, false, this.hostWays());
+    dropped.reason += leftQuiesced(ended, false, this.hostWays());
     return refused(`${armedName(armed)} didn't go ahead: ${dropped.reason}`);
   }
 
-  private async endLeftQuiesce(): Promise<{ lines: string[]; stuck: number } | null> {
-    if (this.endingSwitchQuiesce) return null;
-    this.endingSwitchQuiesce = true;
-    try {
-      return await this.endQuiesce();
-    } finally {
-      this.endingSwitchQuiesce = false;
-    }
+  private endLeftQuiesce(): Promise<EndedQuiesce> {
+    return this.endingSwitchQuiesce ?? this.endSwitchQuiesce();
+  }
+
+  private endSwitchQuiesce(): Promise<EndedQuiesce> {
+    const ending = this.endQuiesce().finally(() => { this.endingSwitchQuiesce = null; });
+    this.endingSwitchQuiesce = ending;
+    return ending;
   }
 
   private disarm(reason: string): void {
@@ -521,13 +527,7 @@ export class HostUpdate {
     if (restart !== null && restart.phase !== 'busy') return refused(`${restartName(restart, true)} is ${PHASE[restart.phase]}.`);
     if (restart !== null) return this.callOff(null, ways);
     if (this.endingSwitchQuiesce) return refused(ENDING_SWITCH_QUIESCE);
-    this.endingSwitchQuiesce = true;
-    let ended;
-    try {
-      ended = await this.endQuiesce();
-    } finally {
-      this.endingSwitchQuiesce = false;
-    }
+    const ended = await this.endSwitchQuiesce();
     const on = ended.ended.length > 0 ? `The switch's quiesce is ended on ${list(ended.ended)}` : null;
     const first = ended.stuck > 0
       ? on !== null ? `${on}, but not on every host.` : 'No restart is waiting, and the switch\'s quiesce couldn\'t be ended.'
@@ -624,7 +624,7 @@ export class HostUpdate {
         'says what\'s out, with its notes link.');
     }
     return notesAnswer(notesPath(setup.here.root, installed), setup.running, installed, version,
-      Math.min(NOTES_BUDGET, cap ?? NOTES_BUDGET));
+      cap ?? NOTES_BUDGET);
   }
 
   private installedTarget(): string | null {
@@ -739,7 +739,7 @@ export class HostUpdate {
     return why === null ? done(first, ...ended.lines) : refused(first, ...ended.lines);
   }
 
-  private async endQuiesce(): Promise<{ ended: string[]; lines: string[]; stuck: number }> {
+  private async endQuiesce(): Promise<EndedQuiesce> {
     const setup = this.need();
     try {
       const { hosts } = await resumeAfterSwitchQuiesce(setup.host.framework(), setup.host.fleet());
@@ -795,7 +795,7 @@ const operatorHold = (status: { quiesced: boolean; reason?: string }): string | 
 const leftQuiesced = (ended: { lines: string[]; stuck: number }, tryingAgain: boolean, ways: UpdateWays): string =>
   ended.stuck === 0 ? '' : ` Ending the switch's quiesce didn't reach every host: ${ended.lines.join(' ')} ` +
     `${ways.reader === 'agent' ? ways.resume.charAt(0).toUpperCase() + ways.resume.slice(1) : `An operator's ${ways.resume}`} ` +
-    'ends it, as does the ' +
+    'tries again, as does the ' +
     `host's next start${tryingAgain ? ', and so does this restart\'s next try' : ''}.`;
 const NO_WAIT_RAN_OUT = 'No restart\'s wait for turns to end has run out, so there is nothing to wait longer for or ' +
   'stop now.';

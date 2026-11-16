@@ -676,7 +676,7 @@ test('bare gives a reason the host stored, such as an armed try\'s, as the host 
   const { root, data } = install();
   const { path } = writeInstallCommand(root, '');
   const waited = 'turns were still going. Ending the switch\'s quiesce didn\'t reach every host: kid: it didn\'t say why. ' +
-    'An operator\'s /update restart resume ends it, as does the host\'s next start.';
+    'An operator\'s /update restart resume tries again, as does the host\'s next start.';
   await fakeHost(data, (message, reply) => {
     if (message.type === 'panel-request' && message.op === 'health') {
       reply({ type: 'panel-response', corrId: message.corrId, op: 'health', ok: true, data: { update: { ...STATUS, armed: {
@@ -1150,6 +1150,7 @@ test('update whose connection closes before its answer ends exits 1 and says how
   expect(ran.status).toBe(1);
   expect(ran.out).toBe('Asking the host to restart…\n');
   expect(ran.err).toContain('closed the connection before its answer ended, so how it ended isn\'t known');
+  expect(ran.err).toContain(`\`${path}\` says what runs now.`);
 });
 
 function farewellHost(data: string, said: { lines: string[]; refused?: boolean }): Promise<void> {

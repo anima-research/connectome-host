@@ -202,7 +202,7 @@ export function takeLock(root: string, ops: LauncherOps): void {
           throw new ContractError(`While taking over the lock that process ${holder.pid} left, which has ended, this ` +
             `moved another process's lock to ${aside}, and couldn't put it back, since ${lock} is there again. Nothing ` +
             'else was changed. Each of the two files names a process that may be running in this install: stop each ' +
-            'that is, remove both files, and run this again.');
+            'that is, and first any service that would start it again, then remove both files, and run this again.');
         }
       }
       rmSync(aside, { force: true });
@@ -656,11 +656,11 @@ function refuse(root: string, ops: LauncherOps, step: JournalLine['step'], curre
   const what = mark.why === 'go-back' ? 'Go back' : 'switch';
   const { mark: markPath } = installPaths(root);
   const again = mark.why === 'go-back'
-    ? 'Go back in the Web UI, `/update back` in the host\'s terminal, or the install\'s own `connectome update back` in a ' +
+    ? `Go back in the Web UI, \`/update back\` in the host's terminal, or \`${installCommandAt(root)} update back\` in a ` +
       `shell. Where the host doesn't stay up, \`bun ${shellWord(join(root, ENTRY_POINT))} ${GO_BACK_FLAG}` +
       `${mark.keepData ? ` ${KEEP_DATA_FLAG}` : ''}\` asks its next ` +
       'start to go back'
-    : 'Restart in the Web UI, `/update restart` in the host\'s terminal, or the install\'s own `connectome update restart` in ' +
+    : `Restart in the Web UI, \`/update restart\` in the host's terminal, or \`${installCommandAt(root)} update restart\` in ` +
       'a shell';
   let dropped = `The request is dropped: once what refused it has cleared, ask again with ${again}.`;
   try {

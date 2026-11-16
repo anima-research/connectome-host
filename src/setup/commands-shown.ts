@@ -1,4 +1,3 @@
-/** The variable that names the file through which an install's command says its own lines to the person. */
 export const SHOWN_FILE = 'CONNECTOME_SETUP_SHOWN';
 
 // What a terminal acts on, or draws as nothing or as a space, rather than showing what it is: Unicode's control and
@@ -6,7 +5,6 @@ export const SHOWN_FILE = 'CONNECTOME_SETUP_SHOWN';
 // be drawn as nothing, and the blank braille cell, U+2800, which is drawn as a space.
 const UNSHOWN = /(?! )[\p{Cc}\p{Cf}\p{Z}\p{Default_Ignorable_Code_Point}\u2800]/gu;
 
-/** The line with each character a terminal would hide or act on shown as its code, such as \u001b. */
 export function shown(line: string): string {
   return line.replace(UNSHOWN, (character) => {
     const hex = character.codePointAt(0)!.toString(16);

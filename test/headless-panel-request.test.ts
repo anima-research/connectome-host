@@ -28,7 +28,8 @@ const MINIMAL_RECIPE = {
 };
 
 const quiescedRefusal = (what: string): string => `${what} refused: this host is quiesced for a release switch. If that ` +
-  'switch goes ahead, its stop can cut a change to the session off. Nothing changed; try again once that quiesce has ended.';
+  'switch goes ahead, its stop can cut a change to the session off. Nothing changed; try again once that quiesce has ended. ' +
+  'Where a switch that has ended left it behind, `/update restart resume` ends it.';
 
 function lineReader(socket: Socket): { events: Array<Record<string, unknown>>; stop: () => void } {
   const events: Array<Record<string, unknown>> = [];
@@ -292,6 +293,20 @@ describe('headless daemon — panel-request / panel-response', () => {
     }
     expect(await command('/checkpoint held-by-switch')).toContain('Checkpoint "held-by-switch" saved');
     expect(await command('/checkpoint')).toContain('Saved checkpoints: held-by-switch');
+  });
+
+  test("/session new and /session switch are refused while this host is quiesced for a release switch, making and opening no session", async () => {
+    const quiesced = await switchRequest({ op: 'quiesce', to: '9.9.9', waitMs: 0 });
+    expect(quiesced.ok).toBe(true);
+    try {
+      expect(await command('/session new held-by-switch')).toBe(quiescedRefusal('/session new'));
+      expect(await command('/session create held-by-switch')).toBe(quiescedRefusal('/session create'));
+      expect(await command('/session switch held-by-switch')).toBe(quiescedRefusal('/session switch'));
+      expect(await command('/session sw held-by-switch')).toBe(quiescedRefusal('/session sw'));
+      expect(await command('/session list')).not.toContain('held-by-switch');
+    } finally {
+      expect((await switchRequest({ op: 'resume' })).ok).toBe(true);
+    }
   });
 
   test('panel-response bypasses subscription filter', async () => {

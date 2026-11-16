@@ -266,9 +266,9 @@ export function releaseQuiesceRefusalFor(
   app: { framework: { getHostModeStatus(): { quiesced: boolean; reason?: string } } },
   message: WebUiClientMessage,
 ): WebUiServerMessage | null {
-  if (message.type !== 'rollback' && message.type !== 'suppress' && !PANEL_OPS_THAT_CHANGE_THE_SESSION.has(message.type)) {
-    return null;
-  }
+  const changes = message.type === 'rollback' || message.type === 'suppress' || message.type === 'fleet-stop' ||
+    message.type === 'fleet-restart' || PANEL_OPS_THAT_CHANGE_THE_SESSION.has(message.type);
+  if (!changes) return null;
   return refusalReply(message, (what) => refusedWhileSwitchQuiesced(app, what));
 }
 

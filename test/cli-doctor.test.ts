@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { doctor, type DoctorParts } from '../src/cli/doctor.js';
@@ -60,15 +60,29 @@ function managerRun(at: Install, states: States): (command: string, args: string
       if (state === 'unloaded') return { status: 113, stdout: '', stderr: 'Could not find service' };
       return { status: 0, stdout: state === 'running' ? '{\n\t"PID" = 4242;\n};\n' : '{\n\t"LastExitStatus" = 256;\n};\n', stderr: '' };
     }
-    if (command === 'plutil' && args[0] === '-type') return { status: 0, stdout: 'string\n', stderr: '' };
-    if (command === 'plutil' && args[0] === '-extract') return { status: 0, stdout: `${at.work}\n`, stderr: '' };
+    if (command === 'plutil') {
+      const units = serviceUnits(at.root, at.platform, at.home)!;
+      const plists = [units.host.file, units.shell.file];
+      const [verb, key, ...rest] = args;
+      const file = rest.at(-1)!;
+      if (verb === '-lint') return { status: 0, stdout: `${key}: OK\n`, stderr: '' };
+      if (key !== 'WorkingDirectory' || !plists.includes(file)) {
+        return { status: 1, stdout: '', stderr: `No value at that key path or invalid key path: ${key}` };
+      }
+      if (verb === '-type' && rest.length === 1) return { status: 0, stdout: 'string\n', stderr: '' };
+      if (verb === '-extract' && rest.join(' ') === `raw -o - ${file}`) return { status: 0, stdout: `${at.work}\n`, stderr: '' };
+    }
     return { status: 2, stdout: '', stderr: `unexpected: ${command} ${args.join(' ')}` };
   };
 }
 
 const BOTS: Record<string, string> = { [`Bot ${TOKEN}`]: 'ember-bot' };
 
-const discordFetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+const DISCORD_ME = 'https://discord.com/api/v10/users/@me';
+const discordFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+  if (String(input) !== DISCORD_ME || init?.redirect !== 'manual') {
+    return Response.json({ message: `stand-in: not the request doctor makes: ${String(input)}`, code: 0 }, { status: 400 });
+  }
   const name = BOTS[new Headers(init?.headers).get('authorization') ?? ''];
   if (name === undefined) return Response.json({ message: '401: Unauthorized', code: 0 }, { status: 401 });
   return Response.json({ id: '900', username: name, bot: true });
@@ -93,6 +107,11 @@ function fakeHost(at: Install, health: unknown, opts: { agent?: string } = {}) {
           const msg = JSON.parse(line) as { type: string; op?: string; corrId?: string };
           if (msg.type !== 'panel-request') continue;
           if (health === 'silent') continue;
+          if (msg.op !== 'health') {
+            socket.write(JSON.stringify({ type: 'panel-response', corrId: msg.corrId, op: msg.op, ok: false,
+              error: `unknown panel op: ${msg.op}` }) + '\n');
+            continue;
+          }
           socket.write(JSON.stringify(health === 'refused'
             ? { type: 'panel-response', corrId: msg.corrId, op: msg.op, ok: false, error: 'unknown panel op: health' }
             : { type: 'panel-response', corrId: msg.corrId, op: msg.op, ok: true, data: health }) + '\n');
@@ -105,7 +124,7 @@ function fakeHost(at: Install, health: unknown, opts: { agent?: string } = {}) {
 
 async function run(at: Install, opts: {
   states?: States; argv?: string[]; uid?: number; owner?: number; fetch?: typeof fetch; env?: Record<string, string>;
-  health?: unknown; healthWaitMs?: number; recipeLimitMs?: number;
+  health?: unknown; healthWaitMs?: number; recipeLimitMs?: number; agent?: string;
 } = {}) {
   const out: string[] = [];
   const err: string[] = [];
@@ -124,7 +143,7 @@ async function run(at: Install, opts: {
     healthWaitMs: opts.healthWaitMs ?? 2_000,
     recipeLimitMs: opts.recipeLimitMs ?? 10_000,
   };
-  const stop = opts.health === undefined ? null : fakeHost(at, opts.health);
+  const stop = opts.health === undefined ? null : fakeHost(at, opts.health, { agent: opts.agent });
   try {
     const status = await doctor({ root: at.root, argv: opts.argv ?? [], out: (line) => out.push(line), err: (line) => err.push(line) }, parts);
     return { status, out: out.join('\n'), err: err.join('\n'), lines: out };
@@ -197,9 +216,10 @@ describe('connectome doctor: the frame', () => {
 
   test('every line hides the stored secrets by name', async () => {
     const at = install();
-    const r = await run(at, { states: RUNNING, health: { agents: [agent(`ember-${KEY}`)] } });
-    expect(r.out).toContain('✓ ember-<ANTHROPIC_API_KEY>: no failed model call in a row.');
+    const r = await run(at, { states: RUNNING, health: { agents: [agent(`ember-${KEY}-${TOKEN}`)] } });
+    expect(r.out).toContain('✓ ember-<ANTHROPIC_API_KEY>-<DISCORD_TOKEN>: no failed model call in a row.');
     expect(r.out).not.toContain(KEY);
+    expect(r.out).not.toContain(TOKEN);
   });
 });
 
@@ -228,6 +248,21 @@ describe('connectome doctor: check 1, the service', () => {
     ]);
   });
 
+  test('a systemd service that is changing its state gets its log and a run in a minute, not the start command', async () => {
+    const at = install();
+    const r = await run(at, { states: { [HOST]: 'activating/auto-restart' } });
+    expect(r.lines.slice(1, 5)).toEqual([
+      `✗ The service ${HOST} is activating (auto-restart).`,
+      `  Next: systemd is changing its state now, so read its log with \`journalctl --user -u ${HOST} -f\`, and run doctor again in a minute.`,
+      expect.stringMatching(/^✗ No host answers: /),
+      `  Next: it may be starting or stopping, so run doctor again in a minute. Its log: \`journalctl --user -u ${HOST} -f\``,
+    ]);
+    const stopping = await run(at, { states: { [HOST]: 'deactivating/stop-sigterm' } });
+    expect(stopping.lines[1]).toBe(`✗ The service ${HOST} is deactivating (stop-sigterm).`);
+    expect(stopping.lines[4]).toBe(
+      `  Next: it may be starting or stopping, so run doctor again in a minute. Its log: \`journalctl --user -u ${HOST} -f\``);
+  });
+
   test('where systemd can\'t be asked, it gives systemd\'s words and the question to ask', async () => {
     const at = install();
     const r = await run(at, { states: { [HOST]: { fails: 'Failed to connect to bus' } } });
@@ -242,8 +277,12 @@ describe('connectome doctor: check 1, the service', () => {
     expect(r.lines.slice(1, 4)).toEqual([
       `✓ The service ${HOST} runs.`,
       `✗ The service ${SHELL} is failed (failed).`,
-      `  Next: start it with \`systemctl --user start ${SHELL} ${HOST}\`, and read its log with \`journalctl --user -u ${HOST} -f\`.`,
+      `  Next: start it with \`systemctl --user start ${SHELL} ${HOST}\`, and read its log with \`journalctl --user -u ${SHELL} -f\`.`,
     ]);
+    const mac = install({ launchd: true, shell: true });
+    const stopped = await run(mac, { states: { [LABEL]: 'running', [`${LABEL}.shell`]: 'loaded' } });
+    expect(stopped.lines[2]).toBe(`✗ The service ${LABEL}.shell is loaded and not running, its last exit 256.`);
+    expect(stopped.lines[3]).toEndWith(`, and read its log with \`tail -f ${join(mac.work, 'logs', 'shell.log')}\`.`);
   });
 
   test('a running launch agent passes, and one loaded and not running is a problem with its last exit', async () => {
@@ -282,6 +321,36 @@ describe('connectome doctor: check 2, the host', () => {
     expect(r.lines[4]).toBe(`  Next: start the service with \`systemctl --user start ${HOST}\`.`);
   });
 
+  test('with no host and a service manager that couldn\'t be asked, the next step is that question, not a start', async () => {
+    const at = install();
+    const r = await run(at, { states: { [HOST]: { fails: 'Failed to connect to bus' } } });
+    expect(r.lines[3]).toStartWith('✗ No host answers: ');
+    expect(r.lines[4]).toBe('  Next: its service manager couldn\'t be asked whether the service runs, so ask it as the line for ' +
+      'the service says, then run doctor again.');
+  });
+
+  test('a socket that answers, but not as a host, gets no start step', async () => {
+    const at = install();
+    const server = Bun.listen({ unix: join(at.data, 'ipc.sock'), socket: { data() {} } });
+    try {
+      const r = await run(at, { states: { [HOST]: 'inactive/dead' } });
+      expect(r.lines[3]).toStartWith(`✗ No host answers: the socket ${join(at.data, 'ipc.sock')} accepted the connection, but no host said it was ready`);
+      expect(r.lines[4]).toBe('  Next: put right what that names, then run doctor again, or run it again in a minute if a host is ' +
+        'still starting.');
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test('where the install record can\'t be read, the next step is to put that right, not a start line without the data directory', async () => {
+    const at = { ...install({ unit: false }), platform: 'win32' as NodeJS.Platform };
+    rmSync(join(at.root, 'install.json'));
+    const r = await run(at, { env: { PATH: '/nonexistent' } });
+    expect(r.lines[2]).toStartWith('✗ No host answers: ');
+    expect(r.lines[3]).toBe('  Next: put right what that names, then run doctor again, or run it again in a minute if a host is ' +
+      'still starting.');
+  });
+
   test('where no service can be installed, the next step starts the host with its own start line', async () => {
     const at = { ...install({ unit: false }), platform: 'win32' as NodeJS.Platform };
     const r = await run(at, { env: { PATH: '/nonexistent' } });
@@ -313,9 +382,40 @@ describe('connectome doctor: check 3, the recipe', () => {
     expect((await run(at)).lines[5]).toBe('– Not checked: the service\'s unit names the recipe, and no service is installed.');
   });
 
+  test('on launchd, with the agent loaded and stopped and no host, the start is launchctl\'s and the recipe the plist names loads', async () => {
+    const at = install({ launchd: true });
+    const r = await run(at, { states: { [LABEL]: 'loaded' } });
+    expect(r.lines[3]).toStartWith('✗ No host answers: ');
+    expect(r.lines[4]).toStartWith(`  Next: start the service with \`launchctl kickstart gui/1000/${LABEL} 2>/dev/null || launchctl bootstrap gui/1000 `);
+    expect(r.lines[5]).toBe(`✓ ${join(at.work, 'recipe.json')} loads.`);
+  });
+
+  test('with no host and an install record that can\'t be read, the recipe isn\'t checked, since its data directory isn\'t known', async () => {
+    const at = install();
+    rmSync(join(at.root, 'install.json'));
+    const r = await run(at, { states: { [HOST]: 'inactive/dead' } });
+    expect(r.lines[3]).toStartWith('✗ No host answers: This install has no record at ');
+    expect(r.lines[5]).toBe('– Not checked: the install record can\'t be read, as the host\'s line says, so the data directory the ' +
+      'service starts the host with isn\'t known.');
+    expect(r.out).not.toContain('loads.');
+  });
+
   test('with no host, the recipe that the unit names loads', async () => {
     const at = install();
     expect((await run(at, { states: { [HOST]: 'inactive/dead' } })).lines[5]).toBe(`✓ ${join(at.work, 'recipe.json')} loads.`);
+  });
+
+  test('a recipe the unit names by URL is loaded from the URL, as service install keeps it', async () => {
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => Response.json(
+      { name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hello' } }) });
+    try {
+      const at = install();
+      const url = `http://127.0.0.1:${server.port}/recipe.json`;
+      writeUnits(at, false, [process.execPath, join(at.root, 'start.js'), url, '--headless']);
+      expect((await run(at, { states: { [HOST]: 'inactive/dead' } })).lines[5]).toBe(`✓ ${url} loads.`);
+    } finally {
+      server.stop(true);
+    }
   });
 
   test('the loader takes its values from .env, with doctor\'s own environment over them', async () => {
@@ -325,6 +425,15 @@ describe('connectome doctor: check 3, the recipe', () => {
     expect(fromDotenv.lines[5]).toEndWith('got "from-dotenv".');
     const fromEnv = await run(at, { states: { [HOST]: 'inactive/dead' }, env: { ROUTING: 'from-environment' } });
     expect(fromEnv.lines[5]).toEndWith('got "from-environment".');
+  });
+
+  test('the loader gets the install\'s data directory as DATA_DIR, as the service\'s unit sets it, over doctor\'s own', async () => {
+    const recipe = JSON.stringify({ name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hi', proseRouting: '${DATA_DIR}' } });
+    const at = install({ recipe });
+    for (const env of [{}, { DATA_DIR: '/elsewhere' }]) {
+      const r = await run(at, { states: { [HOST]: 'inactive/dead' }, env });
+      expect(r.lines[5]).toEndWith(`got "${at.data}".`);
+    }
   });
 
   test('a recipe that doesn\'t load gives the loader\'s words, with a stored secret in them hidden, and the next step', async () => {
@@ -363,14 +472,17 @@ describe('connectome doctor: check 3, the recipe', () => {
     }
   });
 
-  test('a recipe that doesn\'t load within the limit is a problem, with the limit', async () => {
+  test('a recipe that doesn\'t load within the limit isn\'t checked, with the limit, and isn\'t called one to correct', async () => {
     const server = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } });
     try {
       const recipe = JSON.stringify({ name: 'Ember', agent: { name: 'ember', model: 'claude-test-model',
         systemPrompt: `http://127.0.0.1:${server.port}/prompt.md` } });
       const at = install({ recipe });
       const r = await run(at, { states: { [HOST]: 'inactive/dead' }, recipeLimitMs: 300 });
-      expect(r.lines[5]).toBe(`✗ ${join(at.work, 'recipe.json')} doesn't load: it didn't load within 0.3 s.`);
+      expect(r.lines.slice(5, 7)).toEqual([
+        `– Not checked: ${join(at.work, 'recipe.json')} didn't load within 0.3 s, so whether it loads isn't known.`,
+        '  Next: run doctor again: the recipe, or a system prompt it names by URL, may be slow to answer.',
+      ]);
     } finally {
       server.stop(true);
     }
@@ -406,8 +518,16 @@ describe('connectome doctor: check 4, the model calls', () => {
     expect(r.lines.slice(4, 6)).toEqual([
       '✗ ember\'s last 3 turns failed at the model call, the latest at 2026-11-14T10:05:00.000Z.',
       '  Next: each failure\'s reason is in the host\'s log, in a line that starts `[inference-failed] agent=ember`. They can ' +
-        `quote the model provider, so doctor doesn't print them: \`journalctl --user -u ${HOST} -g '\\[inference-failed\\] agent=ember '\` lists them.`,
+        `quote the model provider, so doctor doesn't print them: \`journalctl --user -u ${HOST} --no-pager | grep -F -- '[inference-failed] agent=ember '\` lists them.`,
     ]);
+  });
+
+  test('the command that lists the failures matches an agent\'s name as it is written, not as a pattern', async () => {
+    const at = install();
+    const r = await run(at, { states: RUNNING, health: { agents: [agent('em(b)er+', {
+      consecutiveInferenceFailures: 2, lastInference: { startedAt: STARTED, failedAt: FAILED },
+    })] } });
+    expect(r.out).toContain(`\`journalctl --user -u ${HOST} --no-pager | grep -F -- '[inference-failed] agent=em(b)er+ '\` lists them.`);
   });
 
   test('one failed turn reads in the singular, and on launchd the command greps the agent log', async () => {
@@ -441,6 +561,15 @@ describe('connectome doctor: check 4, the model calls', () => {
     expect(failing.out).toContain('✗ helper\'s last 2 turns failed at the model call');
   });
 
+  test('counts that list no agent, or not the host\'s own, leave its check not made, with why', async () => {
+    const at = install();
+    const none = await run(at, { states: RUNNING, health: { agents: [] } });
+    expect(none.lines[4]).toBe('– Not checked: the host\'s counts list no agent.');
+    const other = await run(at, { states: RUNNING, health: { agents: [agent('helper')] }, agent: 'ember' });
+    expect(other.lines[4]).toBe('– Not checked: the host\'s counts list no agent named ember.');
+    expect(other.out).not.toContain('helper');
+  });
+
   test('a host that gives no counts leaves the check not made, with why', async () => {
     const at = install();
     expect((await run(at, { states: RUNNING, health: 'refused' })).lines[4])
@@ -455,6 +584,20 @@ describe('connectome doctor: check 4, the model calls', () => {
       .toBe('– Not checked: the host didn\'t give its counts of model calls: its answer has no list of agents.');
     expect((await run(at, { states: RUNNING, health: { agents: [{ name: 'ember' }] } })).lines[4])
       .toBe('– Not checked: the host didn\'t give its counts of model calls: an agent in its answer has no name or no count of failed turns.');
+    const refusals = '– Not checked: the host didn\'t give its counts of model calls: an agent in its answer has refusal counts with ' +
+      'no total or no time of the last.';
+    for (const refusalStats of [{ total: 2, lastCategory: 'cyber' }, { lastAt: FAILED }, 'two']) {
+      const r = await run(at, { states: RUNNING, health: { agents: [agent('ember', { refusalStats })] } });
+      expect(r.lines[4], JSON.stringify(refusalStats)).toBe(refusals);
+    }
+    const times = '– Not checked: the host didn\'t give its counts of model calls: an agent in its answer has a time that isn\'t one.';
+    for (const extra of [{ lastInference: { startedAt: 1e100 } },
+      { consecutiveInferenceFailures: 1, lastInference: { startedAt: STARTED, failedAt: 1e100 } },
+      { refusalStats: { total: 1, lastAt: -1e100 } }, { refusalStats: { total: 2, lastAt: 'yesterday' } }]) {
+      const r = await run(at, { states: RUNNING, health: { agents: [agent('ember', extra)] } });
+      expect(r.lines[4], JSON.stringify(extra)).toBe(times);
+      expect(r.status).toBe(0);
+    }
   });
 
   test('a failure with no time, on a host with no service, gives no time and no command', async () => {
@@ -509,7 +652,9 @@ describe('connectome doctor: check 5, the Discord token', () => {
     }) as unknown as typeof fetch;
     expect((await run(at, { states: RUNNING, health: HEALTHY, fetch: unanswered })).lines[5])
       .toBe('– Discord gave no answer that doctor could read: discord.com couldn\'t be reached (ENOTFOUND).');
-    const moved = (async () => new Response(null, { status: 301, headers: { location: 'https://discord.com/elsewhere' } })) as unknown as typeof fetch;
+    const moved = (async (_input: string | URL | Request, init?: RequestInit) => init?.redirect === 'manual'
+      ? new Response(null, { status: 301, headers: { location: 'https://discord.com/elsewhere' } })
+      : Response.json({ id: '900', username: 'ember-bot', bot: true })) as unknown as typeof fetch;
     expect((await run(at, { states: RUNNING, health: HEALTHY, fetch: moved })).lines[5])
       .toBe('– Discord gave no answer that doctor could read: discord.com answered 301.');
   });
@@ -542,6 +687,21 @@ describe('connectome doctor: the closing line', () => {
     const at = install({ dataDir: join(top, 'elsewhere') });
     const r = await run(at, { states: RUNNING, health: HEALTHY });
     expect(r.lines.at(-1)).toEndWith(` ${at.work} ${HOST} --data-dir ${join(top, 'elsewhere')}`);
+  });
+
+  test('where doctor\'s environment has no XDG_RUNTIME_DIR, the ladder line sets it, as its systemctl lines do', async () => {
+    const at = install();
+    const r = await run(at, { states: RUNNING, health: HEALTHY, env: { XDG_RUNTIME_DIR: '' } });
+    expect(r.lines.at(-1)).toMatch(/^Where an incoming message stops, the ladder shows: XDG_RUNTIME_DIR=\/run\/user\/1000 python3 /);
+  });
+
+  test('in an install with a current release, the ladder line goes through current, which an update keeps', async () => {
+    const at = install();
+    mkdirSync(join(at.root, 'releases', '99.0.0'), { recursive: true });
+    symlinkSync(join('releases', '99.0.0'), join(at.root, 'current'));
+    const r = await run(at, { states: RUNNING, health: HEALTHY });
+    expect(r.lines.at(-1)).toBe('Where an incoming message stops, the ladder shows: python3 ' +
+      `${join(at.root, 'current', 'node_modules', '@animalabs', 'connectome-host', 'scripts', 'connectome-doctor')} ${at.work} ${HOST}`);
   });
 
   test('on launchd there is no ladder line', async () => {

@@ -81,15 +81,14 @@ export function refusedWhileSwitching(app: { switching?: boolean }, what: string
     : null;
 }
 
-/** The refusal every entry gives an action that would change the session
- *  while this host is quiesced for a release switch, or null when it isn't. */
 export function refusedWhileSwitchQuiesced(
   app: { framework: { getHostModeStatus(): { quiesced: boolean; reason?: string } } }, what: string,
 ): string | null {
   const status = app.framework.getHostModeStatus();
   return status.quiesced && isSwitchQuiesce(status.reason)
     ? `${what} refused: this host is quiesced for a release switch. If that switch goes ahead, its stop can cut a change ` +
-      'to the session off. Nothing changed; try again once that quiesce has ended.'
+      'to the session off. Nothing changed; try again once that quiesce has ended. Where a switch that has ended left it ' +
+      'behind, `/update restart resume` ends it.'
     : null;
 }
 

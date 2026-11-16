@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { connectWhenAccepting } from './ipc-connect.js';
 
 async function until(check: () => boolean, label: string): Promise<void> {
@@ -12,12 +13,9 @@ async function until(check: () => boolean, label: string): Promise<void> {
   }
 }
 
-/** A headless host on a stub framework (mock-headless-switch-answer-child.ts,
- *  in the state `mode` names) asked for a switch's quiesce over its socket,
- *  after `before`; its answer, as a fleet parent gets it. */
 export async function answerToQuiesce(mode: string, before: Array<Record<string, unknown>> = []): Promise<Record<string, unknown>> {
   const dir = mkdtempSync(join(tmpdir(), 'headless-switch-answer-'));
-  const child = spawn(process.execPath, [new URL('./mock-headless-switch-answer-child.ts', import.meta.url).pathname], {
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./mock-headless-switch-answer-child.ts', import.meta.url))], {
     env: { ...process.env, DATA_DIR: dir, ANSWER_MODE: mode }, stdio: 'ignore',
   });
   try {

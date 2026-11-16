@@ -144,7 +144,7 @@ describe('setup', () => {
     } finally {
       process.env.PATH = before;
     }
-    expect(said.some((line) => line.startsWith(`The service starts the host with \`${join(links, 'bun')} ${join(root, ENTRY_POINT)}\``))).toBe(true);
+    expect(said.some((line) => line.startsWith(`This install's service is to start the host with \`${join(links, 'bun')} ${join(root, ENTRY_POINT)}\``))).toBe(true);
   });
 
   test('the line saying what the service starts the host with doesn\'t name a temporary directory first on PATH whose node is the bun setup runs on, as bunx puts there', () => {
@@ -159,7 +159,7 @@ describe('setup', () => {
     } finally {
       process.env.PATH = before;
     }
-    const line = said.find((l) => l.startsWith('The service starts the host with'));
+    const line = said.find((l) => l.startsWith('This install\'s service is to start the host with'));
     expect(line).toBeDefined();
     expect(line).not.toContain(standIn);
   });

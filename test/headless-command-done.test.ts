@@ -148,8 +148,10 @@ test('/update with the reader\'s typed command names each way as they type it, a
       await until(() => ['typed', 'plain'].every((corrId) =>
         events.some((event) => event.type === 'command-done' && event.corrId === corrId)), 'both answers');
       expect(said('typed')).toContain('- connectome update back keep: 0.12.1 runs on the data as it is now');
+      expect(said('typed')).toContain('- connectome update back restore: the copy is restored');
       expect(said('typed')).not.toContain('/update');
       expect(said('plain')).toContain('- /update back keep: 0.12.1 runs on the data as it is now');
+      expect(said('plain')).toContain('- /update back restore: the copy is restored');
     }, { UPDATE_INSTALL_ROOT: offered.root });
   } finally {
     offered.done();
