@@ -173,8 +173,9 @@ test('setup\'s conversation ends only once the turn that finished has its words 
     await until(() => lines().at(-1) === '> ' && existsSync(join(dir, 'asked.json')), 'the stored secret and a prompt', () => screen);
     terminal.write('last-words\r');
     await until(() => existsSync(join(dir, 'holding.txt')), 'the finishing turn held', () => screen);
+    const before = screen.length;
     terminal.write('\r');
-    await Bun.sleep(300);
+    await until(() => /\r*\n/.test(screen.slice(before)), 'the blank line read', () => screen);
     writeFileSync(join(dir, 'release.txt'), '');
     const ended = await Promise.race([host.exited, Bun.sleep(20_000).then(() => 'still open after 20 s')]);
     expect(ended).toBe(0);
