@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { constants, userInfo } from 'node:os';
 import { createInterface, type Interface } from 'node:readline';
 import { checkKey, type KeyCheck } from './key-check.js';
@@ -36,6 +37,8 @@ export interface SetupWorld {
   cwd: string;
   bun: { path: string; version: string };
   hasSudo: boolean;
+  /** Whether PATH finds a node that isn't the running Bun's own stand-in for one. */
+  hasNode(path: string | undefined): boolean;
   lingerOf(user: string): boolean | null;
   /** null while the user is logged in to the Mac's graphical session, and what the check gave otherwise. */
   macSession(): string | null;
@@ -84,6 +87,10 @@ export function realWorld(): SetupWorld {
     cwd: process.cwd(),
     bun: { path: process.execPath, version: Bun.version },
     hasSudo: Bun.which('sudo') !== null,
+    hasNode: (path) => {
+      const found = Bun.which('node', { PATH: path ?? '' });
+      return found !== null && realpathSync(found) !== realpathSync(process.execPath);
+    },
     lingerOf: (user) => lingerOf(user),
     macSession: () => {
       const [command, ...args] = macSessionCheck();

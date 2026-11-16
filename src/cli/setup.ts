@@ -106,8 +106,6 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       return 0;
     }
   }
-  mkdirSync(join(dir, '.setup'), { recursive: true, mode: 0o700 });
-
   const linger = world.lingerOf(world.user);
   const session = world.platform === 'darwin' ? world.macSession() : undefined;
   if (linger === null && world.platform === 'linux') {
@@ -143,7 +141,9 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   const getNode = `Install Node ${nodeFloor} or later, and at most Node ${SHELL_NODE_TOP} if the resident may get a ` +
     'shell, from nodejs.org or your system\'s package manager, and run setup again.';
   if (nodeVersion === null) {
-    err(`connectome-host needs Node as well as Bun, and \`node --version\` didn't answer here (${ended(node)}). ${getNode}`);
+    err(world.hasNode(env.PATH)
+      ? `connectome-host needs Node as well as Bun, and \`node --version\` didn't answer here (${ended(node)}). ${getNode}`
+      : `There's no Node on this machine's PATH. connectome-host needs Node as well as Bun. ${getNode}`);
     return 1;
   }
   if (bunBelowFloor(pkg.engines.node, nodeVersion) !== false) {
@@ -151,6 +151,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     return 1;
   }
 
+  mkdirSync(join(dir, '.setup'), { recursive: true, mode: 0o700 });
   const wanted = [
     ...installedVersion(dir, PACKAGE) === pkg.version ? [] : [`${PACKAGE}@${pkg.version}`],
     ...installedVersion(dir, SERVERS.discord) === null ? [SERVERS.discord] : [],

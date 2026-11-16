@@ -14,7 +14,9 @@ afterEach(() => {
 const ok = (stdout = ''): Ran => ({ status: 0, stdout, stderr: '' });
 const DEFAULT_TRUSTED = 'Default trusted dependencies (2):\n - esbuild\n - node-pty\n';
 
-function machine(opts: { node?: string; installed?: string; pty?: Ran[]; env?: Record<string, string> } = {}) {
+function machine(opts: {
+  node?: string; installed?: string; pty?: Ran[]; env?: Record<string, string>; noNode?: boolean;
+} = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'cli-shell-'));
   dirs.push(dir);
   const manifest = { dependencies: {} as Record<string, string> };
@@ -31,9 +33,12 @@ function machine(opts: { node?: string; installed?: string; pty?: Ran[]; env?: R
     env: { PATH: '/usr/bin:/bin', ...opts.env },
     bun: { path: 'bun', version: '1.4.4' },
     hasSudo: false,
+    hasNode: () => !opts.noNode,
     run: async (argv) => {
       ran.push(argv);
-      if (argv[0] === 'node' && argv[1] === '--version') return ok(`v${opts.node ?? '24.1.0'}\n`);
+      if (argv[0] === 'node' && argv[1] === '--version') {
+        return opts.noNode ? { status: 1, stdout: '', stderr: '' } : ok(`v${opts.node ?? '24.1.0'}\n`);
+      }
       if (argv[0] === 'node') return pty.shift() ?? ok();
       if (argv[2] === 'pm') return ok(DEFAULT_TRUSTED);
       if (argv[2] === 'add') {
@@ -84,6 +89,12 @@ test('installs node-pty once more where a pty doesn\'t open, and says what to in
   const still = await install(broken);
   expect(still.status).toBe(1);
   expect(still.err[0]).toContain('`apt install build-essential python3`');
+});
+
+test('says plainly where there\'s no Node on PATH, or only Bun\'s own stand-in for it', async () => {
+  const { status, err } = await install(machine({ noNode: true }));
+  expect(status).toBe(1);
+  expect(err[0]).toStartWith('There\'s no Node on this machine\'s PATH. The resident\'s shell runs on Node.');
 });
 
 test('refuses a Node newer than the shell runs on', async () => {

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { setup, setupDirectory } from '../src/cli/setup.js';
 import { packageJson } from '../src/setup/packages.js';
 import type { KeyCheck } from '../src/setup/key-check.js';
-import type { AgentLaunch, Ran, RunOptions, SetupWorld } from '../src/setup/world.js';
+import { realWorld, type AgentLaunch, type Ran, type RunOptions, type SetupWorld } from '../src/setup/world.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -25,7 +25,7 @@ function scratch(): string {
 /** A machine for the script: each program it runs answers as the steps below say. */
 function machine(dir: string, opts: {
   answers?: string[]; hidden?: string[]; keys?: KeyCheck[]; env?: Record<string, string>; platform?: NodeJS.Platform;
-  sudo?: boolean; linger?: boolean | null; macSession?: string | null; bun?: string;
+  sudo?: boolean; linger?: boolean | null; macSession?: string | null; bun?: string; hasNode?: boolean;
   fails?: Partial<Record<'node' | 'add' | 'own-setup' | 'boot', Ran>>; recipe?: string | null;
 } = {}) {
   const asked: string[] = [];
@@ -44,6 +44,7 @@ function machine(dir: string, opts: {
     cwd: dir,
     bun: { path: 'bun', version: opts.bun ?? '1.4.4' },
     hasSudo: opts.sudo ?? false,
+    hasNode: () => opts.hasNode ?? true,
     lingerOf: () => (opts.linger === undefined ? true : opts.linger),
     macSession: () => (opts.macSession === undefined ? null : opts.macSession),
     timeZone: 'Europe/London',
@@ -164,6 +165,17 @@ describe('a first setup', () => {
   });
 });
 
+test('the machine has a Node only where PATH finds a node that isn\'t the running Bun', () => {
+  const bin = scratch();
+  const world = realWorld();
+  expect(world.hasNode(bin)).toBe(false);
+  symlinkSync(process.execPath, join(bin, 'node'));
+  expect(world.hasNode(bin)).toBe(false);
+  rmSync(join(bin, 'node'));
+  writeFileSync(join(bin, 'node'), '#!/bin/sh\n', { mode: 0o755 });
+  expect(world.hasNode(bin)).toBe(true);
+});
+
 describe('where the resident lives', () => {
   test('in the directory the line was typed in where it is empty or setup\'s, and in ~/resident otherwise', () => {
     const home = scratch();
@@ -242,7 +254,7 @@ describe('refusals', () => {
   const refused = async (opts: Parameters<typeof machine>[1], argv?: string[]) => {
     const dir = scratch();
     const m = machine(dir, { hidden: [KEY], ...opts });
-    return { ...(await runSetup(dir, m.world, argv)), m };
+    return { ...(await runSetup(dir, m.world, argv)), m, dir };
   };
 
   test('another surface gets the usage', async () => {
@@ -259,16 +271,24 @@ describe('refusals', () => {
     expect(err[0]).toStartWith('connectome setup needs a person at a terminal');
   });
 
-  test('a Bun below 1.4.4', async () => {
-    const { status, err } = await refused({ bun: '1.4.3' });
+  test('a Bun below 1.4.4, leaving the directory as setup found it', async () => {
+    const { status, err, dir } = await refused({ bun: '1.4.3' });
     expect(status).toBe(1);
     expect(err[0]).toStartWith('Setup needs Bun 1.4.4 or later');
+    expect(existsSync(join(dir, '.setup'))).toBe(false);
   });
 
-  test('no Node', async () => {
-    const { status, err } = await refused({ fails: { node: { status: null, stdout: '', stderr: '', startError: 'spawn node ENOENT' } } });
+  test('no Node on PATH, or only Bun\'s own stand-in for it, said plainly, leaving the directory as setup found it', async () => {
+    const { status, err, dir } = await refused({ hasNode: false, fails: { node: { status: 1, stdout: '', stderr: '' } } });
     expect(status).toBe(1);
-    expect(err[0]).toContain('`node --version` didn\'t answer here (it couldn\'t be started (spawn node ENOENT))');
+    expect(err[0]).toStartWith('There\'s no Node on this machine\'s PATH. connectome-host needs Node as well as Bun.');
+    expect(existsSync(join(dir, '.setup'))).toBe(false);
+  });
+
+  test('a Node of the machine\'s own that doesn\'t answer, with how it ended', async () => {
+    const { status, err } = await refused({ fails: { node: { status: 1, stdout: '', stderr: '' } } });
+    expect(status).toBe(1);
+    expect(err[0]).toContain('`node --version` didn\'t answer here (exit 1)');
   });
 
   test('an install that doesn\'t finish', async () => {

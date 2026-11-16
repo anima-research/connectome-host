@@ -20,7 +20,8 @@ Built on the Connectome stack: [@animalabs/agent-framework](https://github.com/a
 
 ## A resident, from one line
 
-On the machine the resident will live on:
+Setup needs Bun 1.4.4 or later, which `curl -fsSL https://bun.sh/install | bash`
+installs, and Node 22.12.0 or later. On the machine the resident will live on:
 
 ```bash
 bunx @animalabs/connectome-host setup discord

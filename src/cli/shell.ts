@@ -13,7 +13,7 @@ import { shownToPerson } from './shown.js';
 
 export const SHELL_USAGE = 'connectome shell install';
 
-export type ShellWorld = Pick<SetupWorld, 'platform' | 'env' | 'bun' | 'hasSudo' | 'run'>;
+export type ShellWorld = Pick<SetupWorld, 'platform' | 'env' | 'bun' | 'hasSudo' | 'hasNode' | 'run'>;
 
 const SHELL = SERVERS.shell;
 // The 1.x line: the daemon, port and token that the resident's shell runs on are 1.x's.
@@ -60,7 +60,9 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
   const getNode = `Install Node ${packageJson().engines.node.replace('>=', '')} or later, and at most Node ` +
     `${SHELL_NODE_TOP}, from nodejs.org or your system's package manager, and ${again}.`;
   if (nodeVersion === null) {
-    err(`The resident's shell runs on Node, and \`node --version\` didn't answer here (${ended(node)}). ${getNode}`);
+    err(world.hasNode(env.PATH)
+      ? `The resident's shell runs on Node, and \`node --version\` didn't answer here (${ended(node)}). ${getNode}`
+      : `There's no Node on this machine's PATH. The resident's shell runs on Node. ${getNode}`);
     return 1;
   }
   if (Number(nodeVersion.split('.')[0]) > SHELL_NODE_TOP) {
