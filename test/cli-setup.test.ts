@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setup, setupDirectory } from '../src/cli/setup.js';
 import { packageJson } from '../src/setup/packages.js';
 import type { KeyCheck } from '../src/setup/key-check.js';
@@ -39,6 +39,9 @@ function machine(dir: string, opts: {
   const envs: Array<Record<string, string>> = [];
   const launched: AgentLaunch[] = [];
   const checked: string[] = [];
+  const bases: Array<string | undefined> = [];
+  const steps: string[] = [];
+  const boots: Array<{ argv: string[]; env: Record<string, string>; timeoutMs?: number; recipe: unknown }> = [];
   const answers = [...opts.answers ?? []];
   const hidden = [...opts.hidden ?? []];
   const keys = [...opts.keys ?? []];
@@ -61,8 +64,12 @@ function machine(dir: string, opts: {
     run: async (argv: string[], options: RunOptions) => {
       ran.push(argv);
       envs.push(options.env);
-      if (argv[0] === 'node') return opts.fails?.node ?? ok('v24.1.0\n');
+      if (argv[0] === 'node') {
+        steps.push('node');
+        return opts.fails?.node ?? ok('v24.1.0\n');
+      }
       if (argv[2] === 'add') {
+        steps.push('add');
         if (opts.fails?.add) return opts.fails.add;
         const manifest = join(options.cwd, 'package.json');
         const held = existsSync(manifest) ? JSON.parse(readFileSync(manifest, 'utf-8')) : { dependencies: {} };
@@ -76,6 +83,7 @@ function machine(dir: string, opts: {
         return ok();
       }
       if (argv[2]?.endsWith(join('src', 'update', 'setup.ts'))) {
+        steps.push('own setup');
         if (opts.fails?.['own-setup']) return opts.fails['own-setup'];
         const root = argv[4]!;
         const host = join(root, 'releases', VERSION, 'node_modules', '@animalabs', 'connectome-host');
@@ -86,12 +94,22 @@ function machine(dir: string, opts: {
         writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: options.env.DATA_DIR, extraState: [] }));
         return ok(`Set up ${root}.\n`);
       }
+      steps.push('boot');
+      boots.push({
+        argv, env: options.env, timeoutMs: options.timeoutMs,
+        recipe: existsSync(argv[2] ?? '') ? JSON.parse(readFileSync(argv[2]!, 'utf-8')) : null,
+      });
       return opts.fails?.boot ?? ok();
     },
-    checkKey: async ({ key }) => { checked.push(key); return keys.shift() ?? { ok: true }; },
-    startAgent: async (launch) => { launched.push(launch); return 0; },
+    checkKey: async ({ key, baseUrl }) => {
+      steps.push('key check');
+      checked.push(key);
+      bases.push(baseUrl);
+      return keys.shift() ?? { ok: true };
+    },
+    startAgent: async (launch) => { steps.push('agent'); launched.push(launch); return 0; },
   };
-  return { world, asked, ran, envs, launched, checked };
+  return { world, asked, ran, envs, launched, checked, bases, steps, boots };
 }
 
 async function runSetup(dir: string, world: SetupWorld, argv = ['discord']) {
@@ -116,6 +134,15 @@ describe('a first setup', () => {
     expect(order.every((index, i) => index >= 0 && (i === 0 || index > order[i - 1]!))).toBe(true);
     expect(m.ran.find((argv) => argv[2] === 'add')).toEqual(['bun', '--no-env-file', 'add', `${HOST}@${VERSION}`, '@animalabs/discord-mcpl']);
     expect(out).not.toContain(`Set up ${join(dir, 'connectome-host')}.`);
+    expect(m.steps).toEqual(['node', 'add', 'own setup', 'boot', 'key check', 'agent']);
+    const [boot] = m.boots;
+    const bootDir = dirname(boot!.argv[2]!);
+    expect(boot!.argv).toEqual(['bun', join(dir, 'connectome-host', 'releases', VERSION, 'node_modules', '@animalabs', 'connectome-host',
+      'src', 'index.ts'), join(bootDir, 'boot.json'), '--no-tui']);
+    expect(boot!.recipe).toMatchObject({ agent: { provider: 'mock' } });
+    expect(boot!.env.DATA_DIR).toBe(join(bootDir, 'data'));
+    expect(bootDir.startsWith(`${dir}/`)).toBe(false);
+    expect(boot!.timeoutMs).toBe(60_000);
     expect(m.checked).toEqual([KEY]);
     expect(readFileSync(join(dir, '.env'), 'utf-8')).toBe(`ANTHROPIC_API_KEY="${KEY}"\n`);
     expect(statSync(join(dir, '.env')).mode & 0o777).toBe(0o600);
@@ -156,6 +183,19 @@ describe('a first setup', () => {
       'Correct it, or take that line away to use Anthropic\'s own API, then run setup again.');
     expect(m.launched).toEqual([]);
     expect(m.asked).toEqual([]);
+  });
+
+  test('stops at an ANTHROPIC_BASE_URL in .env that holds a $, which Bun reads otherwise, before it checks or asks for a key', async () => {
+    const dir = ownDir();
+    writeFileSync(join(dir, '.env'), 'ANTHROPIC_BASE_URL=https://${GATEWAY}/v1\n');
+    const m = machine(dir, { hidden: [KEY] });
+    const { status, err } = await runSetup(dir, m.world);
+    expect(status).toBe(1);
+    expect(err.join('\n')).toContain(`ANTHROPIC_BASE_URL in ${join(dir, '.env')} can't be used: it holds a double quote, a $ ` +
+      'or a backslash, which Bun can read in a .env line otherwise than typed.');
+    expect(m.checked).toEqual([]);
+    expect(m.asked).toEqual([]);
+    expect(m.launched).toEqual([]);
   });
 
   test('gives Bun\'s install, and the agent, no variable that a dotenv file where it was typed sets, whatever its value', async () => {
@@ -233,6 +273,29 @@ describe('a first setup', () => {
     expect((await runSetup(fresh, exported.world)).status).toBe(0);
     expect(exported.checked).toEqual([KEY]);
     expect(exported.asked.some((question) => question.includes('typed hidden'))).toBe(false);
+  });
+
+  test('offers no exported key where a base URL is exported and .env sets none, says why, and asks for one', async () => {
+    const dir = scratch();
+    const m = machine(dir, { hidden: [KEY], env: { ANTHROPIC_API_KEY: 'sk-ant-gateway-0123456789', ANTHROPIC_BASE_URL: 'https://gateway.example' } });
+    const { status, out } = await runSetup(dir, m.world);
+    expect(status).toBe(0);
+    expect(m.asked.some((question) => question.includes('exported'))).toBe(false);
+    expect(out.filter((line) => line.startsWith('An ANTHROPIC_BASE_URL is exported'))).toEqual([
+      `An ANTHROPIC_BASE_URL is exported in this shell, and ${join(dir, '.env')} sets none. Setup, its agent and the ` +
+      `resident take a base URL from ${join(dir, '.env')} alone, so setup offers no exported key, and checks the key it ` +
+      `asks for at Anthropic's own API. To go on with that gateway, write ANTHROPIC_BASE_URL into ${join(dir, '.env')}, ` +
+      'and run setup again.']);
+    expect(m.checked).toEqual([KEY]);
+    expect(m.bases).toEqual([undefined]);
+    const gateway = ownDir();
+    writeFileSync(join(gateway, '.env'), 'ANTHROPIC_BASE_URL=https://gateway.example\n');
+    const again = machine(gateway, { answers: ['yes'], env: { ANTHROPIC_API_KEY: 'sk-ant-gateway-0123456789', ANTHROPIC_BASE_URL: 'https://gateway.example' } });
+    const rerun = await runSetup(gateway, again.world);
+    expect(rerun.status).toBe(0);
+    expect(rerun.out.some((line) => line.startsWith('An ANTHROPIC_BASE_URL is exported'))).toBe(false);
+    expect(again.checked).toEqual(['sk-ant-gateway-0123456789']);
+    expect(again.bases).toEqual(['https://gateway.example']);
   });
 
   test('asks for no exported key where the key came from a dotenv file where setup was typed', async () => {
@@ -316,6 +379,18 @@ describe('where the resident lives', () => {
     expect(setupDirectory(own, home)).toBe(own);
   });
 
+  test.skipIf(process.getuid?.() === 0)('in the directory the line was typed in where HOME can\'t be searched', () => {
+    const locked = scratch();
+    const busy = scratch();
+    writeFileSync(join(busy, 'notes.txt'), '');
+    chmodSync(locked, 0o600);
+    try {
+      expect(setupDirectory(busy, join(locked, 'home'))).toBe(busy);
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+  });
+
   test('takes a .setup that setup didn\'t make as another program\'s, and puts no resident there', async () => {
     const home = scratch();
     const project = scratch();
@@ -354,8 +429,11 @@ describe('where the resident lives', () => {
     expect(no.ran.some((argv) => argv[2] === 'add' || argv[2]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(false);
     expect(existsSync(join(dir, 'connectome-host'))).toBe(false);
     const yes = machine(dir, { hidden: [KEY], answers: ['yes'] });
-    expect((await runSetup(dir, yes.world)).status).toBe(0);
+    const made = await runSetup(dir, yes.world);
+    expect(made.status).toBe(0);
     expect(yes.ran.some((argv) => argv[2]?.endsWith(join('src', 'update', 'setup.ts')))).toBe(true);
+    expect(made.out).toContain(`Set up ${join(dir, 'connectome-host')}.`);
+    expect(made.out.some((line) => line.startsWith('This install\'s own command is'))).toBe(false);
     const empty = ownDir();
     mkdirSync(join(empty, 'data'));
     const plain = machine(empty, { hidden: [KEY] });
@@ -399,6 +477,7 @@ describe('where the resident lives', () => {
     const { status, out } = await runSetup(dir, again.world);
     expect(status).toBe(0);
     expect(out[0]).toBe(`Setup ran in ${dir} before. Its agent can change with you what it set up.`);
+    expect(out).toContain(`Set up ${join(dir, 'connectome-host')}.`);
     expect(again.ran.some((argv) => argv[2] === 'add')).toBe(false);
     expect(again.asked).toEqual([]);
   });

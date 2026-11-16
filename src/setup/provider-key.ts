@@ -1,3 +1,5 @@
+import { unwritableValue } from './secrets.js';
+
 export type KeyAnswer = { kind: 'accepted' } | { kind: 'refused' | 'unknown'; why: string };
 
 const REQUEST_LIMIT_MS = 15_000;
@@ -54,6 +56,8 @@ export function checkProviderKey(name: string, key: string, dotenv: ReadonlyMap<
   Promise<KeyAnswer> {
   const provider = PROVIDER_KEYS[name]!;
   const given = dotenv.get(provider.baseName);
+  const unreadable = given ? unwritableValue(given) : null;
+  if (unreadable !== null) return Promise.resolve({ kind: 'unknown', why: `${provider.baseName} in .env can't be used: ${unreadable}` });
   const base = (given || provider.base).replace(/\/+$/, '');
   if (!URL.canParse(`${base}${provider.path}`)) {
     return Promise.resolve({ kind: 'unknown', why: `${provider.baseName} in .env isn't a URL` });

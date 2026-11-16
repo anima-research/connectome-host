@@ -60,11 +60,11 @@ function setupsOwn(dir: string): boolean {
 export function setupDirectory(cwd: string, home: string | undefined): string {
   try {
     if (setupsOwn(cwd) || entriesOf(cwd).length === 0) return cwd;
+    return home !== undefined && isAbsolute(home) && statSync(home, { throwIfNoEntry: false })?.isDirectory()
+      ? join(home, 'resident') : cwd;
   } catch {
     return cwd;
   }
-  return home !== undefined && isAbsolute(home) && statSync(home, { throwIfNoEntry: false })?.isDirectory()
-    ? join(home, 'resident') : cwd;
 }
 
 export async function setup(ctx: CliContext & { root: string }, world: SetupWorld = realWorld()): Promise<number> {
@@ -166,7 +166,8 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     return 1;
   }
   const lostData = join(dir, 'data');
-  if (!existsSync(recordPath) && entriesOf(lostData).length > 0) {
+  const lostDataHeld = !existsSync(recordPath) && entriesOf(lostData).length > 0;
+  if (lostDataHeld) {
     out(`${lostData} holds a resident's data, and there's no install record (${recordPath}), as after the install ` +
       `is removed. A new install made now runs this setup's release, ${pkg.version}, on that data. If the install had ` +
       'updated to a later release, answer no, and run that release\'s setup here instead: ' +
@@ -218,14 +219,17 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   const made = await world.run([world.bun.path, '--no-env-file', ownSetup, '--root', root], {
     cwd: dir, env: { ...withoutKeys(env, ['CONNECTOME_INSTALL_ROOT']), DATA_DIR: dataDir },
   });
-  if (made.status !== 0) {
+  const residentBefore = record !== null || lostDataHeld;
+  if (made.status !== 0 || residentBefore) {
     for (const line of `${made.stdout}\n${made.stderr}`.split('\n')) if (line.trim() !== '') out(line);
+  }
+  if (made.status !== 0) {
     err(`The install's own setup (${ownSetup}) didn't finish (${ended(made)}). Once what the lines above say is put ` +
       'right, run setup again.');
     return 1;
   }
   const command = shellWord(join(root, INSTALL_COMMAND));
-  if (record === null) out(`This install's own command is ${command}.`);
+  if (!residentBefore) out(`This install's own command is ${command}.`);
 
   const running = readCurrent(root);
   if (running === null) throw new Error(`the install at ${root} has no current release after its own setup`);
@@ -333,6 +337,12 @@ async function keyFor(
 ): Promise<{ key: string; baseUrl?: string } | null> {
   const stored = readEnvFile(envFile);
   const baseUrl = stored.get('ANTHROPIC_BASE_URL') || undefined;
+  const unreadable = baseUrl === undefined ? null : unwritableValue(baseUrl);
+  if (unreadable !== null) {
+    err(`ANTHROPIC_BASE_URL in ${envFile} can't be used: ${unreadable}. Write the URL out whole, or take that line away ` +
+      'to use Anthropic\'s own API, then run setup again.');
+    return null;
+  }
   if (baseUrl !== undefined && !URL.canParse(baseUrl)) {
     err(`ANTHROPIC_BASE_URL in ${envFile} is ${JSON.stringify(baseUrl)}, which isn't a URL. Correct it, or take that ` +
       'line away to use Anthropic\'s own API, then run setup again.');
@@ -341,7 +351,13 @@ async function keyFor(
   let key: string | null = stored.get('ANTHROPIC_API_KEY') || null;
   let from = key === null ? null : `the ANTHROPIC_API_KEY in ${envFile}`;
   const exported = env.ANTHROPIC_API_KEY?.trim();
-  if (key === null && exported) {
+  const gateway = baseUrl === undefined && Boolean(env.ANTHROPIC_BASE_URL?.trim());
+  if (key === null && gateway) {
+    out(`An ANTHROPIC_BASE_URL is exported in this shell, and ${envFile} sets none. Setup, its agent and the resident ` +
+      `take a base URL from ${envFile} alone, so setup offers no exported key, and checks the key it asks for at ` +
+      `Anthropic's own API. To go on with that gateway, write ANTHROPIC_BASE_URL into ${envFile}, and run setup again.`);
+  }
+  if (key === null && exported && !gateway) {
     const use = await yesNo(world, 'An ANTHROPIC_API_KEY is exported in this shell. Use it for setup\'s agent? Setup ' +
       `writes it to ${envFile}, readable by you alone. The resident uses it too, unless you change it. (yes/no) [yes] `, true);
     if (use === null) return null;
