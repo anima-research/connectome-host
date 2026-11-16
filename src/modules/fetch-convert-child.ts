@@ -193,10 +193,15 @@ const inBrackets = (address: string): string => address.replace(/[()]/g, (bracke
 const imagesWritten = new Map<string, string>();
 const MOST_IMAGES = 64;
 
-/** Whether what holds an image is left out of the markdown, hidden or of a kind that isn't text, so the image is never written though its rule runs. */
+/**
+ * Whether what holds an image is left out of the markdown, so the image is
+ * never written though its rule runs: something hidden, a kind of element that
+ * isn't text, or a fenced code block, which is written from its text alone.
+ */
 function insideDropped(node: DomNode): boolean {
   for (let parent = node.parentNode; parent; parent = parent.parentNode) {
     if (isHidden(parent) || NOT_TEXT.has(parent.nodeName.toLowerCase())) return true;
+    if (parent.nodeName === 'PRE' && parent.childNodes[0]?.nodeName === 'CODE') return true;
   }
   return false;
 }
@@ -306,9 +311,9 @@ function shownText(node: DomNode): string {
   return Array.from(node.childNodes, shownText).join('');
 }
 
-// Turndown's rule for a fenced block takes the code element's whole text
-// without visiting what's inside it, hidden elements and all, so this one
-// stands in for it, the same but for the text it takes.
+// Turndown's rule for a fenced block is written from the code element's whole
+// text, hidden elements and all, and not from what its children were converted
+// to, so this one stands in for it, the same but for the text it takes.
 service.addRule('fenced-code-shown', {
   filter: (node) => node.nodeName === 'PRE' && asDom(node).childNodes[0]?.nodeName === 'CODE',
   replacement: (_content, node) => {

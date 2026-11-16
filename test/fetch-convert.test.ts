@@ -242,6 +242,11 @@ describe('htmlToMarkdown', () => {
     const { markdown, images } = await htmlToPage(html, 'https://x.test/', { images: true });
     expect(images).toEqual([{ written: 'https://x.test/shown.png', address: 'https://x.test/shown.png' }]);
     expect(markdown).toBe('![](https://x.test/shown.png)[link](https://x.test/hidden0.png)');
+    // A fenced code block is written from its text, so an image inside one is never written either.
+    const coded = page(`<pre><code>let a = 1;${hidden}</code></pre><img src="/chart.png">`);
+    const fenced = await htmlToPage(coded, 'https://x.test/', { images: true });
+    expect(fenced.images).toEqual([{ written: 'https://x.test/chart.png', address: 'https://x.test/chart.png' }]);
+    expect(fenced.markdown).toBe('```\nlet a = 1;\n```\n\n![](https://x.test/chart.png)');
   });
 
   test('with images kept, a bar in an image\'s address is encoded, so a table cell can\'t change what is written; a link\'s is left alone', async () => {

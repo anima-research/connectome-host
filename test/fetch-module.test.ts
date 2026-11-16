@@ -72,6 +72,8 @@ beforeAll(async () => {
     else if (path === '/tricky-alt') send(200, 'text/html', '<html><body><p>One picture.</p><img alt="photo](https://third.example/track) more" src="/chart.png"></body></html>');
     else if (path === '/bracketed') send(200, 'text/html', '<html><body><p>One picture.</p><img alt="Sales [2025]" src="/pic(1).png"></body></html>');
     else if (path === '/pic(1).png') send(200, 'image/png', PNG);
+    else if (path.startsWith('/to-image?')) { response.writeHead(302, { location: decodeURIComponent(path.slice('/to-image?'.length)) }); response.end(); }
+    else if (path === '/redirecting-images') send(200, 'text/html', `<html><body><p>Three.</p>${['/chart.png', '/gone.png', '/other.png'].map((target) => `<img src="/to-image?${encodeURIComponent(target)}">`).join('')}</body></html>`);
     else if (path === '/late-image') send(200, 'text/html', `<html><body><p>${'word '.repeat(6_000)}</p><img src="/chart.png"></body></html>`);
     else if (path === '/hidden-image') send(200, 'text/html', '<html><body><p>Text.</p><div hidden><img src="/secret-chart.png"></div><a href="/secret-chart.png">a link to it</a></body></html>');
     else if (path === '/table-image') send(200, 'text/html', '<html><body><table><tr><td>k</td><td>v</td></tr><tr><td>chart</td><td><img src="/a|b.png"></td></tr></table></body></html>');
@@ -713,6 +715,14 @@ describe('answering a prompt', () => {
     expect(result.error).toContain('The model is overloaded. Leave out prompt');
   });
 
+  test('a reply that reaches its length limit with nothing written is reported as that, with images off as with them on', async () => {
+    const { membrane } = model([{ text: '', stopReason: 'max_tokens' }]);
+    const { call } = await started({ membrane });
+    const result = await call({ source: at('/page'), prompt: 'q' });
+    expect(result.error).toContain('it reached its length limit before it wrote one');
+    expect(result.error).toContain('Leave out prompt to read the text itself.');
+  });
+
   test.each([
     ['a failed call', new Error('overloaded'), 'overloaded'],
     ['a refusal', { stopReason: 'refusal' }, 'it refused'],
@@ -1070,8 +1080,9 @@ describe('looking at a page\'s images', () => {
     expect(fifth).toMatchObject({ isError: true, content: expect.stringContaining('No more than 4 images') });
     expect(sixth!.isError).toBe(true);
     expect(textOf(result)).toContain(`It looked at 4 of the page's images: ${pics.slice(0, 4).join(', ')}.`);
-    // The two past the four were refused before any request for them.
+    // The two past the four were refused before any request for them, and the one asked for twice was fetched once.
     expect([hits['/pic5.png'], hits['/pic6.png']]).toEqual([undefined, undefined]);
+    expect(hits['/pic1.png']).toBe(1);
   });
 
   test('images that fail count toward the four, so a page of them can\'t keep a call fetching', async () => {
@@ -1148,6 +1159,20 @@ describe('looking at a page\'s images', () => {
     expect(accepts['/a|b.png']).toContain('image/png');
     expect(accepts['/a|b.png']).not.toContain('text/html');
     expect(accepts['/table-image']).toContain('text/html');
+  });
+
+  test('an image whose address redirects is followed to, with the request for an image, and a redirect to something else is told in words', async () => {
+    const through = (target: string) => at(`/to-image?${encodeURIComponent(target)}`);
+    const { call, calls } = await withImages([asking(through('/chart.png'), through('/gone.png'), through('/other.png')), 'answer']);
+    const before = hits['/chart.png'] ?? 0;
+    const result = await call({ source: at('/redirecting-images'), prompt: 'q' });
+    const [shown, gone, big] = results(calls[1]!);
+    expect(shown!.isError).toBeUndefined();
+    expect((hits['/chart.png'] ?? 0) - before).toBe(1);
+    expect(accepts['/chart.png']).toContain('image/png');
+    expect(gone).toMatchObject({ isError: true, content: expect.stringContaining('HTTP 404') });
+    expect(big).toMatchObject({ isError: true, content: expect.stringContaining('larger than') });
+    expect(result.structured).toMatchObject({ imagesViewed: [through('/chart.png')] });
   });
 
   test('a call to a tool that isn\'t there is told which one is', async () => {

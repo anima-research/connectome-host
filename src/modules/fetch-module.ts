@@ -485,7 +485,7 @@ export class FetchModule implements Module {
     const refused = (why: string) => ({ content: why, isError: true });
     const given = (input as { url?: unknown } | null)?.url;
     const image = typeof given === 'string' ? offered.find(({ written }) => written === given.trim()) : undefined;
-    if (image === undefined) return refused('That is not the address of an image that can be looked at here. Give one exactly as the document writes it, or answer without it; past its first 64 images, a page\'s can\'t be looked at.');
+    if (image === undefined) return refused('That is not the address of an image that can be looked at here. Give one exactly as the document writes it, or answer without it; past its first 64 different images, a page\'s can\'t be looked at.');
     const { address } = image;
     if (seen.looked.includes(address)) return refused('You have already been shown that image, above.');
     if (seen.tried.includes(address)) return refused('You have already asked for that image, and it could not be shown.');
@@ -496,12 +496,12 @@ export class FetchModule implements Module {
       got = await httpGet(new URL(address), { ...this.reach(), timeoutMs: IMAGE_TIMEOUT_MS, maxBytes: IMAGE_MAX_BYTES, readBinary: true, accept: IMAGE_ACCEPT });
     } catch (error) {
       if (!(error instanceof FetchRefusal)) throw error;
-      return refused(`The image couldn't be fetched: ${error.message}`);
+      return refused(`The image couldn't be fetched: ${error.message} Answer without it.`);
     }
-    if (got.status < 200 || got.status >= 300) return refused(`The image couldn't be fetched: its server answered HTTP ${got.status}.`);
-    if (got.cut) return refused(`The image is larger than the ${IMAGE_MAX_BYTES} bytes that can be looked at.`);
+    if (got.status < 200 || got.status >= 300) return refused(`The image couldn't be fetched: its server answered HTTP ${got.status}. Asking for it again won't change that: answer without it.`);
+    if (got.cut) return refused(`The image is larger than the ${IMAGE_MAX_BYTES} bytes that can be looked at. Answer without it.`);
     const type = imageType(got.body);
-    if (type === undefined) return refused('What is at that address is not a PNG, JPEG, GIF or WebP image, so it can\'t be shown.');
+    if (type === undefined) return refused('What is at that address is not a PNG, JPEG, GIF or WebP image, so it can\'t be shown. Answer without it.');
     seen.looked.push(address);
     return { content: [{ type: 'image', source: { type: 'base64', data: got.body.toString('base64'), mediaType: type } }] };
   }

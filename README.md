@@ -847,10 +847,10 @@ address, `![alt](address)`, and one with no alt text is left out. With
 - The page keeps the address of an image with no alt text too, unless its own
   `width` or `height` is a number of pixels under 50, an icon or a tracking
   pixel. An image with alt text is kept whatever its size, as it is without
-  this option. Where an image has a `data-src`, as one loaded late has, that
-  is its address. A page's first 64 images are the ones that can be looked at,
-  and only a page served as HTML has any: one served as markdown or plain text
-  is read as text.
+  this option. Where an image has a `data-src` that is a web address, as one
+  loaded late has, that is its address, before its `src`. A page's first 64
+  different images are the ones that can be looked at, and only a page served
+  as HTML has any: one served as markdown or plain text is read as text.
 - The answering model gets one tool, `view_image`, and is told to use it only
   where the request needs what an image shows.
 - It may ask for four images in one call, shown or not, each at most 3.5 MB,
