@@ -31,17 +31,19 @@ function row(text: string, metadata: Record<string, unknown>): StoredMessage {
   made += 1;
   return { id: `row-${made}`, sequence: made, participant: 'user', content: [{ type: 'text', text }], metadata, timestamp: new Date() } as StoredMessage;
 }
-const rewind = (text: string, count: unknown = 2) => row(text, { system: true, kind: 'refusal-rewind', category: 'zq-cat', count, cause: 'refusal' });
+// agent-framework stores a rewind note's metadata once, at the episode's first rewind, so its count is 1; each
+// later rewind of the episode edits the text alone.
+const rewind = (text: string) => row(text, { system: true, kind: 'refusal-rewind', category: 'zq-cat', count: 1, cause: 'refusal' });
 const failed = (text: string) => row(text, { system: true, kind: 'inference-failed', reason: PROVIDER, consecutive: 1 });
 const rewritten = (r: StoredMessage) => UNSTICK_FIX_11_16.rewrite(r)?.text ?? null;
 
 describe('the forms agent-framework wrote', () => {
-  test('a rewind note for a refusal, 0.6.2 to 0.33.1, keeps its tag and count and loses the category', () => {
+  test('a rewind note for a refusal, 0.6.2 to 0.33.1, keeps its tag and the count its text gives, and loses the category', () => {
     const old = '[refusal-rewind] The 3 most recent turn(s) were set aside because the model refused on them (content ' +
       'filter: zq-cat). Their content is not reproduced here (so this note can\'t re-trigger the filter); the ' +
       `originals remain in the raw record. ${CLEAR}`;
-    expect(rewritten(rewind(old, 3))).toBe(`[refusal-rewind] ${SET_ASIDE('The 3 most recent turn(s)')}`);
-    expect(UNSTICK_FIX_11_16.rewrite(rewind(old, 3))?.kind).toBe('rewind note');
+    expect(rewritten(rewind(old))).toBe(`[refusal-rewind] ${SET_ASIDE('The 3 most recent turn(s)')}`);
+    expect(UNSTICK_FIX_11_16.rewrite(rewind(old))?.kind).toBe('rewind note');
   });
 
   test('a rewind note for failed requests, in 0.6.2\'s form and in 0.22.1\'s, loses the provider\'s words', () => {
@@ -54,10 +56,9 @@ describe('the forms agent-framework wrote', () => {
     for (const old of [before, after]) expect(rewritten(rewind(old))).toBe(`[refusal-rewind] ${SET_ASIDE('The 2 most recent turn(s)')}`);
   });
 
-  test('a rewind note whose metadata holds no count says "Some recent turns"', () => {
-    const old = `[refusal-rewind] The 1 most recent turn(s) were set aside because the model refused on them (content filter: zq-cat). ${CLEAR}`;
-    const noCount = row(old, { system: true, kind: 'refusal-rewind', category: 'zq-cat', cause: 'refusal' });
-    expect(rewritten(noCount)).toBe(`[refusal-rewind] ${SET_ASIDE('Some recent turns')}`);
+  test('a rewind note whose text gives no count says "Some recent turns"', () => {
+    const old = `[refusal-rewind] Turns were set aside because the model refused on them (content filter: zq-cat). ${CLEAR}`;
+    expect(rewritten(rewind(old))).toBe(`[refusal-rewind] ${SET_ASIDE('Some recent turns')}`);
   });
 
   test('a rewind note in 0.33.2\'s or 0.34.0\'s form is left, whatever its tag', () => {
@@ -201,12 +202,12 @@ async function residentWithBothNotes() {
   await say('first question. Reason: a person\'s own words.', 1);
   script.push('refuse');
   await say('second question', 2);
-  script.push('refuse', 'ok');
+  script.push('refuse', 'refuse', 'ok');
   await (framework as unknown as { handleHostCommand(s: string, p: Record<string, unknown>): Promise<unknown> })
     .handleHostCommand('test-server', { command: 'unstick', agentName: 'scout' });
-  await settle(4);
+  await settle(5);
   script.push('fail');
-  await say('third question', 5);
+  await say('third question', 6);
   await framework.stop();
   framework = await open();
   const rows = () => framework.getAgent('scout')!.getContextManager().getAllMessages();
@@ -231,6 +232,9 @@ test('the notes 0.33 wrote: shown and not written, then rewritten, and the next 
   const before = r.notes().map((n) => r.textOf(n));
   expect(before.length).toBe(2);
   expect(before.some((t) => t.includes('content filter: zq-cat'))).toBe(true);
+  const marker = r.notes().find((n) => n.metadata?.kind === 'refusal-rewind')!;
+  expect(r.textOf(marker)).toContain('The 2 most recent turn(s)');
+  expect(marker.metadata?.count).toBe(1);
   expect(before.some((t) => t.includes(`Reason: ${PROVIDER}`))).toBe(true);
 
   const shown = r.sweep();
@@ -241,7 +245,7 @@ test('the notes 0.33 wrote: shown and not written, then rewritten, and the next 
   expect(said(written)).toContain('Sweep unstick-fix-11-16 rewrote 2 of 2 rows.');
   for (const answer of [shown, written]) for (const leak of LEAKS) expect(said(answer)).not.toContain(leak);
   const after = r.notes().map((n) => r.textOf(n));
-  expect(after.find((t) => t.startsWith('[refusal-rewind]'))).toContain('The 1 most recent turn(s) were set aside because the requests that carried them couldn\'t be completed.');
+  expect(after.find((t) => t.startsWith('[refusal-rewind]'))).toContain('The 2 most recent turn(s) were set aside because the requests that carried them couldn\'t be completed.');
   const next = await r.nextRequest();
   for (const leak of LEAKS) expect(next).not.toContain(leak);
   expect(next).toContain('couldn\'t be completed');

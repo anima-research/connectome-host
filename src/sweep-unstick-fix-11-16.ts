@@ -25,7 +25,8 @@ export const UNSTICK_FIX_11_16: Sweep = {
     const text = textOf(row);
     if (metadata.kind === 'refusal-rewind') {
       if (text.includes(SET_ASIDE)) return null;
-      const count = typeof metadata.count === 'number' ? `The ${metadata.count} most recent turn(s)` : 'Some recent turns';
+      const told = /The (\d+) most recent turn\(s\)/.exec(text)?.[1];
+      const count = told === undefined ? 'Some recent turns' : `The ${told} most recent turn(s)`;
       return { kind: 'rewind note', text: `[refusal-rewind] ${count} ${REWIND_REST}` };
     }
     if (metadata.kind === 'inference-failed') {
