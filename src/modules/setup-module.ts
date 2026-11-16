@@ -32,8 +32,8 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 30 * 60_000;
 // Each stream keeps at most 2 * KEPT_BYTES, so the two, as text, fit in one tool result with room for its JSON:
 // agent-framework 0.33.0 caps a tool result at 24,000 characters by default (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS,
-// in its src/tool-result-history.ts). JSON writes a control character as six characters, so output that is mostly
-// control characters can pass that cap, and the framework then cuts the result's end and says how long it was.
+// in its src/tool-result-history.ts). JSON writes most control characters as six characters (\b, \f, \n, \r and \t as
+// two), so output made of them can pass that cap. The framework then cuts the result's end and says how long it was.
 const KEPT_BYTES = 4 * 1024;
 const KILL_GRACE_MS = 5_000;
 const DRAIN_MS = 1_000;
