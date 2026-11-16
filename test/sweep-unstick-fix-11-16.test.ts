@@ -10,11 +10,6 @@ import { createBranchState, handleCommand } from '../src/commands.js';
 import { UNSTICK_FIX_11_16 } from '../src/sweep-unstick-fix-11-16.js';
 import { SWEEPS } from '../src/sweeps.js';
 
-// unstick-fix-11-16 rewrites the rewind and failed-turn notes agent-framework
-// wrote before 0.33.2 into the words 0.33.2 writes, so a resident that holds
-// one no longer reads a provider's words in it. The forms below are the notes
-// as each agent-framework release from 0.5.7 to 0.33.1 wrote them.
-
 const FAILURE_ADVICE = 'If this recurs with the same cause, change approach rather than retrying identically ' +
   '(e.g. drop an oversized attachment or an unsupported setting).';
 const TIMEOUT_ADVICE = 'If a reply is still owed from that turn, you can give it now.';
@@ -130,10 +125,6 @@ describe('the forms agent-framework wrote', () => {
   });
 });
 
-// A real framework writes the two notes as agent-framework 0.33 does, by a
-// forced /unstick that the model refuses and a turn whose call fails; then a
-// new framework opens the store, as after a restart, and the sweep runs.
-
 function response(t: string, stopReason = 'end_turn', raw: unknown = {}): NormalizedResponse {
   return {
     content: t ? [{ type: 'text', text: t }] : [], stopReason, rawAssistantText: t, toolCalls: [], toolResults: [],
@@ -206,6 +197,7 @@ async function residentWithBothNotes() {
   cleanup = async () => { await framework.stop(); rmSync(dir, { recursive: true, force: true }); };
   const settle = async (until: number) => {
     for (let i = 0; i < 300 && requests.length < until; i++) { await framework.runUntilIdle(); await new Promise((r) => setTimeout(r, 10)); }
+    if (requests.length < until) throw new Error(`the scripted membrane got ${requests.length} requests, not ${until}`);
     await framework.runUntilIdle();
   };
   const say = async (content: string, until: number) => {
@@ -272,6 +264,6 @@ test('a person\'s message that holds "Reason:" is left as it was', async () => {
   const r = await residentWithBothNotes();
   const person = () => r.rows().find((n) => r.textOf(n).startsWith('first question.'))!;
   const before = r.textOf(person());
-  r.sweep(true);
+  expect(said(r.sweep(true))).toContain('Sweep unstick-fix-11-16 rewrote 2 of 2 rows.');
   expect(r.textOf(person())).toBe(before);
 });
