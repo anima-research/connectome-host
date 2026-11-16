@@ -185,11 +185,21 @@ const inBrackets = (address: string): string => address.replace(/[()]/g, (bracke
  * The web images written into the markdown, for a reader that can look: each
  * as it is written between the round brackets, which is what that reader gives
  * back, and as its address is, which is what gets fetched. The two differ
- * where a bracket in the address was encoded. The parent is told these rather
- * than left to find them in the markdown again, where a description can hold
- * anything.
+ * where a bracket or a bar in the address was encoded. The parent is told
+ * these rather than left to find them in the markdown again, where a
+ * description can hold anything. Each once, and no more than a page that is
+ * about its images has: the list is the page's to lengthen.
  */
-const imagesWritten: Array<{ written: string; address: string }> = [];
+const imagesWritten = new Map<string, string>();
+const MOST_IMAGES = 64;
+
+/** Whether what holds an image is left out of the markdown, hidden or of a kind that isn't text, so the image is never written though its rule runs. */
+function insideDropped(node: DomNode): boolean {
+  for (let parent = node.parentNode; parent; parent = parent.parentNode) {
+    if (isHidden(parent) || NOT_TEXT.has(parent.nodeName.toLowerCase())) return true;
+  }
+  return false;
+}
 
 const service = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', emDelimiter: '*', bulletListMarker: '-' });
 
@@ -234,7 +244,14 @@ service.addRule('followable-image', {
     // unless the image is too small to be more than decoration: a chart often
     // has no alt text either.
     if (alt === '' && !(keepImages && !isSmall(element))) return '';
-    if (keepImages && /^https?:\/\//i.test(src)) imagesWritten.push({ written: inBrackets(src), address: src });
+    if (keepImages && /^https?:\/\//i.test(src)) {
+      // A bar is encoded as well, for a reader that will give the address
+      // back: a table cell would escape it, and the address written would no
+      // longer be the one listed.
+      const written = inBrackets(src).replace(/\|/g, '%7C');
+      if (!insideDropped(element) && !imagesWritten.has(written) && imagesWritten.size < MOST_IMAGES) imagesWritten.set(written, src);
+      return `![${alt}](${written})`;
+    }
     return `![${alt}](${inBrackets(src)})`;
   },
 });
@@ -310,9 +327,10 @@ service.addRule('not-for-a-reader', {
   replacement: () => '',
 });
 
-let answer: { markdown: string; images: typeof imagesWritten } | { error: string };
+let answer: { markdown: string; images: Array<{ written: string; address: string }> } | { error: string };
 try {
-  answer = { markdown: service.turndown(html), images: imagesWritten };
+  const markdown = service.turndown(html);
+  answer = { markdown, images: Array.from(imagesWritten, ([written, address]) => ({ written, address })) };
 } catch (error) {
   answer = { error: error instanceof Error ? error.message : String(error) };
 }

@@ -236,6 +236,24 @@ describe('htmlToMarkdown', () => {
     expect((await htmlToPage(page('<img alt="here" src="pics/a.png">'), undefined, { images: true })).images).toEqual([]);
   });
 
+  test('an image inside something hidden is not listed, and a crowd of them leaves room for the ones shown', async () => {
+    const hidden = Array.from({ length: 70 }, (_, n) => `<img src="/hidden${n}.png">`).join('');
+    const html = page(`<div hidden>${hidden}</div><div style="display:none"><p><img src="/deep.png"></p></div><img src="/shown.png"><a href="/hidden0.png">link</a>`);
+    const { markdown, images } = await htmlToPage(html, 'https://x.test/', { images: true });
+    expect(images).toEqual([{ written: 'https://x.test/shown.png', address: 'https://x.test/shown.png' }]);
+    expect(markdown).toBe('![](https://x.test/shown.png)[link](https://x.test/hidden0.png)');
+  });
+
+  test('with images kept, a bar in an image\'s address is encoded, so a table cell can\'t change what is written; a link\'s is left alone', async () => {
+    const html = page('<table><tr><td>k</td><td>v</td></tr><tr><td><a href="https://x.test/l|m">link</a></td><td><img alt="p" src="https://x.test/a|b.png"></td></tr></table>');
+    const kept = await htmlToPage(html, undefined, { images: true });
+    expect(kept.markdown).toContain('![p](https://x.test/a%7Cb.png)');
+    expect(kept.markdown).toContain('[link](https://x.test/l\\|m)');
+    expect(kept.images).toEqual([{ written: 'https://x.test/a%7Cb.png', address: 'https://x.test/a|b.png' }]);
+    // Without the option, an image's address is written as it was before the option existed.
+    expect((await htmlToPage(html, undefined)).markdown).toContain('![p](https://x.test/a\\|b.png)');
+  });
+
   test('at most 64 of a page\'s images are listed', async () => {
     const html = page(Array.from({ length: 70 }, (_, n) => `<img src="/p${n}.png">`).join(''));
     const { images } = await htmlToPage(html, 'https://x.test/', { images: true });

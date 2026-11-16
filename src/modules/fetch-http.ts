@@ -154,6 +154,8 @@ export interface HttpGetOptions {
   addressAllowed?: (address: string) => boolean;
   /** Read a body whose type is clearly binary too, an image say, where the default leaves it and reports `binary`. */
   readBinary?: boolean;
+  /** Sent as the Accept header. Defaults to one that prefers text. */
+  accept?: string;
 }
 
 export interface HttpGetResult {
@@ -252,7 +254,7 @@ function requestOnce(url: URL, options: HttpGetOptions, allowed: (address: strin
       agent: false,
       lookup: guardedLookup(allowed),
       headers: {
-        Accept: 'text/markdown, text/html, */*',
+        Accept: options.accept ?? 'text/markdown, text/html, */*',
         'Accept-Encoding': 'identity',
         'User-Agent': options.userAgent,
       },

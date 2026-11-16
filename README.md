@@ -856,10 +856,14 @@ address, `![alt](address)`, and one with no alt text is left out. With
 - It may ask for four images in one call, shown or not, each at most 3.5 MB,
   PNG, JPEG, GIF or WebP by their bytes. The result's note names the ones it
   looked at.
-- Only an address the part of the page it was given names is fetched, exactly
-  as written, and each request, with any redirect its server answers with, is
-  held to the address guard its page is. So a page can't have the model
-  request an address the page didn't already point at. Which of a page's
+- Only an image the page's conversion wrote, in the part of the page the model
+  was given, is fetched. The model asks for it as the page writes its address,
+  and what is requested is the address the image had, which differs where a
+  bracket or a bar in it was encoded for the markdown. Each request, with any
+  redirect its server answers with, is held to the address guard its page is.
+  So a page can't have the model request an address the page didn't already
+  point at as an image, and an image in a hidden part of the page isn't one
+  it can ask for. Which of a page's
   images it asks for, and in what order, is the model's choice, and the page's
   server sees it: a page that sets out to, by naming many images, could learn
   some tens of bits of the request a call that way.

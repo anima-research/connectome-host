@@ -97,6 +97,8 @@ const IMAGE_ROUNDS = 3;
 /** Most bytes of one image: under what a provider takes of one, base64 and all. */
 const IMAGE_MAX_BYTES = 3_500_000;
 const IMAGE_TIMEOUT_MS = 15_000;
+/** What an image request says it takes, so a server with both a page and a picture at one address sends the picture. */
+const IMAGE_ACCEPT = 'image/png, image/jpeg, image/gif, image/webp, image/*;q=0.8';
 /** The answering model's own turns in a request that has more than one. */
 const ANSWERER = 'answerer';
 
@@ -483,7 +485,7 @@ export class FetchModule implements Module {
     const refused = (why: string) => ({ content: why, isError: true });
     const given = (input as { url?: unknown } | null)?.url;
     const image = typeof given === 'string' ? offered.find(({ written }) => written === given.trim()) : undefined;
-    if (image === undefined) return refused('That is not the address of an image in the document. Give one exactly as the document has it, or answer without it.');
+    if (image === undefined) return refused('That is not the address of an image that can be looked at here. Give one exactly as the document writes it, or answer without it; past its first 64 images, a page\'s can\'t be looked at.');
     const { address } = image;
     if (seen.looked.includes(address)) return refused('You have already been shown that image, above.');
     if (seen.tried.includes(address)) return refused('You have already asked for that image, and it could not be shown.');
@@ -491,7 +493,7 @@ export class FetchModule implements Module {
     seen.tried.push(address);
     let got;
     try {
-      got = await httpGet(new URL(address), { ...this.reach(), timeoutMs: IMAGE_TIMEOUT_MS, maxBytes: IMAGE_MAX_BYTES, readBinary: true });
+      got = await httpGet(new URL(address), { ...this.reach(), timeoutMs: IMAGE_TIMEOUT_MS, maxBytes: IMAGE_MAX_BYTES, readBinary: true, accept: IMAGE_ACCEPT });
     } catch (error) {
       if (!(error instanceof FetchRefusal)) throw error;
       return refused(`The image couldn't be fetched: ${error.message}`);
@@ -632,16 +634,21 @@ export class FetchModule implements Module {
         ? response.content.filter((block): block is Extract<ContentBlock, { type: 'tool_use' }> => block.type === 'tool_use')
         : [];
       if (asks.length === 0) break;
-      if (round >= IMAGE_ROUNDS) return { ok: false, error: `${leadIn}: it kept asking to see images instead.${asked()} ${instead}` };
+      if (round >= IMAGE_ROUNDS) return { ok: false, error: `${leadIn}: it kept calling its tool instead.${asked()} ${instead}` };
       const shown: ContentBlock[] = [];
       for (const ask of asks) {
-        const outcome = ask.name === VIEW_IMAGE.name ? await this.imageFor(ask.input, offered, seen) : { content: 'There is no such tool.', isError: true };
+        const outcome = ask.name === VIEW_IMAGE.name
+          ? await this.imageFor(ask.input, offered, seen)
+          : { content: `There is no tool named ${JSON.stringify(shownAddress(ask.name))}. The only one is ${VIEW_IMAGE.name}.`, isError: true };
         shown.push({ type: 'tool_result', toolUseId: ask.id, toolName: ask.name, ...outcome });
       }
       messages.push({ participant: ANSWERER, content: response.content }, { participant: 'user', content: shown });
     }
     // The turn that ends it is the one that answers: what it wrote on the way to an empty one isn't an answer.
-    if (last === '') return { ok: false, error: `${leadIn}: its reply was empty.${asked()} ${instead}` };
+    if (last === '') {
+      const why = response.stopReason === 'max_tokens' ? 'it reached its length limit before it wrote one' : 'its reply was empty';
+      return { ok: false, error: `${leadIn}: ${why}.${asked()} ${instead}` };
+    }
     return { ok: true, text: said.join('\n\n'), cutOff: response.stopReason === 'max_tokens', looked: seen.looked };
   }
 }

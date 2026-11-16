@@ -345,6 +345,21 @@ describe('what comes back', () => {
     expect(got.binary).toBe(false);
   });
 
+  test('the Accept header is the caller\'s to set, and prefers text when it doesn\'t', async () => {
+    const seen: string[] = [];
+    const echo = http.createServer((request, response) => { seen.push(request.headers.accept ?? ''); response.end('ok'); });
+    await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = new URL(`http://127.0.0.1:${(echo.address() as AddressInfo).port}/`);
+      await httpGet(address, onlyLoopback);
+      await httpGet(address, { ...onlyLoopback, accept: 'image/png' });
+      expect(seen).toEqual(['text/markdown, text/html, */*', 'image/png']);
+    } finally {
+      echo.closeAllConnections();
+      echo.close();
+    }
+  });
+
   test('a clearly binary type is reported without being downloaded', async () => {
     const before = closedEarly;
     const got = await httpGet(new URL(`http://127.0.0.1:${port}/png`), onlyLoopback);
