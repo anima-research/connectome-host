@@ -1,0 +1,21 @@
+import type { StoredMessage } from '@animalabs/context-manager';
+
+/**
+ * A named rewrite of rows already stored, run by `connectome sweep NAME`
+ * (`/sweep` in the host). `rewrite` gives a stored row's new text, which
+ * replaces the row's whole content as one text block, and the kind of row
+ * it is; or null for a row it leaves as it is, a row it has already
+ * rewritten included, so a second run finds nothing.
+ */
+export interface Sweep {
+  name: string;
+  line: string;
+  rewrite(row: StoredMessage): { kind: string; text: string } | null;
+}
+
+export const SWEEPS: readonly Sweep[] = [];
+
+export function sweepNames(sweeps: readonly Sweep[]): string[] {
+  if (sweeps.length === 0) return ['This release knows no sweep.'];
+  return ['The sweeps this release knows:', ...sweeps.map((sweep) => `  ${sweep.name}: ${sweep.line}`)];
+}

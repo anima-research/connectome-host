@@ -9,6 +9,7 @@ import { CLI_WAYS, COMMAND_WAYS, statusLines, type UpdateStatus } from '../web/u
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { INSTALL_COMMAND } from './install-command.js';
+import { SWEEPS, sweepNames, type Sweep } from '../sweeps.js';
 
 export interface CliContext {
   root: string | null;
@@ -31,6 +32,8 @@ const HEALTH_WAIT_MS = 10_000;
 
 const UPDATE_USAGE = 'connectome update [check | install | restart [wait | now | resume | <version>] | ' +
   'back [(keep | restore) [<version>]]]';
+
+const SWEEP_USAGE = 'connectome sweep [<name> [--write]]';
 
 export const COMMANDS: CliCommand[] = [
   {
@@ -69,6 +72,17 @@ export const COMMANDS: CliCommand[] = [
     ],
     run: update,
   },
+  {
+    name: 'sweep',
+    usage: SWEEP_USAGE,
+    summary: 'Rewrites rows the running host has already stored, by a named sweep. With no name, it lists the sweeps ' +
+      'this release knows. With a name, the host shows each row that sweep would rewrite and its new text, never its ' +
+      'old text, and writes nothing. With --write, the host rewrites them, and leaves a row as it was while a turn of ' +
+      'an agent whose window holds it is alive. A name this release doesn\'t know, or another word, is a usage error, ' +
+      'which exits 2 before any host is looked for. It exits 1 when no host answers, when the host refuses, or when ' +
+      '--write left a row as it was.',
+    run: (ctx) => sweep(ctx),
+  },
 ];
 
 const io = {
@@ -101,9 +115,9 @@ function isHelp(word: string | undefined): boolean {
 
 function usage(print: (line: string) => void): void {
   print('connectome: an install\'s own command. Each runs the release its install runs. Its own refusals go to ' +
-    'stderr, and what the host answers to update to stdout, a refusal or a failure it answers included; an error ' +
-    'that stops the host\'s update command goes to stderr. send prints only what the agent says on stdout, and its ' +
-    'own notes on stderr.');
+    'stderr, and what the host answers to update and sweep to stdout, a refusal or a failure it answers included; an ' +
+    'error that stops the host\'s update or sweep command goes to stderr. send prints only what the agent says on ' +
+    'stdout, and its own notes on stderr.');
   print('  connectome');
   print('      Which install this is, its release, whether its host is running, and its update state.');
   for (const command of COMMANDS) {
@@ -344,6 +358,46 @@ async function update(ctx: CliContext): Promise<number> {
   }
   if (answer.error !== undefined) {
     ctx.err(`connectome: the host's update command failed: ${inCliWords(answer.error)}`);
+    return 1;
+  }
+  return answer.refused ? 1 : 0;
+}
+
+export async function sweep(ctx: CliContext, sweeps: readonly Sweep[] = SWEEPS): Promise<number> {
+  const [name, flag, extra] = ctx.argv;
+  if (name === undefined) {
+    for (const line of sweepNames(sweeps)) ctx.out(line);
+    return 0;
+  }
+  if (!sweeps.some((each) => each.name === name)) {
+    ctx.err(`connectome: no sweep is named ${name}.`);
+    for (const line of sweepNames(sweeps)) ctx.err(line);
+    return 2;
+  }
+  if ((flag !== undefined && flag !== '--write') || extra !== undefined) {
+    ctx.err(`connectome: usage: ${SWEEP_USAGE}`);
+    return 2;
+  }
+  const host = await reach(ctx);
+  if (host === null) return 1;
+  if ('reason' in host) return noHost(ctx, host);
+  if (host.ready.turnWork === undefined) {
+    host.close();
+    ctx.err('connectome: nothing was asked: the running host is an older release than this command, and it ' +
+      'doesn\'t mark where a command\'s answer ends, so this couldn\'t tell when to stop reading. ' +
+      `${thisRelease(ctx.root!)} Then connectome sweep works.`);
+    return 1;
+  }
+  const answer = await command(host, ['/sweep', ...ctx.argv].join(' '), (line) => ctx.out(line));
+  host.close();
+  if (answer.how === 'closed') {
+    ctx.err('connectome: the host closed the connection before its answer ended, so which rows it rewrote isn\'t ' +
+      'known here. The host stopping closes it, and so does another connectome command connecting. Run the sweep ' +
+      'again without --write to see what is left.');
+    return 1;
+  }
+  if (answer.error !== undefined) {
+    ctx.err(`connectome: the host's sweep command failed: ${answer.error}`);
     return 1;
   }
   return answer.refused ? 1 : 0;

@@ -23,6 +23,7 @@
  *   /usage         — Show session token usage and costs
  *   /bug <text>    — Assemble a bug report to file on GitHub (nothing is sent)
  *   /update        — Update, Restart and Go back
+ *   /sweep [name [--write]] — List the sweeps, or show what one would rewrite in rows already stored
  *   /help          — List commands
  */
 
@@ -45,6 +46,7 @@ import { HOST_STOPPING, SWITCH_UNDER_WAY, refusedWhileSwitching, sessionChangesR
 import { hostUpdate, type UpdateAnswer } from './update/update.js';
 import { goBackLines, goBackUnread, statusLines } from './web/update-text.js';
 import { agentActivity, type AgentRetrying } from './web/agent-activity.js';
+import { SWEEPS, sweepNames, type Sweep } from './sweeps.js';
 
 interface AppContext {
   framework: AgentFramework;
@@ -267,7 +269,7 @@ function rollbackFailed(app: AppContext, from: string, failed: string, err: unkn
 }
 
 const CHANGES_THE_SESSION = new Set(['undo', 'redo', 'checkout', 'branchto', 'newtopic', 'nudge', 'puppet']);
-const CHANGES_THE_SESSION_GIVEN_A_VALUE = new Set(['checkpoint', 'restore', 'budget']);
+const CHANGES_THE_SESSION_GIVEN_A_VALUE = new Set(['checkpoint', 'restore', 'budget', 'sweep']);
 const SUBCOMMANDS_THAT_CHANGE_THE_SESSION = new Map([
   ['session', new Set(['rename', 'delete', 'rm'])],
   ['fleet', new Set(['stop', 'kill', 'restart'])],
@@ -372,6 +374,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
           { text: '                         (subcommands: list | status [name] | view | peek <name> | stop <name> | restart <name>)', style: 'system' },
           { text: '  /update                Whether a newer release is out, and this install\'s update state', style: 'system' },
           { text: '                         (subcommands: check | install | restart [wait | now | resume | <version>] | back [(keep | restore) [<version>]])', style: 'system' },
+          { text: '  /sweep [name [--write]] List the sweeps, or show what one would rewrite in rows already stored (--write rewrites)', style: 'system' },
         ],
       };
 
@@ -458,6 +461,9 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
     case 'update':
       return handleUpdate(args);
 
+    case 'sweep':
+      return handleSweep(app, args, requester);
+
     default:
       return {
         lines: [{ text: `Unknown command: /${cmd}. Type /help.`, style: 'system' }],
@@ -503,6 +509,83 @@ function handleUpdate(args: string[]): CommandResult {
     }
   }
   return usage;
+}
+
+// Keep /sweep free of await: a turn could start between a row's idle check and its edit.
+export function handleSweep(app: AppContext, args: string[], requester: OperatorRequester, sweeps: readonly Sweep[] = SWEEPS): CommandResult {
+  const say = (text: string): Line => ({ text, style: 'system' });
+  const [name, flag, extra] = args;
+  if (name === undefined) return { lines: sweepNames(sweeps).map(say) };
+  const sweep = sweeps.find((each) => each.name === name);
+  if (sweep === undefined) return { lines: [`No sweep is named ${name}.`, ...sweepNames(sweeps)].map(say), refused: true };
+  if ((flag !== undefined && flag !== '--write') || extra !== undefined) {
+    return { lines: [say('Usage: /sweep [<name> [--write]]')], refused: true };
+  }
+  const framework = app.framework;
+  const live = framework.getAllAgents().filter((agent) => !agent.getContextManager().isClosed());
+  const found: Array<{ id: string; cm: ContextManager; kind: string; text: string; was: number; at: Date; holders: string[] }> = [];
+  const seen = new Set<string>();
+  for (const agent of live) {
+    const cm = agent.getContextManager();
+    for (const row of cm.getAllMessages()) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      const next = sweep.rewrite(row);
+      if (next === null) continue;
+      const holders = live.filter((other) => other.getContextManager().windowStatusOf(row.id) === 'in').map((other) => other.name);
+      found.push({ id: row.id, cm, ...next, was: textLength(row.content), at: new Date(row.timestamp), holders });
+    }
+  }
+  if (found.length === 0) return { lines: [say(`Sweep ${name} finds no row to rewrite.`)] };
+  const where = (row: (typeof found)[number]): string =>
+    `${row.kind} row of ${row.at.toISOString()}, in the window of ${row.holders.length > 0 ? row.holders.join(', ') : 'no agent'}`;
+  if (flag === undefined) {
+    const earliest = new Map<string, Date>();
+    for (const row of found) {
+      for (const holder of row.holders) {
+        const before = earliest.get(holder);
+        if (before === undefined || row.at < before) earliest.set(holder, row.at);
+      }
+    }
+    return {
+      lines: [
+        say(`Sweep ${name} would rewrite ${found.length} ${found.length === 1 ? 'row' : 'rows'}. Nothing is written without --write.`),
+        ...found.map((row) => say(`- ${where(row)}: ${row.was} characters now, ${row.text.length} after. Its new text: ${row.text}`)),
+        say(earliest.size === 0
+          ? 'No agent\'s window holds these rows, so --write rewrites no prompt cache.'
+          : `With --write, each of these agents has its prompt cache rewritten once, from its earliest row above: ${[...earliest].map(([agent, at]) => `${agent} (from ${at.toISOString()})`).join(', ')}.`),
+      ],
+    };
+  }
+  const lines: Line[] = [];
+  let rewritten = 0;
+  let leftForTurns = 0;
+  let failed = 0;
+  for (const row of found) {
+    const busy = row.holders.filter((agent) => !idleWithNoTurn(framework, agent));
+    if (busy.length > 0) {
+      leftForTurns += 1;
+      lines.push(say(`- left as it was, since a turn of ${busy.join(', ')} is alive: the ${where(row)}. Run the sweep again once ${busy.length === 1 ? 'it ends' : 'they end'}.`));
+      continue;
+    }
+    try {
+      row.cm.editMessage(row.id, [{ type: 'text', text: row.text }]);
+      rewritten += 1;
+      lines.push(say(`- rewrote the ${where(row)}.`));
+    } catch (error) {
+      failed += 1;
+      lines.push(say(`- left as it was, since its edit failed: the ${where(row)}: ${messageOf(error)}`));
+    }
+  }
+  framework.recordOperatorAction({ kind: 'sweep', requester, params: { sweep: name }, result: { rewritten, leftForTurns, failed } });
+  return {
+    lines: [say(`Sweep ${name} rewrote ${rewritten} of ${found.length} ${found.length === 1 ? 'row' : 'rows'}.`), ...lines],
+    ...(rewritten === found.length ? {} : { refused: true }),
+  };
+}
+
+function textLength(content: ReadonlyArray<{ type: string; text?: unknown }>): number {
+  return content.reduce((sum, block) => sum + (block.type === 'text' && typeof block.text === 'string' ? block.text.length : 0), 0);
 }
 
 function credentialLines(state: CredentialState): Line[] {
