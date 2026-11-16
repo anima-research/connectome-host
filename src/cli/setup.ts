@@ -248,6 +248,7 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     'doesn\'t wait for you to read it.');
   out(`Starting setup's agent. It speaks first. /quit leaves the conversation, and \`${command} setup ${SURFACE}\` ` +
     'picks it up where it stopped.');
+  const dotenv = dotenvLines(dir);
   const status = await world.startAgent({
     argv: [world.bun.path, '--no-env-file', entry, setupRecipe, '--no-tui'],
     cwd: join(dir, '.setup'),
@@ -267,11 +268,29 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       ...linger === false ? { CONNECTOME_SETUP_LINGER_LINE: lingerLine(world) } : {},
       ...world.timeZone ? { CONNECTOME_SETUP_TIME_ZONE: world.timeZone } : {},
       ...session === undefined ? {} : { CONNECTOME_SETUP_MAC_SESSION: session ?? '0' },
+      ...dotenv === '' ? {} : { CONNECTOME_SETUP_DOTENV: dotenv },
       CONNECTOME_UPDATE_CHECK: '0',
     },
   });
   out(`To go on with setup, or to change something it set up: \`${command} setup ${SURFACE}\`.`);
   return status;
+}
+
+function dotenvLines(dir: string): string {
+  const lines: string[] = [];
+  for (const file of ['.env.development.local', '.env.local', '.env.development', '.env']) {
+    let values: Map<string, string>;
+    try {
+      values = readEnvFile(join(dir, file));
+    } catch {
+      lines.push(`${file} unreadable`);
+      continue;
+    }
+    for (const name of ['MODEL', 'MCPL_AGENT_OVERLAY_FILE']) {
+      if (values.has(name)) lines.push(`${file} ${name} ${JSON.stringify(values.get(name))}`);
+    }
+  }
+  return lines.join('; ');
 }
 
 async function keyFor(
