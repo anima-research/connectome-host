@@ -115,7 +115,7 @@ async function install(opts: {
         : `  "$unit -q --no-pager --since @"*" -g "*" -o short-unix") awk -v since="\${7#@}" '$1 + 0 >= since' ${journal} | grep -P -- "$9" ;;`,
       opts.dumpReadFails
         ? '  "$unit -o cat --no-pager --since @"*) echo "Failed to open the journal: Permission denied" >&2; exit 1 ;;'
-        : opts.dumpReadHangs ? '  "$unit -o cat --no-pager --since @"*) exec sleep 10 ;;'
+        : opts.dumpReadHangs ? `  "$unit -o cat --no-pager --since @"*) echo start >> ${join(work, 'dump-starts')}; exec sleep 10 ;;`
         : `  "$unit -o cat --no-pager --since @"*) echo start >> ${join(work, 'dump-starts')}; awk -v since="\${8#@}" '$1 + 0 >= since { sub(/^[^ ]+ [^ ]+ [^ ]+ /, ""); print }' ${journal}; echo read >> ${join(work, 'dump-reads')} ;;`,
       '  *) echo "journalctl stand-in: arguments it doesn\'t answer: $*" >&2; exit 2 ;;',
       'esac',
@@ -746,6 +746,7 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s gate dump', () => {
     expect(out).toMatch(/live gate dump: SIGUSR2 sent, but no read of connectome-test\.service's journal finished within 5 s, so whether a \[diagnostics\] line came isn't known/);
     expect(out).not.toContain('no [diagnostics] line was seen');
     expect(out).toMatch(/=== findings ===[\s\S]*no read of connectome-test\.service's journal finished within 5 s, so the gate dump isn't known/);
+    expect(lines(join(at.work, 'dump-starts'))).toBeGreaterThan(0);
   }, 20_000);
 
   test('a host that answers its SIGUSR2 only after the ladder\'s first read of its journal still has its dump read', async () => {
