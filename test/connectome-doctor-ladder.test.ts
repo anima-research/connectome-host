@@ -404,6 +404,12 @@ describe.skipIf(ladderUnrunnable)('the ladder\'s recent failures', () => {
       'log doesn\'t say whose, so whether the agent that failed has recovered isn\'t known'));
     expect(foundIn(ladder(at).out)).toContainEqual(expect.stringMatching(/^last inference failure \S+ ago: a later call/));
     expect(fixed).not.toContain('hard-down');
+    const spanning = JSON.stringify({ timestamp: new Date((at.now - 25) * 1000).toISOString(), durationMs: 22_000,
+      kind: 'stream', rawResponse: { stop_reason: 'end_turn' } });
+    writeFileSync(calls, `${spanning}\n`);
+    const ended = ladder(at).out;
+    expect(ended).toMatch(new RegExp(`a later call, at ${stamp(at.now - 3)}, succeeded`));
+    expect(ended).not.toContain('hard-down');
     const finding = /\* inference failures, the last \S+ ago, with no successful turn found since — if the reason repeats/;
     writeFileSync(calls, `${call(at.now - 25)}\n`);
     expect(ladder(at).out).toMatch(finding);

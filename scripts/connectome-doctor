@@ -369,6 +369,7 @@ def response_of(row):
 llm_ts = None
 llm_detail = ""
 turn_ts = None
+turn_end = None
 turn_ok = False
 llm_window_from = None
 llm_written_at = None
@@ -447,6 +448,9 @@ if llm_files:
             continue
         call = r
         turn_ts = parse_iso(str(r.get("timestamp", "")))
+        took = r.get("durationMs")
+        turn_end = (turn_ts + took / 1000 if turn_ts is not None and isinstance(took, (int, float))
+                    and not isinstance(took, bool) and 0 <= took < float("inf") else turn_ts)
         turn_resp = response_of(r)
         turn_ok = not (r.get("type") == "error" or turn_resp.get("error") or r.get("error"))
         llm_window_from = None
@@ -652,8 +656,8 @@ if times or untimed:
     failed_at = max(times) if times else None
     timed = " whose time is known" if untimed else ""
     read_from = window_from if turn_ts is None else started_of(llm_files[-1]) if llm_files else None
-    if failed_at is not None and turn_ok and turn_ts is not None and turn_ts > failed_at:
-        warn(f"last inference failure{timed} {age(failed_at)}: a later call, at {hhmm(turn_ts)}, succeeded; the call log "
+    if failed_at is not None and turn_ok and turn_end is not None and turn_end > failed_at:
+        warn(f"last inference failure{timed} {age(failed_at)}: a later call, at {hhmm(turn_end)}, succeeded; the call log "
              "doesn't say whose, so whether the agent that failed has recovered isn't known" + (
                  "; newer rows of the call log can't be read, so whether a call after it failed isn't known"
                  if newer_unread else ""))
