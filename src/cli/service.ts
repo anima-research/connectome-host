@@ -5,7 +5,7 @@ import {
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { ContractError, SUPERVISED_ENV, installPaths, writeTextAtomic } from '../update/contract.js';
+import { ContractError, SUPERVISED_ENV, installPaths, missingDataDir, writeTextAtomic } from '../update/contract.js';
 import { shellWord } from '../update/launcher.js';
 import { lingerOf } from '../setup/linger.js';
 import { SHELL_NODE_TOP } from '../setup/packages.js';
@@ -194,21 +194,14 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       `or digit to make one from, so nothing was written. Set this resident up again in a directory whose name has one.`);
   }
   const dataDir = plain(dataDirOf(root), 'DATA_DIR');
-  let data: Stats | undefined;
+  let missing: string | null;
   try {
-    data = statSync(dataDir);
+    missing = missingDataDir(installPaths(root).install, dataDir, 'nothing was written',
+      'repeat this service install command with the same recipe');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw new Refusal(`the data directory ${dataDir} can't be read: ${errorText(error)}. Nothing was written.`);
-    }
+    throw new Refusal(`the data directory ${dataDir} can't be read: ${errorText(error)}. Nothing was written.`);
   }
-  if (data === undefined || !data.isDirectory()) {
-    const record = installPaths(root).install;
-    throw new Refusal(`${record} names ${dataDir} as its data directory, and no directory is there, as after the ` +
-      'install is moved. A host started now would begin with an empty one, so nothing was written. Put that ' +
-      `directory back, or write its present absolute path into ${record} as dataDir, or make an empty directory ` +
-      'there to start the resident with no memory. Then repeat this service install command with the same recipe.');
-  }
+  if (missing !== null) throw new Refusal(missing);
   let raw: unknown;
   try {
     raw = await sys.readRecipe(recipe);
