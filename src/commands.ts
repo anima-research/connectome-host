@@ -941,27 +941,22 @@ function windowInsteadOfBudget(agent: { model: string; physicalWindowTokens?: nu
 }
 
 /**
- * A count as an operator types it: digits, an optional decimal part, an
- * optional leading `+`, and, where `suffixes` allows, a `k` or `m` suffix
- * (`200000`, `150k`, `1.5m`, `.5k`, `5.k`, `200000.0`), that comes to a whole
- * number above 0. Exponents (`1e5`), signs other than `+`, separators
+ * A token count as an operator types it: digits, an optional decimal part, an
+ * optional leading `+`, and an optional `k` or `m` suffix (`200000`, `150k`,
+ * `1.5m`, `.5k`, `5.k`, `200000.0`), that comes to a whole number above 0 and
+ * at most Number.MAX_SAFE_INTEGER (the value is applied exactly, so a larger
+ * one is refused). Exponents (`1e5`), signs other than `+`, separators
  * (`200,000`, `200 000`, `200_000`) and trailing words are refused, the whole
  * argument with them: `parseInt` read `1e5` as 1, `200,000` as 200 and
  * `150abc` as 150, and `/budget` set that for every agent, confirming it as
- * a success.
+ * a success. `/history` reads the same grammar short of the suffix with a
+ * check of its own, since past its cap every count means the cap and a count
+ * over 2^53 is read as that rather than refused.
  */
-/** A token count as fmtTokens rounds it, with the exact count beside it where
- *  rounding hid it: 1,001 reads as "1.0k (1,001)", 200,000 as "200.0k". */
-export function exactTokens(n: number): string {
-  const rounded = fmtTokens(n);
-  return parseTokenCount(rounded) === n ? rounded : `${rounded} (${n.toLocaleString('en-US')})`;
-}
-
-export function parseTokenCount(arg: string, suffixes: 'km' | 'none' = 'km'): number | undefined {
+export function parseTokenCount(arg: string): number | undefined {
   const match = /^\+?(\d*)(?:\.(\d*))?([km])?$/i.exec(arg.trim());
   if (!match) return undefined;
   const [, whole, rawFraction = '', suffix] = match;
-  if (suffix && suffixes === 'none') return undefined;
   if (whole === '' && rawFraction === '') return undefined;
   // Trailing zeros are not precision: 1.5000k is 1500 as 1.5k is.
   const fraction = rawFraction.replace(/0+$/, '');
@@ -970,6 +965,16 @@ export function parseTokenCount(arg: string, suffixes: 'km' | 'none' = 'km'): nu
   if (exponent < 0) return undefined;
   const tokens = Number((whole || '0') + fraction) * 10 ** exponent;
   return Number.isSafeInteger(tokens) && tokens > 0 ? tokens : undefined;
+}
+
+/** A token count as fmtTokens rounds it, with the exact count beside it where
+ *  rounding hid it: 1,001 reads as "1.0k (1,001)", 200,000 as "200.0k". A
+ *  fractional budget a recipe wrote is shown whole, not to three decimals. */
+export function exactTokens(n: number): string {
+  const rounded = fmtTokens(n);
+  // Under 1,000 fmtTokens prints the number itself, fraction and all.
+  const exact = rounded === String(n) || parseTokenCount(rounded) === n;
+  return exact ? rounded : `${rounded} (${n.toLocaleString('en-US', { maximumFractionDigits: 20 })})`;
 }
 
 function handleBudget(framework: AgentFramework, arg?: string): CommandResult {

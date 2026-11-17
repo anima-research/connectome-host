@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { handleCommand, parseTokenCount } from '../src/commands.js';
+import { handleCommand, parseTokenCount, exactTokens } from '../src/commands.js';
 import { fmtTokens } from '../src/tui.js';
 
 function fleet() {
@@ -58,10 +58,13 @@ test('parseTokenCount scales by digits, so a decimal with a suffix is exact', ()
   expect(parseTokenCount('1.2345k')).toBeUndefined();
   expect(parseTokenCount('1.0')).toBe(1);
   expect(parseTokenCount('1.5')).toBeUndefined();
-  // Without suffixes, a plain whole count for /history (R1-5).
-  expect(parseTokenCount('20', 'none')).toBe(20);
-  expect(parseTokenCount('20.0', 'none')).toBe(20);
-  expect(parseTokenCount('2k', 'none')).toBeUndefined();
-  expect(parseTokenCount('1e2', 'none')).toBeUndefined();
-  expect(parseTokenCount('0x10', 'none')).toBeUndefined();
+  // Applied exactly, so a count past 2^53 is refused (R3-1); /history reads such a count as its cap.
+  expect(parseTokenCount('9007199254740991')).toBe(9_007_199_254_740_991);
+  expect(parseTokenCount('9007199254740992')).toBeUndefined();
+  // The exact count keeps a recipe's fractional budget whole (R3-3).
+  expect(exactTokens(123.4567)).toBe('123.4567');
+  expect(exactTokens(0.0001)).toBe('0.0001');
+  expect(exactTokens(1000.1234)).toBe('1.0k (1,000.1234)');
+  expect(exactTokens(1001)).toBe('1.0k (1,001)');
+  expect(exactTokens(200_000)).toBe('200.0k');
 });
