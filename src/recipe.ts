@@ -406,6 +406,15 @@ export interface RecipeAgent {
   /** Default-off containment of whole-response prose wrappers for known tools. */
   toolWrapperProseGuard?: boolean;
   /**
+   * Hold a turn's start until the agent's compression call already in flight
+   * ends (agent-framework `AgentConfig.primaryWaitsForAuxiliary`). Default
+   * false: the turn starts beside it. For a model whose provider limits how
+   * fast input tokens per minute may grow, such as Claude 3 Opus, where a
+   * compression call in flight can cost the larger turn its admission. An
+   * agent-framework that predates the setting always waits.
+   */
+  primaryWaitsForAuxiliary?: boolean;
+  /**
    * Continue until skip_reply (agent-framework `AgentConfig.autoContinue`,
    * agent-framework's docs/auto-continue.md; off when omitted): a turn the
    * model ends itself, with prose or with nothing, is followed by another
@@ -2084,7 +2093,7 @@ const RECIPE_AGENT_KEYS = [
   'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
   'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
   'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting', 'proseLock',
-  'toolWrapperProseGuard', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
+  'toolWrapperProseGuard', 'primaryWaitsForAuxiliary', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
   'refusalHandling', 'clock',
 ] as const;
 export const DEFAULT_RECIPE_CLOCK: ClockConfig = Object.freeze({ intervalMinutes: 10 }) as ClockConfig;
@@ -2511,6 +2520,10 @@ export function validateRecipe(raw: unknown): Recipe {
 
   if (agent.toolWrapperProseGuard !== undefined && typeof agent.toolWrapperProseGuard !== 'boolean') {
     throw new Error(`Recipe agent.toolWrapperProseGuard must be a boolean, got ${JSON.stringify(agent.toolWrapperProseGuard)}.`);
+  }
+
+  if (agent.primaryWaitsForAuxiliary !== undefined && typeof agent.primaryWaitsForAuxiliary !== 'boolean') {
+    throw new Error(`Recipe agent.primaryWaitsForAuxiliary must be a boolean, got ${JSON.stringify(agent.primaryWaitsForAuxiliary)}.`);
   }
 
   if (agent.autoContinue !== undefined && typeof agent.autoContinue !== 'boolean') {
