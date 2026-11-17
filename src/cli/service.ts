@@ -5,7 +5,7 @@ import {
 import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { ContractError, RESTART_EXIT_CODE, SUPERVISED_ENV, installPaths, writeTextAtomic } from '../update/contract.js';
+import { ContractError, SUPERVISED_ENV, installPaths, missingDataDir, writeTextAtomic } from '../update/contract.js';
 import { lingerOf } from '../setup/linger.js';
 import { SHELL_NODE_TOP } from '../setup/packages.js';
 import { StoredSecrets, readEnvFile, writeEnvValue } from '../setup/secrets.js';
@@ -13,10 +13,10 @@ import { readRecipeDocument } from '../recipe-document.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
 import { INSTALL_COMMAND, shellWord } from '../update/install-command-name.js';
-import { RESTART_PROPERTIES, restartPolicy, systemdUnits } from '../update/systemd-units.js';
+import { systemdUnits } from '../update/systemd-units.js';
 import { lastingPath, lookup, serviceBun, type BunLookup } from '../update/service-bun.js';
 import {
-  type ManagerSystem, agentState, childEnv, fileDirectory, launchctlFailure, ownerOf, readOr, runsFrom, runsHere, showUnit, stateOf, stderrOf, systemctlLine,
+  type ManagerSystem, agentState, childEnv, fileDirectory, launchctlFailure, ownerOf, readOr, runsHere, showUnit, stateOf, stderrOf, systemctlLine,
 } from './service-manager.js';
 import { Refusal, plain, plist, serviceUnits, systemdUnit, type Manager, type ServiceUnit } from './service-unit.js';
 import { shownToPerson } from './shown.js';
@@ -193,21 +193,14 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       `or digit to make one from, so nothing was written. Set this resident up again in a directory whose name has one.`);
   }
   const dataDir = plain(dataDirOf(root), 'DATA_DIR');
-  let data: Stats | undefined;
+  let missing: string | null;
   try {
-    data = statSync(dataDir);
+    missing = missingDataDir(installPaths(root).install, dataDir, 'nothing was written',
+      'repeat this service install command with the same recipe');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw new Refusal(`the data directory ${dataDir} can't be read: ${errorText(error)}. Nothing was written.`);
-    }
+    throw new Refusal(`the data directory ${dataDir} can't be read: ${errorText(error)}. Nothing was written.`);
   }
-  if (data === undefined || !data.isDirectory()) {
-    const record = installPaths(root).install;
-    throw new Refusal(`${record} names ${dataDir} as its data directory, and no directory is there, as after the ` +
-      'install is moved. A host started now would begin with an empty one, so nothing was written. Put that ' +
-      `directory back, or write its present absolute path into ${record} as dataDir, or make an empty directory ` +
-      'there to start the resident with no memory. Then repeat this service install command with the same recipe.');
-  }
+  if (missing !== null) throw new Refusal(missing);
   let raw: unknown;
   try {
     raw = await sys.readRecipe(recipe);
@@ -253,7 +246,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     ...lasting.split(':').filter((entry) => isAbsolute(entry)),
     '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])].join(':');
   const logPath = join(work, 'logs', 'agent.log');
-  const hostVars: Array<[string, string]> = [['PATH', path], ['DATA_DIR', dataDir]];
+  const hostVars: Array<[string, string]> = [['PATH', path], ['DATA_DIR', dataDir], [SUPERVISED_ENV, '1']];
   const hostArgv = [bun, join(root, 'start.js'), recipe, '--headless'];
   const shellArgv = shell === null ? [] : [node!, shell.bin, '--host', 'localhost', '--headless'];
   const shellVars: Array<[string, string]> = shell === null ? []
@@ -264,13 +257,10 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
       shell: shell === null ? null
         : systemdUnit(`connectome-host resident's shell daemon in ${work}`, work, shellArgv, shellVars, null),
       host: systemdUnit(`connectome-host resident in ${work}`, work, hostArgv, hostVars, wants, 'mixed'),
-      supervised: systemdUnit(`connectome-host resident in ${work}`, work, hostArgv,
-        [...hostVars, [SUPERVISED_ENV, '1']], wants, 'mixed'),
     }
     : {
       shell: shell === null ? null : plist(names.shell.name, work, shellArgv, shellVars, join(work, 'logs', 'shell.log')),
-      host: plist(names.host.name, work, hostArgv, [...hostVars, [SUPERVISED_ENV, '1']], logPath),
-      supervised: '',
+      host: plist(names.host.name, work, hostArgv, hostVars, logPath),
     };
   const writeUnit = (unit: ServiceUnit, text: string) => {
     try {
@@ -290,30 +280,8 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     }
     writeUnit(names.host, texts.host);
     systemctl(sys, env, ['daemon-reload']);
-    const loaded = showUnit(sys, env, names.host.name, ['LoadState', 'WorkingDirectory', RESTART_PROPERTIES]);
-    if (typeof loaded === 'string') throw new Refusal(`${loaded}. Nothing was started.`);
-    if (loaded.get('LoadState') !== 'loaded' || !runsHere(runsFrom(loaded.get('WorkingDirectory') ?? '', sys.home), work)) {
-      throw new Refusal(`systemd doesn't show ${names.host.name} loaded with ${work} as its working directory ` +
-        `(it shows ${loaded.get('LoadState') || 'no load state'}, in ` +
-        `${loaded.get('WorkingDirectory') || 'no set directory'}), so whether it restarts the host can't be checked. ` +
-        'Nothing was started.');
-    }
-    const policy = restartPolicy(loaded);
-    if (!policy.restarts) {
-      throw new Refusal(`systemd shows ${names.host.name} with ${policy.settings}, so it doesn't restart the host both ` +
-        `when it exits with ${RESTART_EXIT_CODE}, as an update's restart does, and with 1, as a failed update does. A ` +
-        `drop-in may override the unit: ${systemctlLine(sys, `cat ${names.host.name}`)} shows every file it's read ` +
-        `from. Its unit is left without ${SUPERVISED_ENV}=1, and nothing was started or restarted. A host it runs ` +
-        `now keeps what it started with, ${SUPERVISED_ENV}=1 included if it started with it, until it starts again: ` +
-        `${systemctlLine(sys, `restart ${names.host.name}`)} restarts it on the unit as it is now: the file this run ` +
-        `wrote, with the recipe it was given, and any drop-in over it. Once the unit ` +
-        `restarts the host on ${RESTART_EXIT_CODE} and 1, repeat this service install command with the same recipe, ` +
-        'which sets the line.');
-    }
-    writeUnit(names.host, texts.supervised);
-    systemctl(sys, env, ['daemon-reload']);
-    ctx.out(`Wrote ${names.host.file}. systemd restarts it when the host exits with ${RESTART_EXIT_CODE} and with 1 ` +
-      `(${policy.settings}), so its unit sets ${SUPERVISED_ENV}=1.`);
+    ctx.out(`Wrote ${names.host.file}. Restart=on-failure restarts the host whenever it exits other than with 0, so ` +
+      `its unit sets ${SUPERVISED_ENV}=1.`);
     systemctl(sys, env, ['enable', ...units.map((unit) => unit.name)]);
     ctx.out(`Enabled ${units.map((unit) => unit.name).join(' and ')}, so systemd starts ` +
       `${units.length === 1 ? 'it' : 'them'} at boot.`);

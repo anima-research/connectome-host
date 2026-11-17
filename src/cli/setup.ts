@@ -6,7 +6,7 @@ import { ANTHROPIC_API } from '../setup/key-check.js';
 import { SERVERS, SETUP_BUN_FLOOR, SHELL_NODE_TOP, installedVersion, packageJson } from '../setup/packages.js';
 import { DOTENV_FILES, readEnvFile, unwritableValue, withoutDotenv, writeEnvValue } from '../setup/secrets.js';
 import { macSessionCheck, ended, realWorld, withoutKeys, type SetupWorld } from '../setup/world.js';
-import { WRITE_RECORD_AGAIN, readCurrent, readRecord, releaseDir, type InstallRecord } from '../update/contract.js';
+import { WRITE_RECORD_AGAIN, missingDataDir, readCurrent, readRecord, releaseDir, type InstallRecord } from '../update/contract.js';
 import { HOST_ENTRY, RELEASE_HOST } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
 import { INSTALL_COMMAND, shellWord } from '../update/install-command-name.js';
@@ -204,11 +204,9 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
   const dataDir = resolve(dir, record?.dataDir ?? 'data');
   if (record === null) mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  else if (statSync(dataDir, { throwIfNoEntry: false })?.isDirectory() !== true) {
-    err(`${recordPath} names ${dataDir} as its data directory, and no directory is there, as after the install is ` +
-      'moved. A host started now would begin with an empty one, so setup stops here. Put that directory back, or ' +
-      `write its present absolute path into ${recordPath} as dataDir, or make an empty directory there to start the ` +
-      'resident with no memory. Then run setup again.');
+  const missing = missingDataDir(recordPath, dataDir, 'setup stops here', 'run setup again');
+  if (missing !== null) {
+    err(missing);
     return 1;
   }
   const ownSetup = join(dir, RELEASE_HOST, 'src', 'update', 'setup.ts');
