@@ -42,7 +42,7 @@ test('/history refuses a count that is not a whole number above 0, naming it, an
     const lines = handleCommand(`/history ${bad}`, appWithMessages(30)).lines.map((l) => l.text);
     expect(lines).toEqual([`Invalid message count: "${bad}". Examples: 20, 200`]);
   }
-  for (const ok of ['3', '+3', '3.0', '3.', '003']) expect(rows(`/history ${ok}`, 30)).toHaveLength(3);
+  for (const ok of ['3', '+3', '3.0', '3.00', '3.', '003']) expect(rows(`/history ${ok}`, 30)).toHaveLength(3);
   expect(rows('/history 1', 30)).toHaveLength(1);
   // Every count past the cap means the cap, a 20-digit one too (R2-7).
   expect(rows('/history 9007199254740992', 30)).toHaveLength(30);
@@ -62,6 +62,8 @@ test('/history refuses a count that is not a whole number above 0, naming it, an
   expect(capped[1]).toStartWith('  [m101] ');
   expect(capped).toHaveLength(502);
   expect(capped.at(-1)).toBe('Showing the last 500 of 600; /find <text> searches them all.');
+  // One row past the cap is enough for the line (R3-4).
+  expect(all('/history 500', 501).at(-1)).toBe('Showing the last 500 of 501; /find <text> searches them all.');
   // At the cap, held rows still get the line; a store of exactly 500 doesn't.
   expect(all('/history 500', 600).at(-1)).toBe('Showing the last 500 of 600; /find <text> searches them all.');
   expect(all('/history 500', 500)).toHaveLength(501);

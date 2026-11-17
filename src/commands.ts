@@ -1542,14 +1542,15 @@ function handleHistory(app: AppContext, countArg?: string): CommandResult {
   const cm = commandAgent(app)?.getContextManager();
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
-  // A count that doesn't come to a whole number above 0 is refused, naming
-  // it: "1e309" read as Infinity and slice(-Infinity) printed the whole store,
+  // A count that isn't written as a whole number above 0 in decimal digits is
+  // refused, naming it: "1e309" read as Infinity and slice(-Infinity) printed the whole store,
   // one line per message, in the command's result, and "abc", "0" or "-5"
   // fell back to 20 without a word. The grammar is digits with an optional
   // leading + and a decimal part of zeros ("20", "+20", "20.0"), which main
   // read too; exponents, other signs, 0x, separators and words are refused.
-  // #669's parseTokenCount(arg, 'none') reads the same and replaces this once
-  // one of the two lands.
+  // #669's parseTokenCount reads the same grammar (plus a k/m suffix) below
+  // 2^53 and refuses larger counts, where this reads them as the cap (past
+  // the cap every count means the cap), so the two keep separate checks.
   let count = 20;
   if (countArg !== undefined) {
     const match = /^\+?(\d*)(?:\.(\d*))?$/.exec(countArg);
@@ -1579,11 +1580,11 @@ function handleHistory(app: AppContext, countArg?: string): CommandResult {
     });
   }
 
-  // The result goes to the requester alone and is capped where the Web UI's
-  // history paging is: /history 5000 on a 4,590-message store printed 4,590
-  // lines, 151 KB (#666). The line about the cap comes last, after the rows,
-  // and only where rows were held back: through fleet--command the output is
-  // one event a line in a 500-entry buffer, so a line put first is evicted.
+  // The result is capped where the Web UI's history paging is: /history 5000
+  // on a 4,590-message store printed 4,590 lines, 151 KB (#666). The line
+  // about the cap comes last, after the rows, and only where the cap held
+  // rows back: through fleet--command the output is one event a line in a
+  // 500-entry buffer, so a line put first is evicted.
   if (count === HISTORY_PAGE_MAX && messages.length > HISTORY_PAGE_MAX) {
     lines.push({ text: `Showing the last ${HISTORY_PAGE_MAX} of ${messages.length}; /find <text> searches them all.`, style: 'system' });
   }
