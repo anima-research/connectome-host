@@ -29,7 +29,7 @@
 
 // Keep this module's imports light: the headless tests start a host per test, many at once.
 import { createServer, type Socket, type Server } from 'node:net';
-import { createWriteStream, mkdirSync, existsSync, unlinkSync, writeFileSync, renameSync, statSync, type WriteStream } from 'node:fs';
+import { createWriteStream, mkdirSync, existsSync, unlinkSync, writeFileSync, renameSync, statSync, openSync, type WriteStream } from 'node:fs';
 import { takeBootConsole } from './headless-boot-console.js';
 import { sessionMarker, rolloverNotice } from './session-marker.js';
 import { join, resolve } from 'node:path';
@@ -73,7 +73,8 @@ const EXITING_FLUSH_MS = 50;
 let activeLog: WriteStream | null = null;
 
 /** headless.log is rolled over to headless.log.1 past this, at a start and
- *  live: nothing else rotates it, and /bug reads its last 4 MiB alone. */
+ *  live: nothing else rotates it, and /bug reads the last 4 MiB of it and,
+ *  after a live rollover, of headless.log.1. */
 export const HEADLESS_LOG_MAX_BYTES = 64 * 1024 * 1024;
 
 /** Move a headless.log at or past the cap aside as headless.log.1 (replacing
@@ -140,7 +141,24 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   // passing (chunk, cb) or (chunk, encoding, cb) for backpressure /
   // flush confirmation don't have their callbacks silently swallowed.
   const atStart = rollOverIfLarge(logPath);
-  let logStream: WriteStream = createWriteStream(logPath, { flags: 'a' });
+  // The file is opened here, synchronously, so the stream has its fd before
+  // anything can rename the path: a stream still opening when a start's own
+  // first lines crossed the cap would open the new headless.log instead and
+  // put this run's marker in the file the rollover moved aside.
+  const openLog = (): WriteStream | Error => {
+    try {
+      const stream = createWriteStream(logPath, { fd: openSync(logPath, 'a') });
+      // Given an fd, Bun leaves the stream's path unset; set it, so what reads
+      // a stream's path (the shutdown fixtures among them) sees the log's.
+      if (stream.path === undefined) Object.defineProperty(stream, 'path', { value: logPath, configurable: true });
+      return stream;
+    } catch (err) {
+      return err instanceof Error ? err : new Error(String(err));
+    }
+  };
+  const first = openLog();
+  if (first instanceof Error) throw first;
+  let logStream: WriteStream = first;
   activeLog = logStream;
   let logBytes = (() => { try { return statSync(logPath).size; } catch { return 0; } })();
   // Lines the stream takes, counted toward the cap: the marker and notices too.
@@ -148,8 +166,12 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   const openSession = (): void => { put(`\n${sessionMarker(new Date())}\n`); };
   // After a rename that failed for a reason other than the file being gone,
   // said once, and tried again only another MiB on: not at every line.
-  let retryRolloverAt = HEADLESS_LOG_MAX_BYTES;
   const RETRY_STEP = 1024 * 1024;
+  let retryRolloverAt = atStart instanceof Error ? logBytes + RETRY_STEP : HEADLESS_LOG_MAX_BYTES;
+  // Once a MiB, whether the file is still there: one an operator deleted
+  // while the host ran is opened anew, rather than written to unlinked until
+  // the next cap crossing.
+  let checkExistsAt = logBytes + RETRY_STEP;
   openSession();
   type StdWrite = typeof process.stdout.write;
   // Once endHeadlessLog has ended the stream, such a line goes to the
@@ -164,29 +186,41 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   ): boolean => {
     if (logStream.writableEnded) return toStderr(chunk, encodingOrCb, cb);
     logBytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.byteLength;
-    if (logBytes >= retryRolloverAt) {
-      const rolled = rollOverIfLarge(logPath, logBytes);
-      if (rolled === 'moved' || rolled === 'gone') {
-        // A resident up for weeks reaches the cap live: the open file keeps
-        // its name's new place, headless.log.1, and the stream ends there
-        // once its pending lines are written, which endHeadlessLog waits for
-        // (retiring); a new file takes the lines from here, with a marker of
-        // its own and a notice /bug reads headless.log.1 on. A file an
-        // operator deleted while the host ran is simply opened anew.
+    let rolled: 'moved' | 'gone' | 'below' | Error | undefined;
+    if (logBytes >= retryRolloverAt) rolled = rollOverIfLarge(logPath, logBytes);
+    else if (logBytes >= checkExistsAt) {
+      checkExistsAt = logBytes + RETRY_STEP;
+      if (!existsSync(logPath)) rolled = 'gone';
+    }
+    if (rolled === 'moved' || rolled === 'gone') {
+      // A resident up for weeks reaches the cap live: the open file keeps
+      // its name's new place, headless.log.1, and the stream ends there
+      // once its pending lines are written, which endHeadlessLog waits for
+      // (retiring); a new file takes the lines from here, with a marker of
+      // its own and a notice /bug reads headless.log.1 on. A file an
+      // operator deleted while the host ran is simply opened anew.
+      const next = openLog();
+      if (next instanceof Error) {
+        // The old stream stays the log; said once, tried again a MiB on.
+        retryRolloverAt = logBytes + RETRY_STEP;
+        put(`[${new Date().toISOString()}] headless.log couldn't be opened anew after it was ${rolled === 'moved' ? 'moved to headless.log.1' : 'deleted'} (${next.message}); still writing to the old file, trying again in ${RETRY_STEP} bytes\n`);
+      } else {
+        const crossedAt = logBytes;
         const old = logStream;
         const done = new Promise<void>((r) => { old.once('close', r); old.once('error', () => r()); });
         retiring.add(done); void done.then(() => retiring.delete(done));
         old.end();
-        logStream = createWriteStream(logPath, { flags: 'a' });
+        logStream = next;
         activeLog = logStream;
         logBytes = typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.byteLength;
         retryRolloverAt = HEADLESS_LOG_MAX_BYTES;
+        checkExistsAt = logBytes + RETRY_STEP;
         openSession();
-        put(`[${new Date().toISOString()}] ${rolled === 'moved' ? rolloverNotice(HEADLESS_LOG_MAX_BYTES) : 'headless.log was gone and was opened anew'}\n`);
-      } else if (rolled instanceof Error) {
-        retryRolloverAt = logBytes + RETRY_STEP;
-        put(`[${new Date().toISOString()}] headless.log is past ${HEADLESS_LOG_MAX_BYTES} bytes and couldn't be moved to headless.log.1 (${rolled.message}); trying again in ${RETRY_STEP} bytes\n`);
+        put(`[${new Date().toISOString()}] ${rolled === 'moved' ? rolloverNotice(crossedAt) : 'headless.log was gone and was opened anew'}\n`);
       }
+    } else if (rolled instanceof Error) {
+      retryRolloverAt = logBytes + RETRY_STEP;
+      put(`[${new Date().toISOString()}] headless.log is past ${HEADLESS_LOG_MAX_BYTES} bytes and couldn't be moved to headless.log.1 (${rolled.message}); trying again in ${RETRY_STEP} bytes\n`);
     }
     return typeof encodingOrCb === 'function'
       ? logStream.write(chunk, encodingOrCb)

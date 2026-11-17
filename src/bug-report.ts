@@ -863,6 +863,7 @@ export function gatherBugReportFacts(opts: GatherOptions): BugReportFacts {
     const read = tailLines(join(opts.dataDir, errorLogName), LOG_WINDOW);
     let session = currentSession((read?.lines ?? []).join('\n'));
     let log: HostErrorSummary['log'] = errorLogName;
+    let truncated = read ? read.truncated : false;
     // A headless.log rolled over live opens its session with a notice: the
     // run's earlier lines (its boot lines among them) are in headless.log.1,
     // back to that file's own marker, so they are read too, within the same
@@ -872,13 +873,17 @@ export function gatherBugReportFacts(opts: GatherOptions): BugReportFacts {
       if (earlier?.readable) {
         session = `${currentSession(earlier.lines.join('\n'))}\n${session}`;
         log = 'headless.log.1 + headless.log';
+        // Cut short where the run's part of headless.log.1 outran the window:
+        // its tail then holds no marker, and the report says so, as it does
+        // for headless.log alone.
+        if (earlier.truncated && !earlier.lines.some((line) => SESSION_MARKER.test(line))) truncated = true;
       }
     }
     const parsed = parseErrorLog(session, frameScope(root));
     hostErrors = {
       log,
       readable: read ? read.readable : true,
-      truncated: read ? read.truncated : false,
+      truncated,
       tags: [...parsed.tags.entries()].sort((a, b) => b[1] - a[1]),
       otherTags: parsed.otherTags,
       errors: parsed.errors,

@@ -541,6 +541,12 @@ describe('the mode', () => {
       const facts = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
       expect(facts.hostErrors?.log).toBe('headless.log.1 + headless.log');
       expect(facts.hostErrors?.tags).toEqual([['mcpl', 2], ['gate', 1]]);
+      // A run whose part of headless.log.1 outran the window is said to be cut short (R3-2).
+      writeFileSync(join(dir, 'headless.log.1'), `\n--- session 2026-10-11T23:30:00.000Z ---\n[mcpl] boot\n${'x'.repeat(5 * 1024 * 1024)}\n[gate] late\n`);
+      const cut = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
+      expect(cut.hostErrors?.log).toBe('headless.log.1 + headless.log');
+      expect(cut.hostErrors?.truncated).toBe(true);
+      expect([...(cut.hostErrors?.tags ?? [])].sort()).toEqual([['gate', 1], ['mcpl', 1]]);
       // Without the notice (a rollover at start, or none), headless.log.1 is left alone.
       writeFileSync(join(dir, 'headless.log'), '\n--- session 2026-10-11T23:31:00.000Z ---\n[mcpl] c\n');
       const plain = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });

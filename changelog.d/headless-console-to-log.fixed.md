@@ -15,6 +15,8 @@
   there alone, as before. Since the file now takes every warning and error,
   it is rolled over to `headless.log.1` (one generation kept) past 64 MiB, at
   a start and live; an exit right after a live rollover still waits for the
-  retired file's last lines, a deleted log is opened anew, and `/bug` reads
-  `headless.log.1` back to its marker after a live rollover. Nothing rotated
+  retired file's last lines, a log deleted while the host runs is opened anew
+  within a MiB of lines, and `/bug` reads `headless.log.1` back to its marker
+  after a live rollover, within the same 4 MiB, saying when that cut the run
+  short. Nothing rotated
   the file before.
