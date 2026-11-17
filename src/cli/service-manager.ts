@@ -73,7 +73,7 @@ function plistField(sys: ManagerSystem, env: Record<string, string>, path: strin
 
 /** systemctl show (systemd 257) gives WorkingDirectory=-/x as !/x, ~ as ~, and an unset one under the user manager as
  *  ! and the home, its default. */
-export function runsFrom(shown: string, home: string): string | null {
+function runsFrom(shown: string, home: string): string | null {
   const set = shown.replace(/^[-!+@:]+/, '');
   if (set === '' || (shown.startsWith('!') && realOrResolved(set) === realOrResolved(home))) return null;
   return realOrResolved(set === '~' ? home : set);
