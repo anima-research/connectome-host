@@ -37,7 +37,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   closeSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync,
-  symlinkSync, truncateSync, unlinkSync, writeSync,
+  statSync, symlinkSync, truncateSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -213,6 +213,14 @@ export function copyShows(those: string): string {
     'mcpl-servers.agent.json or the file MCPL_AGENT_OVERLAY_FILE names, each resolved from the service\'s working ' +
     `directory), ${those}, and among the rest, those places as that update found them: each through any link to where ` +
     'it led, and one inside another shown only as the outer one.';
+}
+
+export function missingDataDir(recordPath: string, dataDir: string, stops: string, then: string): string | null {
+  if (statSync(dataDir, { throwIfNoEntry: false })?.isDirectory() === true) return null;
+  return `${recordPath} names ${dataDir} as its data directory, and no directory is there, as after the install is ` +
+    `moved. A host started now would begin with an empty one, so ${stops}. Put that directory back, or write its ` +
+    `present absolute path into ${recordPath} as dataDir, or make an empty directory there to start the resident ` +
+    `with no memory. Then ${then}.`;
 }
 
 /** How to put an install record right, which setup's refusals of a lost record, or of one that isn't JSON, has no

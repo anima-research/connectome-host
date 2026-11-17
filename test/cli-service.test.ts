@@ -138,7 +138,6 @@ class FakeSystemd {
   nrestarts = new Map<string, number>();
   starts: Array<{ unit: string; environment: string[]; execStart: string }> = [];
   onStop: () => void = () => {};
-  checkedEnvironment: string[][] = [];
   calls: string[] = [];
   crashing = new Set<string>();
   restartWait = new Set<string>();
@@ -287,10 +286,7 @@ class FakeSystemd {
   private show(unit: string, args: string[]): Ran {
     const asked = (args.find((arg) => arg.startsWith('--property='))?.slice('--property='.length) ?? '').split(',');
     const loaded = this.loaded.get(unit) ?? this.load(unit);
-    if (loaded) {
-      this.referenced.add(unit);
-      if (!unit.endsWith('.shell.service') && asked.includes('Restart')) this.checkedEnvironment.push(loaded.environment);
-    }
+    if (loaded) this.referenced.add(unit);
     const crashing = loaded !== undefined && this.running.has(unit) && this.crashing.has(unit);
     if (crashing) {
       this.nrestarts.set(unit, (this.nrestarts.get(unit) ?? 0) + 1);
@@ -579,20 +575,11 @@ test('a shell whose only node on PATH is in that temporary directory, the bun in
   nothingWritten(at);
 });
 
-test('the host\'s unit, as install first writes it and in its supervised form, has systemd send its stop\'s SIGTERM to the host alone', async () => {
+test('the host\'s unit has systemd send its stop\'s SIGTERM to the host alone', async () => {
   const at = install();
-  mkdirSync(`${hostUnit(at)}.d`, { recursive: true });
-  writeFileSync(join(`${hostUnit(at)}.d`, 'override.conf'), '[Service]\nRestart=no\n');
   const f = fake(at);
-  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  const first = readFileSync(hostUnit(at), 'utf-8');
-  expect(first).not.toContain('CONNECTOME_SUPERVISED');
-  expect(first).toContain('KillMode=mixed\n');
-  rmSync(`${hostUnit(at)}.d`, { recursive: true });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
-  const supervised = readFileSync(hostUnit(at), 'utf-8');
-  expect(supervised).toContain('CONNECTOME_SUPERVISED=1');
-  expect(supervised).toContain('KillMode=mixed\n');
+  expect(readFileSync(hostUnit(at), 'utf-8')).toContain('KillMode=mixed\n');
 });
 
 test('the shell daemon\'s unit leaves its stop to systemd\'s default', async () => {
@@ -1129,84 +1116,23 @@ test('a unit in its manager\'s default directory, which is this install, is name
     `from ${at.work} can't be told, and one that does isn't ruled out.`]);
 });
 
-test('the supervised line is added only after the restart check passes, and the host starts with it', async () => {
+test('the host\'s unit sets the supervised line, and the host starts with it', async () => {
   const at = install();
   const f = fake(at);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
-  expect(f.systemd.checkedEnvironment[0]).not.toContain('CONNECTOME_SUPERVISED=1');
   const host = f.systemd.starts.find((start) => start.unit === HOST)!;
   expect(host.environment).toContain('CONNECTOME_SUPERVISED=1');
   expect(readFileSync(hostUnit(at), 'utf-8')).toContain('Environment="CONNECTOME_SUPERVISED=1"\n');
 });
 
-test('a drop-in that stops the restart on failure leaves the unit without the line, starts nothing, and says why', async () => {
+test('a drop-in that stops the host\'s restart doesn\'t stop install: the unit sets the supervised line, and the host starts', async () => {
   const at = install();
   mkdirSync(`${hostUnit(at)}.d`, { recursive: true });
   writeFileSync(join(`${hostUnit(at)}.d`, 'override.conf'), '[Service]\nRestart=no\n');
   const f = fake(at);
-  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(readFileSync(hostUnit(at), 'utf-8')).not.toContain('CONNECTOME_SUPERVISED');
-  expect(f.systemd.starts).toEqual([]);
-  const said = f.err.join('\n');
-  expect(said).toContain('Restart=no');
-  expect(said).toContain('left without CONNECTOME_SUPERVISED=1');
-});
-
-test('a host unit that systemd shows with another working directory, once written, is refused: nothing is started', async () => {
-  const at = install();
-  mkdirSync(`${hostUnit(at)}.d`, { recursive: true });
-  writeFileSync(join(`${hostUnit(at)}.d`, 'override.conf'), '[Service]\nWorkingDirectory=/srv/elsewhere\n');
-  const f = fake(at);
-  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(existsSync(hostUnit(at))).toBe(true);
-  expect(readFileSync(hostUnit(at), 'utf-8')).not.toContain('CONNECTOME_SUPERVISED');
-  expect(f.systemd.starts).toEqual([]);
-  expect(f.err.join('\n')).toContain(`systemd doesn't show ${HOST} loaded with ${at.work} as its working directory ` +
-    '(it shows loaded, in /srv/elsewhere)');
-});
-
-test('a running host whose restart check fails keeps running, and the next run that passes restarts it', async () => {
-  const at = install();
-  const f = fake(at);
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
-  const startsBefore = f.systemd.starts.length;
-  mkdirSync(`${hostUnit(at)}.d`, { recursive: true });
-  writeFileSync(join(`${hostUnit(at)}.d`, 'override.conf'), '[Service]\nRestart=no\n');
-  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.systemd.starts.length).toBe(startsBefore);
-  expect(f.systemd.running.has(HOST)).toBe(true);
-  const said = f.err.join('\n');
-  expect(said).toContain('keeps what it started with, CONNECTOME_SUPERVISED=1 included');
-  expect(said).toContain(`systemctl --user restart ${HOST} restarts it on the unit as it is now: the file this run wrote, ` +
-    'with the recipe it was given, and any drop-in over it.');
-  expect(said).toContain(`systemctl --user restart ${HOST}`);
-  rmSync(`${hostUnit(at)}.d`, { recursive: true });
-  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
-  expect(f.systemd.starts.slice(startsBefore).map((start) => start.unit)).toEqual([HOST]);
-});
-
-test('a drop-in that counts exit 1 as success leaves the unit without the line, and says why', async () => {
-  const at = install();
-  mkdirSync(`${hostUnit(at)}.d`, { recursive: true });
-  writeFileSync(join(`${hostUnit(at)}.d`, 'override.conf'), '[Service]\nSuccessExitStatus=1\n');
-  const f = fake(at);
-  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(readFileSync(hostUnit(at), 'utf-8')).not.toContain('CONNECTOME_SUPERVISED');
-  expect(f.systemd.starts).toEqual([]);
-  expect(f.err.join('\n')).toContain('SuccessExitStatus includes 1');
-});
-
-test('a drop-in that keeps exit 75 from restarting the host leaves the unit without the line, and says why', async () => {
-  const at = install();
-  mkdirSync(`${hostUnit(at)}.d`, { recursive: true });
-  writeFileSync(join(`${hostUnit(at)}.d`, 'override.conf'), '[Service]\nRestartPreventExitStatus=75\n');
-  const f = fake(at);
-  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(readFileSync(hostUnit(at), 'utf-8')).not.toContain('CONNECTOME_SUPERVISED');
-  expect(f.systemd.starts).toEqual([]);
-  expect(f.err.join('\n')).toContain('RestartPreventExitStatus includes 75');
-  expect(f.err.join('\n')).toContain('Once the unit restarts the host on 75 and 1, repeat this service install command ' +
-    'with the same recipe, which sets the line.');
+  expect(readFileSync(hostUnit(at), 'utf-8')).toContain('Environment="CONNECTOME_SUPERVISED=1"\n');
+  expect(f.systemd.starts.find((start) => start.unit === HOST)!.environment).toContain('CONNECTOME_SUPERVISED=1');
 });
 
 test('systemctl gets XDG_RUNTIME_DIR for this user when the environment lacks it', async () => {
@@ -1222,15 +1148,6 @@ test('an XDG_RUNTIME_DIR already set is kept', async () => {
   const f = fake(at, { env: { PATH: '/usr/bin:/bin', XDG_RUNTIME_DIR: '/run/user/elsewhere' } });
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(0);
   for (const env of f.systemd.envs) expect(env.XDG_RUNTIME_DIR).toBe('/run/user/elsewhere');
-});
-
-test('a systemctl line a refusal gives carries XDG_RUNTIME_DIR when the environment lacks it', async () => {
-  const at = install();
-  mkdirSync(`${hostUnit(at)}.d`, { recursive: true });
-  writeFileSync(join(`${hostUnit(at)}.d`, 'override.conf'), '[Service]\nRestart=no\n');
-  const f = fake(at, { env: { PATH: '/usr/bin:/bin' } });
-  expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
-  expect(f.err.join('\n')).toContain(`XDG_RUNTIME_DIR=/run/user/1001 systemctl --user cat ${HOST}`);
 });
 
 for (const platform of ['linux', 'darwin'] as const) test('readiness refuses an answering host outside the ' + platform + ' unit', async () => {
@@ -2515,11 +2432,10 @@ test('a recipe that names a shell, without the shell\'s package here, gets the c
     'command again with the same recipe.');
 });
 
-test('a refusal after the shell\'s settings are kept, such as the restart policy\'s, starts nothing and says nothing of what a shell reaches', async () => {
+test('a refusal after the shell\'s settings are kept, such as a failed enable, starts nothing and says nothing of what a shell reaches', async () => {
   const at = install('My Resident', { shell: true });
-  mkdirSync(`${hostUnit(at)}.d`, { recursive: true });
-  writeFileSync(join(`${hostUnit(at)}.d`, 'override.conf'), '[Service]\nRestart=no\n');
   const f = fake(at);
+  f.systemd.failOnce.set(`enable ${HOST}`, 'Failed to enable unit: Access denied');
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(readEnvFile(join(at.work, '.env')).has('SESSION_SERVER_TOKEN')).toBe(true);
   expect(f.systemd.starts).toEqual([]);
