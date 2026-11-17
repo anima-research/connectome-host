@@ -253,15 +253,6 @@ const actionItems = (description: string): Record<string, string> => Object.from
   }),
 );
 
-const HEADLESS_COMMANDS = 'They type it in a shell, as the user your host runs as: check is `connectome update check`, ' +
-  'install is `connectome update install`, restart is `connectome update restart`, and back is `connectome update back`, ' +
-  'then `connectome update back keep` or `connectome update back restore`. Their restart and back begin at once, ' +
-  'without waiting for a quiet moment: new turns are held, turns in progress get up to 2 min to end, and if any don\'t, ' +
-  'their command says who is still busy and how to wait longer, stop now or call it off. notes and cancel have no ' +
-  'command of theirs: their check gives them a link to the notes, and this tool\'s cancel is the one call that disarms a ' +
-  'restart before it begins without replacing it or stopping the host: their own restart or back goes ahead in ' +
-  'its place.';
-
 const LONG_COMMAND = '/home/alice/resident/connectome-host/connectome';
 
 for (const [kind, options, command] of [
@@ -294,42 +285,32 @@ for (const [kind, options, command] of [
   });
 }
 
-test('on a headless host, the update tool names the person\'s own command, and check says how they type each action and what theirs do', async () => {
+test('on a headless host, the update tool\'s description names the person\'s own command, and check doesn\'t list how they type each action', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const host = residentHost({ root });
-  expect(toolDescription(host)).toContain('so never give them its name to type: their own command is `connectome update`, ' +
-    'typed in a shell, and check says how they use it.');
+  expect(toolDescription(host)).toContain('The person who runs your host can\'t call this tool: their own command is ' +
+    '`connectome update`, typed in a shell.');
   expect(toolDescription(host)).not.toContain('/update');
   const check = text(await host.call({ action: 'check' }));
-  expect(check).toContain(`The person who runs your host updates it with their own command, not this tool. ${HEADLESS_COMMANDS}`);
+  expect(check).not.toContain('The person who runs your host');
   expect(check).not.toContain('/update');
 });
 
-test('on a headless host with no install of its own, the update tool names no command of the person\'s, and check says how such a host is updated', async () => {
+test('on a headless host with no install of its own, the update tool\'s description says the person has no command of theirs to update it', async () => {
   const host = residentHost({ root: null });
-  expect(toolDescription(host)).toContain('This host has no command of theirs to update it: check says how it\'s updated.');
+  expect(toolDescription(host)).toContain('The person who runs your host can\'t call this tool, and this host has no ' +
+    'command of theirs to update it.');
   expect(toolDescription(host)).not.toContain('connectome update');
-  expect(text(await host.call({ action: 'check' }))).toContain('This host runs headless with no install of its own, so it ' +
-    'has no command of theirs to update it: a fleet child is updated with its parent\'s install where its parent has one, ' +
-    'and any other host by hand (docs/DEPLOYMENTS.md, "Updating an install"), and your restart refuses here, ' +
-    'saying so.');
+  expect(text(await host.call({ action: 'check' }))).not.toContain('The person who runs your host');
 });
 
-test('on a host run in a terminal, the update tool names the person\'s /update, and check says how they type each action there and what theirs do', async () => {
+test('on a host run in a terminal, the update tool\'s description names the person\'s /update, and check doesn\'t list how they type each action', async () => {
   const { root } = installRunning0141(['0.15.0']);
   const host = residentHost({ root, mode: 'terminal' });
-  expect(toolDescription(host)).toContain('so never give them its name to type: their own command is `/update`, typed in the ' +
-    'host\'s terminal, and check says how they use it.');
+  expect(toolDescription(host)).toContain('The person who runs your host can\'t call this tool: their own command is ' +
+    '`/update`, typed in the host\'s terminal.');
   expect(toolDescription(host)).not.toContain('connectome update');
-  expect(text(await host.call({ action: 'check' }))).toContain('The person who runs your host updates it with their own ' +
-    'command, not this tool. They type it in the host\'s terminal: check is `/update check`, install is `/update install`, ' +
-    'restart is `/update restart`, and back is `/update back`, then `/update back keep` or `/update back restore`. ' +
-    '`connectome update` in another shell doesn\'t reach this host. Their restart and back begin at once, without waiting ' +
-    'for a quiet moment: new turns are held, turns in progress get up to 2 min to end, and if any don\'t, its answer says ' +
-    'who is still busy and how to wait longer, stop now or call it off. Once it stops, they start the host again ' +
-    'themselves, and that start switches. notes and cancel have no command of theirs: their check gives them a link ' +
-    'to the notes, and this tool\'s cancel is the one call that disarms a restart before it begins without ' +
-    'replacing it or stopping the host: their own restart or back goes ahead in its place.');
+  expect(text(await host.call({ action: 'check' }))).not.toContain('The person who runs your host');
 });
 
 test('on a host started from an install, the update tool and check name the person\'s commands by the install\'s own command', async () => {
@@ -338,9 +319,6 @@ test('on a host started from an install, the update tool and check name the pers
   const host = residentHost({ root, holders: ['alice'], installCommand: typed });
   expect(toolDescription(host)).toContain(`their own command is \`${typed} update\``);
   expect(toolDescription(host)).not.toContain('`connectome update');
-  const check = text(await host.call({ action: 'check' }));
-  expect(check).toContain(`check is \`${typed} update check\`, install is \`${typed} update install\``);
-  expect(check).not.toContain('`connectome update');
   await host.update.restartToInstalled();
   expect(text(await host.call({ action: 'check' }))).toContain(`the person's ${typed} update restart wait, the person's ` +
     `${typed} update restart now or the person's ${typed} update restart resume.`);

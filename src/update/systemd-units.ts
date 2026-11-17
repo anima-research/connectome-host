@@ -101,9 +101,9 @@ homeOf = passwdHome): ServiceUnits {
   return { found, unasked, unresolved, defaulted };
 }
 
-export const RESTART_PROPERTIES = 'Restart,SuccessExitStatus,RestartPreventExitStatus,RestartForceExitStatus';
+const RESTART_PROPERTIES = 'Restart,SuccessExitStatus,RestartPreventExitStatus,RestartForceExitStatus';
 
-export function restartPolicy(fields: Map<string, string>): { settings: string; restarts: boolean } {
+function restartPolicy(fields: Map<string, string>): { settings: string; restarts: boolean } {
   const restart = fields.get('Restart') || 'no';
   const statusesOf = (key: string) => (fields.get(key) ?? '').split(/\s+/).filter(Boolean);
   // systemd's rules for an exit with `code`: a prevented status never
