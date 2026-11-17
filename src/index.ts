@@ -113,6 +113,7 @@ import {
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption } from './framework-agent-config.js';
 import { probeAccountBinding } from './thinking-binding-probe.js';
+import { loadModelFacts, refreshModelFacts } from './model-facts.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
@@ -870,8 +871,23 @@ async function main() {
     console.error('Set DATA_DIR to a path where this user has or can make a directory, or fix what the error names.');
     process.exit(1);
   }
+  // What the Models API said of the recipe's models at the last start, for
+  // the fit check at load and the agent config, before the recipe is read.
+  const modelFactsFile = join(config.dataDir, 'model-facts.json');
+  loadModelFacts(modelFactsFile);
   const recipe = await resolveRecipe();
   const provider = resolveProvider(recipe);
+  if (provider === 'anthropic') {
+    // Refreshed for this start's [fit] line and config, and the next start's load.
+    await refreshModelFacts({
+      models: [resolveModel(recipe), typeof recipe.modules?.subagents === 'object' ? recipe.modules.subagents.defaultModel : undefined,
+        typeof recipe.modules?.retrieval === 'object' ? recipe.modules.retrieval.model : undefined],
+      stateFile: modelFactsFile,
+      baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+      apiKey: config.apiKey || undefined,
+      authToken: config.authToken || undefined,
+    });
+  }
   const fit = runningFit(recipe, config.model);
   if (!fit.checked) console.log(fit.line);
 
