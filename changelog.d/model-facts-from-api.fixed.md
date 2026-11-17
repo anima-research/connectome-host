@@ -10,4 +10,5 @@
   no network, each said once. The read also keeps what the API says of the
   model's effort levels, thinking types and lifecycle; a model past `active`
   is said at start with its retirement date. `MODEL_FACTS=off` turns the read
-  off.
+  off; behind a gateway (`ANTHROPIC_BASE_URL`), which may not serve the
+  endpoint, it runs only with `MODEL_FACTS=on`.

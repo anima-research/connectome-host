@@ -53,7 +53,7 @@ describe('model facts from the Models API', () => {
     const model = 'claude-haiku-6';
     expect(getDefaultModelLimits(model)).toBeUndefined();
     const { fetch, urls, headers } = fetchOf((url) => ({ status: 200, body: sample(url.split('/').pop()!) }));
-    await refreshModelFacts({ models: [model, 'claude-opus-4-6', model, undefined], stateFile: file(), apiKey: 'sk-test', fetch, log, now: () => new Date('2026-11-17T12:00:00Z') });
+    await refreshModelFacts({ models: [model, 'claude-opus-4-6', model, undefined], stateFile: file(), apiKey: 'sk-test', fetch, log, env: {}, now: () => new Date('2026-11-17T12:00:00Z') });
     expect(urls.sort()).toEqual(['https://api.anthropic.com/v1/models/claude-haiku-6', 'https://api.anthropic.com/v1/models/claude-opus-4-6']);
     expect(headers[0]).toMatchObject({ 'x-api-key': 'sk-test', 'anthropic-version': '2026-10-21' });
     expect(getDefaultModelLimits(model)).toEqual({ maxContextTokens: 1_000_000, maxOutputTokens: 128_000 });
@@ -71,7 +71,7 @@ describe('model facts from the Models API', () => {
 
   test('an alias resolves: the facts are kept under the name the recipe used and the id the API answered with', async () => {
     const { fetch } = fetchOf(() => ({ status: 200, body: sample('claude-sonnet-5-5-20260601') }));
-    await refreshModelFacts({ models: ['claude-sonnet-5-5'], stateFile: file(), apiKey: 'k', fetch, log });
+    await refreshModelFacts({ models: ['claude-sonnet-5-5'], stateFile: file(), apiKey: 'k', fetch, log, env: {} });
     expect(modelFacts('claude-sonnet-5-5')?.id).toBe('claude-sonnet-5-5-20260601');
     expect(modelFacts('claude-sonnet-5-5-20260601')?.id).toBe('claude-sonnet-5-5-20260601');
   });
@@ -85,7 +85,7 @@ describe('model facts from the Models API', () => {
       if (url.endsWith('claude-y')) return new Error('ECONNREFUSED');
       return { status: 200, body: { type: 'not-a-model' } };
     });
-    await refreshModelFacts({ models: ['claude-unknown', 'claude-x', 'claude-y', 'claude-z'], stateFile: file(), apiKey: 'k', fetch, log });
+    await refreshModelFacts({ models: ['claude-unknown', 'claude-x', 'claude-y', 'claude-z'], stateFile: file(), apiKey: 'k', fetch, log, env: {} });
     expect(said.sort()).toEqual([
       "[model-facts] claude-unknown: the models API doesn't know this id, so the host's own table stands for it.",
       '[model-facts] claude-x: the models API answered 503, so what was read 2026-11-01T00:00:00.000Z stands.',
@@ -102,14 +102,17 @@ describe('model facts from the Models API', () => {
 
   test('a model past active is said once with its retirement date', async () => {
     const { fetch } = fetchOf(() => ({ status: 200, body: sample('claude-sonnet-4-5', { lifecycle: 'deprecated', deprecated_at: '2026-10-01T00:00:00Z', retires_at: '2027-01-15T00:00:00Z' }) }));
-    await refreshModelFacts({ models: ['claude-sonnet-4-5'], stateFile: file(), apiKey: 'k', fetch, log });
+    await refreshModelFacts({ models: ['claude-sonnet-4-5'], stateFile: file(), apiKey: 'k', fetch, log, env: {} });
     expect(said).toEqual(['[model-facts] claude-sonnet-4-5 is deprecated, retiring 2027-01-15T00:00:00Z: a resident on it should move before then.']);
     expect(modelFacts('claude-sonnet-4-5')?.retiresAt).toBe('2027-01-15T00:00:00Z');
   });
 
-  test('a bearer token, a gateway base URL, the off switch, and no key', async () => {
+  test('a bearer token; a gateway base URL is asked only with MODEL_FACTS=on; the off switch; no key', async () => {
     const { fetch, urls, headers } = fetchOf(() => ({ status: 200, body: sample('claude-opus-5-5') }));
-    await refreshModelFacts({ models: ['claude-opus-5-5'], stateFile: file(), authToken: 'tok', baseURL: 'https://gw.example.com/anthropic/', fetch, log });
+    // A gateway or a stand-in may not serve /v1/models: not asked unless told it does.
+    await refreshModelFacts({ models: ['claude-opus-5-5'], stateFile: file(), authToken: 'tok', baseURL: 'https://gw.example.com/anthropic/', fetch, log, env: {} });
+    expect(urls).toEqual([]);
+    await refreshModelFacts({ models: ['claude-opus-5-5'], stateFile: file(), authToken: 'tok', baseURL: 'https://gw.example.com/anthropic/', fetch, log, env: { MODEL_FACTS: 'on' } });
     expect(urls).toEqual(['https://gw.example.com/anthropic/v1/models/claude-opus-5-5']);
     expect(headers[0]).toMatchObject({ authorization: 'Bearer tok' });
     expect(headers[0]['x-api-key']).toBeUndefined();

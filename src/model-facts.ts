@@ -130,7 +130,8 @@ const API_VERSION = '2026-10-21';
 /**
  * Read each model the recipe names from the Models API, once, at start, and
  * keep what came back for this start's deciders and the next start's load.
- * Off with `MODEL_FACTS=off`, and a no-op without a key. A model the API
+ * Off with `MODEL_FACTS=off`, a no-op without a key, and behind a gateway
+ * (`ANTHROPIC_BASE_URL`) only with `MODEL_FACTS=on`. A model the API
  * doesn't know, a request that fails, or a gateway that answers with
  * something else leaves the saved facts, then the tables, standing, and is
  * said once. A model whose lifecycle isn't `active` is said once with its
@@ -139,8 +140,14 @@ const API_VERSION = '2026-10-21';
 export async function refreshModelFacts(options: RefreshModelFactsOptions): Promise<void> {
   const env = options.env ?? process.env;
   const log = options.log ?? ((line: string) => console.error(line));
-  if (/^(off|0|false|no)$/i.test((env.MODEL_FACTS ?? '').trim())) return;
+  const setting = (env.MODEL_FACTS ?? '').trim().toLowerCase();
+  if (/^(off|0|false|no)$/.test(setting)) return;
   if (!options.apiKey && !options.authToken) return;
+  // Facts about Anthropic's models come from Anthropic's API. Behind a
+  // gateway or a stand-in (ANTHROPIC_BASE_URL set) the endpoint may not be
+  // served, and an unmodelled request can fail a harness's whole run, so
+  // such a route is asked only when MODEL_FACTS=on says the gateway serves it.
+  if (options.baseURL && !/^(on|1|true|yes)$/.test(setting)) return;
   const doFetch = options.fetch ?? fetch;
   const base = (options.baseURL ?? 'https://api.anthropic.com').replace(/\/+$/, '');
   const names = [...new Set(options.models.filter((m): m is string => typeof m === 'string' && m !== ''))];
