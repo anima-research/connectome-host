@@ -79,42 +79,13 @@ const UPDATE_DESCRIPTION =
   '- cancel: disarms an armed restart before it begins, whoever armed it.\n' +
   '`version`, with restart, is the release you looked at: if it would go to another by then, nothing is armed. ' +
   'Restart needs a headless host started with `CONNECTOME_SUPERVISED=1`; elsewhere it refuses and ' +
-  'says why. After a restart nothing tells you it happened: check says what you run now. ' +
-  'The person who runs your host can\'t call this tool, ';
+  'says why. After a restart nothing tells you it happened: check says what you run now. ';
 
 const personWord = (headless: boolean, command: string | null): string =>
-  !headless ? 'so never give them its name to type: their own command is `/update`, typed in the host\'s terminal, and ' +
-    'check says how they use it.'
-    : command === null ? 'so never give them its name to type. This host has no command of theirs to update it: check ' +
-    'says how it\'s updated.'
-      : `so never give them its name to type: their own command is \`${command} update\`, typed in a shell, and check ` +
-      'says how they use it.';
-
-const NO_INSTALL_HEADLESS =
-  'This host runs headless with no install of its own, so it has no command of theirs to update it: a fleet child is ' +
-  'updated with its parent\'s install where its parent has one, and any other host by hand (docs/DEPLOYMENTS.md, ' +
-  '"Updating an install"), and your restart refuses here, saying so.';
-
-const THEIRS_GO_AT_ONCE = 'Their restart and back begin at once, without waiting for a quiet moment: new turns are held, ' +
-  'turns in progress get up to 2 min to end, and if any don\'t,';
-
-const NO_NOTES_OR_CANCEL = 'notes and cancel have no command of theirs: their check gives them a link to the notes, and ' +
-  'this tool\'s cancel is the one call that disarms a restart before it begins without replacing it or ' +
-  'stopping the host: their own restart or back goes ahead in its place.';
-
-const personHeadless = (command: string): string =>
-  'The person who runs your host updates it with their own command, not this tool. They type it in a shell, as the ' +
-  `user your host runs as: check is \`${command} update check\`, install is \`${command} update install\`, restart is ` +
-  `\`${command} update restart\`, and back is \`${command} update back\`, then \`${command} update back keep\` or ` +
-  `\`${command} update back restore\`. ${THEIRS_GO_AT_ONCE} their command says who is still busy and how to wait longer, ` +
-  `stop now or call it off. ${NO_NOTES_OR_CANCEL}`;
-
-const PERSON_IN_A_TERMINAL =
-  'The person who runs your host updates it with their own command, not this tool. They type it in the host\'s ' +
-  'terminal: check is `/update check`, install is `/update install`, restart is `/update restart`, and back is ' +
-  '`/update back`, then `/update back keep` or `/update back restore`. `connectome update` in another shell doesn\'t ' +
-  `reach this host. ${THEIRS_GO_AT_ONCE} its answer says who is still busy and how to wait longer, stop now or call it ` +
-  `off. Once it stops, they start the host again themselves, and that start switches. ${NO_NOTES_OR_CANCEL}`;
+  'The person who runs your host can\'t call this tool' + (
+    !headless ? ': their own command is `/update`, typed in the host\'s terminal.'
+      : command === null ? ', and this host has no command of theirs to update it.'
+        : `: their own command is \`${command} update\`, typed in a shell.`);
 
 function updateTool(headless: boolean, command: string | null): ToolDefinition {
   return {
@@ -363,7 +334,7 @@ export class LifecycleModule implements Module {
         const pending = this.state.armedRequest();
         answer = { done: status.check?.ok !== false, lines: [
           ...statusLines(status, ways), ...(pending === null ? [] : [capital(plainRestart(pending))]),
-          ...this.update.notesPointer(status.installed), this.personLine(),
+          ...this.update.notesPointer(status.installed),
         ] };
         break;
       }
@@ -386,10 +357,6 @@ export class LifecycleModule implements Module {
     }
     const text = answer.lines.join('\n');
     return answer.done ? { success: true, data: text } : refuse(text);
-  }
-
-  private personLine(): string {
-    return !this.headless ? PERSON_IN_A_TERMINAL : this.ownInstall ? personHeadless(this.command) : NO_INSTALL_HEADLESS;
   }
 
   private when(iso: string): string {
