@@ -75,64 +75,141 @@ export type ReasoningGetter = () => {
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
-/** A Claude id's generation, read from the id: `claude-haiku-4-5-20251001` is
- *  4.5, `claude-opus-4-20250514` is 4.0, `claude-3-5-sonnet-20241022` is 3.5,
- *  `claude-opus-5-5` is 5.5. Fable and Mythos ids are the newest and read as
- *  Infinity. Undefined for an id that isn't a Claude model's. */
-export function claudeGeneration(model: string): number | undefined {
-  if (/claude-(fable|mythos)-/.test(model)) return Infinity;
-  const m = /claude-(?:(?:opus|sonnet|haiku)-)?(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(model);
-  if (!m) return undefined;
-  return Number(m[1]) + (m[2] !== undefined ? Number(m[2]) / 10 : 0);
+/** A Claude id as the effort rule keys it: lower case, a dotted version
+ *  hyphenated, and without what names the same model another way: a routing
+ *  prefix (`anthropic/`, Bedrock's `us.anthropic.`), a dated snapshot
+ *  (`-20260301`, `@20260301`), Bedrock's `-v1:0`, a `[1m]` suffix. So
+ *  `anthropic/claude-opus-4.7`, `claude-opus-4-7-20260301` and
+ *  `claude-opus-4-7[1m]` are one key, `claude-opus-4-7`. */
+export function effortModelKey(model: string): string {
+  return model.toLowerCase()
+    .replace(/(\d)\.(\d)/g, '$1-$2')
+    .replace(/^.*[/.:](?=claude-)/, '')
+    .replace(/\[[^\]]*\]$/, '')
+    .replace(/-v\d+:\d+$/, '')
+    .replace(/[-@]20\d{6}$/, '');
 }
 
-/** Effort levels a Claude id is known to refuse with a 400, by the rule the
- *  generations follow rather than a row per model: nothing before 4.5 takes
- *  `output_config.effort`; Haiku 4.5 and Sonnet 4.5 don't either; Opus 4.5
- *  takes low/medium/high; the 4.6 pair adds max but not xhigh; every model
- *  from 4.7 on takes all five (Opus 4.7 and 4.8, Sonnet 5 and 5.5, Opus 5 and
- *  5.5, Haiku 5.5, Fable, Mythos). A model this process found refusing a
- *  level (recordEffortRefusal) is known to refuse it from then on. */
+/** A Claude id's version as a (major, minor) pair, read from the id:
+ *  `claude-haiku-4-5-20251001` is [4, 5], `claude-opus-4-20250514` is [4, 0],
+ *  `claude-opus-4-10` is [4, 10], `claude-3-5-sonnet-20241022` is [3, 5].
+ *  Undefined for an id the rule can't place: a family it doesn't know (how
+ *  Fable and Mythos arrived), or no version. Compared as a pair, never as a
+ *  decimal, so a two-digit minor reads right. */
+export function claudeVersion(model: string): [number, number] | undefined {
+  const id = effortModelKey(model);
+  if (/(^|[/.:])claude-([1-3]|v[12]|instant)(?!\d)/.test(id)) {
+    const m = /claude-(\d)(?:-(\d))?/.exec(id);
+    return m ? [Number(m[1]), m[2] !== undefined ? Number(m[2]) : 0] : [2, 0];
+  }
+  const m = /(^|[/.:])claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(id);
+  if (!m) return undefined;
+  return [Number(m[2]), m[3] !== undefined ? Number(m[3]) : 0];
+}
+
+/** Effort levels a Claude id is known to refuse with a 400. The set of
+ *  models that refuse is closed, since every one of them has shipped: nothing
+ *  before 4.5 takes `output_config.effort`; Haiku 4.5 and Sonnet 4.5 don't;
+ *  Opus 4.5 takes low/medium/high; the 4.6 pair takes max but not xhigh. Any
+ *  other `claude-` id, a family this rule has never heard of included, is not
+ *  known to refuse, and gets the effort; a refusal then teaches the process
+ *  (recordEffortRefusal) for the id's normalized spelling. An id that isn't a
+ *  Claude model's (a third-party model behind ANTHROPIC_BASE_URL) is treated
+ *  as refusing, as on main: its 400 may never name the effort, so the learn
+ *  path couldn't save it. */
 function knownToRefuseEffort(model: string, level: EffortLevel): boolean {
-  if (refusedEffort.has(`${model}:${level}`)) return true;
-  const generation = claudeGeneration(model);
-  if (generation === undefined || generation < 4.5) return true;
-  if (generation === 4.5) return !/claude-opus-4-5/.test(model) || !(level === 'low' || level === 'medium' || level === 'high');
-  if (generation === 4.6) return level === 'xhigh';
+  const id = effortModelKey(model);
+  if (!/(^|[/.:])claude-/.test(id)) return true;
+  if (refusedEffort.has(`${id}:${level}`)) return true;
+  const version = claudeVersion(model);
+  if (!version) return false;
+  const [major, minor] = version;
+  if (major < 4 || (major === 4 && minor < 5)) return true;
+  if (major === 4 && minor === 5) return !/claude-opus-4-5/.test(id) || !(level === 'low' || level === 'medium' || level === 'high');
+  if (major === 4 && minor === 6) return level === 'xhigh';
   return false;
 }
 
-/** Whether `model` accepts `output_config.effort` at `level`. A level the
- *  model is known to refuse is dropped, since a 400 on every turn would leave
- *  the agent no turn to undo the setting with. A model not known to refuse it
- *  gets it, and a refusal teaches the process (stream() sends the request
- *  again without it and records the model), so a new model needs no row here
- *  to run at its effort from the day it ships. A level outside the known set
- *  (a corrupt or outdated saved setting) is never sent, whatever the model. */
+/** Whether `model` is known to take `output_config.effort` at `level`: a
+ *  Claude id the rule places from 4.5 on, at a level its generation takes. For
+ *  a caller whose requests don't go through stream(), which alone recovers
+ *  from a refusal, this is the one to ask; a model this says false of may
+ *  still take the level (a family the rule doesn't know), and stream() finds
+ *  out. */
+export function modelKnownToAcceptEffort(model: string, level: EffortLevel): boolean {
+  if (!(EFFORT_LEVELS as readonly string[]).includes(level)) return false;
+  const version = claudeVersion(model);
+  return version !== undefined && !knownToRefuseEffort(model, level);
+}
+
+/** Whether stream() sends `model` `output_config.effort` at `level`: true
+ *  unless the model is known to refuse it (knownToRefuseEffort), since a
+ *  refusal there is recovered from: the request goes again without the
+ *  effort, and the level is dropped for the model for the life of the
+ *  process. A level the model is known to refuse is never sent, since a 400
+ *  on every turn would leave the agent no turn to undo the setting with. A
+ *  level outside the known set (a corrupt or outdated saved setting) is never
+ *  sent, whatever the model. Off stream(), where nothing recovers, ask
+ *  modelKnownToAcceptEffort. */
 export function modelAcceptsEffort(model: string, level: EffortLevel): boolean {
   if (!(EFFORT_LEVELS as readonly string[]).includes(level)) return false;
   return !knownToRefuseEffort(model, level);
 }
 
-/** Levels this process found a model refusing, as `${model}:${level}`. */
+/** Levels this process found a model refusing, as `${effortModelKey(model)}:${level}`. */
 const refusedEffort = new Set<string>();
 
-/** A 400 that names `output_config.effort`: the model doesn't take the level
- *  (or effort at all), and the request is to go again without it. */
-function describeError(error: unknown): string {
-  const message = String((error as { message?: unknown } | null)?.message ?? error);
-  return message.length > 160 ? `${message.slice(0, 157)}...` : message;
+/** The provider's own message out of an error: the SDK renders a 400 as
+ *  `400 {…the body…}`, and membrane keeps that text; the body's
+ *  error.message is what names the field refused. */
+export function providerMessage(error: unknown): string {
+  const text = String((error as { message?: unknown } | null)?.message ?? error);
+  const brace = text.indexOf('{');
+  if (brace >= 0) {
+    try {
+      const body = JSON.parse(text.slice(brace)) as { error?: { message?: unknown }; message?: unknown };
+      const inner = body?.error?.message ?? body?.message;
+      if (typeof inner === 'string') return inner;
+    } catch { /* not a JSON body: the text as it is */ }
+  }
+  return text;
 }
 
-export function isEffortRefusal(error: unknown): boolean {
+function describeError(error: unknown): string {
+  const message = providerMessage(error);
+  return message.length > 200 ? `${message.slice(0, 197)}...` : message;
+}
+
+/** A 400 whose own message names the effort: the model doesn't take the
+ *  level (or effort at all), and the request is to go again without it. A
+ *  complaint about `output_config` alone counts only where the effort was the
+ *  one key sent under it, so a 400 about `output_config.format` on a request
+ *  that also carried an effort is not read as an effort refusal. */
+export function isEffortRefusal(error: unknown, effortWasOnlyOutputConfigKey = true): boolean {
   const e = error as { httpStatus?: number; status?: number; rawError?: { status?: number } } | null;
   const status = e?.httpStatus ?? e?.status ?? e?.rawError?.status;
-  const message = String((error as { message?: unknown } | null)?.message ?? error);
-  return status === 400 && /output_config|\beffort\b/i.test(message);
+  if (status !== 400) return false;
+  const message = providerMessage(error);
+  if (/\beffort\b/i.test(message)) return true;
+  return effortWasOnlyOutputConfigKey && /output_config/i.test(message);
 }
 
-export function recordEffortRefusal(model: string, level: EffortLevel): void {
-  refusedEffort.add(`${model}:${level}`);
+/** `request` with any effort of the caller's own taken out of `extra.output_config`
+ *  (and `output_config` itself, where that leaves it empty). */
+export function withoutEffort<T extends { extra?: Record<string, unknown> }>(request: T): T {
+  const extra = request.extra as { output_config?: Record<string, unknown> } | undefined;
+  if (!extra?.output_config || !('effort' in extra.output_config)) return request;
+  const { effort: _dropped, ...rest } = extra.output_config;
+  const { output_config: _oc, ...otherExtra } = extra;
+  const nextExtra = Object.keys(rest).length ? { ...otherExtra, output_config: rest } : otherExtra;
+  return { ...request, extra: Object.keys(nextExtra).length ? nextExtra : undefined } as T;
+}
+
+export function recordEffortRefusal(model: string, level: EffortLevel): boolean {
+  const key = `${effortModelKey(model)}:${level}`;
+  if (refusedEffort.has(key)) return false;
+  refusedEffort.add(key);
+  return true;
 }
 
 /** For tests. */
@@ -158,8 +235,8 @@ export function modelAcceptsAdaptiveThinking(model: string): boolean {
  *  models though its sentence on the notes names Fable 5.2). Thinking
  *  can't be turned off on any of them, and under the default display
  *  ('omitted') those notes come back empty. A later model isn't assumed to
- *  accept 'updates': an unaccepted display is a 400 on every turn, the same
- *  fail-safe posture as modelAcceptsEffort. So the ID may go on with a dated
+ *  accept 'updates': an unaccepted display is a 400 on every turn, and
+ *  nothing recovers from it as stream() does from an effort refusal. So the ID may go on with a dated
  *  snapshot (`-20260301`, `@20260301`) or a suffix such as the 1M-context
  *  marker ([1m]), but not with a version: a digit (`opus-5-50`) or a hyphen
  *  and one or two digits (`fable-5-3`, `fable-5-10`). */
@@ -1014,9 +1091,13 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     // What the request was shaped by: a refusal is answered from this, not from
     // a verdict another agent's refusal changed while this one was out.
     const sentWithoutControl = accountBinding(request.model) === 'shows';
-    const effort = this.getReasoning?.()?.effort;
-    const sentWithEffort = effort !== undefined && effort !== 'default' && modelAcceptsEffort(request.model, effort as EffortLevel);
     const effective = this.withOAuthIdentity(this.withEffort(this.withProgressNotes(this.withBinding(this.withReasoning(request)))));
+    // Read off the request as built, not the setting: the setting may name a
+    // level withEffort dropped, and a caller may have sent an effort of its own.
+    const outputConfig = (effective.extra as { output_config?: Record<string, unknown> } | undefined)?.output_config;
+    const effort = outputConfig?.effort;
+    const sentWithEffort = typeof effort === 'string' && (EFFORT_LEVELS as readonly string[]).includes(effort);
+    const effortAlone = sentWithEffort && Object.keys(outputConfig ?? {}).length === 1;
     const sink: { rawRequest: unknown } = { rawRequest: null };
     const wrapped = this.captureRawRequest(options, sink);
     let delivered = false;
@@ -1036,17 +1117,20 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     } catch (err) {
       this.recordCall('stream', request, t0, sink.rawRequest, { error: err });
       // Sent again only when nothing of it reached the caller, as membrane's own retries.
-      if (sentWithEffort && !delivered && isEffortRefusal(err)) {
+      if (sentWithEffort && !delivered && isEffortRefusal(err, effortAlone)) {
         // The model isn't known to refuse this effort, and did: the setting
-        // stays, the level is known refused for this model from here on, and
-        // the request goes again without it. Where a table of models would
-        // need a row for each release, the refusal itself teaches the host.
-        recordEffortRefusal(request.model, effort as EffortLevel);
-        console.error(
-          `[reasoning-effort] ${request.model} refused effort=${effort} (${describeError(err)}); sent again without it, ` +
-          'and without it from now on (reasoning_effort stays set; the model default applies).',
-        );
-        return this.stream(request, callbacks, options);
+        // stays, the level is known refused for this model for the life of
+        // the process, and the request goes again without it, a caller's own
+        // effort included. Where a table of models would need a row for each
+        // release, the refusal itself teaches the host. Said once per model
+        // and level, however many requests were in flight when it was learned.
+        if (recordEffortRefusal(request.model, effort as EffortLevel)) {
+          console.error(
+            `[reasoning-effort] ${request.model} refused effort=${effort} (${describeError(err)}); sent again without it, ` +
+            'and without it for the life of this process (reasoning_effort stays set; the model default applies).',
+          );
+        }
+        return this.stream(withoutEffort(request), callbacks, options);
       }
       if (!sentWithoutControl || delivered || !isBindingRefusal(err)) throw err;
       // The account was found at start to show such a block, and this one
