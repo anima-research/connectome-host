@@ -1,1 +1,0 @@
-- Recognize home-notice log prefixes in bug reports and use `(redacted)` for diagnostic secret placeholders instead of a bracketed log-tag shape.

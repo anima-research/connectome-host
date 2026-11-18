@@ -119,8 +119,13 @@ export class ZulipHomeDelivery {
     // This check never substitutes another server, prefix, stream or topic.
     if (topic !== b.statusTopic && topic !== b.incidentsTopic) return { state: 'not-dispatched', detail: 'topic-outside-binding' };
     try {
-      const servers = this.backend.servers().filter((s) => s.id === b.serverId);
-      if (servers.length !== 1 || !servers[0]!.connected) return { state: 'not-dispatched', detail: 'bound-server-unavailable' };
+      const candidates = this.backend.servers();
+      const servers = candidates.filter((s) => s.id === b.serverId);
+      if (servers.length !== 1) {
+        console.error(`[notices:home] bound serverId=${b.serverId} missing or ambiguous; configured candidates=${JSON.stringify(candidates.map(s => s.id))}; check home.serverId against recipe MCPL IDs (not a reconnect problem).`);
+        return { state: 'not-dispatched', detail: 'bound-server-missing-or-ambiguous' };
+      }
+      if (!servers[0]!.connected) return { state: 'not-dispatched', detail: 'bound-server-unavailable' };
       const server = servers[0]!;
       if (server.toolPrefix !== b.toolPrefix) return { state: 'not-dispatched', detail: 'server-prefix-drift' };
       if (!Array.isArray(server.toolClasses) || !server.toolClasses.some((t) =>
@@ -147,17 +152,18 @@ export class ZulipHomeDelivery {
     } catch { return { state: 'not-dispatched', detail: 'backend-inspection-failed' }; }
 
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
     try {
       // ModuleContext.callTool, NOT a model callback/puppet/channel_publish.
       const result = await Promise.race([
         Promise.resolve().then(() => this.backend.call({ id: `notice-home-${id}`, name: `${b.toolPrefix}--send_message`, input: {
           type: 'stream', to: b.stream, topic, content, attachments: [attachment],
         } })),
-        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), this.timeoutMs); }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => { timedOut = true; reject(new Error('timeout')); }, this.timeoutMs); }),
       ]);
       const ids = acknowledgement(result, b, topic);
       return ids ? { state: 'sent', messageIds: ids, serverId: b.serverId } : { state: 'uncertain', detail: 'no-valid-zulip-acknowledgement' };
-    } catch { return { state: 'uncertain', detail: 'dispatch-threw-or-timed-out' }; }
+    } catch { return { state: 'uncertain', detail: timedOut ? 'dispatch-timeout; remote send may still complete' : 'dispatch-threw; inspect transport logs' }; }
     finally { if (timer !== undefined) clearTimeout(timer); }
   }
 }

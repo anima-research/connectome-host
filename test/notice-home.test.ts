@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test, spyOn } from 'bun:test';
 import { mkdtemp, readFile, writeFile, rm, stat, readdir, chmod } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -27,9 +28,10 @@ afterEach(async () => {
 async function scratch() { const d = await mkdtemp(join(tmpdir(), 'host-notice-home-')); dirs.push(d); return d; }
 async function journal(dir: string): Promise<any> { return JSON.parse(await readFile(join(dir, 'journal.json'), 'utf8')); }
 
-async function harness(options: { dir?: string; config?: NoticeHomeConfig; instance?: string; sendTimeoutMs?: number; setup?: (h: any) => void } = {}) {
+async function harness(options: { dir?: string; config?: NoticeHomeConfig; instance?: string; agentName?: string; sendTimeoutMs?: number; setup?: (h: any) => void } = {}) {
   const dir = options.dir ?? await scratch();
   const config = options.config ?? binding();
+  const agentName = options.agentName ?? 'worker';
   let listener: (event: any) => void = () => {};
   let t = 100;
   const calls: ToolCall[] = [];
@@ -59,7 +61,9 @@ async function harness(options: { dir?: string; config?: NoticeHomeConfig; insta
       // This is the real NoticesModule -> delivery adapter -> ctx.callTool
       // boundary, not a formatter/helper-only assertion. No API/network.
       calls.push(call);
-      const j = await journal(dir);
+      // Synchronous evidence read cannot race the fake acknowledgement's
+      // timeout via an unrelated asynchronous filesystem completion.
+      const j = JSON.parse(readFileSync(join(dir, 'journal.json'), 'utf8'));
       expect(j.records.find((r: any) => `notice-home-${r.id}` === call.id)?.outcome.state).toBe('intent');
       return h.result(call);
     },
@@ -74,7 +78,7 @@ async function harness(options: { dir?: string; config?: NoticeHomeConfig; insta
     getAllTools: () => h.tools,
     healthSnapshot: () => {
       if (h.readFailure) throw new Error('must not capture raw health error/request');
-      return { at: t, agents: [{ name: 'worker', status: h.status, consecutiveInferenceFailures: h.failures,
+      return { at: t, agents: [{ name: agentName, status: h.status, consecutiveInferenceFailures: h.failures,
         refusalStats: { total: h.refusalTotal }, providerAdmission: { primaryActive: h.primaryActive, primaryPending: false, hostHold: false,
           auxiliaryInFlight: 0, auxiliaryDeferred: 0, heldRequests: 0 } }],
         gate: { secretRequestBody: 'NEVER-CAPTURE-HEALTH' }, pendingRequests: [{ body: 'NEVER-CAPTURE-REQUEST' }] };
@@ -82,8 +86,8 @@ async function harness(options: { dir?: string; config?: NoticeHomeConfig; insta
     getAgent: trap('getAgent/model'), requestInference: trap('framework.requestInference'),
     channels: { publishForAgent: trap('publishForAgent'), open: trap('channel_open'), setLocus: trap('setLocus') },
   };
-  const module = new NoticesModule({ agentName: 'worker', home: config, homeRuntime: {
-    directory: dir, instanceId: options.instance ?? 'instance-A', sendTimeoutMs: options.sendTimeoutMs ?? 25,
+  const module = new NoticesModule({ agentName, home: config, homeRuntime: {
+    directory: dir, instanceId: options.instance ?? 'instance-A', sendTimeoutMs: options.sendTimeoutMs ?? 1000,
   }, now: () => t });
   running.push(module);
   await module.start(ctx);
@@ -115,7 +119,7 @@ describe('service-home recipe', () => {
   });
 });
 
-test('startup uses fixed authenticated tool/server/realm/stream/topics; intent is durable; no LLM/locus/admission effects', async () => {
+test('startup uses fixed tool/server/stream/topics with operator-attested, unverified realm; intent is durable; no LLM/locus/admission effects', async () => {
   const h = await harness();
   expect(h.calls).toHaveLength(1);
   const c = h.calls[0]!;
@@ -140,24 +144,31 @@ test('startup uses fixed authenticated tool/server/realm/stream/topics; intent i
 });
 
 test('meaningful health changes, unknown/readfailure and later observations; unknown is not recovery; no polling', async () => {
-  const h = await harness();
-  h.trace('inference:started'); await h.settle();
-  expect(h.calls).toHaveLength(1); // Same observed state.
-  h.state.status = 'running'; h.trace('inference:started'); await h.settle();
-  expect(h.calls).toHaveLength(2);
-  h.alert('novel-outage'); await h.settle();
-  h.state.readFailure = true; h.trace('inference:waiting'); await h.settle();
-  let j = await journal(h.dir);
-  expect(j.records[j.records.length - 1].diagnostic).toContain('health-read-failed');
-  expect(j.records.filter((r: any) => r.phase === 'recovery-observed')).toHaveLength(0);
-  h.state.readFailure = false; h.state.status = 'idle'; h.trace('inference:completed'); await h.settle();
-  j = await journal(h.dir);
-  expect(j.active.map((a: any) => a.kind)).toEqual(['novel-outage']);
-  expect(j.records.filter((r: any) => r.phase === 'recovery-observed')).toHaveLength(0);
-  const before = h.calls.length;
-  await new Promise((r) => setTimeout(r, 30));
-  expect(h.calls).toHaveLength(before);
-  expect(JSON.stringify(j)).not.toContain('NEVER-CAPTURE');
+  const timeouts = spyOn(globalThis, 'setTimeout');
+  const intervals = spyOn(globalThis, 'setInterval');
+  const cleared = spyOn(globalThis, 'clearTimeout');
+  try {
+    const h = await harness();
+    h.trace('inference:started'); await h.settle();
+    expect(h.calls).toHaveLength(1); // Same observed state.
+    h.state.status = 'running'; h.trace('inference:started'); await h.settle();
+    expect(h.calls).toHaveLength(2);
+    h.alert('novel-outage'); await h.settle();
+    h.state.readFailure = true; h.trace('inference:waiting'); await h.settle();
+    let j = await journal(h.dir);
+    expect(j.records[j.records.length - 1].diagnostic).toContain('health-read-failed');
+    expect(j.records.filter((r: any) => r.phase === 'recovery-observed')).toHaveLength(0);
+    h.state.readFailure = false; h.state.status = 'idle'; h.trace('inference:completed'); await h.settle();
+    j = await journal(h.dir);
+    expect(j.active.map((a: any) => a.kind)).toEqual(['novel-outage']);
+    expect(j.records.filter((r: any) => r.phase === 'recovery-observed')).toHaveLength(0);
+    expect(JSON.stringify(j)).not.toContain('NEVER-CAPTURE');
+    expect(intervals).not.toHaveBeenCalled();
+    // Every registered timer is a completed delivery deadline, not a dormant
+    // polling callback beyond a short observation window.
+    expect(timeouts.mock.calls.every(([, ms]) => ms === 1000)).toBe(true);
+    expect(cleared.mock.calls).toHaveLength(timeouts.mock.calls.length);
+  } finally { timeouts.mockRestore(); intervals.mockRestore(); cleared.mockRestore(); }
 });
 
 test('startup unknown and bounded framework early ops replay are observations, not inferred health/recovery', async () => {
@@ -174,7 +185,7 @@ test('startup unknown and bounded framework early ops replay are observations, n
 
 test('omitting home makes no backend capability/health calls and creates no delivery journal', async () => {
   const dir = await scratch();
-  const module = new NoticesModule({ agentName: 'worker' }); running.push(module);
+  const module = new NoticesModule({ agentName: 'worker', homeRuntime: { directory: dir, instanceId: 'legacy' } }); running.push(module);
   await module.start({} as ModuleContext);
   const forbidden = () => { throw new Error('legacy must not inspect home backend'); };
   module.setFramework({ onTrace: () => () => {}, listMcplServers: forbidden, getAllTools: forbidden, healthSnapshot: forbidden } as never);
@@ -199,7 +210,7 @@ test('all observed alert kinds including refusal/unknown get generic incidents; 
   expect((await journal(h.dir)).active.map((a: any) => a.kind)).toEqual(['unknown-alert-kind']);
 });
 
-test('only a matching component reconnect clears mcpl-down, not unrelated reconnect or health unknown', async () => {
+test('matching component reconnect or mcpl module-added clears mcpl-down, not unrelated events or health unknown', async () => {
   const h = await harness();
   h.alert('mcpl-down', 'component unavailable', 150, { agentName: 'component-A' }); await h.settle();
   h.emit({ type: 'mcpl:server-reconnected', serverId: 'component-B', timestamp: 151 }); await h.settle();
@@ -301,8 +312,8 @@ test('durable pending intent across instance drift becomes uncertain, never repl
 
 for (const [label, setup, reason] of [
   ['disconnected', (h: any) => { h.servers[0].connected = false; }, 'bound-server-unavailable'],
-  ['missing server', (h: any) => { h.servers = []; }, 'bound-server-unavailable'],
-  ['ambiguous server', (h: any) => { h.servers.push({ ...h.servers[0] }); }, 'bound-server-unavailable'],
+  ['missing server', (h: any) => { h.servers = []; }, 'bound-server-missing-or-ambiguous'],
+  ['ambiguous server', (h: any) => { h.servers.push({ ...h.servers[0] }); }, 'bound-server-missing-or-ambiguous'],
   ['prefix drift', (h: any) => { h.servers[0].toolPrefix = 'another-prefix'; }, 'server-prefix-drift'],
   ['tool ownership mismatch', (h: any) => { h.servers[0].toolClasses = []; }, 'tool-not-owned-by-bound-server'],
   ['observable realm mismatch', (h: any) => { h.servers[0].realm = 'https://wrong.invalid'; }, 'observable-realm-mismatch'],
@@ -329,7 +340,7 @@ for (const [label, result] of [
   ['transport throw', async () => { throw new Error('DO-NOT-CAPTURE-RAW-EXCEPTION'); }],
   ['timeout', async () => new Promise<never>(() => {})],
 ] as const) test(`ambiguous dispatch: ${label}; durable uncertainty and no replay`, async () => {
-  const h = await harness();
+  const h = await harness({ sendTimeoutMs: label === 'timeout' ? 25 : undefined });
   h.state.result = result;
   h.alert('future', 'once', 501); await h.settle();
   expect(h.calls).toHaveLength(2); // startup then one incident; its status stays local.
@@ -343,12 +354,15 @@ for (const [label, result] of [
 });
 
 test('late acknowledgement after timeout never upgrades uncertainty or triggers resend', async () => {
-  const h = await harness();
+  const h = await harness({ sendTimeoutMs: 25 });
   let finish!: (r: ToolResult) => void;
-  h.state.result = () => new Promise((resolve) => { finish = resolve; });
+  let late!: Promise<ToolResult>;
+  h.state.result = () => late = new Promise((resolve) => { finish = resolve; });
   h.alert('future', 'late send', 550); await h.settle();
   finish({ success: true, structured: { result: 'success', id: 99 } });
-  await new Promise((r) => setTimeout(r, 0));
+  await late;
+  await new Promise<void>(r => setImmediate(r));
+  await h.settle();
   expect((await journal(h.dir)).records.find((r: any) => r.kind === 'future').outcome.state).toBe('uncertain');
   expect(h.calls).toHaveLength(2);
 });
@@ -415,36 +429,68 @@ test('publication-caused alerts cannot recursively send; core processing continu
   expect(h.module.homeState()?.deliveryHalted).toBe(false);
 });
 
-test('protected unknown backlog saturates explicitly; no evidence loss, disk/queue growth or notice storm', async () => {
+test('R8: running full journal preserves exact active evidence and surviving unknowns while rolling the finite window', async () => {
   const h = await harness();
   await h.module.stop();
-  // A bounded synthetic unknown backlog. Terminal records are tested separately.
   const fixture = await journal(h.dir);
-  fixture.records = Array.from({ length: 128 }, () => ({ ...fixture.records[0], id: randomUUID(), outcome: { state: 'uncertain', detail: 'unknown; never evict/replay' } }));
+  fixture.records = Array.from({ length: 127 }, (_, i) => ({ ...fixture.records[0], id: randomUUID(),
+    diagnostic: `original evidence ${i}`, outcome: { state: 'uncertain', detail: 'unknown; no replay' } }));
+  const anchor = fixture.records[0];
+  anchor.phase = 'incident'; anchor.kind = 'original'; anchor.topic = binding().incidentsTopic;
+  anchor.incidentId = randomUUID();
+  fixture.active = [{ key: JSON.stringify([anchor.subject, anchor.kind]), id: anchor.incidentId, kind: anchor.kind, subject: anchor.subject }];
   await writeFile(join(h.dir, 'journal.json'), JSON.stringify(fixture));
   const r = await harness({ dir: h.dir, instance: 'instance-B' });
-  r.alert('future', 'last retained incident', 800); await r.settle();
-  expect(r.module.homeState()?.disabled).not.toBeNull();
+  expect(r.module.homeState()?.disabled).toBeNull();
+  expect(r.calls).toHaveLength(1); // Startup ran, the alert below is not ignored.
+  expect((await journal(h.dir)).records).toHaveLength(128);
+  r.alert('future', 'new incident at capacity', 800); await r.settle();
   const j = await journal(h.dir);
-  expect(j.records.length).toBeLessThanOrEqual(128);
-  const bytes = (await stat(join(h.dir, 'journal.json'))).size;
-  expect(bytes).toBeLessThanOrEqual(2 * 1024 * 1024);
-  const before = r.calls.length;
-  for (let i = 0; i < 200; i++) r.alert('other', 'excess', 1000 + i);
-  await r.settle();
-  expect(r.calls).toHaveLength(before);
-  expect((await stat(join(h.dir, 'journal.json'))).size).toBe(bytes);
+  expect(r.module.homeState()?.disabled).toBeNull();
+  expect(r.calls).toHaveLength(3);
+  expect(j.records).toHaveLength(128);
+  expect(j.retention.evicted).toBe(2);
+  const expected = [anchor, ...fixture.records.slice(3)];
+  expect(j.records.filter((x: any) => fixture.records.some((y: any) => y.id === x.id))).toEqual(expected);
+  expect(j.records.find((x: any) => x.id === anchor.id)).toEqual(anchor);
+  expect(j.records.find((x: any) => x.kind === 'future').outcome.state).toBe('sent');
+  expect((await stat(join(h.dir, 'journal.json'))).size).toBeLessThanOrEqual(2 * 1024 * 1024);
   expect((await readdir(h.dir)).filter((name) => name.startsWith('journal'))).toEqual(['journal.json']);
 });
 
-test('bounded queue overflow disables visibly without blocking core or attempting sends', async () => {
+test('R1: overflow drops only excess observations, drains accepted work and accepts later work', async () => {
   const h = await harness();
-  for (let i = 0; i < 100; i++) h.alert('future', `burst ${i}`, 2000 + i);
-  await h.settle();
-  expect(h.module.homeState()?.disabled).toContain('bounded-queue-exhausted');
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>(r => { entered = r; });
+  const stalled = new Promise<void>(r => { release = r; });
+  h.state.result = async () => { entered(); await stalled; return { success: true, structured: { result: 'success', id: 1 } }; };
+  h.alert('future', 'first stalled', 2000);
+  await started;
+  for (let i = 1; i < 100; i++) h.alert('future', `burst ${i}`, 2000 + i);
+  expect(h.module.homeState()?.queued).toBe(64);
+  expect(h.module.homeState()?.dropped).toBe(36);
+  expect(h.module.homeState()?.disabled).toBeNull();
+  release(); await h.settle();
+  const j = await journal(h.dir);
+  expect(j.records.filter((r: any) => r.phase === 'incident')).toHaveLength(64);
+  expect(j.records.find((r: any) => r.diagnostic === 'burst 63').outcome.state).toBe('sent');
+  h.alert('future', 'after overflow', 2200); await h.settle();
+  expect(h.calls.some(c => (c.input as any).content.includes('after overflow'))).toBe(true);
   expect(h.module.homeState()?.queued).toBe(0);
   expect(await h.module.onProcess({ type: 'normal:event' } as never, {} as never)).toEqual({});
-});
+}, 60000);
+
+test('R1 replay: oversized synchronous startup replay cannot disable loading or subsequent live delivery', async () => {
+  const h = await harness({ setup: h => {
+    h.early = Array.from({ length: 90 }, (_, i) => ({ type: 'ops:alert', kind: 'future', agentName: 'worker', timestamp: i, message: `early ${i}` }));
+  } });
+  expect(h.module.homeState()?.disabled).toBeNull();
+  expect(h.module.homeState()?.dropped).toBe(27); // startup + 63 accepted replay items
+  expect((await journal(h.dir)).records.filter((r: any) => r.phase === 'incident')).toHaveLength(63);
+  h.alert('future', 'live after replay', 200); await h.settle();
+  expect(h.calls.some(c => (c.input as any).content.includes('live after replay'))).toBe(true);
+}, 60000);
 
 test('real AF ModuleContext dispatch reaches offline fake API with zero model callbacks and unchanged core state', async () => {
   const dir = await scratch();
@@ -485,7 +531,10 @@ test('real AF ModuleContext dispatch reaches offline fake API with zero model ca
     // Avoid notifyOps' optional external webhook and cwd failures.log sinks.
     inject!({ type: 'ops:alert', kind: 'future-kind', agentName: 'worker', message: 'synthetic public diagnostic', timestamp: 1000 });
     await module.homeSettled();
-    expect(posts.length).toBeGreaterThanOrEqual(2);
+    expect(posts.some(c => {
+      const r = JSON.parse(Buffer.from((c.input as any).attachments[0].data, 'base64').toString()).record;
+      return r.kind === 'future-kind' && r.diagnostic === 'synthetic public diagnostic' && r.source.timestamp === 1000;
+    })).toBe(true);
     expect(modelCalls).toBe(0);
     expect(framework.getAgent('worker')!.state.status).toBe('idle');
     expect(framework.channels?.listChannelsRaw() ?? []).toEqual(beforeChannels);
@@ -768,7 +817,7 @@ test('fix1 F1b: actual single JSON content branded acknowledgement and corrupt r
 });
 
 test('fix1 F2: delayed publication failure after timeout cannot recurse; new independent incident still delivers', async () => {
-  const h = await harness();
+  const h = await harness({ sendTimeoutMs: 25 });
   let attempts = 0;
   h.state.result = async () => {
     if (++attempts === 1) {
@@ -845,7 +894,7 @@ for (const [first, ownCallbacks] of [['status', false], ['incident', false], ['i
     }
     // Their derived statuses are delivered, not silently made local-only.
     for (const kind of ['hard-down', 'store-held-lost']) {
-      expect(j.records.some((r: any) => r.phase === 'status' && r.outcome.state === 'sent' && r.diagnostic.includes(kind))).toBe(true);
+      expect(j.records.some((r: any) => r.phase === 'status' && r.outcome.state === 'sent' && r.diagnostic.includes(j.records.find((x: any) => x.kind === kind && x.phase === 'incident').incidentId))).toBe(true);
     }
     const own = j.records.filter((r: any) => r.phase === 'incident' && r.subject === 'chat-ops');
     expect(own).toHaveLength(ownCallbacks ? 2 : 0);
@@ -872,9 +921,9 @@ test('fix2 N2: fresh identical observation after server recovery sends once; no 
   h.alert('hard-down', 'same provider diagnostic', 911, { traceId: 'first-source' }); await h.settle();
   const original = (await journal(h.dir)).records.find((r: any) => r.kind === 'hard-down');
   expect(original.outcome).toEqual({ state: 'not-dispatched', detail: 'bound-server-unavailable' });
-  const before = h.calls.length;
   h.state.servers[0].connected = true;
   h.emit({ type: 'mcpl:server-reconnected', serverId: 'chat-ops', timestamp: 912 }); await h.settle();
+  const before = h.calls.length; // New, previously undelivered status may publish on recovery.
   // Neither recovery nor replay of the exact retained source retries a record.
   h.alert('hard-down', 'same provider diagnostic', 911, { traceId: 'first-source' }); await h.settle();
   h.alert('refusal-offpath', 'unknown remote outcome', 910); await h.settle();
@@ -909,4 +958,192 @@ test('fix2 N2: fresh identical observation after server recovery sends once; no 
   expect(h.calls.some(c => c.id === `notice-home-${original.id}`)).toBe(false);
   expect(h.calls.filter(c => c.id === `notice-home-${uncertain.id}`)).toHaveLength(1);
   expect(h.forbidden).toEqual([]);
+});
+
+// First-review regressions use NoticesModule lifecycle and subscribed traces,
+// not NoticeHome's private implementation.
+test('R2: a status suppressed by failed incident delivery does not become the sent baseline', async () => {
+  const h = await harness();
+  h.state.servers[0].connected = false;
+  h.alert('future', 'offline', 9001); await h.settle();
+  const before = await journal(h.dir);
+  const pending = before.records.at(-1);
+  expect(pending.phase).toBe('status');
+  expect(pending.outcome.state).toBe('not-dispatched');
+  h.state.servers[0].connected = true;
+  h.trace('inference:waiting'); await h.settle();
+  const after = await journal(h.dir);
+  expect(after.records.at(-1)).toMatchObject({ phase: 'status', diagnostic: pending.diagnostic, outcome: { state: 'sent' } });
+  expect(h.calls).toHaveLength(2);
+  expect(after.records.find((r: any) => r.id === pending.id).outcome.state).toBe('not-dispatched');
+  h.trace('inference:waiting'); await h.settle();
+  expect(h.calls).toHaveLength(2); // A delivered identical state DOES dedup.
+});
+
+test('R3: more than 64 unresolved identities bound tracking without disabling delivery or claiming recovery', async () => {
+  const h = await harness();
+  for (let i = 0; i < 70; i++) {
+    h.alert(`unknown-${i}`, `incident ${i}`, 10000 + i, { agentName: `child-${i}` });
+    await h.settle();
+  }
+  const j = await journal(h.dir);
+  expect(h.module.homeState()?.disabled).toBeNull();
+  expect(j.active).toHaveLength(64);
+  expect(j.retention.forgottenActive).toBe(6);
+  expect(j.records.some((r: any) => r.phase === 'recovery-observed')).toBe(false);
+  expect(j.records.every((r: any) => r.diagnostic.length <= 8192)).toBe(true);
+  h.alert(j.active.at(-1).kind + '-clear', 'latest source clear', 10100, { agentName: j.active.at(-1).subject });
+  await h.settle();
+  expect((await journal(h.dir)).active).toHaveLength(63);
+  await h.module.stop();
+  const r = await harness({ dir: h.dir, instance: 'continued' });
+  expect(r.module.homeState()?.disabled).toBeNull();
+}, 60000);
+
+test('R4: uncertainty rolls through bounded retention, including restart, without replay or a lifetime halt', async () => {
+  const h = await harness();
+  h.state.result = async () => ({ success: true, data: [] }); // malformed acknowledgement
+  for (let i = 0; i < 140; i++) { h.alert('future', `uncertain ${i}`, 11000 + i); await h.settle(); }
+  const j = await journal(h.dir);
+  expect(h.module.homeState()?.disabled).toBeNull();
+  expect(j.records).toHaveLength(128);
+  expect(j.retention.evicted).toBeGreaterThan(128);
+  expect(j.records.find((r: any) => r.diagnostic === 'uncertain 139').outcome.state).toBe('uncertain');
+  const old = new Set(j.records.map((r: any) => r.id));
+  await h.module.stop();
+  const r = await harness({ dir: h.dir, instance: 'after-uncertainty' });
+  r.alert('independent', 'new live event', 12000); await r.settle();
+  expect(r.module.homeState()?.disabled).toBeNull();
+  expect(r.calls).toHaveLength(3);
+  expect(r.calls.every(c => !old.has(c.id.replace('notice-home-', '')))).toBe(true);
+}, 60000);
+
+test('R5: child turn-end closes only the matching child main-turn incidents', async () => {
+  const h = await harness();
+  h.alert('hard-down', 'child failed', 13000, { agentName: 'child-A' });
+  h.alert('hard-down', 'other child failed', 13001, { agentName: 'child-B' });
+  h.alert('context-maintenance-failed', 'auxiliary failed', 13002, { agentName: 'child-A' });
+  await h.settle();
+  h.emit({ type: 'inference:turn_ended', agentName: 'child-A', timestamp: 13003 }); await h.settle();
+  const j = await journal(h.dir);
+  expect(j.active.map((a: any) => [a.subject, a.kind])).toEqual([['child-B', 'hard-down'], ['child-A', 'context-maintenance-failed']]);
+  expect(j.records.find((r: any) => r.phase === 'recovery-observed')).toMatchObject({ subject: 'child-A', kind: 'hard-down-clear', outcome: { state: 'sent' } });
+});
+
+test('R6: binding drift logs scrubbed cause, exact journal location and actionable preservation guidance', async () => {
+  const h = await harness(); await h.module.stop();
+  const before = await readFile(join(h.dir, 'journal.json'), 'utf8');
+  const log = spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const r = await harness({ dir: h.dir, config: { ...binding(), statusTopic: 'new topic' } });
+    expect(r.calls).toHaveLength(0);
+    expect(log.mock.calls.flat().join(' ')).toContain('journal schema/binding mismatch');
+    expect(log.mock.calls.flat().join(' ')).toContain(join(h.dir, 'journal.json'));
+    expect(log.mock.calls.flat().join(' ')).toContain('Preserve the journal');
+    expect(log.mock.calls.flat().join(' ')).toContain('intentional binding change');
+    expect(await readFile(join(h.dir, 'journal.json'), 'utf8')).toBe(before);
+  } finally { log.mockRestore(); }
+});
+
+test('R7: misspelled server binding reports the invalid ID and configured candidates, not disconnection', async () => {
+  const log = spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const h = await harness({ config: { ...binding(), serverId: 'chat-opz' }, setup: h => { h.servers[0].id = 'chat-ops'; } });
+    expect(h.calls).toHaveLength(0);
+    expect((await journal(h.dir)).records[0].outcome.detail).toBe('bound-server-missing-or-ambiguous');
+    const text = log.mock.calls.flat().join(' ');
+    expect(text).toContain('chat-opz'); expect(text).toContain('chat-ops');
+    expect(text).toContain('check home.serverId');
+  } finally { log.mockRestore(); }
+});
+
+test('R9: the unreleased home is described under Added, not as fixes to a prior release', async () => {
+  // Release metadata has no delivery behavior; inspect the shipped fragments.
+  const names = await readdir(new URL('../changelog.d/', import.meta.url));
+  expect(names).not.toContain('zulip-home-fix1.fixed.md');
+  expect(names).not.toContain('zulip-home-fix2.fixed.md');
+  expect(names).not.toContain('663-notice-home-log-tags.fixed.md');
+  expect(await readFile(new URL('../changelog.d/agent-service-home.added.md', import.meta.url), 'utf8')).toContain('per-record no-retry');
+});
+
+test('redaction expansion and truncation remain bounded and reloadable, including long-kind clears and child recovery', async () => {
+  const h = await harness();
+  const name = 'password=PRIVATE ' + 'n'.repeat(280);
+  const kind = 'k'.repeat(251);
+  h.alert(kind, 'secret=x '.repeat(1000), 14000, { agentName: name, data: { category: 'c'.repeat(479) + ' password=x ' + 'trailing text '.repeat(20) } });
+  await h.settle();
+  h.alert(kind + '-clear', 'source cleared', 14001, { agentName: name }); await h.settle();
+  expect((await journal(h.dir)).active).toHaveLength(0);
+  h.alert('secret=x '.repeat(25), 'expanded field', 14002); await h.settle();
+  h.alert('hard-down', 'failed child', 14003, { agentName: name }); await h.settle();
+  h.emit({ type: 'inference:turn_ended', agentName: name, timestamp: 14004 }); await h.settle();
+  const j = await journal(h.dir);
+  expect(j.active.some((a: any) => a.kind === 'hard-down')).toBe(false);
+  expect(JSON.stringify(j)).not.toContain('PRIVATE');
+  expect(j.records.every((r: any) => r.kind.length <= 256 && r.subject.length <= 256 && r.diagnostic.length <= 8192)).toBe(true);
+  await h.module.stop();
+  const r = await harness({ dir: h.dir, instance: 'reload-projections' });
+  expect(r.module.homeState()?.disabled).toBeNull();
+});
+
+test('stop drains accepted work, rejects later traces and settles before returning', async () => {
+  const h = await harness();
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>(r => { entered = r; });
+  const stalled = new Promise<void>(r => { release = r; });
+  h.state.result = async () => { entered(); await stalled; return { success: true, structured: { result: 'success', id: 1 } }; };
+  h.alert('future', 'in flight', 15000); await started;
+  h.alert('future', 'accepted before stop', 15001);
+  const stopping = h.module.stop();
+  h.alert('future', 'after stop', 15002);
+  release(); await stopping;
+  const j = await journal(h.dir);
+  expect(j.records.some((r: any) => r.diagnostic === 'accepted before stop' && r.outcome.state === 'sent')).toBe(true);
+  expect(j.records.some((r: any) => r.diagnostic === 'after stop')).toBe(false);
+  expect(h.module.homeState()?.queued).toBe(0);
+});
+
+
+test('status references bound long active identities without overflowing its diagnostic projection', async () => {
+  const h = await harness();
+  for (let i = 0; i < 24; i++) {
+    h.alert(`kind-${i}-` + 'k'.repeat(240), 'long identity', 16000 + i, { agentName: `child-${i}-` + 's'.repeat(240) });
+    await h.settle();
+  }
+  expect(h.module.homeState()?.disabled).toBeNull();
+  const j = await journal(h.dir);
+  expect(j.active).toHaveLength(24);
+  expect(j.records.every((r: any) => r.diagnostic.length <= 8192)).toBe(true);
+}, 30000);
+
+test('startup status projects the agent subject through the same bounded redaction as incidents', async () => {
+  const h = await harness({ agentName: 'password=PRIVATE ' + 'n'.repeat(300) });
+  expect(JSON.stringify(await journal(h.dir))).not.toContain('PRIVATE');
+  expect((await journal(h.dir)).records[0].subject.length).toBeLessThanOrEqual(256);
+  await h.module.stop();
+  const r = await harness({ dir: h.dir, agentName: 'password=PRIVATE ' + 'n'.repeat(300), instance: 'subject-reload' });
+  expect(r.module.homeState()?.disabled).toBeNull();
+});
+
+test('active identities must agree with their anchoring incident on load', async () => {
+  const h = await harness(); h.alert('future', 'anchor', 17000); await h.settle(); await h.module.stop();
+  const j = await journal(h.dir);
+  j.active[0].subject = 'damaged-but-self-consistent';
+  j.active[0].key = JSON.stringify([j.active[0].subject, j.active[0].kind]);
+  const damaged = JSON.stringify(j); await writeFile(join(h.dir, 'journal.json'), damaged);
+  const r = await harness({ dir: h.dir });
+  expect(r.calls).toHaveLength(0);
+  expect(r.module.homeState()?.disabled).not.toBeNull();
+  expect(await readFile(join(h.dir, 'journal.json'), 'utf8')).toBe(damaged);
+});
+
+test('unidentified fresh alerts at the same wall-clock millisecond are not mistaken for retained replay', async () => {
+  const h = await harness();
+  h.state.servers[0].connected = false;
+  h.alert('future', 'no source identity', 18000, { timestamp: undefined }); await h.settle();
+  h.state.servers[0].connected = true;
+  h.alert('future', 'no source identity', 18000, { timestamp: undefined }); await h.settle();
+  expect((await journal(h.dir)).records.filter((r: any) => r.kind === 'future')).toHaveLength(2);
+  expect(h.calls.some(c => (c.input as any).content.includes('no source identity'))).toBe(true);
 });

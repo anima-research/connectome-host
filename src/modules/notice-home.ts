@@ -65,7 +65,7 @@ interface HomeJournal {
   selfEchoReadiness: 'operator-attested-preflight/not-runtime-verified';
   currentInstance: string;
   deliveryHalted: boolean; // Legacy evidence only; never gates unrelated records.
-  retention?: { evicted: number };
+  retention?: { evicted: number; forgottenActive?: number };
   records: HomeRecord[];
   active: ActiveIncident[];
   lastStatus: string | null;
@@ -82,8 +82,23 @@ function diagnostic(value: unknown): { text: string; capped: boolean } {
     .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1=(redacted)')
     .replace(/\b(?:sk-|sk-ant-)[A-Za-z0-9_-]{12,}/g, '(redacted)')
     .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, '$1(redacted)@');
-  return { text, capped: raw.length > MAX_DIAGNOSTIC };
+  return { text: truncate(text, MAX_DIAGNOSTIC), capped: raw.length > MAX_DIAGNOSTIC || text.length > MAX_DIAGNOSTIC };
 }
+
+/** Never split a redaction token: projections must remain stable on reload. */
+function truncate(text: string, max: number, marker = ''): string {
+  if (text.length <= max) return text;
+  let end = max - marker.length;
+  const token = text.lastIndexOf('(redacted)', end);
+  if (token >= 0 && end < token + '(redacted)'.length) {
+    // Include the assignment name in the removed suffix, not a dangling key=.
+    end = text.slice(0, token).search(/\S*$/);
+    const header = /\b(?:authorization|proxy-authorization|cookie|set-cookie):\s*$/i.exec(text.slice(0, end));
+    if (header) end = header.index;
+  }
+  return text.slice(0, end) + marker;
+}
+const field = (value: string) => truncate(diagnostic(value).text, 256, ' [field truncated]');
 
 interface DiagnosticMetadata {
   fields: Record<string, unknown>;
@@ -105,7 +120,7 @@ function safeMetadata(value: unknown): DiagnosticMetadata {
   const text = (v: string, max: number) => {
     const d = diagnostic(v); redacted ||= d.text !== v.slice(0, MAX_DIAGNOSTIC);
     truncated ||= d.capped || d.text.length > max;
-    return d.text.length > max ? d.text.slice(0, max - 20) + '[metadata truncated]' : d.text;
+    return truncate(d.text, max, ' [metadata truncated]');
   };
   const counters = new Set(['count', 'mail', 'keptForRecovery', 'heldBySurgery', 'passedOn', 'streak']);
   const progressCounters = new Set(['totalChunks', 'chunksCompressed', 'l1QueueLength', 'l1WaitingOnTools',
@@ -168,7 +183,7 @@ function healthObservation(read: () => Record<string, unknown>, agentName: strin
     const p = agent.providerAdmission;
     const b = (v: unknown) => typeof v === 'boolean' ? v : null;
     return {
-      knowledge: 'observed-not-continuous-health', agentStatus: agent.status.slice(0, 128),
+      knowledge: 'observed-not-continuous-health', agentStatus: truncate(diagnostic(agent.status).text, 128),
       consecutiveInferenceFailures: n(agent.consecutiveInferenceFailures), refusalTotal: n(agent.refusalStats?.total),
       providerAdmissionSample: agent.status === 'idle' && p?.primaryActive === true ? 'transition-unsettled' : 'observed-at-record-time',
       providerAdmission: {
@@ -192,7 +207,8 @@ export class NoticeHome {
   // Causal descendants (including callbacks after timeout) stay local without
   // permanently latching unrelated observations or waiting for a hung call.
   private readonly publicationContext = new AsyncLocalStorage<boolean>();
-  private dispatching = false;
+  private dropped = 0;
+  private overflowReported = false;
   private suppressDelivery = false;
 
   constructor(private readonly binding: NoticeHomeConfig, private readonly runtime: HomeRuntime,
@@ -224,13 +240,15 @@ export class NoticeHome {
     if (!this.bound || this.stopped || this.disabled) return;
     const type = typeof event.type === 'string' ? event.type : '';
     if (type !== 'ops:alert' && !STATUS_TRACES.has(type)) return;
-    if (type.startsWith('inference:') && event.agentName !== this.agentName) return;
+    if (type.startsWith('inference:') && (typeof event.agentName !== 'string' || !event.agentName ||
+        type !== 'inference:turn_ended' && event.agentName !== this.agentName)) return;
     const at = this.now();
     const source: SourceRef = { type, timestamp: typeof event.timestamp === 'number' && Number.isFinite(event.timestamp) ? event.timestamp : null,
       traceId: typeof event.traceId === 'string' ? diagnostic(event.traceId).text.slice(0, 256) : null };
     // Copy bounded allowed fields NOW, not the raw trace into a deferred queue.
-    const field = (value: string) => value.length <= 256 ? diagnostic(value).text : diagnostic(value).text.slice(0, 230) + '[field truncated at 256]';
-    const kind = typeof event.kind === 'string' && event.kind ? field(event.kind) : 'unknown-alert-kind';
+    const rawKind = typeof event.kind === 'string' && event.kind ? event.kind : 'unknown-alert-kind';
+    const clear = rawKind.endsWith('-clear');
+    const kind = field(clear ? rawKind.slice(0, -6) : rawKind);
     const subject = typeof event.agentName === 'string' && event.agentName ? field(event.agentName) : '(source subject unknown)';
     const component = typeof event.serverId === 'string' ? field(event.serverId)
       : typeof event.moduleName === 'string' && event.moduleName.startsWith('mcpl:') ? field(event.moduleName.slice(5)) : null;
@@ -242,42 +260,52 @@ export class NoticeHome {
     const observation = healthObservation(readHealth, this.agentName);
     this.enqueue(async () => {
       this.suppressDelivery = publicationRelated;
-      if (type === 'ops:alert') await this.alert(kind, subject, message, source, at, metadata);
+      if (type === 'ops:alert') await this.alert(kind, subject, message, source, at, metadata, clear);
       else if (type === 'inference:turn_ended') {
         for (const incident of [...this.journal.active]) {
-          if (incident.subject === this.agentName && TURN_END_CLOSES.has(incident.kind)) {
-            await this.alert(`${incident.kind}-clear`, incident.subject,
-              { text: `${type} observed; closes this source-defined episode, not proof of continuing health`, capped: false }, source, at);
+          if (incident.subject === subject && TURN_END_CLOSES.has(incident.kind)) {
+            await this.alert(incident.kind, incident.subject,
+              { text: `${type} observed; closes this source-defined episode, not proof of continuing health`, capped: false }, source, at, undefined, true);
           }
         }
       } else if ((type === 'mcpl:server-reconnected' || type === 'module:added') && component !== null) {
         if (this.journal.active.some((a) => a.kind === 'mcpl-down' && a.subject === component)) {
-          await this.alert('mcpl-down-clear', component,
-            { text: `${type} observed for this component; not proof of continuing availability`, capped: false }, source, at);
+          await this.alert('mcpl-down', component,
+            { text: `${type} observed for this component; not proof of continuing availability`, capped: false }, source, at, undefined, true);
         }
       }
       await this.status(observation, at, false);
     });
   }
 
-  state(): { disabled: string | null; deliveryHalted: boolean; legacyDeliveryHalted: boolean; queued: number; records: number } {
-    return { disabled: this.disabled, deliveryHalted: this.disabled !== null, legacyDeliveryHalted: this.journal.deliveryHalted, queued: this.queued, records: this.journal.records.length };
+  state(): { disabled: string | null; deliveryHalted: boolean; legacyDeliveryHalted: boolean; queued: number; records: number; dropped: number } {
+    return { disabled: this.disabled, deliveryHalted: this.disabled !== null, legacyDeliveryHalted: this.journal.deliveryHalted, queued: this.queued, records: this.journal.records.length, dropped: this.dropped };
   }
   settled(): Promise<void> { return this.chain; }
   async stop(): Promise<void> { this.stopped = true; await this.chain; }
 
-  private fail(reason: string): void {
-    if (!this.disabled) console.error(`[notices:home] delivery disabled: ${reason}; no fallback/replay. Agent core continues.`);
+  private fail(reason: string, error: unknown): void {
+    if (!this.disabled) console.error(`[notices:home] delivery disabled: ${reason}; ` +
+      `journal=${join(this.runtime.directory, 'journal.json')}; cause=${field(error instanceof Error ? error.message : String(error))}. ` +
+      'Preserve the journal; check permissions/disk/schema and binding. For an intentional binding change, ' +
+      'archive the old directory and use a new private directory. No fallback/replay. Agent core continues.');
     this.disabled ??= reason;
   }
   private enqueue(work: () => Promise<void>): void {
     if (this.stopped || this.disabled) return;
-    if (this.queued >= MAX_QUEUED) { this.fail('bounded-queue-exhausted; later observations are not retained'); return; }
+    if (this.queued >= MAX_QUEUED) {
+      if (!this.overflowReported) {
+        console.error(`[notices:home] queue full; dropping new observations until drained; accepted work continues. journal=${join(this.runtime.directory, 'journal.json')}`);
+      }
+      this.overflowReported = true;
+      this.dropped = Math.min(Number.MAX_SAFE_INTEGER, this.dropped + 1);
+      return;
+    }
     this.queued++;
     this.chain = this.chain.then(async () => {
-      try { if (!this.stopped && !this.disabled) await work(); }
-      catch { this.fail('journal-unavailable-corrupt-drifted-or-full; later observations are not retained'); }
-      finally { this.queued--; }
+      try { if (!this.disabled) await work(); }
+      catch (error) { this.fail('journal-unavailable-corrupt-drifted-or-full; later observations are not retained', error); }
+      finally { if (--this.queued === 0) this.overflowReported = false; }
     });
   }
 
@@ -303,7 +331,8 @@ export class NoticeHome {
           !smallString(j.currentInstance) || typeof j.deliveryHalted !== 'boolean' || !Array.isArray(j.records) || j.records.length > MAX_RECORDS ||
           !Array.isArray(j.active) || j.active.length > MAX_ACTIVE ||
           !(j.lastStatus === null || hash(j.lastStatus)) ||
-          j.retention !== undefined && (!j.retention || !Number.isSafeInteger(j.retention.evicted) || j.retention.evicted < 0)) throw new Error('journal schema/binding mismatch');
+          j.retention !== undefined && (!j.retention || !Number.isSafeInteger(j.retention.evicted) || j.retention.evicted < 0 ||
+            j.retention.forgottenActive !== undefined && (!Number.isSafeInteger(j.retention.forgottenActive) || j.retention.forgottenActive < 0))) throw new Error('journal schema/binding mismatch');
       const ids = new Set<string>();
       for (const r of j.records) {
         if (!r || !id(r.id) || ids.has(r.id) || !smallString(r.instanceId) || typeof r.diagnostic !== 'string' ||
@@ -330,7 +359,7 @@ export class NoticeHome {
       for (const a of j.active) {
         if (!a || typeof a.key !== 'string' || !id(a.id) || activeIds.has(a.id) || !smallString(a.kind) ||
             typeof a.subject !== 'string' || a.subject.length > 256 || a.key !== JSON.stringify([a.subject, a.kind]) ||
-            !j.records.some((r) => r.incidentId === a.id && r.phase === 'incident')) throw new Error('invalid incident');
+            !j.records.some((r) => r.incidentId === a.id && r.phase === 'incident' && r.kind === a.kind && r.subject === a.subject)) throw new Error('invalid incident');
         activeIds.add(a.id);
       }
       this.journal = j;
@@ -344,6 +373,7 @@ export class NoticeHome {
   /** Fixed two-file atomic replacement: <= 2 MiB each. No append-only growth,
    * fsync intent + rename + directory BEFORE entering the side-effect boundary. */
   private async save(): Promise<void> {
+    this.compact(this.journal.records.at(-1)?.id);
     const body = JSON.stringify(this.journal);
     if (Buffer.byteLength(body) > MAX_FILE_BYTES) throw new Error('retention byte cap');
     const path = join(this.runtime.directory, 'journal.next');
@@ -358,18 +388,22 @@ export class NoticeHome {
     try { await dir.sync(); } finally { await dir.close(); }
   }
 
-  private async alert(kind: string, subject: string, message: { text: string; capped: boolean }, source: SourceRef, at: number, metadata?: DiagnosticMetadata): Promise<void> {
-    const clear = kind.endsWith('-clear');
-    const base = clear ? kind.slice(0, -6) : kind;
+  private async alert(kind: string, subject: string, message: { text: string; capped: boolean }, source: SourceRef, at: number, metadata?: DiagnosticMetadata, clear = false): Promise<void> {
+    const base = kind;
+    if (clear) kind = truncate(base, 250, ' [truncated]') + '-clear';
     const key = JSON.stringify([subject, base]);
     const identity: unknown[] = [source, kind, subject, message.text,
-      source.timestamp === null && source.traceId === null ? at : null];
+      source.timestamp === null && source.traceId === null ? randomUUID() : null];
     if (metadata && Object.keys(metadata.fields).length) identity.push(metadata.fields);
     const eventKey = digest(JSON.stringify(identity));
     if (this.journal.records.some((r) => r.eventKey === eventKey || r.lastEventKey === eventKey)) return;
     let active = this.journal.active.find((a) => a.key === key);
     if (!clear && !active) {
-      if (this.journal.active.length >= MAX_ACTIVE) throw new Error('active cap');
+      if (this.journal.active.length >= MAX_ACTIVE) {
+        this.journal.active.shift(); // Forget tracking, never claim a recovery.
+        const retention = this.journal.retention!;
+        retention.forgottenActive = Math.min(Number.MAX_SAFE_INTEGER, (retention.forgottenActive ?? 0) + 1);
+      }
       active = { key, id: randomUUID(), kind: base, subject };
       this.journal.active.push(active);
     }
@@ -387,21 +421,19 @@ export class NoticeHome {
   }
 
   private async status(observation: Record<string, unknown>, at: number, startup: boolean): Promise<void> {
-    const snapshot = { ...observation, activeIncidents: this.journal.active.map(({ id, kind, subject }) => ({ id, kind, subject })) };
+    const snapshot = { ...observation, activeIncidents: this.journal.active.map(({ id }) => ({ id })), forgottenActive: this.journal.retention?.forgottenActive ?? 0 };
     const text = JSON.stringify(snapshot);
     const key = digest(text);
     if (!startup && key === this.journal.lastStatus) return;
-    this.journal.lastStatus = key;
     await this.publish({ phase: 'status', incidentId: null, kind: startup ? 'startup-observation' : 'status-change',
-      subject: this.agentName, diagnostic: text, diagnosticCapped: false,
+      subject: field(this.agentName), diagnostic: text, diagnosticCapped: false,
       source: { type: 'healthSnapshot', timestamp: at, traceId: null },
-      eventKey: digest(JSON.stringify([this.runtime.instanceId, at, key, startup])), at });
+      eventKey: digest(JSON.stringify([this.runtime.instanceId, at, key, startup])), at, statusKey: key });
   }
 
   private async publish(input: { phase: HomeRecord['phase']; incidentId: string | null; kind: string; subject: string;
-    diagnostic: string; diagnosticCapped: boolean; metadata?: DiagnosticMetadata; source: SourceRef; eventKey: string; at: number }): Promise<void> {
-    this.compact();
-    if (this.journal.records.length >= MAX_RECORDS || input.diagnostic.length > MAX_DIAGNOSTIC) throw new Error('protected-record retention cap');
+    diagnostic: string; diagnosticCapped: boolean; metadata?: DiagnosticMetadata; source: SourceRef; eventKey: string; at: number; statusKey?: string }): Promise<void> {
+    if (input.diagnostic.length > MAX_DIAGNOSTIC) throw new Error('protected-record retention cap');
     const r: HomeRecord = { id: randomUUID(), eventKey: input.eventKey, lastEventKey: input.eventKey,
       phase: input.phase, incidentId: input.incidentId, instanceId: this.runtime.instanceId,
       topic: input.phase === 'status' ? this.binding.statusTopic : this.binding.incidentsTopic,
@@ -416,32 +448,31 @@ export class NoticeHome {
       `logicalAgent=${this.binding.logicalAgent}; instance=${r.instanceId}; sourceSubject=${r.subject}\n` +
       `verification=${this.journal.verification}; selfEcho=${this.journal.selfEchoReadiness}\n` +
       `event=${r.id}; incident=${r.incidentId ?? 'unknown/not applicable'}; count=${r.count}; lastSeen=${r.lastSeen}\n` +
-      (r.diagnosticCapped ? `[RETENTION CAP: only first ${MAX_DIAGNOSTIC} input characters retained; excess not captured.]\n` : '') + r.diagnostic + (r.metadata ? `\nStructured diagnostic projection: ${JSON.stringify(r.metadata)}` : '');
+      (r.diagnosticCapped ? `[RETENTION CAP: diagnostic bounded to ${MAX_DIAGNOSTIC} characters before/after redaction; excess not captured.]\n` : '') + r.diagnostic + (r.metadata ? `\nStructured diagnostic projection: ${JSON.stringify(r.metadata)}` : '');
     if (this.suppressDelivery) {
       r.outcome = { state: 'not-dispatched', detail: 'publication-related-observation; no recursive delivery' };
     } else {
-      this.dispatching = true;
-      try { r.outcome = await this.publicationContext.run(true, () => this.delivery!.send(r.id, r.topic, text, attachment)); }
-      finally { this.dispatching = false; }
+      r.outcome = await this.publicationContext.run(true, () => this.delivery!.send(r.id, r.topic, text, attachment));
       if (r.outcome.state !== 'sent') {
         // Suppress only the rest of this observation (e.g. its derived status).
         // Future independent observations may dispatch; old records NEVER replay.
         this.suppressDelivery = true;
-        console.error(`[notices:home] record ${r.id}: ${r.outcome.state}; no replay. Agent core continues.`);
+        console.error(`[notices:home] record ${r.id}: ${r.outcome.state}; detail=${r.outcome.detail}; serverId=${this.binding.serverId}; journal=${join(this.runtime.directory, 'journal.json')}; check configured server/capabilities or remote delivery; no replay. Agent core continues.`);
       }
     }
+    if (input.statusKey && r.outcome.state === 'sent') this.journal.lastStatus = input.statusKey;
     await this.save();
   }
 
-  /** Oldest terminal records leave the explicit <=128-record dedupe window.
-   * Unknown/pending outcomes never leave. Keep the newest incident record of
-   * every active identity (even if a later status/clear is terminal). */
-  private compact(): void {
-    while (this.journal.records.length >= MAX_RECORDS) {
+  /** Oldest records leave the explicit <=128-record dedupe window.
+   * Includes unknown outcomes: this is a finite diagnostic window, not an audit log. Keep the newest incident
+   * record of every active identity (even if a later status/clear is terminal). */
+  private compact(currentId?: string): void {
+    while (this.journal.records.length > MAX_RECORDS || Buffer.byteLength(JSON.stringify(this.journal)) > MAX_FILE_BYTES) {
       const anchors = new Set(this.journal.active.map(a => [...this.journal.records].reverse()
-        .find(r => r.incidentId === a.id && r.phase === 'incident')?.id));
+        .find(r => r.incidentId === a.id && r.phase === 'incident' && r.kind === a.kind && r.subject === a.subject)?.id));
       const index = this.journal.records.findIndex(r =>
-        ['sent', 'not-dispatched'].includes(r.outcome.state) && !anchors.has(r.id));
+        r.id !== currentId && !anchors.has(r.id));
       if (index < 0) throw new Error('protected backlog full; no evidence discarded');
       this.journal.records.splice(index, 1);
       this.journal.retention ??= { evicted: 0 };

@@ -83,9 +83,12 @@ policy before a pilot. No live qualification/activation is part of this slice.
 
 * Startup takes one public `healthSnapshot()` observation. Thereafter the host
   samples on observed `ops:alert`, this agent's inference started/aborted/failed/
-  waiting/exhausted/completed/turn_ended, server-reconnected, module-added and
+  waiting/exhausted/completed, any subject's turn_ended, server-reconnected, module-added and
   module-removed traces. There is **no periodic timer**. It posts a status only
-  when its bounded projection/active incident identities change (plus startup).
+  when its bounded projection/active incident IDs change (plus startup); the
+  dedup baseline advances only after acknowledged delivery, not local refusal or
+  uncertainty. Status lists IDs referencing incident records, not unbounded
+  copies of kind/subject text.
 * The health projection is agent status, consecutive inference failures,
   refusal total, and scalar provider-admission counters/flags. Missing values
   stay null; missing agent/read failure is **unknown**, never recovery. No gate
@@ -94,9 +97,13 @@ policy before a pilot. No live qualification/activation is part of this slice.
   AF can emit traces before releasing provider admission; `idle` with
   `primaryActive:true` is recorded as null/`transition-unsettled`, not a claim
   that the idle agent is currently active. No periodic refresh is implied.
-* Every `ops:alert` observed by this framework sink is forwarded, including
+* Every accepted `ops:alert` observed by this framework sink is considered, including
   framework/component/child subjects, unknown kinds (generic presentation), and
-  `refusal`; there is no category/tier censorship in home mode. Kind-less alerts
+  `refusal`; there is no category/tier censorship in home mode. Coalescing,
+  publication-local suppression, overload drops and storage disablement mean
+  not every alert gets a remote post. Stop unsubscribes and rejects new work,
+  then drains accepted observations (including their derived statuses) before
+  returning; it is not an immediate send-cancellation fence. Kind-less alerts
   get `unknown-alert-kind`. Current-boot traces cached by AF are requested with
   `replay: true`; events not emitted, before the cache, or beyond its bounded
   early-trace retention are not reconstructed. There is no failures.log tailer.
@@ -107,7 +114,7 @@ policy before a pilot. No live qualification/activation is part of this slice.
   mean no refusal occurred. Categories are not used to hide observed alerts.
 * An explicit `*-clear` is a **source clear observation**, not a general healthy
   claim; correlation can be unknown. Only successful `inference:turn_ended`
-  closes this agent's main-turn hard-down, context-refusal and refusal episodes.
+  closes the matching subject's (including a child agent's) main-turn hard-down, context-refusal and refusal episodes.
   In AF 0.33, `inference:completed` precedes refusal reporting and has no stop
   reason: it clears **nothing** here. Natural completion without a later
   authoritative clear may therefore leave an episode unresolved.
@@ -168,16 +175,23 @@ binding/schema drift without replacing the existing journal. Fixed temporary
 `journal.next` plus fsync/atomic rename/directory fsync serializes durable intent
 **before** entering the delivery boundary, then outcome. File sync errors stop
 delivery, not the agent core. Filesystem durability still depends on its fsync
-contract; no cross-host fencing or exactly-once guarantee is claimed.
+contract; no cross-host fencing or exactly-once guarantee is claimed. The
+recursive parent-directory creation is not power-loss qualified: provision the
+private directory durably before activation. A missing journal is treated as
+first run, not as proof that no remote messages exist.
 
 The immutable binding includes logical agent and destination. Each record has
 its origin runtime instance (random per host process), local record and incident
 ID, source trace type/timestamp/trace ID when available, observed time, count,
 last-seen time and outcome. Source message/turn/checkpoint references remain
 unknown; a local incident ID is not a provider's incident ID. A new instance
-preserves old record identities and active incidents, and adds a startup
+preserves retained record identities and tracked active incidents, and adds a startup
 observation. **Single active host per logical-agent journal is a v1 assumption.**
 Cloning state does not stop/fence the old host; do not run both copies.
+The journal resides in the host data tree: update rollback/backup restoration
+can restore stale delivery evidence while remote Zulip posts remain. Preserve
+the latest journal independently before restoring data; this slice provides
+no cross-rollback deduplication guarantee.
 
 * `sent`: positive, well-formed Zulip acknowledgement and message IDs: legacy
   positive safe integers or validated `<tag>:<positive-safe-integer>` strings
@@ -194,7 +208,7 @@ Cloning state does not stop/fence the old host; do not run both copies.
   remote send; a late acknowledgement is not used to upgrade/replay it.
 
 **No automatic resend/retry of a retained record**, even after reconnect/restart.
-Uncertain/pending records are retained and never replayed; they do **not**
+Uncertain/pending records are retained within the finite window and never automatically replayed; they do **not**
 permanently disable unrelated new observations. A startup-connecting/schema
 refusal is local to its record. New observations after connection/schema
 recovery can deliver normally, without a reset command or evidence deletion.
@@ -219,11 +233,16 @@ alerts/reconnects after delivery-triggered transport failure. No new AF API or
 lifecycle-fencing guarantee is provided here.
 
 Console diagnostics and read-only `homeState()` expose
-storage/queue disablement. The original journal `deliveryHalted` flag is retained
+storage disablement and queue drops (the cumulative runtime `dropped` count). The original journal `deliveryHalted` flag is retained
 as **historical evidence only**, not consulted as a future-message latch;
 `homeState().legacyDeliveryHalted` exposes it separately. Actual corrupt journal,
-binding drift, storage/queue/protected-backlog exhaustion still fail closed
-without overwriting/deleting evidence or blocking core processing.
+binding drift or actual storage failure still fail closed
+without overwriting the invalid journal or blocking core processing. Disablement
+logs include the scrubbed exception, journal path and preservation/rebinding
+guidance. Missing/ambiguous bound server IDs name configured candidates and
+require configuration repair, unlike a disconnected known server. No home
+delivery failure is recursively sent as an ops alert; operators must monitor
+console logs or the inspection hook.
 
 Identical diagnostic repetitions in an active episode coalesce into count /
 lastSeen / first+last source reference in a retained record, **except a prior
@@ -237,24 +256,38 @@ records is unchanged; changed diagnostics get new records with the same
 incident ID. Exact retained first/
 last event identities are not resent across restart. Counts are observations,
 not a complete per-event audit; without a distinct source trace identity,
-same-timestamp identical events cannot be distinguished. Counts saturate at
+same-timestamp identified events cannot be distinguished. When both source
+timestamp and trace ID are absent, a fresh local random event key avoids
+wall-clock collisions; those unidentified observations cannot dedup on replay. Counts saturate at
 the maximum safe integer. Attachments are immutable snapshots: later repeat
 counts live in the private journal, not in an edited remote board.
 
-Hard bounds: 128 retained records, 64 active incidents, 64 queued work items,
-2 MiB per file (current + fixed temporary, at most 4 MiB total). When making room,
-oldest terminal `sent`/`not-dispatched` records are evicted first, except the
-newest incident record anchoring each active identity. Active identities and
-that latest diagnostic/outcome survive; older terminal diagnostics in an active
-episode can leave the window. `retention.evicted` is a saturating explicit count.
-**Uncertain/pending records are never evicted**, even after an incident clears.
-If protected evidence itself fills the bounded store, delivery stops visibly
-and later observations are not retained; do not delete unknowns to provoke
-replay. Byte and queue bounds can also stop retention/delivery.
+Hard bounds: 128 retained records, 64 tracked active incidents, 64 queued work
+items, 2 MiB per file (current + fixed temporary, at most 4 MiB total). Queue
+saturation drops **only newly arriving excess observations**, logs once per
+saturation burst and increments `homeState().dropped`; accepted work drains and
+later independent work can deliver. This also applies to startup replay; there
+is no unbounded replay buffer or backpressure on the framework/core.
+
+This is a **finite diagnostic window, not an audit log**. When making room,
+the oldest records leave regardless of outcome, including uncertain records;
+the latest incident record anchoring each tracked identity and the current
+publication are protected. Byte pressure can shorten the record window.
+`retention.evicted` counts removed records. When a 65th unresolved identity
+arrives, the oldest tracked identity is forgotten, **not recovered**;
+`retention.forgottenActive` counts this loss of tracking and is included in
+status. The original record remains until normal record eviction. A late clear
+of a forgotten incident has unknown correlation. No time-based recovery is
+inferred, no old record is resent, and unknown delivery evidence does not
+create a lifetime halt. Export evidence elsewhere if indefinite retention is
+required; there is no reconciliation/archive worker in this slice.
 
 Dedup is explicitly limited to retained first/last identities in this at-most
-128-record window, not forever-history/exactly-once. Reobserving an old evicted
-terminal event can produce a new notice. This small bounded retention permits
+128-record window, not forever-history/exactly-once. Lossy redacted/truncated kind/subject
+projections are the correlation keys: colliding names can share an episode;
+use distinct short operational subjects. Adding a second raw identity registry
+is intentionally outside this small sink. Reobserving an old evicted
+event (including one with an unknown delivery outcome) can produce a new notice. This small bounded retention permits
 healthy long-running reconnect/refusal cycles without a lifetime stop, but is
 not an audit platform. Existing AF logs have their own independent retention.
 
@@ -266,7 +299,7 @@ to an offline fake API module. Model callbacks are forbidden; visible locus,
 channel-open and admission hooks/state stay unchanged. Tests cover binding,
 unknowns, source clear/recovery, formatting/full-record reference, dedup/restart,
 durable ambiguity/no replay, known non-dispatch, drift, malformed answers,
-per-record uncertainty, non-recursive publication, bounded compaction and protected-backlog caps. They do **not** prove a live connector's
+per-record uncertainty, non-recursive publication, bounded rolling compaction, overload recovery, child recovery and stop draining. They do **not** prove a live connector's
 authenticated realm, echo suppression, upload availability, destination access,
 shared-stream wake policy, or crash/power-loss behavior of a production disk.
 No other connector implementation is claimed.
