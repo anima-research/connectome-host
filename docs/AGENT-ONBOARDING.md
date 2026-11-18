@@ -682,7 +682,8 @@ Two `systemd --user` units in `~/.config/systemd/user/`:
    `DEPLOYMENTS.md` says), `WorkingDirectory=<agent>-cm` (the host reads
    `mcpl-servers.json` and the agent's overlay from it), `EnvironmentFile=...env`,
    `Environment=PATH=<node bin>:<bun bin>:...`, `After=/Wants=terminal-sessions.service`,
-   `Restart=always`.
+   `Restart=always`, `KillMode=mixed` (so the host closes its MCP servers itself at a stop;
+   `webui-deployment.md` explains the setting and why `TimeoutStopSec` stays at its default).
 
 Set explicit `PATH` in the units (login-shell PATH isn't loaded for services).
 

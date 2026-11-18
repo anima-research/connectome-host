@@ -29,7 +29,7 @@ Headless mode and the fleet protocol are specified in
   live under `~/connectome-local/*` and are symlinked into the host (see
   DEV-ENVIRONMENT).
 - **VPS (Linux)** — systemd **user** services (lingering enabled), with
-  `KillMode=mixed` in the unit, so a stop's SIGTERM reaches the host alone and
+  `KillMode=mixed` in the unit (see `webui-deployment.md`), so a stop's SIGTERM reaches the host alone and
   the host stops its MCP servers itself (the default, `control-group`, signals
   the servers at the same time, before the host's stop begins). If `sudo` is
   unavailable on the box, run everything as user services. A box reached only

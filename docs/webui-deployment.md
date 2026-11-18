@@ -212,7 +212,6 @@ ExecStart=/home/connectome/.bun/bin/bun src/index.ts recipes/admin.json --headle
 Restart=on-failure
 RestartSec=5
 KillMode=mixed
-TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
 
@@ -225,12 +224,22 @@ serves the admin UI; the headless IPC socket is a separate channel
 (intended for parent-process supervision; not used by the WebUI).
 
 `KillMode=mixed` sends the stop's SIGTERM to the host alone, so the host
-stops its MCP servers itself, in its order (SIGTERM, 2 s, SIGKILL), and
-agent-framework's stop stays quiet about them. systemd's default,
-`control-group`, signals every process in the cgroup at once: a server that
-closes on SIGTERM is gone before the host's stop begins, and the host logs
-an outage and a reconnect at its own shutdown. `TimeoutStopSec` is how long
-systemd waits for the host before it SIGKILLs what is left.
+closes its MCP servers itself, once its own stop has drained what it waits
+for (streams, scripts, a compression in flight): each server gets SIGTERM,
+a short grace, then SIGKILL, and agent-framework's stop doesn't report them
+as an outage or try to reconnect them. systemd's default, `control-group`,
+signals every process in the cgroup at once: a server that closes on
+SIGTERM can be gone before the host's stop begins, and the host then logs
+an outage and a reconnect at its own shutdown. The other half of `mixed`:
+anything still running when the host exits (a server's own child processes,
+the Codex app-server, fleet children a Web UI quit left detached, or
+everything after a crash) is SIGKILLed at once rather than sent SIGTERM;
+under systemd, detach doesn't keep children running in either mode.
+systemd's `TimeoutStopSec` (90 s by default) bounds the host's whole stop,
+compression in flight included; past it everything left in the unit is
+SIGKILLed at once, so a lower value means slow stops end with servers that
+never saw a SIGTERM. Leave it at the default unless a stop is measured to
+need more.
 
 ## Tailscale-style hostnames
 
