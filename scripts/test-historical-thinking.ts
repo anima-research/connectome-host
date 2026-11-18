@@ -6,7 +6,8 @@
  *
  *   case A: signature field omitted
  *   case B: signature field empty string ""
- *   case C: thinking wrapped as <recovered_thinking> text (control — must work)
+ *   case C: thinking wrapped as <recovered_thinking> text (Opus 5/5.5 and
+ *           Fable refuse it since 2026-11-09: reasoning_extraction)
  *   case D: redacted_thinking block (alt encoding the API natively supports)
  *
  * Run: ANTHROPIC_API_KEY=sk-... bun scripts/test-historical-thinking.ts
@@ -51,7 +52,7 @@ const CASES: Case[] = [
   },
   {
     name: 'C_wrapped_text_control',
-    description: 'recovered_thinking as wrapped text (must succeed)',
+    description: 'recovered_thinking as wrapped text (refused on Opus 5/5.5 and Fable since 2026-11-09)',
     assistantBlocks: [
       {
         type: 'text',
@@ -109,13 +110,27 @@ function summarize(body: string, ok: boolean): string {
   }
 }
 
+/** A 200 can still be a refusal: stop_reason "refusal", with its category. */
+export function refusalOf(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as { stop_reason?: unknown; stop_details?: { category?: unknown } | null };
+    if (parsed.stop_reason !== 'refusal') return undefined;
+    const category = parsed.stop_details?.category;
+    return `stop_reason=refusal${typeof category === 'string' ? `, category=${category}` : ''}`;
+  } catch {
+    return undefined;
+  }
+}
+
 async function main() {
   console.log(`Model: ${MODEL}\n`);
   for (const c of CASES) {
     process.stdout.write(`[${c.name}] ${c.description} ... `);
     try {
       const { ok, status, body } = await runCase(c);
-      console.log(`${ok ? 'PASS' : 'FAIL'} (${status}) — ${summarize(body, ok)}\n`);
+      const refusal = ok ? refusalOf(body) : undefined;
+      const verdict = !ok ? 'FAIL' : refusal !== undefined ? 'REFUSED' : 'PASS';
+      console.log(`${verdict} (${status}) — ${refusal ?? summarize(body, ok)}\n`);
     } catch (err) {
       console.log(`THROW — ${(err as Error).message}\n`);
     }

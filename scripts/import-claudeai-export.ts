@@ -7,8 +7,9 @@
  *
  * Block-level fidelity:
  *   - text         → TextContent
- *   - thinking     → TextContent wrapped in <recovered_thinking>…</recovered_thinking>
- *                    (the export's thinking summaries are not imported)
+ *   - thinking     → TextContent wrapped in <recovered_thinking>…</recovered_thinking>;
+ *                    empty thinking is skipped; --drop-thinking drops it all
+ *                    (the export's thinking summaries are never imported)
  *   - tool_use     → ToolUseContent (claude.ai-internal tool names kept as-is;
  *                    inert at replay since no module advertises them)
  *   - tool_result  → ToolResultContent
@@ -17,7 +18,11 @@
  *
  * Thinking is imported as wrapped text because the export carries no
  * signatures, and the API refuses unsigned thinking blocks and
- * redacted_thinking with fabricated data.
+ * redacted_thinking with fabricated data. Some models (Opus 5, Opus 5.5, Fable,
+ * as of 2026-11-10) refuse the wrapped text too (reasoning_extraction); the
+ * host leaves it out of their requests on its own (src/recovered-thinking.ts),
+ * and the store keeps it for models that take it. --drop-thinking leaves it
+ * out of the store as well.
  *
  * Tree handling:
  *   The export records branches via `parent_message_uuid`. When a fork is
@@ -36,6 +41,7 @@
  *                     can read it back without re-passing the flag.
  *   --filter <regex>  Only import conversations whose name matches (case-insens.)
  *   --dry-run         Parse and report; don't write
+ *   --drop-thinking   Don't import thinking at all
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -44,6 +50,10 @@ import { JsStore } from '@animalabs/chronicle';
 import { ContextManager } from '@animalabs/context-manager';
 import type { ContentBlock } from '@animalabs/membrane';
 import { SessionManager } from '../src/session-manager.js';
+import { LEFT_OUT } from '../src/recovered-thinking.js';
+
+/** What an assistant turn of empty thinking alone keeps: nothing was left out. */
+export const EMPTY_TURN = '[empty turn]';
 import { createLineReader } from './lib/line-reader.js';
 
 interface Opts {
@@ -53,13 +63,14 @@ interface Opts {
   filter?: RegExp;
   dryRun: boolean;
   interactive: boolean;
+  dropThinking: boolean;
 }
 
 function parseArgs(argv: string[]): Opts {
   const args = argv.slice(2);
   if (args.length === 0 || args[0]?.startsWith('-')) {
     console.error(
-      'Usage: bun scripts/import-claudeai-export.ts <export-dir> [--out <dir>] [--agent <name>] [--filter <regex>] [--dry-run] [--no-interactive]',
+      'Usage: bun scripts/import-claudeai-export.ts <export-dir> [--out <dir>] [--agent <name>] [--filter <regex>] [--dry-run] [--no-interactive] [--drop-thinking]',
     );
     process.exit(1);
   }
@@ -68,6 +79,7 @@ function parseArgs(argv: string[]): Opts {
   let agentName = 'Claude';
   let filter: RegExp | undefined;
   let dryRun = false;
+  let dropThinking = false;
   // Interactive by default if stdin is a TTY; --no-interactive forces off.
   let interactive = !!process.stdin.isTTY;
   for (let i = 1; i < args.length; i++) {
@@ -76,6 +88,7 @@ function parseArgs(argv: string[]): Opts {
     else if (a === '--agent') agentName = args[++i]!;
     else if (a === '--filter') filter = new RegExp(args[++i]!, 'i');
     else if (a === '--dry-run') dryRun = true;
+    else if (a === '--drop-thinking') dropThinking = true;
     else if (a === '--no-interactive') interactive = false;
     else if (a === '--interactive') interactive = true;
     else {
@@ -83,7 +96,7 @@ function parseArgs(argv: string[]): Opts {
       process.exit(1);
     }
   }
-  return { exportDir, outDir, agentName, filter, dryRun, interactive };
+  return { exportDir, outDir, agentName, filter, dryRun, interactive, dropThinking };
 }
 
 interface ExportTextBlock {
@@ -221,7 +234,10 @@ export function linearize(messages: ExportMessage[]): { path: ExportMessage[]; b
 
 /** The API requires every tool_use id and tool_result tool_use_id to be a
  *  non-empty string. */
-export function transformContent(msg: ExportMessage): ContentBlock[] {
+export function transformContent(
+  msg: ExportMessage,
+  { dropThinking = false }: { dropThinking?: boolean } = {},
+): ContentBlock[] {
   const out: ContentBlock[] = [];
 
   for (const att of msg.attachments ?? []) {
@@ -245,9 +261,15 @@ export function transformContent(msg: ExportMessage): ContentBlock[] {
         break;
 
       case 'thinking': {
+        // An empty tag carries nothing, and the models that refuse wrapped
+        // thinking refuse it too, so it is never written.
+        // A malformed export can carry a non-string thought; it's kept as JSON.
+        const raw = block.thinking as unknown;
+        const thought = typeof raw === 'string' ? raw : raw == null ? '' : JSON.stringify(raw);
+        if (dropThinking || !thought.trim()) break;
         out.push({
           type: 'text',
-          text: `<recovered_thinking>\n${block.thinking}\n</recovered_thinking>`,
+          text: `<recovered_thinking>\n${thought}\n</recovered_thinking>`,
         });
         break;
       }
@@ -310,6 +332,20 @@ export function transformContent(msg: ExportMessage): ContentBlock[] {
       type: 'text',
       text: `[image: ${f.file_name} (file_uuid=${f.file_uuid}, bytes not in export)]`,
     });
+  }
+
+  // An assistant turn of thinking alone, with its thinking left out, keeps a
+  // short marker: dropping the turn would put two user turns side by side and
+  // leave the next turn's originalParent pointing at a turn never imported.
+  // When every thought in it was empty, nothing was left out, and the marker
+  // says only that the turn was empty.
+  if (out.length === 0 && msg.sender === 'assistant' && msg.content?.some((b) => b?.type === 'thinking')) {
+    const anyThought = msg.content.some((b) => {
+      if (b?.type !== 'thinking') return false;
+      const raw = (b as { thinking?: unknown }).thinking;
+      return typeof raw === 'string' ? raw.trim() !== '' : raw != null;
+    });
+    out.push({ type: 'text', text: anyThought ? LEFT_OUT : EMPTY_TURN });
   }
 
   return out;
@@ -377,15 +413,19 @@ async function importConversation(
   const meta = sessionMgr.createSession(conv.name || `Imported ${conv.uuid.slice(0, 8)}`);
   const storePath = sessionMgr.getStorePath(meta.id);
   const store = JsStore.openOrCreate({ path: storePath });
+  // What was written, not the path's length: a message with nothing to import
+  // is skipped, and one mixing tool blocks is written as several.
+  let written = 0;
   try {
     const cm = await ContextManager.open({ store });
     try {
       for (const msg of path) {
-        const blocks = transformContent(msg);
+        const blocks = transformContent(msg, { dropThinking: opts.dropThinking });
         if (blocks.length === 0) continue;
         const sourceParticipant = msg.sender === 'assistant' ? opts.agentName : 'user';
         const messages = splitMixedToolMessages(blocks, sourceParticipant);
         for (const [idx, m] of messages.entries()) {
+          written++;
           cm.addMessage(m.participant, m.content, {
             sourceId: messages.length > 1 ? `${msg.uuid}#${idx}` : msg.uuid,
             exportSource: {
@@ -418,7 +458,7 @@ async function importConversation(
         updatedAt: conv.updated_at,
         agentName: opts.agentName,
         originalMessageCount: conv.chat_messages.length,
-        importedMessageCount: path.length,
+        importedMessageCount: written,
         branched,
         importedAt: new Date().toISOString(),
       },
@@ -429,11 +469,11 @@ async function importConversation(
 
   const idx = sessionMgr.load();
   if (idx.sessions[meta.id]) {
-    idx.sessions[meta.id]!.messageCount = path.length;
+    idx.sessions[meta.id]!.messageCount = written;
     sessionMgr.save(idx);
   }
 
-  return { sessionId: meta.id, messageCount: path.length, branched };
+  return { sessionId: meta.id, messageCount: written, branched };
 }
 
 function formatRow(idx: number, selected: boolean, conv: ExportConversation): string {

@@ -39,6 +39,7 @@ import { AutobiographicalStrategy } from '@animalabs/agent-framework';
 import { Membrane, AnthropicAdapter, BedrockAdapter, type NormalizedResponse } from '@animalabs/membrane';
 import { SessionManager } from '../src/session-manager.js';
 import { resolveAgentName } from '../src/agent-name.js';
+import { withRecoveredThinkingGuard } from '../src/recovered-thinking.js';
 
 const PRICING: Record<string, { input: number; output: number }> = {
   'claude-sonnet-4-5-20250929': { input: 3.0, output: 15.0 },
@@ -191,9 +192,12 @@ async function main() {
   const price = priceOf(opts.model);
   const spend: Spend = { inputTokens: 0, outputTokens: 0, cost: 0 };
   const isBedrock = /^([a-z]{2,6}\.)?anthropic\./.test(opts.model);
-  const adapter = isBedrock
+  // Behind the same guard as the host's adapters: warmup compresses with the
+  // conversation's own model, and an imported store's chunks can carry
+  // <recovered_thinking> blocks that model refuses (recovered-thinking.ts).
+  const adapter = withRecoveredThinkingGuard(isBedrock
     ? new BedrockAdapter()
-    : new AnthropicAdapter({ apiKey: process.env.ANTHROPIC_API_KEY });
+    : new AnthropicAdapter({ apiKey: process.env.ANTHROPIC_API_KEY }));
   const membrane = new Membrane(adapter, {
     ...(isBedrock ? { defaultPromptCaching: false } : {}),
     // Membrane gives the assistant role only to messages whose participant is
