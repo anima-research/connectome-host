@@ -1,4 +1,5 @@
 import { runHeadless } from '../src/headless.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 import type { AppContext } from '../src/index.js';
 import { readResultShapes } from './workspace-read-shapes.js';
 
@@ -7,6 +8,7 @@ const result = readResultShapes[shape];
 if (!result) throw new Error(`READ_SHAPE must name one of: ${Object.keys(readResultShapes).join(', ')}`);
 
 await runHeadless({
+  surfaces: new SurfaceAnswers(),
   recipe: { name: 'workspace-viewer-test', agent: { name: 'fixture' } },
   agentName: 'fixture',
   framework: {

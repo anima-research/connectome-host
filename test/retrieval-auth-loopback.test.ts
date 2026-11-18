@@ -8,6 +8,7 @@ import {
   __getSharedServerPortForTests,
   stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 describe('retrieval operator authentication on credential-free loopback', () => {
   let webUiModule: WebUiModule | undefined;
@@ -20,6 +21,7 @@ describe('retrieval operator authentication on credential-free loopback', () => 
     mkdirSync(staticRoot);
     writeFileSync(join(staticRoot, 'index.html'), '<!doctype html><title>loopback</title>');
     webUiModule = new WebUiModule({
+    surfaces: new SurfaceAnswers(),
       port: 0,
       host: '127.0.0.1',
       staticDir: staticRoot,

@@ -9,6 +9,7 @@ import {
   stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
 import type { FleetEventCallback } from '../src/modules/fleet-module.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 let webUiModule: WebUiModule;
 
@@ -35,7 +36,7 @@ function fakeFleet() {
 }
 
 beforeAll(async () => {
-  webUiModule = new WebUiModule({ port: 0, host: '127.0.0.1' });
+  webUiModule = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0, host: '127.0.0.1' });
   await webUiModule.start({} as ModuleContext);
   if (!__getSharedServerPortForTests()) throw new Error('webui server not bound');
 });

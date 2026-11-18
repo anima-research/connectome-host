@@ -8,6 +8,7 @@ import {
   __getSharedServerPortForTests,
   stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 const USER = 'admin';
 const PASS = 'open-sesame';
@@ -18,7 +19,7 @@ let port: number;
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'webui-switch-'));
   writeFileSync(join(dir, 'index.html'), '<!doctype html><title>t</title>');
-  webUiModule = new WebUiModule({ port: 0, host: '127.0.0.1', basicAuth: { username: USER, password: PASS }, staticDir: dir });
+  webUiModule = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0, host: '127.0.0.1', basicAuth: { username: USER, password: PASS }, staticDir: dir });
   await webUiModule.start({} as ModuleContext);
   const bound = __getSharedServerPortForTests();
   if (!bound) throw new Error('webui server not bound');

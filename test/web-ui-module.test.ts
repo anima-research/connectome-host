@@ -8,6 +8,7 @@ import {
   __getSharedServerPortForTests,
   stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 interface ServerHandle {
   port: number;
@@ -38,6 +39,7 @@ beforeAll(async () => {
 
   // Port 0 has the OS pick a free port, which is read back from the server.
   webUiModule = new WebUiModule({
+    surfaces: new SurfaceAnswers(),
     port: 0,
     host: '127.0.0.1',
     basicAuth: { username: BASIC_USER, password: BASIC_PASS },

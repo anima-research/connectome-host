@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { AgentFramework, EventGate, type ModuleContext } from '@animalabs/agent-framework';
 import { validateRecipe } from '../src/recipe.js';
 import { WebUiModule, __getSharedServerPortForTests, stopWebUiServer } from '../src/modules/web-ui-module.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 const readRecipe = (name: string) => JSON.parse(readFileSync(new URL(`../recipes/${name}`, import.meta.url), 'utf8'));
 
@@ -14,7 +15,7 @@ for (const file of ['webui-test.json', 'webui-fleet-test.json']) {
   test(`${file} starts an unauthenticated loopback WebUI`, async () => {
     const recipe = validateRecipe(readRecipe(file));
     const config = recipe.modules?.webui;
-    const mod = new WebUiModule({ ...(typeof config === 'object' ? config : {}), port: 0 });
+    const mod = new WebUiModule({ surfaces: new SurfaceAnswers(), ...(typeof config === 'object' ? config : {}), port: 0 });
     try {
       await mod.start({} as ModuleContext);
       expect(config).toMatchObject({ host: '127.0.0.1' });

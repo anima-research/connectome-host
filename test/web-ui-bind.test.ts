@@ -4,6 +4,7 @@ import {
   WebUiModule,
   stopWebUiServer,
 } from '../src/modules/web-ui-module.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 afterEach(async () => {
   await stopWebUiServer();
@@ -11,18 +12,18 @@ afterEach(async () => {
 
 describe('WebUiModule bind safety', () => {
   test('default bind (0.0.0.0) without basicAuth refuses to start', async () => {
-    const mod = new WebUiModule({ port: 0 });
+    const mod = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0 });
     await expect(mod.start({} as ModuleContext)).rejects.toThrow(/without auth/i);
   });
 
   test('explicit non-loopback host without basicAuth refuses to start', async () => {
-    const mod = new WebUiModule({ port: 0, host: '0.0.0.0' });
+    const mod = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0, host: '0.0.0.0' });
     await expect(mod.start({} as ModuleContext)).rejects.toThrow(/without auth/i);
   });
 
   test('loopback bind without basicAuth is allowed (local dev)', async () => {
     for (const host of ['127.0.0.1', 'localhost', '::1']) {
-      const mod = new WebUiModule({ port: 0, host });
+      const mod = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0, host });
       await mod.start({} as ModuleContext);
       await mod.stop();
       await stopWebUiServer();
@@ -42,7 +43,7 @@ describe('WebUiModule bind safety', () => {
       [{ a: 1 } as unknown as string[], 'allowedOrigins {"a":1}, which isn\'t a list,'],
     ] as const) {
       const given = (Array.isArray(allowedOrigins) ? [...allowedOrigins] : allowedOrigins) as string[];
-      const refused = new WebUiModule({ port: 0, host: '127.0.0.1', allowedOrigins: given }).start({} as ModuleContext);
+      const refused = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0, host: '127.0.0.1', allowedOrigins: given }).start({} as ModuleContext);
       await expect(refused).rejects.toThrow(named);
       await expect(refused).rejects.toThrow('Set basicAuth and make allowedOrigins a non-empty list of http or https origins, or remove allowedOrigins');
     }
@@ -58,7 +59,7 @@ describe('WebUiModule bind safety', () => {
       ['https://admin.example.internal' as unknown as string[], 'allowedOrigins "https://admin.example.internal", which isn\'t a list,'],
     ] as const) {
       const given = (Array.isArray(allowedOrigins) ? [...allowedOrigins] : allowedOrigins) as string[];
-      const refused = new WebUiModule({ port: 0, host: '127.0.0.1', allowedOrigins: given, basicAuth }).start({} as ModuleContext);
+      const refused = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0, host: '127.0.0.1', allowedOrigins: given, basicAuth }).start({} as ModuleContext);
       await expect(refused).rejects.toThrow(named);
       await expect(refused).rejects.toThrow('List the origins to accept, or remove allowedOrigins');
     }
@@ -72,7 +73,7 @@ describe('WebUiModule bind safety', () => {
       { allowedOrigins: ['https://admin.example.internal', 'http://127.0.0.1:5173'], basicAuth: auth },
       { allowedOrigins: null as unknown as string[], basicAuth: auth },
     ]) {
-      const mod = new WebUiModule({ port: 0, host: '127.0.0.1', ...config });
+      const mod = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0, host: '127.0.0.1', ...config });
       await mod.start({} as ModuleContext);
       await mod.stop();
       await stopWebUiServer();
@@ -86,7 +87,7 @@ describe('WebUiModule bind safety', () => {
       { username: 'admin' } as unknown as { username: string; password: string },
       { username: 'admin', password: 42 } as unknown as { username: string; password: string },
     ]) {
-      const refused = new WebUiModule({ port: 0, host: '127.0.0.1', basicAuth }).start({} as ModuleContext);
+      const refused = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0, host: '127.0.0.1', basicAuth }).start({} as ModuleContext);
       await expect(refused).rejects.toThrow('username or password is empty, missing or not a string');
       await expect(refused).rejects.toThrow('.env');
     }
@@ -94,6 +95,7 @@ describe('WebUiModule bind safety', () => {
 
   test('non-loopback bind WITH basicAuth is allowed', async () => {
     const mod = new WebUiModule({
+    surfaces: new SurfaceAnswers(),
       port: 0,
       host: '0.0.0.0',
       basicAuth: { username: 'admin', password: 'open-sesame' },

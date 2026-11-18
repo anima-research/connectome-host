@@ -312,9 +312,15 @@ if os.path.exists(agent_log):
             del_detail = f"{C_RED}NO LOCUS — speech stayed in chronicle{C_OFF}"
             warn("last routeSpeech had no publish locus (push-event wake quirk) — "
                  "reply was generated but NOT delivered to Discord")
+        elif "not routed for the replacement" in ln:
+            del_detail = f"{C_YEL}not routed: the agent was replaced while its turn ran{C_OFF}"
         else:
+            shown = re.search(r"turn has no channel; (\d+) chars shown by (.+), routing posted it to no channel", ln)
             mm = re.search(r"routed (\d+) chars -> (\S+)", ln)
-            del_detail = f"routed {mm.group(1)}ch -> {mm.group(2)}" if mm else ln[-60:]
+            if shown:
+                del_detail = f"no channel; {shown.group(1)}ch shown by {shown.group(2)}"
+            else:
+                del_detail = f"routed {mm.group(1)}ch -> {mm.group(2)}" if mm else ln[-60:]
     else:
         del_detail = "none this boot (log rotates at restart)"
 stages.append(("routeSpeech delivery", del_ts, del_detail))

@@ -1,6 +1,7 @@
 import { mock } from 'bun:test';
 import * as core from '@opentui/core';
 import { createTestRenderer } from '@opentui/core/testing';
+import { SurfaceAnswers } from '../src/surfaces.js';
 import { switchSessionSteps } from '../src/session-switch.js';
 
 const [mode, control] = process.argv.slice(2);
@@ -85,6 +86,7 @@ const switchGate = new Promise<void>(resolve => { releaseSwitch = resolve; });
 let switchDone: Promise<unknown> = Promise.resolve();
 
 const app = {
+  surfaces: new SurfaceAnswers(),
   membrane: {},
   recipe: { name: 'tui-shutdown-test', agent: { name: 'agent' } },
   branchState: { checkpoints: new Map() },

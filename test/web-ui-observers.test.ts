@@ -34,6 +34,7 @@ import { WEB_PROTOCOL_VERSION, type WebUiServerMessage, type WelcomeMessage, typ
 import { STREAM_END_TRACES } from '../src/state/turn-trace.js';
 import { BASIC, helloFor, makeKeypair } from './web-ui-observed-host.js';
 import { blankLiterals } from './blank-literals.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 describe('ObserverRegistry.verifyHello', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'observers-unit-'));
@@ -810,7 +811,7 @@ describe('scope filters', () => {
     expect(unionTypes(source)).toEqual(['tool:completed', 'tool:started']);
   });
 
-  test("a child's events go by the host's trace table, its lifecycle needs health, its snapshot a tree's scopes, its speech thinking and tools, a stream end's stand-in messages, and any other kind a full client", () => {
+  test("a child's events go by the host's trace table, its lifecycle needs health, its snapshot a tree's scopes, its speech thinking and tools, a stream end's stand-in and its notes messages, and any other kind a full client", () => {
     expect(childEventScopes({ type: 'message:added' })).toEqual(['messages']);
     expect(childEventScopes({ type: 'inference:tokens', blockType: 'thinking' } as never)).toEqual(['messages', 'thinking']);
     expect(childEventScopes({ type: 'tool:started' })).toEqual(['messages', 'tools']);
@@ -818,6 +819,7 @@ describe('scope filters', () => {
     expect(childEventScopes({ type: 'ops:alert' })).toEqual(['ops']);
     expect(childEventScopes({ type: 'inference:speech' })).toEqual(['messages', 'thinking', 'tools']);
     expect(childEventScopes({ type: 'stream-ended', agentName: 'kid' } as never)).toEqual(['messages']);
+    expect(childEventScopes({ type: 'inference:prose', agentName: 'kid' } as never)).toEqual(['messages']);
     expect(childEventScopes({ type: 'lifecycle', phase: 'ready' } as never)).toEqual(['health']);
     expect(childEventScopes({ type: 'snapshot' })).toEqual(['messages', 'thinking', 'tools', 'health', 'ops']);
     for (const type of ['command-output', 'a-kind-added-later', 'private:new-kind', '', undefined, 7]) {
@@ -1149,6 +1151,7 @@ describe('WebUiModule observer flow (e2e)', () => {
     saveObserversFile(observersPath, { observers: [] });
 
     mod = new WebUiModule({
+    surfaces: new SurfaceAnswers(),
       port: 0,
       host: '127.0.0.1',
       basicAuth: { username: 'admin', password: 'pw' },

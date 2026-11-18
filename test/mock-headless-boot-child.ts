@@ -2,6 +2,7 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { holdBootTraces } from '../src/boot-traces.js';
 import { runHeadless } from '../src/headless.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 import type { AppContext } from '../src/index.js';
 
 const bootTurn = process.env.FIXTURE_BOOT_TURN;
@@ -32,6 +33,7 @@ const restored = [
 let live: ((event: Record<string, unknown>) => void) | null = null;
 
 const app: Record<string, unknown> & { framework: unknown; onFrameworkReplaced?: () => void } = {
+  surfaces: new SurfaceAnswers(),
   recipe: { name: 'boot-replay-test', agent: { name: 'fixture' } },
   agentName: 'fixture',
   framework: {

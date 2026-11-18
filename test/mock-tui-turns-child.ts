@@ -6,6 +6,7 @@
 import { mock } from 'bun:test';
 import * as core from '@opentui/core';
 import { createTestRenderer } from '@opentui/core/testing';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 const [scenario] = process.argv.slice(2);
 // Kitty's key encoding, so a lone Escape is read at once rather than held to
@@ -145,6 +146,7 @@ const sessions = [{ id: 's1', name: 'first' }, { id: 's2', name: 'other' }];
 let active = sessions[0];
 let endSwitch!: (outcome: 'switched' | 'failed') => void;
 const app = {
+  surfaces: new SurfaceAnswers(),
   membrane: {},
   recipe: { name: 'tui-turns-test', agent: { name: 'agent' } },
   credentials: { provider: 'anthropic', snapshot: () => ({ kind: 'ok' }) },
@@ -203,7 +205,8 @@ async function until(done: () => boolean | Promise<boolean>, what: string): Prom
 }
 
 async function step(name: string): Promise<void> {
-  process.stdout.write(`TUI_STEP ${JSON.stringify({ step: name, frame: await frame(), aborts: [...aborts], mountRefreshes: [...mountRefreshes], colours: colours() })}\n`);
+  const tui = app.surfaces.answer('tui', { agentName: 'agent', text: 'A note.', final: false, connections: [] }) ?? null;
+  process.stdout.write(`TUI_STEP ${JSON.stringify({ step: name, frame: await frame(), aborts: [...aborts], mountRefreshes: [...mountRefreshes], colours: colours(), tui })}\n`);
 }
 
 /** The words whose colour a step reports, each where it is first drawn. */
@@ -316,6 +319,18 @@ async function play(): Promise<void> {
     first.send('inference:started');
     first.send('inference:tokens', { content: 'retry words' });
     first.send('inference:completed');
+    await step('returned');
+  } else if (scenario === 'background-answer') {
+    first.send('inference:started');
+    first.send('inference:tokens', { content: 'first round words' });
+    await step('foreground');
+    await pressed(() => mockInput.pressKey('b', { ctrl: true }), 'Ctrl+B');
+    first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
+    await until(async () => (await frame()).includes('[↓ background'), 'the status to show the background');
+    await step('background');
+    first.send('inference:stream_resumed');
+    first.send('inference:completed');
+    await until(async () => (await frame()).includes('returned from background'), 'the turn to return');
     await step('returned');
   } else if (scenario === 'switch-ctrl-b') {
     first.send('inference:started');

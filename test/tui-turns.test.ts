@@ -7,7 +7,7 @@ import { join } from 'node:path';
 /** src/tui.ts's colour for a line an undo or a shed took out. */
 const DIM_GRAY = '#555555';
 
-type Step = { frame: string; aborts: string[]; mountRefreshes: string[]; colours: Record<string, string> };
+type Step = { frame: string; aborts: string[]; mountRefreshes: string[]; colours: Record<string, string>; tui: string | null };
 
 async function play(scenario: string): Promise<Map<string, Step>> {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'tui-turns-')));
@@ -32,8 +32,8 @@ async function play(scenario: string): Promise<Map<string, Step>> {
     expect(stdout).toContain('TUI_DONE');
     const steps = new Map<string, Step>();
     for (const [, json] of stdout.matchAll(/TUI_STEP (\{[^\n]*\})/g)) {
-      const { step, frame, aborts, mountRefreshes, colours } = JSON.parse(json);
-      steps.set(step, { frame, aborts, mountRefreshes, colours });
+      const { step, frame, aborts, mountRefreshes, colours, tui } = JSON.parse(json);
+      steps.set(step, { frame, aborts, mountRefreshes, colours, tui });
     }
     return steps;
   } finally {
@@ -47,6 +47,16 @@ async function play(scenario: string): Promise<Map<string, Step>> {
 const times = (text: string, part: string) => text.split(part).length - 1;
 const ABORTED = '(turn aborted: interrupted from the TUI)';
 const INTERRUPTING = '(interrupting: the turn stops as soon as it can be aborted)';
+
+describe("the TUI's answer for a turn's speech, through runTui", () => {
+  test("a note asked about while the root turn runs in the background is named as held by the TUI, and in the foreground as the TUI", async () => {
+    const steps = await play('background-answer');
+    expect(steps.get('foreground')?.tui).toBe('the TUI');
+    expect(steps.get('background')?.frame).toContain('[↓ background');
+    expect(steps.get('background')?.tui).toBe('the TUI, which holds it while this turn runs in the background');
+    expect(steps.get('returned')?.tui).toBe('the TUI');
+  });
+});
 
 describe("the TUI's Escape, through runTui", () => {
   test('in each state of the root turn: what it asks the framework, the line it shows, and the status bar', async () => {

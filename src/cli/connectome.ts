@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { constants } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { ENTRY_POINT, readCurrent } from '../update/contract.js';
 import { EXACT_VERSION } from '../update/install.js';
@@ -37,10 +38,13 @@ export const COMMANDS: CliCommand[] = [
     name: 'send',
     usage: 'connectome send <text>',
     summary: 'Waits until the running agent is between turns, sends it one line, and prints what it says until ' +
-      'that turn\'s work ends. If a channel message, or the end of a script or subagent the agent started, arrives ' +
-      'just before the line, the agent may answer it in the same turn, and that reply prints too. A subagent or ' +
-      'script the turn starts can bring a later turn: if what brings it arrives within half a second of the turn\'s ' +
-      'work ending, it joins that work and its reply prints too, and this doesn\'t wait for anything later.',
+      'that turn\'s work ends: the notes it routes as speech between tool calls in the turn this line opens, as ' +
+      'they come, and each turn\'s reply after its notes. A host that gives agent-framework no MCP or MCPL ' +
+      'server routes no notes, so there only replies print. If a channel message, or the end of a script or ' +
+      'subagent the agent started, arrives just before the line, the agent may answer it in the same turn, and ' +
+      'that reply prints too. A subagent or script the turn starts can bring a later turn: if what brings it ' +
+      'arrives within half a second of the turn\'s work ending, it joins that work and its reply prints too, and ' +
+      'this doesn\'t wait for anything later.',
     run: (ctx) => send(ctx),
   },
   {
@@ -205,6 +209,9 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
 
 export const SEND_QUIET_LIMIT_MS = 15 * 60_000;
 
+const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
+type StopSignal = typeof STOP_SIGNALS[number];
+
 const SENT = 'connectome: wrote the line to the host\'s socket; what the agent says in reply prints here.';
 
 const UNREAD = ` The host also closes it when output for it backs up and stays backed up for ${STOPPED_READING_MS / 60_000} ` +
@@ -234,16 +241,26 @@ export async function send(ctx: CliContext, quietLimitMs = SEND_QUIET_LIMIT_MS):
   let sent = between;
   let started = false;
   let spoke = false;
+  let replied = false;
   let ended = false;
   let finished = false;
+  // A note the framework routes after a slow earlier delivery can come after
+  // the reply's frame, so a turn's reply is held until its turn's notes are
+  // in. A turn that fails or is stopped, or under explicit routing one a tool
+  // ends, doesn't wait for its deliveries.
+  const replies: string[] = [];
+  const printReplies = (): void => { for (const reply of replies.splice(0)) ctx.out(reply); };
   if (!sent) ctx.err('connectome: the agent is in a turn. This waits for it to end, then sends.');
-  const quiet = new Promise<'idle' | 'closed' | 'unheard'>((resolve) => {
+  const quiet = new Promise<'idle' | 'closed' | 'unheard' | StopSignal>((resolve) => {
     let limit = setTimeout(() => done('unheard'), quietLimitMs);
-    const done = (how: 'idle' | 'closed' | 'unheard') => {
+    const done = (how: 'idle' | 'closed' | 'unheard' | StopSignal) => {
       finished = true;
       clearTimeout(limit);
+      for (const [signal, stop] of stops) process.off(signal, stop);
       resolve(how);
     };
+    const stops = STOP_SIGNALS.map((signal) => [signal, () => done(signal)] as const);
+    for (const [signal, stop] of stops) process.on(signal, stop);
     host.onEvent((event) => {
       if (finished) return;
       clearTimeout(limit);
@@ -260,9 +277,14 @@ export async function send(ctx: CliContext, quietLimitMs = SEND_QUIET_LIMIT_MS):
       const agent = String(event.agentName || 'an agent');
       if (event.type === 'inference:started') {
         started = true;
-      } else if (event.type === 'inference:speech' && typeof event.content === 'string' && event.content !== '') {
+        printReplies();
+      } else if (event.type === 'inference:prose' && typeof event.content === 'string' && event.content !== '') {
         spoke = true;
         ctx.out(event.content);
+      } else if (event.type === 'inference:speech' && typeof event.content === 'string' && event.content !== '') {
+        spoke = true;
+        replied = true;
+        replies.push(event.content);
       } else if (event.type === 'inference:failed' || event.type === 'inference:exhausted') {
         if (event.type === 'inference:exhausted') ended = true;
         ctx.err(`connectome: ${agent}'s inference ${event.type === 'inference:exhausted' ? 'gave up' : 'failed'}: ` +
@@ -279,6 +301,14 @@ export async function send(ctx: CliContext, quietLimitMs = SEND_QUIET_LIMIT_MS):
   if (between && host.send({ type: 'text', content: text, from: 'console' })) ctx.err(SENT);
   const how = await quiet;
   host.close();
+  printReplies();
+  if (how !== 'idle' && how !== 'closed' && how !== 'unheard') {
+    ctx.err(sent
+      ? `connectome: stopped by ${how} before the agent's turn work ended, so what it says after this isn't seen ` +
+        'here. The message was sent, and the agent may still be working on it.'
+      : `connectome: stopped by ${how} while the agent was in a turn, so nothing was sent.`);
+    return 128 + constants.signals[how];
+  }
   if (!sent) {
     ctx.err(how === 'closed'
       ? 'connectome: the connection closed before the agent\'s turn ended, so nothing was sent. The host stopping ' +
@@ -289,7 +319,7 @@ export async function send(ctx: CliContext, quietLimitMs = SEND_QUIET_LIMIT_MS):
   }
   if (how === 'closed') {
     ctx.err(spoke || started
-      ? `connectome: the connection closed before the agent's turn ended, so ${spoke ? 'the rest of ' : ''}its reply ` +
+      ? `connectome: the connection closed before the agent's turn ended, so ${replied ? 'the rest of ' : ''}its reply ` +
         'wasn\'t seen here. The host stopping closes it, and so does another connectome command connecting.' + UNREAD
       : 'connectome: the connection closed before any reply. If the host hadn\'t read the message yet, it never ' +
         'reached the agent: the host stopping closes it, and so does another connectome command connecting, and ' +
@@ -307,7 +337,7 @@ export async function send(ctx: CliContext, quietLimitMs = SEND_QUIET_LIMIT_MS):
       'can answer it later. Sending it again won\'t undo a decline, and could deliver it twice.');
     return 1;
   }
-  if (ended && !spoke) {
+  if (ended && !replied) {
     ctx.err('connectome: the agent\'s turn ended without a reply.');
     return 1;
   }

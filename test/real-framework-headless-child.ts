@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { AgentFramework } from '@animalabs/agent-framework';
 import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { runHeadless } from '../src/headless.ts';
+import { SurfaceAnswers } from '../src/surfaces.ts';
 import type { AppContext } from '../src/index.ts';
 
 const dataDir = process.env.DATA_DIR!;
@@ -27,6 +28,7 @@ const framework = await AgentFramework.create({
 });
 framework.start();
 await runHeadless({
+  surfaces: new SurfaceAnswers(),
   recipe: { name: 'Real framework test', agent: { name: 'resident' } },
   agentName: 'resident',
   framework,

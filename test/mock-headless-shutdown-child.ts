@@ -1,4 +1,5 @@
 import { runHeadless } from '../src/headless.ts';
+import { SurfaceAnswers } from '../src/surfaces.ts';
 import type { AppContext } from '../src/index.ts';
 import { WriteStream, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -78,6 +79,7 @@ if (mode === 'ready-window') {
 }
 let stopCalls = 0;
 await runHeadless({
+  surfaces: new SurfaceAnswers(),
   recipe: { name: 'Shutdown test', agent: { name: 'fixture' } },
   agentName: 'fixture',
   framework: {

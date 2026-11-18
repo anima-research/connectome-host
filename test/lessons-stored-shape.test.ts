@@ -8,6 +8,7 @@ import { LessonsModule } from '../src/modules/lessons-module.js';
 import { RetrievalModule } from '../src/modules/retrieval-module.js';
 import { handleCommand, handleExport } from '../src/commands.js';
 import { WebUiModule, stopWebUiServer } from '../src/modules/web-ui-module.js';
+import { SurfaceAnswers } from '../src/surfaces.js';
 
 type AnyObj = Record<string, any>;
 
@@ -568,7 +569,7 @@ describe('readers in other modules', () => {
     const h = await loaded([stored('old1', { content: 'legacy' }), stored('pct', { content: 'percent', tags: ['x'], confidence: 85 })]);
     const dir = mkdtempSync(join(tmpdir(), 'lessons-webui-'));
     writeFileSync(join(dir, 'index.html'), '<!doctype html><title>t</title>');
-    const web = new WebUiModule({ port: 0, host: '127.0.0.1', staticDir: dir });
+    const web = new WebUiModule({ surfaces: new SurfaceAnswers(), port: 0, host: '127.0.0.1', staticDir: dir });
     try {
       await web.start({} as ModuleContext);
       web.setApp({

@@ -1,10 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { runHeadless } from '../src/headless.ts';
+import { SurfaceAnswers } from '../src/surfaces.ts';
 import type { AppContext } from '../src/index.ts';
 
 const recipe = JSON.parse(readFileSync(process.argv[2]!, 'utf-8')) as { name: string; agent: { name: string } };
 
 await runHeadless({
+  surfaces: new SurfaceAnswers(),
   recipe,
   framework: {
     getAllAgents: () => [{ name: recipe.agent.name, state: { status: 'idle' } }],

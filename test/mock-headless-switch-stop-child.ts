@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runHeadless } from '../src/headless.ts';
+import { SurfaceAnswers } from '../src/surfaces.ts';
 import type { AppContext } from '../src/index.ts';
 import { switchSessionSteps } from '../src/session-switch.ts';
 
@@ -43,6 +44,7 @@ const sessionManager = {
 };
 
 const app: Record<string, unknown> & { framework: ReturnType<typeof framework>; onFrameworkReplaced?: () => void } = {
+  surfaces: new SurfaceAnswers(),
   recipe: { name: 'switch-stop-test', agent: { name: 'fixture' } },
   agentName: 'fixture',
   framework: framework('first'),

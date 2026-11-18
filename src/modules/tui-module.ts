@@ -7,13 +7,22 @@ import type {
   ToolDefinition,
   ToolCall,
   ToolResult,
+  SpeechRoutedContext,
+  SpeechSent,
 } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
+import { REPLY_UNHEARD_KEY, SURFACE_ORDER, SURFACE_TAG_KEY, SurfaceAnswers, surfaceTagOf, type SurfaceName } from '../surfaces.js';
+
+const REPLY_UNHEARD_NOTE = '[host note: the client that sent this wasn\'t subscribed to inference:speech when it ' +
+  'arrived, so a plain-prose reply won\'t reach it unless it subscribes.]';
 
 export class TuiModule implements Module {
   readonly name = 'tui';
+  private ctx: ModuleContext | null = null;
 
-  async start(_ctx: ModuleContext): Promise<void> {}
+  constructor(private readonly answers: SurfaceAnswers) {}
+
+  async start(ctx: ModuleContext): Promise<void> { this.ctx = ctx; }
   async stop(): Promise<void> {}
   getTools(): ToolDefinition[] { return []; }
 
@@ -31,28 +40,16 @@ export class TuiModule implements Module {
     const text = typeof content === 'string' ? content : JSON.stringify(content);
     const triggerInference = (event as { triggerInference?: boolean }).triggerInference;
     const targetAgents = (event as { targetAgents?: string[] }).targetAgents;
-
-    // agent-framework routes plain prose by channel, and an IPC wake carries
-    // none: a turn it opens takes the agent's home or default publish channel as
-    // its locus, or none, and a wake during an open turn keeps that turn's locus.
-    const blocks: Array<{ type: 'text'; text: string }> = [{ type: 'text', text }];
-    if (source === 'headless') {
-      blocks.push({
-        type: 'text',
-        text:
-          '[host note: this message arrived over IPC and carries no channel locus — ' +
-          'any active-channel routing from your previous turn no longer applies. A plain-prose ' +
-          'reply will NOT reach the sender: it may fall back to your home/default channel or stay ' +
-          'in your chronicle only. To answer a specific person or channel, use an explicit send tool; ' +
-          'if no reply is needed, none is expected.]',
-      });
-    }
+    const metadata = (event as { metadata?: Record<string, unknown> }).metadata;
+    const tag = surfaceTagOf(metadata);
+    const unheard = source === 'headless' && metadata?.[REPLY_UNHEARD_KEY] === true;
 
     const response: EventResponse = {
       addMessages: [
         {
           participant: 'user',
-          content: blocks,
+          content: [{ type: 'text', text }, ...(unheard ? [{ type: 'text' as const, text: REPLY_UNHEARD_NOTE }] : [])],
+          ...(tag ? { metadata: { [SURFACE_TAG_KEY]: tag } } : {}),
         },
       ],
     };
@@ -62,5 +59,20 @@ export class TuiModule implements Module {
     }
 
     return response;
+  }
+
+  onSpeechRouted(agentName: string, text: string, context: SpeechRoutedContext): SpeechSent {
+    const connections = new Map<SurfaceName, string[]>();
+    for (const id of context.openedBy?.messages ?? []) {
+      const tag = surfaceTagOf(this.ctx?.getMessage(id)?.metadata);
+      if (!tag) continue;
+      const known = connections.get(tag.surface) ?? [];
+      if (tag.connection !== undefined && !known.includes(tag.connection)) known.push(tag.connection);
+      connections.set(tag.surface, known);
+    }
+    const places = SURFACE_ORDER.filter((surface) => connections.has(surface))
+      .map((surface) => this.answers.answer(surface, { agentName, text, final: context.final, connections: connections.get(surface)! }))
+      .filter((place): place is string => !!place);
+    return places.length > 0 ? { sentTo: places.join(' and ') } : {};
   }
 }
