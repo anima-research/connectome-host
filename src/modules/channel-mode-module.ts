@@ -243,8 +243,9 @@ export class ChannelModeModule implements Module {
     // Only a sole, answered close failure owns all retry guidance. Other
     // failures still need retry advice, even alongside a deferred close.
     const retry = mode === 'mentions' && failed.length === 1 && failed[0]!.step === 'close' && !failed[0]!.unanswered ? '' :
-      'Each step is safe to repeat, so call channel-mode--set_channel_mode again with the same channelId and ' +
-      (mode === 'debounced' ? `mode, and debounceMs ${debounceMs},` : 'mode') +
+      'Each step is safe to repeat, so call channel-mode--set_channel_mode again with the same channelId' +
+      (serverId === undefined ? ' and mode' : ', mode and serverId') +
+      (mode === 'debounced' ? `, and debounceMs ${debounceMs},` : '') +
       ' to retry; if it fails the same way, ask whoever runs this host.';
     const summary =
       failed.length === 0
@@ -424,7 +425,7 @@ export class ChannelModeModule implements Module {
             'Check modules.channelMode.gcModuleName: another subscription-gc module may still auto-close channels.',
           );
         }
-        return { step, ok: true, detail: `no ${this.gcModuleName} module; ${step === 'gc-pin' ? 'nothing auto-closes it' : 'nothing to unpin'}` };
+        return { step, ok: true, detail: `no ${this.gcModuleName} module; ${step === 'gc-pin' ? (this.gcModuleName === 'subscription-gc' ? 'nothing auto-closes it' : 'pin skipped') : 'nothing to unpin'}` };
       }
       const result = await ctx.callTool({ id: `chanmode-${this.callSeq++}`, name, input: toolInput });
       if (result && result.success) {
@@ -461,7 +462,7 @@ function doneText(s: StepResult): string {
       return s.detail === 'set' ? 'its debounce rule is set'
         : s.detail === 'removed' ? 'its debounce rule was removed'
         : 'it had no debounce rule to remove';
-    case 'gc-pin': return s.detail.endsWith('; nothing auto-closes it') ? `nothing will auto-close it (${s.detail.split(';')[0]})` : 'it is pinned open';
+    case 'gc-pin': return s.detail.endsWith('; nothing auto-closes it') ? `nothing will auto-close it (${s.detail.split(';')[0]})` : s.detail.endsWith('; pin skipped') ? `pin skipped (${s.detail.split(';')[0]})` : 'it is pinned open';
     case 'gc-unpin': return s.detail.endsWith('; nothing to unpin') ? `there was no pin to release (${s.detail.split(';')[0]})` : "it isn't pinned";
     default: return `${s.step} worked`;
   }

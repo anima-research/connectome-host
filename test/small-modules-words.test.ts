@@ -134,6 +134,16 @@ describe('channel-mode', () => {
     expect(r.error).toContain('call channel-mode--set_channel_mode again with the same channelId and mode, and debounceMs 60000, to retry');
   });
 
+  test('R5-3 debounced retry preserves an explicit serverId', async () => {
+    const { m } = wired();
+    const r = await m.handleToolCall(call('set_channel_mode', {
+      channelId: 'discord:1:2', mode: 'debounced', serverId: 'discord', debounceMs: 60_000,
+    }));
+    expect(r.error).toContain(
+      'again with the same channelId, mode and serverId, and debounceMs 60000, to retry',
+    );
+  });
+
   test('in mentions mode, a removed rule, or none, reads as what happened', async () => {
     const removed = await wired({ failing: ['channel_close'] }).m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions' }));
     expect(removed.error).toStartWith(

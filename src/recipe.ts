@@ -1281,7 +1281,6 @@ export interface RecipeModules {
    * 4 and 5, for disconnected/pending owners and explicit binding release.
    * New ids are refused before effects at 1024 live owners, including in-flight
    * opens; complete mentions cleanup to free a slot. Owners are never evicted.
-   * See docs/ATTENTION-AND-GATING.md for resolution and cleanup details.
    * `toolPrefix` is deprecated and read by nothing.
    * `defaultDebounceMs` sets the debounced-mode quiet window (180000 if
    * omitted).

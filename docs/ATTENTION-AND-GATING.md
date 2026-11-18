@@ -203,7 +203,8 @@ action.
   optional tool-call `serverId` selects a known server or registry owner when
   multiple servers register the same id; ambiguity errors name those servers.
   Debounced mode refuses a named server that does not own a registered channel,
-  with the registry's hint, before changing the rule, pin, or lifecycle state.
+  with the registry's hint (or, when a saved owner binds the channel, the route
+  to release it), before changing the rule, pin, or lifecycle state.
 
   Ownership resolution and cleanup:
   1. Read module state from the current Chronicle branch on each call. A saved

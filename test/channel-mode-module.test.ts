@@ -190,8 +190,11 @@ describe('channel-mode server ownership', () => {
         const partial = await set('debounced');
         expect(partial.success).toBe(false);
         expect(partial.error).toContain(
-          `its debounce rule is set and nothing will auto-close it (no ${gcModuleName ?? 'subscription-gc'} module)`,
+          gcModuleName === undefined
+            ? 'its debounce rule is set and nothing will auto-close it (no subscription-gc module)'
+            : `its debounce rule is set and pin skipped (no ${gcModuleName} module)`,
         );
+        if (gcModuleName !== undefined) expect(partial.error).not.toContain('nothing will auto-close it');
         await set('mentions');
         await set('debounced');
         expect(warn).toHaveBeenCalledTimes(gcModuleName === undefined ? 0 : 1);
@@ -328,6 +331,7 @@ describe('channel-mode server ownership', () => {
       const cleanup = await w.set(m, id, 'mentions', 'a');
       expect(cleanup.success).toBe(false);
       expect(cleanup.error).not.toContain('saved owner record was cleared');
+      expect(cleanup.error).toContain('again with the same channelId, mode and serverId to retry');
       expect((cleanup.data as { steps: Array<{ detail: string }> }).steps[1].detail).toBe(
         "Old owner a's close could not be confirmed. The saved owner record was retained. " +
         'This does not confirm a close. ' +
