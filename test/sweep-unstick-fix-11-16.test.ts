@@ -20,6 +20,12 @@ const SET_ASIDE = (count: string) => `${count} were set aside because the reques
 const CLEAR = 'You are clear to continue — if you were mid-task, take a different approach; otherwise carry on with ' +
   'whatever is now in front of you, or briefly acknowledge the gap and ask what\'s next.';
 const PROVIDER = 'ZQ-PROVIDER says no. Reason: zq-inner. Another sentence.';
+// The two notes as agent-framework 0.33.1 writes them, text and stamps, for a refusal's rewind and an invalid request.
+const OLD_REWIND = '[refusal-rewind] The 2 most recent turn(s) were set aside because the model refused on them (content ' +
+  'filter: zq-cat). Their content is not reproduced here (so this note can\'t re-trigger the filter); the originals ' +
+  `remain in the raw record. ${CLEAR}`;
+const OLD_FAILED = '[inference-failed] Your previous turn did not complete: the model call failed (invalid_request, ' +
+  `HTTP 400) and produced no response, so nothing was sent. Reason: ${PROVIDER}. ${FAILURE_ADVICE}`;
 
 let made = 0;
 function row(text: string, metadata: Record<string, unknown>): StoredMessage {
@@ -214,6 +220,12 @@ async function residentWithBothNotes() {
   await settle(5);
   script.push('fail');
   await say('third question', 6);
+  const scout = framework.getAgent('scout')!.getContextManager();
+  const native = scout.getAllMessages().filter((r) => ['refusal-rewind', 'inference-failed'].includes(String(r.metadata?.kind))).map((r) => r.id);
+  const old = [
+    scout.addMessage('user', [{ type: 'text', text: OLD_REWIND }], { system: true, kind: 'refusal-rewind', category: 'zq-cat', count: 1, cause: 'refusal' }),
+    scout.addMessage('user', [{ type: 'text', text: OLD_FAILED }], { system: true, kind: 'inference-failed', reason: PROVIDER, consecutive: 1, errorType: 'invalid_request', httpStatus: 400 }),
+  ];
   await framework.stop();
   framework = await open();
   const rows = () => framework.getAgent('scout')!.getContextManager().getAllMessages();
@@ -228,31 +240,33 @@ async function residentWithBothNotes() {
     await say('fourth question', before + 1);
     return JSON.stringify(requests.at(-1));
   };
-  return { rows, notes, textOf, sweep, nextRequest };
+  return { rows, notes, textOf, sweep, nextRequest, native, old };
 }
 
 const said = (r: { lines: Array<{ text: string }> }) => r.lines.map((l) => l.text).join('\n');
 const LEAKS = ['zq-cat', 'content filter', 'ZQ-PROVIDER', 'zq-inner'];
 
-test('the notes 0.33 wrote: shown and not written, then rewritten, and the next request holds no provider\'s words', async () => {
+test('the notes 0.33.1 wrote: shown and not written, then rewritten, and the next request holds no provider\'s words; the notes the installed framework wrote are left', async () => {
   const r = await residentWithBothNotes();
-  const before = r.notes().map((n) => r.textOf(n));
-  expect(before.length).toBe(2);
-  expect(before.some((t) => t.includes('content filter: zq-cat'))).toBe(true);
-  const marker = r.notes().find((n) => n.metadata?.kind === 'refusal-rewind')!;
-  expect(r.textOf(marker)).toContain('The 2 most recent turn(s)');
-  expect(marker.metadata?.count).toBe(1);
-  expect(before.some((t) => t.includes(`Reason: ${PROVIDER}`))).toBe(true);
+  const textAt = (id: string) => r.textOf(r.rows().find((n) => n.id === id)!);
+  expect(r.native.length).toBe(2);
+  const nativeBefore = r.native.map(textAt);
+  for (const leak of LEAKS) expect(nativeBefore.join('\n')).not.toContain(leak);
+  expect(r.old.map(textAt)).toEqual([OLD_REWIND, OLD_FAILED]);
 
   const shown = r.sweep();
   expect(said(shown)).toContain('Sweep unstick-fix-11-16 would rewrite 2 rows.');
-  expect(r.notes().map((n) => r.textOf(n))).toEqual(before);
+  for (const id of r.native) expect(said(shown)).not.toContain(` row ${id} of `);
+  for (const id of r.old) expect(said(shown)).toContain(` row ${id} of `);
+  expect(r.old.map(textAt)).toEqual([OLD_REWIND, OLD_FAILED]);
 
   const written = r.sweep(true);
   expect(said(written)).toContain('Sweep unstick-fix-11-16 rewrote 2 of 2 rows.');
   for (const answer of [shown, written]) for (const leak of LEAKS) expect(said(answer)).not.toContain(leak);
-  const after = r.notes().map((n) => r.textOf(n));
-  expect(after.find((t) => t.startsWith('[refusal-rewind]'))).toContain('The 2 most recent turn(s) were set aside because the requests that carried them couldn\'t be completed.');
+  expect(textAt(r.old[0]!)).toBe(`[refusal-rewind] ${SET_ASIDE('The 2 most recent turn(s)')}`);
+  expect(textAt(r.old[1]!)).toBe('[inference-failed] Your previous turn did not complete: the model call failed ' +
+    `(invalid_request, HTTP 400) and produced no response, so nothing was sent. ${FAILURE_ADVICE}`);
+  expect(r.native.map(textAt)).toEqual(nativeBefore);
   const next = await r.nextRequest();
   for (const leak of LEAKS) expect(next).not.toContain(leak);
   expect(next).toContain('couldn\'t be completed');
