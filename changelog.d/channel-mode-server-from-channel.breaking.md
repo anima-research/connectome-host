@@ -1,4 +1,5 @@
-- Channel attention modes route open, debounce source, and close to the
+- **Recipe authors and operators:** Channel attention modes route open,
+  debounce source, and close to the
   channel's MCPL owner, not always Discord. Optional `serverId` disambiguates
   shared ids; saved owners bind both modes until mentions cleanup completes.
   Invalid debounced ownership is refused before changes; disconnected closes
@@ -20,11 +21,13 @@
   Re-adding GC restores any previously persisted pin; ask the host operator
   to arrange recovery if ownership may have changed, rather than calling
   mentions on a replacement. Direct GC unpin has no declared operator tool
-  or writable settings field. See `docs/ATTENTION-AND-GATING.md`.
+  or writable settings field. Mode names remain `debounced` and `mentions`.
+  See `docs/ATTENTION-AND-GATING.md`.
 - **Operators:** The default-enabled `set_channel_mode` tool description and
   schema change on upgrade. Each wake-enabled resident with channelMode enabled
-  rewrites its prompt cache in full on its first request, even if residents
-  never invoke the tool.
+  whose requests include the tool (not hidden by its tool allowlist) rewrites
+  its prompt cache in full on its first request, even if it never invokes
+  the tool.
 - **Recipe authors:** `modules.channelMode.serverId` is now only a legacy
   fallback for unregistered bare ids or its own namespace, not a server override
   for every call. Registry owners take precedence; use tool-call `serverId`

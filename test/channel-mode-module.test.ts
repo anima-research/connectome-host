@@ -243,6 +243,7 @@ describe('channel-mode server ownership', () => {
     const refused = await w.set(m, id);
     expect(refused.success).toBe(false);
     expect(refused.error).toContain('Ask whoever runs this host to restore');
+    expect(refused.error).toContain('mentions omitting serverId or naming saved owner "a"');
     expect(w.calls).toHaveLength(calls);
     expect([...w.rules]).toEqual(rules);
     expect(w.saved()).toEqual({ owners: { [id]: 'a' } });
@@ -299,7 +300,7 @@ describe('channel-mode server ownership', () => {
       w.channels.removeServer('a');
       const refused = await w.set(m, id);
       expect(refused.error).toContain('mentions');
-      expect(refused.error).toContain('without serverId');
+      expect(refused.error).toContain('mentions omitting serverId or naming saved owner "a"');
       expect(refused.error).toContain('unconfirmed');
       const calls = w.calls.length;
       const cleanup = await w.set(m, id, 'mentions', explicit);
@@ -333,7 +334,7 @@ describe('channel-mode server ownership', () => {
       expect(cleanup.error).not.toContain('saved owner record was cleared');
       expect(cleanup.error).toContain('again with the same channelId, mode and serverId to retry');
       expect((cleanup.data as { steps: Array<{ detail: string }> }).steps[1].detail).toBe(
-        "Old owner a's close could not be confirmed. The saved owner record was retained. " +
+        "Old owner a's close could not be confirmed by this attempt. The saved owner record was retained. " +
         'This does not confirm a close. ' +
         'Call mentions with serverId "a" to retry cleanup and release the binding without a confirmed close.',
       );
@@ -505,7 +506,7 @@ describe('channel-mode server ownership', () => {
               expect((await w.set(m, id, 'debounced', 'b')).success).toBe(false);
               expect(gc.getAgentSettingsExtension().get('test').channel_idle_pinned).toEqual([id]);
             } else {
-              const closeDetail = "Old owner a's close could not be confirmed. " +
+              const closeDetail = "Old owner a's close could not be confirmed by this attempt. " +
                 'The saved owner record was cleared. This does not confirm a close. ' +
                 "Do not retry against a replacement server; ask whoever runs this host to verify the old owner's remote subscription.";
               const message = ownerStatus === 'live' ? 'Channel zulip:g set to mentions mode.' :
@@ -990,7 +991,8 @@ describe('channel-mode server ownership', () => {
     w.failedTools.clear();
     w.calls.length = 0;
     w.sent.length = 0;
-    await w.set(m, id, 'mentions');
+    const retry = await w.set(m, id, 'mentions');
+    expect(retry.error).toContain('close could not be confirmed by this attempt');
     expect(w.calls[0]).toMatchObject({ name: 'channel_close', input: { serverId: 'a' } });
     expect(w.sent.filter(s => s.serverId === 'b')).toEqual([]);
     expect(w.channels.getDesiredState('b', id)).toBe('open');
@@ -1194,6 +1196,23 @@ describe('channel-mode server ownership', () => {
     }
   });
 
+  test('unsaved mentions retry names the resolved owner and warns against replacements', async () => {
+    const w = registryWired(['a', 'b']);
+    const id = 'zulip:g';
+    await w.register('a', id);
+    await w.channels.handleChannelToolCall('channel_open', { channelId: id, serverId: 'a' }, { kind: 'module' });
+    const m = await w.createModule();
+    w.framework.removeGatePolicy = () => { throw new Error('rule removal failed'); };
+    const result = await w.set(m, id, 'mentions');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('serverId "a" only after verifying it is still the intended owner');
+    expect(result.error).toContain('Do not select a replacement server');
+    expect(result.error).not.toContain('Each step is safe to repeat');
+    expect(w.channels.getDesiredState('a', id)).toBe('closed');
+    expect(w.writes).toEqual([]);
+    await m.stop();
+  });
+
   test('orphan cleanup never advises closing a replacement owner', async () => {
     const w = registryWired(['a', 'b']);
     const m = await w.createModule();
@@ -1203,6 +1222,8 @@ describe('channel-mode server ownership', () => {
     w.channels.removeServer('a');
     w.servers.shift();
     await w.register('b', id);
+    expect((await w.channels.handleChannelToolCall('channel_open', { channelId: id, serverId: 'b' }, { kind: 'module' })).success).toBe(true);
+    expect(w.channels.getDesiredState('b', id)).toBe('open');
     w.sent.length = 0;
     const result = await w.set(m, id, 'mentions');
     const text = JSON.stringify(result);
@@ -1211,7 +1232,7 @@ describe('channel-mode server ownership', () => {
     expect(text).not.toContain('Each step is safe to repeat');
     expect(text).toContain('ask whoever runs this host');
     expect(text).toContain('old owner');
-    expect(w.channels.getDesiredState('b', id)).toBe('closed');
+    expect(w.channels.getDesiredState('b', id)).toBe('open');
     expect(w.sent.filter(s => s.serverId === 'b')).toEqual([]);
     await m.stop();
   });
@@ -1222,7 +1243,7 @@ describe('channel-mode server ownership', () => {
     const result = await w.set('zulip:backend', 'mentions');
     expect(result.success).toBe(false);
     expect(result.error).toContain('closing the channel failed (adapter refused close)');
-    expect(result.error).toContain('to retry');
+    expect(result.error).toContain('To retry');
     expect(result.error).toContain('ask whoever runs this host');
     expect(w.rules.size).toBe(0);
     expect(w.calls.at(-1)).toMatchObject({ input: { pinned: false } });

@@ -206,7 +206,7 @@ export class ChannelModeModule implements Module {
                 : "is disconnected and hasn't registered this channel. ") +
               `Retry debounced once the server registers the channel, or call mentions with serverId "${savedOwner}" to release the binding without a confirmed close.` }
         : ownerGone
-          ? { error: `The saved owner ${savedOwner} is no longer configured for channel ${channelId}. Ask whoever runs this host to restore that server and its registration, or call mentions with or without serverId to remove the rule, unpin, and clear the record even if the old owner's close is unconfirmed.` }
+          ? { error: `The saved owner ${savedOwner} is no longer configured for channel ${channelId}. Ask whoever runs this host to restore that server and its registration, or call mentions omitting serverId or naming saved owner "${savedOwner}" to remove the rule, unpin, and clear the record even if the old owner's close is unconfirmed.` }
           : this.resolveServer(channelId, explicit ?? savedOwner);
     if (mode === 'debounced') {
       const error = 'error' in resolved ? resolved.error : !resolved.connected
@@ -247,6 +247,8 @@ export class ChannelModeModule implements Module {
     const retry = mode === 'mentions' && 'error' in resolved
       ? 'Resolve the ownership issue above, then call mentions with the same channelId and serverId naming its owner to retry; if unsure, ask whoever runs this host.'
       : mode === 'mentions' && failed.length === 1 && failed[0]!.retryHandled ? '' :
+      mode === 'mentions' && savedOwner === undefined && 'serverId' in resolved
+        ? `To retry, call channel-mode--set_channel_mode with the same channelId, mode and serverId "${resolved.serverId}" only after verifying it is still the intended owner. Do not select a replacement server; if ownership has changed or is unclear, ask whoever runs this host.` :
       'Each step is safe to repeat, so call channel-mode--set_channel_mode again with the same channelId' +
       (serverId === undefined ? ' and mode' : ', mode and serverId') +
       (mode === 'debounced' ? `, and debounceMs ${debounceMs},` : '') +
@@ -404,7 +406,7 @@ export class ChannelModeModule implements Module {
     }
     if (releaseOrphan && !steps[1]!.ok && 'serverId' in resolved) {
       steps[1]!.retryHandled = true;
-      steps[1]!.detail = `Old owner ${resolved.serverId}'s close could not be confirmed. ` +
+      steps[1]!.detail = `Old owner ${resolved.serverId}'s close could not be confirmed by this attempt. ` +
         `The saved owner record was ${released ? 'cleared' : 'retained'}. ` +
         'This does not confirm a close. ' +
         (released
