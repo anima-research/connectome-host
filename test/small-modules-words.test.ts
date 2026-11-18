@@ -150,7 +150,11 @@ describe('channel-mode', () => {
       'Channel discord:1:2 is only partly in mentions mode: its debounce rule was removed and it isn\'t pinned, ' +
       'and closing the channel failed (channel_close refused: Server not found: discord).',
     );
-    expect(removed.error).toContain('again with the same channelId and mode to retry');
+    // No saved binding protects a retry if channel ownership changes.
+    expect(removed.error).toContain('To retry, call channel-mode--set_channel_mode with the same channelId, mode and serverId "discord" only after verifying it is still the intended owner');
+    expect(removed.error).toContain('Do not select a replacement server');
+    expect(removed.error).toContain('if ownership has changed or is unclear, ask whoever runs this host');
+    expect(removed.error).not.toContain('Each step is safe to repeat');
     const none = await wired({ failing: ['channel_close'], ruleExists: false }).m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions' }));
     expect(none.error).toContain("it had no debounce rule to remove and it isn't pinned");
   });
@@ -164,8 +168,14 @@ describe('channel-mode', () => {
       const result = await m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions' }));
       expect(result.success).toBe(false);
       expect(result.error).toContain('closing the channel failed');
-      expect(result.error).toContain('Each step is safe to repeat');
-      expect(result.error).toContain('again with the same channelId and mode to retry');
+      expect(result.error).toContain(opts.removeFails
+        ? "the channel's debounce gate rule failed (cannot remove)"
+        : 'releasing its pin failed');
+      // Multiple failures still need retry advice, not an unconditional safety claim.
+      expect(result.error).toContain('To retry, call channel-mode--set_channel_mode with the same channelId, mode and serverId "discord" only after verifying it is still the intended owner');
+      expect(result.error).toContain('Do not select a replacement server');
+      expect(result.error).toContain('if ownership has changed or is unclear, ask whoever runs this host');
+      expect(result.error).not.toContain('Each step is safe to repeat');
     }
   });
 

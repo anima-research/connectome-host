@@ -23,16 +23,18 @@
   mentions on a replacement. Direct GC unpin has no declared operator tool
   or writable settings field. Mode names remain `debounced` and `mentions`.
   See `docs/ATTENTION-AND-GATING.md`.
-- **Operators:** The default-enabled `set_channel_mode` tool description and
-  schema change on upgrade. Each wake-enabled resident with channelMode enabled
-  whose requests include the tool (not hidden by its tool allowlist) rewrites
-  its prompt cache in full on its first request, even if it never invokes
-  the tool.
+- **Operators:** The `set_channel_mode` tool description and schema, and
+  subscription GC's `channel_idle_limits` description in the `agent_settings`
+  schema, change on upgrade. Each resident whose requests carry either changed
+  tool (not hidden by its tool allowlist) rewrites its prompt cache in full on
+  its first such request, even if it never invokes the tool. The settings change
+  also affects residents with subscription GC and `agent_settings` enabled when
+  channelMode or wake is disabled.
 - **Recipe authors:** `modules.channelMode.serverId` is now only a legacy
   fallback for unregistered bare ids or its own namespace, not a server override
   for every call. Registry owners take precedence; use tool-call `serverId`
   for explicit ownership (after cleaning up any saved owner).
-- Debounced setup now refuses disconnected or unregistered saved owners,
+- **Recipe authors and operators:** Debounced setup now refuses disconnected or unregistered saved owners,
   in-progress new bindings, and new ids at the 1,024-owner cap. Reconnect and
   wait for registration, wait for setup to finish, or complete mentions cleanup
   for a tracked id to free capacity, respectively.
