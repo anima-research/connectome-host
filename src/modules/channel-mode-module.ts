@@ -102,7 +102,7 @@ export class ChannelModeModule implements Module {
           type: 'object',
           properties: {
             channelId: { type: 'string', description: 'Copy the exact incoming-event id: zulip:backend, slack:<conversationId> (slack:C0123ABCD), or discord:<guildId>:<channelId>, not a raw platform id. Bare legacy ids (no colon) may use the configured fallback. Unregistered unknown namespaces need serverId.' },
-            serverId: { type: 'string', description: 'Optional owning MCPL server for shared ids; mentions naming a saved owner releases its missing-channel binding without a confirmed close.' },
+            serverId: { type: 'string', description: 'Optional owning MCPL server for shared ids; mentions naming a saved owner can release its missing-channel binding without a confirmed close, after rule cleanup and successful unpin (or absent configured GC) and owner-state save.' },
             mode: { type: 'string', enum: ['debounced', 'mentions'], description: 'Target attention mode.' },
             debounceMs: { type: 'number', description: 'Quiet window in ms (100–300000); validated in either mode.' },
           },
@@ -171,7 +171,12 @@ export class ChannelModeModule implements Module {
     }
 
     // Module state follows the current Chronicle branch without restarting us.
-    const owners = this.readOwners();
+    let owners: Map<string, string>;
+    try {
+      owners = this.readOwners();
+    } catch (err) {
+      return { success: false, isError: true, error: `Nothing changed: cannot read saved channel ownership: ${errMsg(err)}. Ask whoever runs this host to recover the stored state before retrying.` };
+    }
     const savedOwner = owners.get(channelId);
     const explicit = serverId as string | undefined;
     const entries = this.framework.channels?.listChannelsRaw() ?? [];
@@ -309,7 +314,15 @@ export class ChannelModeModule implements Module {
   }
 
   private readOwners(): Map<string, string> {
-    return new Map(Object.entries(this.ctx?.getState<ChannelModeState>()?.owners ?? {}));
+    const state = this.ctx?.getState<ChannelModeState>();
+    // ModuleContext returns null for absent state; some stubs return undefined.
+    if (state == null) return new Map();
+    if (!state || typeof state !== 'object' || Array.isArray(state) ||
+        !state.owners || typeof state.owners !== 'object' || Array.isArray(state.owners) ||
+        Object.entries(state.owners).some(([id, owner]) => !id || typeof owner !== 'string' || !owner)) {
+      throw new Error('invalid channel-mode owner state');
+    }
+    return new Map(Object.entries(state.owners));
   }
 
   private policyName(channelId: string): string {
@@ -334,14 +347,19 @@ export class ChannelModeModule implements Module {
           },
           { position: 'prepend' },
         );
-        if (steps[0]!.ok) {
-          const owners = this.readOwners();
-          owners.set(channelId, serverId);
-          this.ctx.setState<ChannelModeState>({ owners: Object.fromEntries(owners) });
-        }
         steps.push({ step: 'gate-policy', ok: true, detail: 'set' });
       } catch (err) {
         steps.push({ step: 'gate-policy', ok: false, detail: errMsg(err) });
+      }
+    }
+
+    if (steps[0]!.ok && steps[1]!.ok && this.ctx) {
+      try {
+        const owners = this.readOwners();
+        owners.set(channelId, serverId);
+        this.ctx.setState<ChannelModeState>({ owners: Object.fromEntries(owners) });
+      } catch (err) {
+        steps.push({ step: 'owner-save', ok: false, detail: `Open and rule succeeded, but saving ownership failed: ${errMsg(err)}. Saved ownership is unconfirmed.` });
       }
     }
 
@@ -391,23 +409,27 @@ export class ChannelModeModule implements Module {
     // An unregistered owner's close may fail before recording desired state.
     // Release that orphan after rule cleanup AND unpin (or confirmed GC
     // absence), not a replacement close.
-    const owners = this.readOwners();
     // Registration may appear while close or unpin awaits. Abandonment is
     // allowed only while the owner is still missing, or its close is confirmed.
     const orphanStillMissing = 'serverId' in resolved && !this.framework!.channels?.listChannelsRaw()
       .some(entry => entry.serverId === resolved.serverId && entry.descriptor.id === channelId);
     let released = false;
-    if (!retainPending && steps[0]!.ok && steps[2]!.ok &&
+    try {
+      const owners = this.readOwners();
+      if (!retainPending && steps[0]!.ok && steps[2]!.ok &&
         (closed || (releaseOrphan && orphanStillMissing)) &&
         'serverId' in resolved && this.ctx && owners.get(channelId) === resolved.serverId) {
-      owners.delete(channelId);
-      this.ctx.setState<ChannelModeState>({ owners: Object.fromEntries(owners) });
-      released = true;
+        owners.delete(channelId);
+        this.ctx.setState<ChannelModeState>({ owners: Object.fromEntries(owners) });
+        released = true;
+      }
+    } catch (err) {
+      steps.push({ step: 'owner-save', ok: false, detail: `Releasing saved ownership failed after the cleanup steps above: ${errMsg(err)}. Saved ownership is unconfirmed.` });
     }
     if (releaseOrphan && !steps[1]!.ok && 'serverId' in resolved) {
       steps[1]!.retryHandled = true;
       steps[1]!.detail = `Old owner ${resolved.serverId}'s close could not be confirmed by this attempt. ` +
-        `The saved owner record was ${released ? 'cleared' : 'retained'}. ` +
+        `The saved owner record was ${released ? 'cleared' : steps.some(s => s.step === 'owner-save') ? 'not confirmed cleared' : 'retained'}. ` +
         'This does not confirm a close. ' +
         (released
           ? `Do not retry against a replacement server; ask whoever runs this host to verify the old owner's remote subscription.`
@@ -491,6 +513,7 @@ const STEP_NAMES: Readonly<Record<string, string>> = {
   open: 'opening the channel',
   close: 'closing the channel',
   'gate-policy': "the channel's debounce gate rule",
+  'owner-save': 'saving channel ownership',
   'gc-pin': 'pinning it open',
   'gc-unpin': 'releasing its pin',
 };

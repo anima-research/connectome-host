@@ -69,7 +69,7 @@ function registryWired(ids = ['zulip', 'discord', 'slack'], initialState?: unkno
     m.setFramework(framework);
     await m.start({
       getModule: () => m,
-      getState: () => structuredClone(saved), setState: (state: unknown) => { saved = structuredClone(state); writes.push(saved); },
+      getState: () => structuredClone(saved), setState: (state: unknown) => { if (failedTools.has('setState')) throw new Error('state write failed'); saved = structuredClone(state); writes.push(saved); },
       callTool: async (call: ToolCall) => {
         calls.push(call);
         if (failedTools.has(call.name)) return { success: false, error: 'injected failure' };
@@ -86,6 +86,70 @@ function registryWired(ids = ['zulip', 'discord', 'slack'], initialState?: unkno
 }
 
 describe('channel-mode server ownership', () => {
+  test('owner save failure does not misreport the installed rule', async () => {
+    const w = registryWired(['a']);
+    const m = await w.createModule();
+    await w.register('a', 'zulip:g');
+    w.failedTools.add('setState');
+    const result = await w.set(m, 'zulip:g');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('its debounce rule is set');
+    expect(result.error).toContain('saving channel ownership failed');
+    expect(result.error).not.toContain('gate rule failed');
+    expect(w.rules.size).toBe(1);
+    expect(w.saved()).toBeUndefined();
+    expect((result.data as { steps: unknown[] }).steps).toContainEqual(
+      expect.objectContaining({ step: 'owner-save', ok: false }),
+    );
+  });
+
+  test('owner release failure returns completed cleanup in a structured result', async () => {
+    const w = registryWired(['a']);
+    const m = await w.createModule();
+    await w.register('a', 'zulip:g');
+    await w.set(m, 'zulip:g');
+    w.failedTools.add('setState');
+    const result = await w.set(m, 'zulip:g', 'mentions');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('saving channel ownership failed');
+    expect(result.error).toContain('Saved ownership is unconfirmed');
+    expect(w.rules.size).toBe(0);
+    expect(w.channels.getDesiredState('a', 'zulip:g')).toBe('closed');
+    expect(w.saved()).toEqual({ owners: { 'zulip:g': 'a' } });
+    expect((result.data as { steps: unknown[] }).steps).toEqual([
+      expect.objectContaining({ step: 'gate-policy', ok: true }),
+      expect.objectContaining({ step: 'close', ok: true }),
+      expect.objectContaining({ step: 'gc-unpin', ok: true }),
+      expect.objectContaining({ step: 'owner-save', ok: false }),
+    ]);
+  });
+
+  test('null ModuleContext state means no saved ownership', async () => {
+    const w = registryWired(['a'], null);
+    const m = await w.createModule();
+    await w.register('a', 'zulip:g');
+    expect((await w.set(m, 'zulip:g')).success).toBe(true);
+    expect(w.saved()).toEqual({ owners: { 'zulip:g': 'a' } });
+  });
+
+  for (const state of [[], {}, { owners: null }, { owners: [] }, { owners: 'bad' },
+    { owners: { 'zulip:g': null } }, { owners: { 'zulip:g': '' } }]) {
+    for (const mode of ['mentions', 'debounced']) {
+      test(`malformed owner state refuses ${mode} without effects: ${JSON.stringify(state)}`, async () => {
+        const w = registryWired(['b'], state);
+        const m = await w.createModule();
+        await w.register('b', 'zulip:g');
+        const result = await w.set(m, 'zulip:g', mode);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('recover the stored state');
+        expect(w.calls).toEqual([]);
+        expect(w.rules.size).toBe(0);
+        expect(w.writes).toEqual([]);
+        expect(w.saved()).toEqual(state);
+      });
+    }
+  }
+
   for (const mode of ['mentions', 'debounced']) {
     test(`R2-1 sequence ${mode === 'mentions' ? 1 : 2}: saved owner binds ${mode} until cleanup`, async () => {
       const w = registryWired(['a', 'b']);
@@ -1288,5 +1352,11 @@ describe('channel-mode server ownership', () => {
     expect(schema).toContain('slack:<conversationId>');
     expect(schema).not.toContain('teamId');
     expect(schema).toContain('serverId');
+    expect(schema).toContain('after rule cleanup and successful unpin');
+    expect(schema).toContain('absent configured GC');
+    expect(schema).toContain('owner-state save');
+    const settings = JSON.stringify(new SubscriptionGcModule().getAgentSettingsExtension().properties);
+    expect(settings).toContain('use set_channel_mode with mode mentions');
+    expect(settings).toContain('if cleanup fails or ownership is unclear');
   });
 });

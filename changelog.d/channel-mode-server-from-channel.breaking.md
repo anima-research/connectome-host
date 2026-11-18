@@ -38,3 +38,5 @@
   in-progress new bindings, and new ids at the 1,024-owner cap. Reconnect and
   wait for registration, wait for setup to finish, or complete mentions cleanup
   for a tracked id to free capacity, respectively.
+- Channel mode refuses malformed saved ownership before effects, and reports
+  owner-state save failures separately from rule installation or completed cleanup.
