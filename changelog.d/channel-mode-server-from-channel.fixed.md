@@ -8,8 +8,9 @@
   precedence over
   registry replacement hints in both modes, unless explicitly abandoned by
   naming the saved owner. Owner records follow branch switches and free after
-  rule/close cleanup even without subscription GC. Branch moves can forget
-  bindings but leave the host-wide rule and open channel in place. Reapply
+  rule/close/unpin cleanup even without subscription GC. Failed unpin and
+  unanswered close retain registered owners for safe retries. Branch moves can
+  forget bindings but leave the host-wide rule and open channel in place. Reapply
   affected modes to replace or remove old wrong-source rules, and remove
   hand-written workaround rules. Mentions naming a saved owner can release a
   missing-channel binding after rule removal and unpin, without a replacement
@@ -17,11 +18,13 @@
   as closed. Without subscription GC, pin and unpin are successful no-ops and
   do not strand orphan records; results distinguish them from an actual unpin.
   Re-adding GC restores any previously persisted pin; ask the host operator
-  to unpin with GC directly if ownership may have changed, rather than calling
-  mentions on a replacement. See `docs/ATTENTION-AND-GATING.md`.
+  to arrange recovery if ownership may have changed, rather than calling
+  mentions on a replacement. Direct GC unpin has no declared operator tool
+  or writable settings field. See `docs/ATTENTION-AND-GATING.md`.
 - **Operators:** The default-enabled `set_channel_mode` tool description and
-  schema change on upgrade. Each wake-enabled resident's first request rewrites
-  its prompt cache in full, even if residents never invoke the tool.
+  schema change on upgrade. Each wake-enabled resident with channelMode enabled
+  rewrites its prompt cache in full on its first request, even if residents
+  never invoke the tool.
 - **Recipe authors:** `modules.channelMode.serverId` is now only a legacy
   fallback for unregistered bare ids or its own namespace, not a server override
   for every call. Registry owners take precedence; use tool-call `serverId`

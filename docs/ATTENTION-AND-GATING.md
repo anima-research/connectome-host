@@ -218,9 +218,11 @@ action.
      legacy fallback (default `discord`) only for bare ids with no `:` or ids
      in that fallback's own namespace. Unknown namespaces such as `teams:x`
      never route to a different fallback. Registry ownership overrides prefixes.
-  3. Debounced mode refuses unknown, disconnected, ambiguous, or wrong explicit
-     ownership before any effects. Owners are saved only after open and rule
-     installation both succeed. While the saved owner still registers the
+  3. Debounced mode refuses unknown, disconnected, ambiguous, or
+     registry-conflicting explicit ownership before any effects. An explicit known server for an unregistered
+     ID selects a route, not verified ownership: the registry may refuse open,
+     while independent rule and pin steps still run. Owners are saved only after
+     open and rule installation both succeed. While the saved owner still registers the
      channel, a different explicit owner is refused in either mode until mentions
      cleanup completes. One mode/rule is kept per exact channel id; switching
      server is not an implicit migration.
@@ -234,25 +236,28 @@ action.
      keeps the binding and says to retry the close after registration. Debounced
      refuses without effects and asks to retry once connected and registered.
      For a still-registered owner, a successful or
-     durably recorded close plus successful rule removal deletes the matching
-     owner record. Unpin failures are reported separately and do not retain that
-     record. If subscription GC
+     durably recorded (answered) close plus successful rule removal and unpin
+     deletes the matching owner record. Failed unpin or unanswered close retains
+     the owner so retry cannot infer a replacement. If subscription GC
      is absent (`modules.subscriptionGc: false`, or removed after a successful
      debounced setup), pin and unpin are successful no-ops: nothing auto-closes
      the channel, and there is no pin to release, respectively. This does not
      edit saved GC state: re-adding subscription GC later restores any pin
-     persisted earlier. With GC present again, ask the host operator to unpin
-     directly through GC if ownership may have changed: mentions would also remove the current
-     rule and close the current owner.
-     Only a sole close failure with specific recovery advice suppresses the
-     tool's generic retry advice, including a durably recorded close. Skipped,
+     persisted earlier. There is no declared operator tool or writable settings
+     field for direct GC unpin. If ownership may have changed, ask the host operator to arrange
+     recovery; do not use mentions merely to clear the old pin, because it also
+     removes the current rule and closes the current owner.
+     A sole close failure with specific recovery advice suppresses the tool's
+     generic retry advice, including a durably recorded close. Unresolved
+     ownership asks for resolution and an explicit serverId instead. Skipped,
      failed, or unanswered steps are reported individually.
   5. For a missing channel entry, mentions releases the saved binding only if
      the owner is no longer configured or an explicit `serverId` names that
      saved owner (never closing a replacement), and only after successful rule
      removal and unpin (absent GC counts as nothing to unpin), even if close is
-     unconfirmed; failures remain reported, and this does not clear the old
-     registry's desired-open state or guarantee a remote close.
+     unconfirmed while that owner remains unregistered; failures remain reported,
+     and this does not clear the old registry's desired-open state or guarantee
+     a remote close.
 
   New distinct debounced ids are refused before effects at 1024 live owners
   (including in-flight opens). Complete mentions cleanup for a tracked channel

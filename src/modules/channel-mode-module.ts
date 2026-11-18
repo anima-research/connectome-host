@@ -185,7 +185,7 @@ export class ChannelModeModule implements Module {
     const ownerGone = ownerMissing && !ownerPending;
     const releaseOrphan = mode === 'mentions' && ownerMissing &&
       (ownerGone || explicit === savedOwner);
-    if (savedOwner !== undefined && explicit !== undefined && explicit !== savedOwner && !releaseOrphan) {
+    if (savedOwner !== undefined && explicit !== undefined && explicit !== savedOwner) {
       return { success: false, isError: true, error: `Nothing changed: channel ${channelId} is bound to saved owner ${savedOwner}. Call mentions with serverId "${savedOwner}" to complete cleanup (for a missing channel, this releases the binding without a confirmed close) before selecting ${explicit}.` };
     }
     // Registry hints are safe only without a saved binding: otherwise they can
@@ -220,7 +220,7 @@ export class ChannelModeModule implements Module {
       if (this.pendingOwners.has(channelId)) {
         return { success: false, isError: true, error: `Nothing changed: a debounced change for channel ${channelId} is in progress. Retry after it completes.` };
       }
-      if (owners.size + this.pendingOwners.size >= MAX_OWNERS) {
+      if (new Set([...owners.keys(), ...this.pendingOwners]).size >= MAX_OWNERS) {
         return { success: false, isError: true, error: `Nothing changed: channel-mode's ${MAX_OWNERS} live-owner capacity is full. Complete mentions cleanup for a tracked channel to free a slot (for a missing channel, call mentions with serverId naming its saved owner to release the binding without a confirmed close).` };
       }
       this.pendingOwners.add(channelId);
@@ -244,7 +244,9 @@ export class ChannelModeModule implements Module {
       .join('; ');
     // Suppress generic retries only when the failed step supplies recovery
     // advice (including a durably deferred close), not for arbitrary refusals.
-    const retry = mode === 'mentions' && failed.length === 1 && failed[0]!.retryHandled ? '' :
+    const retry = mode === 'mentions' && 'error' in resolved
+      ? 'Resolve the ownership issue above, then call mentions with the same channelId and serverId naming its owner to retry; if unsure, ask whoever runs this host.'
+      : mode === 'mentions' && failed.length === 1 && failed[0]!.retryHandled ? '' :
       'Each step is safe to repeat, so call channel-mode--set_channel_mode again with the same channelId' +
       (serverId === undefined ? ' and mode' : ', mode and serverId') +
       (mode === 'debounced' ? `, and debounceMs ${debounceMs},` : '') +
@@ -283,7 +285,7 @@ export class ChannelModeModule implements Module {
     if (preferredServerId !== undefined) {
       const server = servers.find(server => server.id === preferredServerId);
       if (!server && !owners.some(owner => owner.serverId === preferredServerId)) {
-        return { error: `MCPL server ${preferredServerId} for channel ${channelId} is unknown. Pass serverId naming a known server or a registry owner.` };
+        return { error: `MCPL server ${preferredServerId} for channel ${channelId} is unknown. Known servers or registry owners: ${[...new Set([...servers.map(server => server.id), ...owners.map(owner => owner.serverId)])].sort().join(', ') || 'none'}. Pass serverId naming a known server or a registry owner.` };
       }
       return { serverId: preferredServerId, connected: server?.connected === true };
     }
@@ -375,20 +377,26 @@ export class ChannelModeModule implements Module {
 
     // A disconnected close returns failure, but the registry durably records
     // it. Consult its structured desired state, not error-message wording.
-    const closed = 'serverId' in resolved && (steps[1]!.ok ||
+    const closed = 'serverId' in resolved && !steps[1]!.unanswered && (steps[1]!.ok ||
       this.framework!.channels?.getDesiredState?.(resolved.serverId, channelId) === 'closed');
     if (closed && !steps[1]!.ok && !steps[1]!.unanswered) {
       steps[1]!.retryHandled = true;
       steps[1]!.detail += ' The registry records this channel as closed; no repeat close is needed. ' +
         'If the remote subscription stays open, ask whoever runs this host.';
     }
-    // Live owners still need a close; a missing GC tool does not retain them.
+    // Retain ownership through failed unpin so the advised retry cannot close a
+    // replacement. Confirmed optional GC absence still counts as completion.
     // An unregistered owner's close may fail before recording desired state.
     // Release that orphan after rule cleanup AND unpin (or confirmed GC
     // absence), not a replacement close.
     const owners = this.readOwners();
+    // Registration may appear while close or unpin awaits. Abandonment is
+    // allowed only while the owner is still missing, or its close is confirmed.
+    const orphanStillMissing = 'serverId' in resolved && !this.framework!.channels?.listChannelsRaw()
+      .some(entry => entry.serverId === resolved.serverId && entry.descriptor.id === channelId);
     let released = false;
-    if (!retainPending && steps[0]!.ok && (releaseOrphan ? steps[2]!.ok : closed) &&
+    if (!retainPending && steps[0]!.ok && steps[2]!.ok &&
+        (closed || (releaseOrphan && orphanStillMissing)) &&
         'serverId' in resolved && this.ctx && owners.get(channelId) === resolved.serverId) {
       owners.delete(channelId);
       this.ctx.setState<ChannelModeState>({ owners: Object.fromEntries(owners) });
