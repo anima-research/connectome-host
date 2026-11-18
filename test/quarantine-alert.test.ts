@@ -73,12 +73,34 @@ describe('quarantineAlarm', () => {
     }
   });
 
-  test('none held: the all-clear, under its own kind', () => {
+  test('none held: record absence under its own kind, never proof of coverage/debt payment', () => {
     expect(quarantineAlarm({ count: 0, keys: [] })).toEqual({
       kind: 'compression-quarantine-clear',
-      message: 'compression quarantine EMPTY — all debt paid; alarm stands down.',
+      message: 'compression quarantine EMPTY — no records held; coverage and debt payment not established by this count; alarm stands down.',
       data: { count: 0 },
     });
     expect(quarantineAlarm({ count: 0, keys: [], spans: [] }).kind).toBe('compression-quarantine-clear');
+  });
+
+  test('known episode-end reasons forward to notifyOps data without claiming coverage or an actual retry', () => {
+    for (const clearReason of ['quarantine-empty', 'operator-waiver-requested'] as const) {
+      const alert = quarantineAlarm({ count: 0, keys: [], clearReason });
+      expect(alert.kind).toBe('compression-quarantine-clear');
+      expect(alert.data).toEqual({ count: 0, clearReason });
+      expect(alert.message).toContain('no records held');
+      expect(alert.message).toContain('coverage and debt payment not established');
+      expect(alert.message.includes('operator waiver requested')).toBe(clearReason === 'operator-waiver-requested');
+      expect(alert.data).not.toHaveProperty('actualRetry');
+    }
+  });
+
+  test('absent, generic and unknown reasons remain neutral; a held-record alarm never forwards a clear reason', () => {
+    const neutral = quarantineAlarm({ count: 0, keys: [] });
+    for (const clearReason of [undefined, null, 'generic', 'future-reason', 'coverage-complete', {}]) {
+      expect(quarantineAlarm({ count: 0, keys: [], clearReason } as unknown as QuarantineStatus)).toEqual(neutral);
+    }
+    for (const clearReason of ['quarantine-empty', 'operator-waiver-requested'] as const) {
+      expect(quarantineAlarm({ count: 3, keys, clearReason })).toEqual(quarantineAlarm({ count: 3, keys }));
+    }
   });
 });
