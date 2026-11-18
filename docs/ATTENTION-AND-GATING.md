@@ -224,7 +224,9 @@ action.
      channel, a different explicit owner is refused in either mode until mentions
      cleanup completes. One mode/rule is kept per exact channel id; switching
      server is not an implicit migration.
-  4. Mentions removes the rule and unpins, even when ownership cannot be resolved.
+  4. Unless an explicit owner conflicts with the saved binding (refused before
+     effects), mentions removes the rule and unpins even when ownership cannot
+     be resolved.
      It closes a known owner even when disconnected: when the channel still
      has a registry entry, the framework records the close for re-registration.
      If the saved owner is still configured, a missing channel entry is
@@ -239,10 +241,12 @@ action.
      debounced setup), pin and unpin are successful no-ops: nothing auto-closes
      the channel, and there is no pin to release, respectively. This does not
      edit saved GC state: re-adding subscription GC later restores any pin
-     persisted earlier. With GC present again, call mentions to unpin if needed.
-     Only a sole
-     answered close failure suppresses the tool's generic retry advice; the
-     registry explains deferred closes. Skipped, failed, or unanswered steps are reported individually.
+     persisted earlier. With GC present again, ask the host operator to unpin
+     directly through GC if ownership may have changed: mentions would also remove the current
+     rule and close the current owner.
+     Only a sole close failure with specific recovery advice suppresses the
+     tool's generic retry advice, including a durably recorded close. Skipped,
+     failed, or unanswered steps are reported individually.
   5. For a missing channel entry, mentions releases the saved binding only if
      the owner is no longer configured or an explicit `serverId` names that
      saved owner (never closing a replacement), and only after successful rule

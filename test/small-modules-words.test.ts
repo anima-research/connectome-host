@@ -150,7 +150,7 @@ describe('channel-mode', () => {
       'Channel discord:1:2 is only partly in mentions mode: its debounce rule was removed and it isn\'t pinned, ' +
       'and closing the channel failed (channel_close refused: Server not found: discord).',
     );
-    expect(removed.error).not.toContain('to retry');
+    expect(removed.error).toContain('to retry');
     const none = await wired({ failing: ['channel_close'], ruleExists: false }).m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions' }));
     expect(none.error).toContain("it had no debounce rule to remove and it isn't pinned");
   });
@@ -181,7 +181,7 @@ describe('channel-mode', () => {
   test('a step whose call threw may have taken effect, and the result says so', async () => {
     const m = new ChannelModeModule();
     m.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => { throw new Error('debounce rule refused'); }, removeGatePolicy: () => true } as never);
-    await m.start({ getState: () => undefined, setState: () => {},
+    await m.start({ getModule: () => m, getState: () => undefined, setState: () => {},
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') throw new Error('timed out');
         return { success: false, error: `${c.name} refused` };
@@ -192,6 +192,8 @@ describe('channel-mode', () => {
       'Channel discord:1:2 may not have changed: opening the channel got no answer (timed out), so it may or may not have taken effect;',
     );
     expect(none.error).not.toContain('Nothing changed');
+    expect(none.error).toContain('pinning it open failed (subscription-gc--pin_channel_idle_limit refused)');
+    expect(none.error).not.toContain('pinning it open got no answer');
 
     const m2 = new ChannelModeModule();
     m2.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => {}, removeGatePolicy: () => true } as never);
@@ -209,7 +211,7 @@ describe('channel-mode', () => {
     const m = new ChannelModeModule();
     const gate: string[] = [];
     m.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => { gate.push('add'); }, removeGatePolicy: () => true } as never);
-    await m.start({ getState: () => undefined, setState: () => {},
+    await m.start({ getModule: () => m, getState: () => undefined, setState: () => {},
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') await m.stop();
         return { success: true };

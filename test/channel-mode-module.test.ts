@@ -242,7 +242,7 @@ describe('channel-mode server ownership', () => {
     const rules = structuredClone([...w.rules]);
     const refused = await w.set(m, id);
     expect(refused.success).toBe(false);
-    expect(refused.error).toContain('Restore');
+    expect(refused.error).toContain('Ask whoever runs this host to restore');
     expect(w.calls).toHaveLength(calls);
     expect([...w.rules]).toEqual(rules);
     expect(w.saved()).toEqual({ owners: { [id]: 'a' } });
@@ -502,8 +502,7 @@ describe('channel-mode server ownership', () => {
             } else {
               const closeDetail = "Old owner a's close could not be confirmed. " +
                 'The saved owner record was cleared. This does not confirm a close. ' +
-                'Close attempt: No channel "zulip:g" is on server "a", so nothing ran. ' +
-                'It\'s on server "b": call again with serverId "b", or leave serverId out.';
+                "Do not retry against a replacement server; ask whoever runs this host to verify the old owner's remote subscription.";
               const message = ownerStatus === 'live' ? 'Channel zulip:g set to mentions mode.' :
                 'Channel zulip:g is only partly in mentions mode: its debounce rule was removed and ' +
                 `there was no pin to release (no subscription-gc module), and closing the channel failed (${closeDetail}).`;
@@ -1023,12 +1022,15 @@ describe('channel-mode server ownership', () => {
     let release!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });
     const calls: ToolCall[] = [];
+    let entered!: () => void;
+    const openEntered = new Promise<void>(resolve => { entered = resolve; });
     await m.start({ getModule: () => m, getState: () => ({ owners }), setState: () => {}, callTool: async (call: ToolCall) => {
       calls.push(call);
-      if (call.name === 'channel_open') await pending;
+      if (call.name === 'channel_open') { entered(); await pending; }
       return { success: true };
     } } as unknown as ModuleContext);
     const first = w.set(m, 'zulip:last');
+    await openEntered;
     expect(calls).toHaveLength(1);
     expect((await w.set(m, 'zulip:extra')).error).toContain('1024');
     expect(calls).toHaveLength(1);
@@ -1043,10 +1045,42 @@ describe('channel-mode server ownership', () => {
       w.rules.set('channel-mode:debounced:legacy-id', { name: 'channel-mode:debounced:legacy-id', match: { source: 'discord', channel: 'legacy-id' } });
       const result = await w.set('legacy-id', 'mentions');
       expect(result.error).toContain('skipped');
+      expect(result.error).toContain('to retry');
+      expect(result.error).toContain('ask whoever runs this host');
       expect(w.rules.size).toBe(0);
       expect(w.calls).toMatchObject([{ input: { pinned: false } }]);
       expect(w.calls).toHaveLength(1);
     }
+  });
+
+  test('orphan cleanup never advises closing a replacement owner', async () => {
+    const w = registryWired(['a', 'b']);
+    const m = await w.createModule();
+    const id = 'zulip:g';
+    await w.register('a', id);
+    await w.set(m, id);
+    w.channels.removeServer('a');
+    w.servers.shift();
+    await w.register('b', id);
+    w.sent.length = 0;
+    const result = await w.set(m, id, 'mentions');
+    const text = JSON.stringify(result);
+    expect(text).not.toContain('call again with serverId');
+    expect(text).not.toContain('leave serverId out');
+    expect(text).not.toContain('Each step is safe to repeat');
+    expect(text).toContain('ask whoever runs this host');
+    expect(text).toContain('old owner');
+    expect(w.channels.getDesiredState('b', id)).toBe('closed');
+    expect(w.sent.filter(s => s.serverId === 'b')).toEqual([]);
+    await m.stop();
+  });
+
+  test('release notes warn default-enabled tool changes rewrite prompt caches', () => {
+    const notes = readFileSync(new URL('../changelog.d/channel-mode-server-from-channel.fixed.md', import.meta.url), 'utf8');
+    expect(notes).toMatch(/default-enabled/);
+    expect(notes).toMatch(/prompt.cache/);
+    expect(notes).toMatch(/first request/);
+    expect(notes).toMatch(/never invoke/);
   });
 
   test('mentions reports a failed close while removing rule and pin', async () => {
@@ -1055,6 +1089,8 @@ describe('channel-mode server ownership', () => {
     const result = await w.set('zulip:backend', 'mentions');
     expect(result.success).toBe(false);
     expect(result.error).toContain('closing the channel failed (adapter refused close)');
+    expect(result.error).toContain('to retry');
+    expect(result.error).toContain('ask whoever runs this host');
     expect(w.rules.size).toBe(0);
     expect(w.calls.at(-1)).toMatchObject({ input: { pinned: false } });
   });
@@ -1093,7 +1129,7 @@ describe('channel-mode server ownership', () => {
     const schema = JSON.stringify(tool.inputSchema);
     expect(schema).toContain('legacy');
     expect(schema).toContain('no colon');
-    expect(schema).toContain('Unknown namespaces are refused');
+    expect(schema).toContain('Unregistered unknown namespaces need serverId');
     expect(schema).not.toContain('silently');
     expect(schema).toContain('slack:<conversationId>');
     expect(schema).not.toContain('teamId');

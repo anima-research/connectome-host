@@ -30,6 +30,8 @@ interface StepResult {
   ok: boolean;
   detail: string;
   unanswered?: true;
+  /** This step supplies owner-safe recovery advice instead of the generic retry. */
+  retryHandled?: true;
 }
 
 export class ChannelModeModule implements Module {
@@ -99,7 +101,7 @@ export class ChannelModeModule implements Module {
         inputSchema: {
           type: 'object',
           properties: {
-            channelId: { type: 'string', description: 'Copy the exact incoming-event id: zulip:backend, slack:<conversationId> (slack:C0123ABCD), or discord:<guildId>:<channelId>, not a raw platform id. Bare legacy ids (no colon) may use the configured fallback. Unknown namespaces are refused.' },
+            channelId: { type: 'string', description: 'Copy the exact incoming-event id: zulip:backend, slack:<conversationId> (slack:C0123ABCD), or discord:<guildId>:<channelId>, not a raw platform id. Bare legacy ids (no colon) may use the configured fallback. Unregistered unknown namespaces need serverId.' },
             serverId: { type: 'string', description: 'Optional owning MCPL server for shared ids; mentions naming a saved owner releases its missing-channel binding without a confirmed close.' },
             mode: { type: 'string', enum: ['debounced', 'mentions'], description: 'Target attention mode.' },
             debounceMs: { type: 'number', description: 'Quiet window in ms (100–300000); validated in either mode.' },
@@ -204,11 +206,11 @@ export class ChannelModeModule implements Module {
                 : "is disconnected and hasn't registered this channel. ") +
               `Retry debounced once the server registers the channel, or call mentions with serverId "${savedOwner}" to release the binding without a confirmed close.` }
         : ownerGone
-          ? { error: `The saved owner ${savedOwner} is no longer configured for channel ${channelId}. Restore that server and its registration, or call mentions with or without serverId to remove the rule, unpin, and clear the record even if the old owner's close is unconfirmed.` }
+          ? { error: `The saved owner ${savedOwner} is no longer configured for channel ${channelId}. Ask whoever runs this host to restore that server and its registration, or call mentions with or without serverId to remove the rule, unpin, and clear the record even if the old owner's close is unconfirmed.` }
           : this.resolveServer(channelId, explicit ?? savedOwner);
     if (mode === 'debounced') {
       const error = 'error' in resolved ? resolved.error : !resolved.connected
-        ? `MCPL server ${resolved.serverId} for channel ${channelId} is disconnected. Connect that server before retrying.`
+        ? `MCPL server ${resolved.serverId} for channel ${channelId} is disconnected. Ask whoever runs this host to connect that server before retrying.`
         : undefined;
       if (error) return { success: false, error: `Nothing changed: ${error}`, isError: true };
     }
@@ -240,9 +242,9 @@ export class ChannelModeModule implements Module {
         ? `${STEP_NAMES[s.step] ?? s.step} got no answer (${s.detail}), so it may or may not have taken effect`
         : `${STEP_NAMES[s.step] ?? s.step} failed (${s.detail})`)
       .join('; ');
-    // Only a sole, answered close failure owns all retry guidance. Other
-    // failures still need retry advice, even alongside a deferred close.
-    const retry = mode === 'mentions' && failed.length === 1 && failed[0]!.step === 'close' && !failed[0]!.unanswered ? '' :
+    // Suppress generic retries only when the failed step supplies recovery
+    // advice (including a durably deferred close), not for arbitrary refusals.
+    const retry = mode === 'mentions' && failed.length === 1 && failed[0]!.retryHandled ? '' :
       'Each step is safe to repeat, so call channel-mode--set_channel_mode again with the same channelId' +
       (serverId === undefined ? ' and mode' : ', mode and serverId') +
       (mode === 'debounced' ? `, and debounceMs ${debounceMs},` : '') +
@@ -262,7 +264,7 @@ export class ChannelModeModule implements Module {
       success: failed.length === 0,
       isError: failed.length > 0,
       ...(failed.length > 0 ? { error: summary } : {}),
-      data: { channelId, mode, debounceMs: mode === 'debounced' ? debounceMs : undefined, steps, message: summary },
+      data: { channelId, mode, debounceMs: mode === 'debounced' ? debounceMs : undefined, steps: steps.map(({ retryHandled, ...step }) => step), message: summary },
     };
   }
 
@@ -375,6 +377,11 @@ export class ChannelModeModule implements Module {
     // it. Consult its structured desired state, not error-message wording.
     const closed = 'serverId' in resolved && (steps[1]!.ok ||
       this.framework!.channels?.getDesiredState?.(resolved.serverId, channelId) === 'closed');
+    if (closed && !steps[1]!.ok && !steps[1]!.unanswered) {
+      steps[1]!.retryHandled = true;
+      steps[1]!.detail += ' The registry records this channel as closed; no repeat close is needed. ' +
+        'If the remote subscription stays open, ask whoever runs this host.';
+    }
     // Live owners still need a close; a missing GC tool does not retain them.
     // An unregistered owner's close may fail before recording desired state.
     // Release that orphan after rule cleanup AND unpin (or confirmed GC
@@ -388,15 +395,17 @@ export class ChannelModeModule implements Module {
       released = true;
     }
     if (releaseOrphan && !steps[1]!.ok && 'serverId' in resolved) {
+      steps[1]!.retryHandled = true;
       steps[1]!.detail = `Old owner ${resolved.serverId}'s close could not be confirmed. ` +
         `The saved owner record was ${released ? 'cleared' : 'retained'}. ` +
         'This does not confirm a close. ' +
         (released
-          ? `Close attempt: ${steps[1]!.detail}`
+          ? `Do not retry against a replacement server; ask whoever runs this host to verify the old owner's remote subscription.`
           : `Call mentions with serverId "${resolved.serverId}" to retry cleanup and release the binding without a confirmed close.`);
     }
 
     if (retainPending && !steps[1]!.ok && 'serverId' in resolved) {
+      steps[1]!.retryHandled = true;
       // The registry may suggest another server, but the saved binding forbids
       // that selection. Replace its hint rather than presenting conflicting advice.
       steps[1]!.detail = `Server ${resolved.serverId} has not registered channel ${channelId}. ` +
