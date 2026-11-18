@@ -126,6 +126,51 @@ describe('the forms agent-framework wrote', () => {
     expect(rewritten(row(words, { system: true, kind: 'other' }))).toBeNull();
   });
 
+  describe('a failed-turn note whose reason agent-framework 0.33.3 writes itself is left, whichever release wrote it', () => {
+    const FAILED = '[inference-failed] Your previous turn did not complete: the model call failed';
+    const BOUND = 'No content within 0.3s of the send (the host\'s setting for this bound: ' +
+      '`inferenceBounds.progressBounds.beforeContentMs`)';
+    const note = (text: string, metadata: Record<string, unknown>) =>
+      row(text, { system: true, kind: 'inference-failed', consecutive: 1, ...metadata });
+
+    test('a progress bound\'s cut, as 0.33.3\'s inference-bounds tests have it', () => {
+      const text = '[inference-failed] Your previous turn did not complete: the model call timed out and produced no ' +
+        `response, so nothing was sent. The call was made again, and it timed out again. Reason: ${BOUND}. ${TIMEOUT_ADVICE}`;
+      expect(rewritten(note(text, { reason: BOUND, errorType: 'timeout', retryable: false }))).toBeNull();
+      const think = 'No content within 2s of a thinking block\'s start (max_tokens 8000 at 50 tokens a second) (the ' +
+        'host\'s setting for this bound: `inferenceBounds.progressBounds.thinkTokensPerSecond`)';
+      expect(rewritten(note(`${text.replace(BOUND, think)}`, { reason: think, errorType: 'timeout' }))).toBeNull();
+    });
+
+    test('a compile that context-manager refused, as 0.33.3\'s inference-failure-bounds tests have it, and the same note as 0.33.1 wrote it', () => {
+      const reason = 'Context would exceed hard budget';
+      for (const errorType of ['over_budget', 'context_refusal']) {
+        const text = `${FAILED} (${errorType}) and produced no response, so nothing was sent. Reason: ${reason}. ${FAILURE_ADVICE}`;
+        expect(rewritten(note(text, { reason, errorType }))).toBeNull();
+      }
+    });
+
+    test('a stream\'s abort, which carries no error type', () => {
+      const reason = 'Stream aborted: stopped by operator';
+      const text = `[inference-failed] Your previous turn did not complete: it failed. Reason: ${reason}. ${FAILURE_ADVICE}`;
+      expect(rewritten(note(text, { reason }))).toBeNull();
+    });
+
+    test('where the stored fields don\'t show such a reason, the note is swept: a provider\'s timeout, a provider\'s message that opens like an abort, and a note with no stored reason', () => {
+      const timeout = '[inference-failed] Your previous turn did not complete: the model call timed out (timeout, HTTP 408) ' +
+        `and produced no response, so nothing was sent. Reason: ${PROVIDER}. ${TIMEOUT_ADVICE}`;
+      expect(rewritten(note(timeout, { reason: PROVIDER, errorType: 'timeout', httpStatus: 408 }))).not.toBeNull();
+      const planted = 'Stream aborted: ZQ-PROVIDER says no';
+      const asAbort = `${FAILED} (invalid_request, HTTP 400) and produced no response, so nothing was sent. Reason: ${planted}. ${FAILURE_ADVICE}`;
+      expect(rewritten(note(asAbort, { reason: planted, errorType: 'invalid_request', httpStatus: 400 }))).not.toBeNull();
+      const asCut = `${FAILED} (server, HTTP 500) and produced no response, so nothing was sent. Reason: ${BOUND}. ${FAILURE_ADVICE}`;
+      expect(rewritten(note(asCut, { reason: BOUND, errorType: 'server', httpStatus: 500 }))).not.toBeNull();
+      const noReason = `${FAILED} (over_budget) and produced no response, so nothing was sent. Reason: ${PROVIDER}. ${FAILURE_ADVICE}`;
+      expect(rewritten(note(noReason, { errorType: 'unknown' }))).not.toBeNull();
+      expect(rewritten(note(`[inference-failed] Your previous turn did not complete: it failed. Reason: ${BOUND}. ${FAILURE_ADVICE}`, {}))).not.toBeNull();
+    });
+  });
+
   test('it is the one sweep this release knows', () => {
     expect(SWEEPS.map((sweep) => sweep.name)).toEqual(['unstick-fix-11-16']);
   });
