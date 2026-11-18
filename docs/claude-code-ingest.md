@@ -290,7 +290,9 @@ discord-mcpl among them signing in to Discord as the resident's bot, and the `.e
 original data directory. Instead:
 1. Copy the data directory the service gives the host (its `DATA_DIR`), wherever it is,
    following links (`cp -RL`), so a link in it doesn't lead the copy back to the
-   original.
+   original. Delete `cache-keepalive.json` from the copy: it holds the resident's
+   recent requests, which a copy started with `agent.cacheKeepalive.persist` on would
+   replay.
 2. Make stage 4's Claude-Code-specific choices in the recipe first, so the check
    compiles what the resident will run. Then copy it, readable by you alone
    (`chmod 600` on the copy before the password goes in), and in the copy leave out

@@ -411,6 +411,7 @@ Under `$DATA_DIR` (default `./data`):
 | `sessions/<id>.import-source.json` | Provenance sidecar written by the importers. |
 | `llm-calls.<iso>.jsonl` | Provider call log, one per process. |
 | `lessons.json` | Lesson store (shared by every session in the data dir). |
+| `cache-keepalive.json` | With `agent.cacheKeepalive.persist`: the keepalive's lineages, up to four whole recent requests (0600), rewritten each turn. Deleted at startup when `persist` is off; deleting it forgets them. |
 | `observers.json`, `identity-key.pem` | WebUI observer grants; identity keypair. |
 | `ipc.sock`, `headless.log`, `headless.pid` | Headless mode. |
 | `mcpl-servers.agent.child.json` | A fleet child's own agent overlay, named to it by `MCPL_AGENT_OVERLAY_FILE`. |

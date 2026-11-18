@@ -3,8 +3,16 @@ import {
   logKeepaliveEvent,
   formatKeepaliveEvent,
   KEEPALIVE_LOG_PREFIX,
+  keepalivePersistWarning,
+  keepalivePersistHealth,
+  KEEPALIVE_STATE_FILE,
+  type KeepaliveRef,
 } from '../src/cache-keepalive-log.js';
-import type { KeepaliveEvent } from '@animalabs/membrane';
+import { AnthropicAdapter, CacheKeepalive, type KeepaliveEvent } from '@animalabs/membrane';
+import { LoggingAnthropicAdapter } from '../src/logging-adapter.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const EVENTS: KeepaliveEvent[] = [
   { type: 'refreshed', key: 'k1', lane: 'stream', readTokens: 523102, idleMs: 2987020 },
@@ -64,5 +72,68 @@ describe('keepalive event logging', () => {
     }
     expect(toStderr.length).toBe(EVENTS.length);
     expect(toStdout.length).toBe(0);
+  });
+});
+
+describe('keepalivePersistWarning', () => {
+  test('says nothing when persist is off, or the keepalive is saving', () => {
+    expect(keepalivePersistWarning(undefined, undefined)).toBeNull();
+    expect(keepalivePersistWarning(false, {})).toBeNull();
+    expect(keepalivePersistWarning(true, { persistPath: '/data/cache-keepalive.json' })).toBeNull();
+  });
+
+  test('a 5-minute cache: no effect', () => {
+    expect(keepalivePersistWarning(true, { persistPath: '/x' }, '5m')).toContain("no effect with agent.cacheTtl '5m'");
+  });
+
+  test('no keepalive (another provider, or keepalive off): no effect', () => {
+    expect(keepalivePersistWarning(true, undefined)).toContain('keepalive is off for this provider or recipe');
+  });
+
+  test('a membrane without statePath', () => {
+    expect(keepalivePersistWarning(true, {})).toContain("this membrane can't save keepalive state");
+  });
+
+  test('a keepalive that gave up its file', () => {
+    expect(keepalivePersistWarning(true, { persistPath: undefined })).toContain('stopped saving');
+  });
+
+  test('matches the installed membrane, from a real adapter instance', () => {
+    const adapter = new AnthropicAdapter({ apiKey: 'test-key', cacheKeepalive: { enabled: true } });
+    try {
+      const supported = 'persistPath' in CacheKeepalive.prototype;
+      const warning = keepalivePersistWarning(true, adapter.cacheKeepalive);
+      if (supported) expect(warning).toContain('stopped saving');
+      else expect(warning).toContain("this membrane can't save keepalive state");
+    } finally {
+      adapter.cacheKeepalive?.stop();
+    }
+  });
+
+  test('statePath reaches the adapter\'s keepalive (when membrane takes it)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ka-persist-'));
+    const statePath = join(dir, KEEPALIVE_STATE_FILE);
+    const adapter = new LoggingAnthropicAdapter(
+      { apiKey: 'test-key', cacheKeepalive: { enabled: true, statePath } as never },
+      join(dir, 'llm.jsonl'),
+    );
+    try {
+      const ka = adapter.cacheKeepalive as KeepaliveRef;
+      if ('persistPath' in CacheKeepalive.prototype) {
+        expect(ka?.persistPath).toBe(statePath);
+        expect(keepalivePersistHealth(true, ka)).toEqual({ saving: true, path: statePath });
+      } else {
+        expect(keepalivePersistHealth(true, ka)).toEqual({ saving: false, reason: 'membrane-unsupported' });
+      }
+    } finally {
+      adapter.cacheKeepalive?.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('health: absent unless persist is on', () => {
+    expect(keepalivePersistHealth(undefined, { persistPath: '/x' })).toBeNull();
+    expect(keepalivePersistHealth(true, undefined)).toEqual({ saving: false, reason: 'no-keepalive' });
+    expect(keepalivePersistHealth(true, { persistPath: undefined })).toEqual({ saving: false });
   });
 });
