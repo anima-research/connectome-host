@@ -116,11 +116,17 @@ describe('the retired surface keys', () => {
     const notices = deprecatedSurfaceNotices(validateRecipe(recipe({ instructions: { path: 'input/AGENTS.md', position: 'beforeUser' } })).modules);
     expect(notices).toHaveLength(1);
     expect(notices[0]).toContain('modules.instructions.position "beforeUser" is deprecated');
-    expect(notices[0]).toContain('agent-framework#171');
-    expect(notices[0]).toContain('misses the prompt cache');
+    expect(notices[0]).toContain('anima-research/agent-framework#171');
+    expect(notices[0]).toContain('between a tool call and its result');
+    expect(notices[0]).toContain('"afterUser" avoids that but moves the same way');
+    expect(notices[0]).toContain('"system" (the default) stays put');
     for (const position of ['system', 'afterUser', undefined]) {
       expect(deprecatedSurfaceNotices(validateRecipe(recipe({ instructions: { path: 'input/AGENTS.md', ...(position ? { position } : {}) } })).modules)).toEqual([]);
     }
+    // The boolean shorthand never reaches the object check. Called directly:
+    // `instructions: true` defaults to the instructions/ mount, which the
+    // recipe helper here doesn't declare, so validateRecipe would refuse it.
+    expect(deprecatedSurfaceNotices({ instructions: true } as any)).toEqual([]);
   });
 });
 

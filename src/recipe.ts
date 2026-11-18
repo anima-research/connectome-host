@@ -1073,9 +1073,11 @@ export interface RecipeModules {
    *   request misses the cache from its old place on, and on a model that
    *   binds a reply's thinking to everything before it, every reply after its
    *   old place loses its thinking.
-   * - 'beforeUser' is deprecated (agent-framework#171). It's spliced in again
-   *   before the newest user message at every compile, so it moves, and it
-   *   can split a tool call from its result. Use 'afterUser' or 'system'.
+   * - 'beforeUser' is deprecated (anima-research/agent-framework#171). It is
+   *   placed before the newest user-role message, and a tool result is one,
+   *   so a request rebuilt mid-turn (a retry) can put it between a tool call
+   *   and its result. It moves as 'afterUser' does, missing the prompt cache
+   *   from its old place whenever a newer user message arrives.
    */
   instructions?: boolean | {
     /** Workspace path "<mountName>/<relativePath>". Default "instructions/AGENTS.md". */
@@ -1615,12 +1617,17 @@ export function deprecatedSurfaceNotices(modules: RecipeModules | undefined): st
     notices.push('modules.webui.observersSurface is no longer read: the observer tools are in agent-framework\'s built-in ' +
       '"settings" toolset, or in the tool list of an agent that may not call both toolsets--open and toolsets--act.');
   }
-  // Deprecated in 0.25.0 with a cost paid on every compile: said at start,
-  // where the two keys above are, and not only in the changelog.
+  // Deprecated in 0.25.0. The cost only "beforeUser" has is the split: it is
+  // placed before the newest user-role message, and agent-framework stores a
+  // tool result as one. The cache miss on a newer user message it shares with
+  // "afterUser"; only "system" stays put. Said at start, where the two keys
+  // above are, and not only in the README and the changelog.
   if (typeof modules?.instructions === 'object' && modules.instructions.position === 'beforeUser') {
-    notices.push('modules.instructions.position "beforeUser" is deprecated (agent-framework#171): the block is spliced ' +
-      'in again before the newest user message at every compile, so it moves, a request misses the prompt cache from ' +
-      'there on, and it can split a tool call from its result. Use "afterUser" or "system"; both stay supported.');
+    notices.push('modules.instructions.position "beforeUser" is deprecated (anima-research/agent-framework#171): it is ' +
+      'placed before the newest user-role message, and a tool result is one, so a request rebuilt mid-turn (a retry) ' +
+      'can put it between a tool call and its result. "afterUser" avoids that but moves the same way, missing the ' +
+      'prompt cache from its old place whenever a newer user message arrives; "system" (the default) stays put and ' +
+      'misses the cache only when the file changes.');
   }
   return notices;
 }
