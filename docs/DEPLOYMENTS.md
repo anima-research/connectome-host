@@ -146,7 +146,8 @@ the working directory):
   directory) — the child's stdio, opened by the parent at spawn.
 - **Inference failures** (agent-framework): when a turn's inference is
   exhausted after retries the framework prints
-  `[inference-failed] agent=… consecutive=N: <reason>` to stderr (in readline
+  `[inference-failed] agent=… consecutive=N type=… status=… code=…: <reason>`,
+  each label only where the error has it, to stderr (in readline
   mode, to `data/readline-error.log`), appends a
   JSONL record to `logs/failures.log`, and adds an `[inference-failed]` marker
   to the agent's chronicle, so the agent learns its turn failed

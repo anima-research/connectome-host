@@ -41,6 +41,13 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
     `wake-decisions.json` is not affected. A Go back that keeps the newer
     data, to a release on agent-framework 0.33.0, drops the `unasked`
     records, and the servers recorded as predating onboarding are offered.
+- **Not changed: connectome-host's own code still puts a provider's words
+  where an agent reads them,** as on 0.25.0. Two such paths:
+  - A subagent whose model call fails: its parent gets the error's message.
+    agent-framework 0.33.3's rejection for a failed run still carries it.
+  - Where `modules.notices` has a status channel: the `[host-notice]` row
+    written for the agent quotes the notice posted there, such as a
+    hard-down's last reason or an off-path refusal's category.
 
 ## 0.25.0 — 2026-11-10
 
