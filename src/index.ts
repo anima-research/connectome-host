@@ -863,6 +863,11 @@ async function main() {
   await waitToBeListed();
   installHere = releaseHere();
   if (installHere !== null) armTrialLog(installHere);
+  // What the Models API said of the recipe's models at the last start, for
+  // the fit check at load and the agent config, before the recipe is read
+  // (nothing to load at a first start, when the directory doesn't exist yet).
+  const modelFactsFile = join(config.dataDir, 'model-facts.json');
+  loadModelFacts(modelFactsFile);
   try {
     // mkdirSync's mode applies only to the directories it creates.
     mkdirSync(config.dataDir, { recursive: true, mode: PRIVATE_DIR_MODE });
@@ -871,10 +876,6 @@ async function main() {
     console.error('Set DATA_DIR to a path where this user has or can make a directory, or fix what the error names.');
     process.exit(1);
   }
-  // What the Models API said of the recipe's models at the last start, for
-  // the fit check at load and the agent config, before the recipe is read.
-  const modelFactsFile = join(config.dataDir, 'model-facts.json');
-  loadModelFacts(modelFactsFile);
   const recipe = await resolveRecipe();
   const provider = resolveProvider(recipe);
   if (provider === 'anthropic') {
