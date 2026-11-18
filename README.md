@@ -997,12 +997,25 @@ refused while a turn is in flight: `/checkout`, `/restore` and `/branchto`
 while any agent sharing the store is mid-turn, the subconscious included, and
 `/undo`, `/redo` and `/newtopic` while the agent the command acts for is.
 `/sweep` isn't refused for a turn in flight. With `--write`, it leaves each
-row that the window of an agent with a turn alive holds, says so, and
-rewrites the rest; run it again once those turns end. While a command that
-changes the session, such as a bare `/newtopic` writing its summary, is still
-running, `/sweep` with `--write` writes nothing and says so. `/sweep` reaches
-the open session's rows alone, and on a host with more sessions its answer
-says so.
+row that the window of an agent with a turn alive holds, says so, and rewrites
+the rest; run it again once those turns end. While a command that changes the
+session, such as a bare `/newtopic` writing its summary, is still running,
+`/sweep` with `--write` writes nothing and says so. `/sweep` reaches the open
+session's rows alone, and on a host with more sessions its answer says so. It
+reaches this host's own agents alone: on a host with fleet children its answer
+says so, and an agent here sends a child `/sweep` with `fleet--command` and
+reads the child's answer with `fleet--peek`. A row stored in shards isn't
+rewritten: the answer names it with its count of shards, and a `--write` that
+meets one ends refused. A summary already built from a rewritten row keeps its
+old words, and where the strategy of an agent whose context holds the row
+renders summaries the answer says so. A later rollback to a row stored before
+the sweep (`/restore` to a message, `/branchto` or the Web UI's Rollback)
+brings that row's old text back, so run the sweep again after one. Each
+`--write` records in the operator log the rows it rewrote, left and failed,
+and those stored in shards, each with its agent and up to 50 of each kind, and
+the branch and the store's sequence before its first edit. A row's text before
+the sweep is its text at that sequence (context-manager's `getMessageAt`), and
+the rows the sweep matches at that sequence are the rows it listed.
 `/newtopic` stores its transition only while the agent has no turn alive, and
 is refused while a continuation or a retry of the agent's turn is on its way.
 A bare `/newtopic` writes its summary first. If the branch or the strategy

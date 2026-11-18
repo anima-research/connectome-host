@@ -389,3 +389,122 @@ test('no answer holds a row\'s old text: the list, the write, a turn alive and a
   expect(said(answers[1]!)).toContain('its edit failed');
   for (const answer of answers) expect(said(answer)).not.toContain(OLD);
 });
+
+const ROLLBACK = 'A later rollback to a row stored before now (/restore to a message, /branchto or the Web UI\'s Rollback) ' +
+  'brings these rows\' old text back. Run the sweep again after one.';
+const SHARDS = 'it is stored in 3 shards of body group group-7, which this sweep can\'t rewrite in place, so its old text stays.';
+
+function withFleet(h: Awaited<ReturnType<typeof host>>, children: string[]) {
+  const fleet = { name: 'fleet', getChildren: () => new Map(children.map((name) => [name, { name }])) };
+  const framework = new Proxy(h.framework, {
+    get(target, key) {
+      if (key === 'getAllModules') return () => [...target.getAllModules(), fleet];
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const app = { ...(h.app as object), framework } as never;
+  return (...args: string[]) => handleSweep(app, args, { via: 'test' }, [notes]);
+}
+
+describe('/sweep NAME: what it doesn\'t reach, and what its record keeps', () => {
+  test('a later rollback to a row stored before the sweep brings the old words back, and a --write that rewrote a row says so', async () => {
+    const h = await host();
+    const id = h.note('a', 1);
+    await h.turn('a');
+    const cm = h.agent('a').getContextManager();
+    const target = cm.getAllMessages().at(-1)!;
+    cm.addMessage('user', text('a later row'), {});
+    await h.turn('a');
+    const written = h.sweep('test-notes', '--write');
+    expect(said(written)).toContain('Sweep test-notes rewrote 1 of 1 row.');
+    expect(said(written)).toContain(ROLLBACK);
+    await h.framework.rollbackToMessage('a', { messageId: String(target.id) } as never);
+    expect(h.rowText('a', id)).toContain(OLD);
+    const again = h.sweep('test-notes');
+    expect(said(again)).toContain('Sweep test-notes would rewrite 1 row.');
+    expect(said(again)).not.toContain(ROLLBACK);
+    expect(said(h.sweep('test-notes', '--write'))).toContain(ROLLBACK);
+    expect(said(h.sweep('test-notes', '--write'))).not.toContain(ROLLBACK);
+  });
+
+  test('on a host with fleet children, each answer says the sweep reached this host\'s agents alone, and how an agent sweeps a child', async () => {
+    const h = await host();
+    h.note('a', 1);
+    const sweep = withFleet(h, ['kid', 'pup']);
+    const line = 'This host has 2 fleet children (kid, pup): the sweep reached this host\'s own agents alone. An agent here ' +
+      'sends a child /sweep test-notes, or /sweep test-notes --write, with fleet--command, and reads the child\'s answer ' +
+      'with fleet--peek.';
+    for (const answer of [sweep('test-notes'), sweep('test-notes', '--write'), sweep('test-notes')]) expect(said(answer)).toContain(line);
+    expect(said(withFleet(h, ['kid'])('test-notes'))).toContain('This host has 1 fleet child (kid): ');
+    expect(said(withFleet(h, [])('test-notes'))).not.toContain('fleet');
+    expect(said(h.sweep('test-notes'))).not.toContain('fleet');
+  });
+
+  test('the operator log records the rows rewritten, left and failed, each with its agent, and the branch and the store\'s sequence before the first edit', async () => {
+    const h = await host();
+    const first = h.note('a', 1);
+    const second = h.note('a', 2);
+    const cm = h.agent('a').getContextManager();
+    const edit = cm.editMessage.bind(cm);
+    cm.editMessage = (id, content) => {
+      if (String(id) === first) throw new Error('the store refused this edit');
+      edit(id, content);
+    };
+    const store = h.framework.getStore();
+    const before = { branch: store.currentBranch().name, sequenceBefore: store.currentSequence() };
+    h.sweep('test-notes', '--write');
+    const logged = h.operatorLog().find((e) => e.kind === 'sweep')!;
+    expect(logged.result).toMatchObject({
+      ...before, rewritten: 1, leftForTurns: 0, failed: 1,
+      rewrittenRows: [{ agent: 'a', id: second }], leftRows: [], failedRows: [{ agent: 'a', id: first }],
+    });
+    expect(store.currentSequence()).toBeGreaterThan(before.sequenceBefore);
+  });
+
+  test('the logged rows of a kind stop at 50, saying so, while its count is whole', async () => {
+    const h = await host();
+    for (let n = 1; n <= 51; n++) h.note('a', n);
+    h.sweep('test-notes', '--write');
+    const result = h.operatorLog().find((e) => e.kind === 'sweep')!.result as Record<string, unknown>;
+    expect(result.rewritten).toBe(51);
+    expect((result.rewrittenRows as unknown[]).length).toBe(50);
+    expect(result.rewrittenRowsTruncated).toBe(true);
+    expect(result.leftRowsTruncated).toBeUndefined();
+  });
+
+  test('where a holder\'s strategy renders summaries, the show and the write say that a summary already built from these rows keeps their old words', async () => {
+    const h = await host();
+    h.note('a', 1);
+    await h.turn('a');
+    const plain = h.sweep('test-notes');
+    expect(said(plain)).not.toContain('summar');
+    const cm = h.agent('a').getContextManager();
+    cm.describeRenderedForms = () => ({ strategy: 'test', forms: ['raw', 'summary'] });
+    const line = 'For a, whose strategy renders summaries, a summary already built from these rows keeps their old words.';
+    expect(said(h.sweep('test-notes'))).toContain(line);
+    expect(said(h.sweep('test-notes', '--write'))).toContain(line);
+  });
+
+  test('a row stored in shards is named with its count of shards and left, the show doesn\'t count it, and a --write that meets one answers refused', async () => {
+    const h = await host();
+    h.note('a', 1);
+    const sharded = h.note('a', 2);
+    const cm = h.agent('a').getContextManager();
+    const all = cm.getAllMessages.bind(cm);
+    cm.getAllMessages = () => all().map((row) => (String(row.id) === sharded ? { ...row, bodyGroupId: 'group-7', shardIndex: 0, shardCount: 3 } : row));
+    const shown = h.sweep('test-notes');
+    expect(said(shown)).toContain('Sweep test-notes would rewrite 1 row.');
+    expect(shown.lines.map((l) => l.text).find((l) => l.includes(SHARDS))).toContain(`row ${sharded} of `);
+    expect(shown.refused).toBeUndefined();
+    const written = h.sweep('test-notes', '--write');
+    expect(written.refused).toBe(true);
+    expect(said(written)).toContain('Sweep test-notes rewrote 1 of 1 row.');
+    expect(said(written)).toContain(`${SHARDS} A second run won't change that.`);
+    expect(h.rowText('a', sharded)).toContain(OLD);
+    expect(h.operatorLog().find((e) => e.kind === 'sweep')!.result).toMatchObject({ inShards: 1, shardedRows: [{ agent: 'a', id: sharded }] });
+    const alone = h.sweep('test-notes');
+    expect(said(alone)).toContain('Sweep test-notes finds no row it can rewrite.');
+    expect(said(alone)).toContain(SHARDS);
+  });
+});
