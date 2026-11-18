@@ -128,7 +128,7 @@ const ERROR_CLASSES = new Set([
  */
 export const HOST_LOG_TAGS = new Set([
   'agent-settings', 'anthropic-credentials', 'autobiographical', 'batch', 'budget-preflight',
-  'cache-keepalive', 'channel', 'cm-cache', 'coalescing', 'compression-quarantine', 'context-maintenance',
+  'cache-keepalive', 'channel', 'cm-cache', 'coalescing', 'compression-provider', 'compression-quarantine', 'context-maintenance',
   'credential', 'credential-monitor', 'deprecated', 'diagnostics', 'discord', 'discord-awareness', 'echo',
   'estimator-calibration', 'fit', 'fleet', 'framework', 'gate', 'gate-telemetry', 'heartbeat', 'host', 'host-command',
   'host-mode', 'host-notice', 'identity', 'image', 'inference-dropped', 'inference-failed',

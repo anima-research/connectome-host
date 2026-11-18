@@ -751,6 +751,14 @@ and the context can't compress under the window. Use a stable model for compress
 agent *speaks* on a more fragile one — they're separate settings, and the summaries are still
 "in the agent's voice" via `summaryParticipant`. (Note: if you switch compression off the
 agent's own model, mention it to the user — it's mildly identity-adjacent.)
+To send compression through another credential or provider than the agent's turns (turns on a
+subscription token, compression on an API key or a gateway), set
+`agent.strategy.compressionProvider`: `{ "provider": "anthropic" | "openai-responses" |
+"openai-compatible" | "openrouter", "apiKeyEnv"?: "<ENV_VAR>", "baseUrl"?: "<url>" }`. The
+credential is read from `apiKeyEnv` (default: the provider's usual variable, e.g.
+`ANTHROPIC_API_KEY`), never from the recipe. On another provider than `agent.provider`, set
+`compressionModel` to the model as that provider names it. The host logs where compression goes
+at start, and refuses to start if the installed agent-framework or context-manager can't route it.
 
 **11.4 — Exact token counts via a *live* model.** The makeup endpoint calls `count_tokens`
 (at `ANTHROPIC_BASE_URL` when set) with the agent's own model, provider/gateway prefixes
@@ -857,7 +865,10 @@ transcripts and residents that keep diaries in long tool arguments. Fleet mitiga
 recipe-level: `refusalHandling.retries: 2` (near-threshold refusals are nondeterministic and
 refused-up-front requests are not billed); `compressionToolProseFallback` into `journal` for
 long `think` / `skip_reply` arguments; `carrierPolicy: "live-strip"` when the live window
-refuses but compression is fine; a context-manager that defers tools-less compression (a
+refuses but compression is fine; `agent.strategy.compressionProvider` (§11.3) to move
+compression off a subscription credential onto an API key, which keeps the resident's turns on
+the subscription (whether it changes how often compression is refused is not established); a
+context-manager that defers tools-less compression (a
 compression request with no `tools` declared is a deterministic input-block on some model
 families). Symptoms, triage table and the localisation method are in
 [`claude-code-ingest.md` §5](./claude-code-ingest.md#5-if-you-hit-reasoning_extraction-refusals)
