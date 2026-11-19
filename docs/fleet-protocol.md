@@ -264,7 +264,7 @@ prompt. autoStart, autoRestart and `fleet--restart` bypass the check.
 | `fleet--status` | `name?` | Detailed record (shows the *requested* subscription, before the forced union below). |
 | `fleet--send` | `name, content` | Send a `text` command. |
 | `fleet--command` | `name, command` | Send a `command`; returns immediately — output arrives as `command-output` events (see `fleet--peek`). |
-| `fleet--peek` | `name, lines?=50` | Last N events from the child's 500-event ring buffer, each without a failure's own text (its `error`, `stack` and `providerErrorCode`, an alert's `message` and `data`, an `errorType` of `safety`), with a `note` saying so. The buffer keeps each event whole. |
+| `fleet--peek` | `name, lines?=50` | Last N events from the child's 500-event ring buffer, each without a failure's own text: an `error` or `attemptError` at any depth reads `"left out"`, and `stack`, `providerErrorCode`, an alert's `message` and `data`, and an `errorType` of `safety` are left out. A `note` in the result says so. The buffer keeps each event whole. |
 | `fleet--kill` | `name` | `shutdown`, wait `gracefulShutdownMs`, SIGTERM, wait `sigtermEscalationMs`, SIGKILL. |
 | `fleet--restart` | `name` | Kill, then relaunch with the same recipe, dataDir, subscription, `env` and `autoRestart`. Cancels a pending automatic restart and starts a fresh retry budget (§4.6), as a `fleet--launch` of the same name does. |
 | `fleet--relay` | `from, to, prefix?` | Send to `to` the last `inference:speech` this host has had from `from` since its connection to `from` last opened. Refused when that frame is `""`, a round with no text, and while this host has no connection to a `from` that may be running (below). |

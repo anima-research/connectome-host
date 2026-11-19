@@ -2601,12 +2601,12 @@ export class FleetModule implements Module {
   }
 }
 
-const PEEK_NOTE = "Each event is shown without a failure's own text: its error, stack and providerErrorCode, " +
-  "an alert's message and data, and an errorType of safety.";
+const LEFT_OUT = 'left out';
+const PEEK_NOTE = `Each event's error and attemptError read "${LEFT_OUT}" in place of their text, and its stack and ` +
+  "providerErrorCode, an alert's message and data, and an errorType of safety are left out.";
 
 function peekView(event: WireEvent): Record<string, unknown> {
-  const shown: Record<string, unknown> = { ...event };
-  delete shown.error;
+  const shown = withoutErrorText(event);
   delete shown.stack;
   delete shown.providerErrorCode;
   if (shown.errorType === 'safety') delete shown.errorType;
@@ -2615,6 +2615,21 @@ function peekView(event: WireEvent): Record<string, unknown> {
     delete shown.data;
   }
   return shown;
+}
+
+function withoutErrorText(value: object): Record<string, unknown> {
+  const shown: Record<string, unknown> = {};
+  for (const [key, field] of Object.entries(value)) {
+    const text = typeof field === 'string' || (typeof field === 'object' && field !== null);
+    shown[key] = (key === 'error' || key === 'attemptError') && text ? LEFT_OUT : nestedWithoutErrorText(field);
+  }
+  return shown;
+}
+
+function nestedWithoutErrorText(field: unknown): unknown {
+  if (Array.isArray(field)) return field.map(nestedWithoutErrorText);
+  if (typeof field === 'object' && field !== null) return withoutErrorText(field);
+  return field;
 }
 
 function isUrlOrAbsolute(p: string): boolean {
