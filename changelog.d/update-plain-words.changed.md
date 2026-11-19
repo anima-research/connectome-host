@@ -1,6 +1,0 @@
-- `/update back` and `connectome update back` say in plain words what each way brings back:
-  - Keeping the newer data brings the host back as it is now. It answers new turns, or holds them if its operator quiesced it. A switch's quiesce that was left behind ends at that start.
-  - Restoring the copy brings the host back answering new turns, whether or not it's quiesced now. The exception is a host that its operator quiesced before the Restart that took the copy, from the Web UI or through an MCPL server. That host comes back holding new turns until someone clicks "⏸ quiesced" in the Web UI's top bar.
-
-  Their last line says that either way, new turns are held first, and turns in progress get up to 2 min to end, as with Restart. Before, both said that the host "quiesces".
-- `/update restart` and `/update back`, and `connectome update restart` and `back`, open with "Asking the host to restart" or "to go back". Then they say that if it goes ahead, new turns are held and turns in progress get up to 2 min to end. Before, they said "unless refused". When a headless host that started with `CONNECTOME_SUPERVISED=1` then stops, they say that the service starts it again by itself, and that this start makes the switch.

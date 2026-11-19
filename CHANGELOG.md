@@ -6,6 +6,177 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.26.0 — 2026-11-19
+
+### Added
+
+- `connectome doctor` checks an install in five steps:
+  - **The service:** the units that `connectome service install` names, the shell daemon's included, and the state of each, as systemd or launchd gives it.
+  - **The host:** whether a host answers on the install's socket, with its pid and recipe. The host takes one client at a time. So doctor's connection to it closes another command's connection.
+  - **The recipe:** with a host, the recipe that the host loaded. With no host, whether the recipe that the service's unit names loads. Doctor loads it with `.env`'s values, its own environment over them, and the install's data directory as `DATA_DIR` over both, as the service's unit sets it.
+  - **The model calls:** the host's counts of each agent's failed model calls in a row, and of its refusals, with the command that lists the failures in the host's log. Doctor prints no failure's text, since that text can quote the model provider.
+  - **The Discord token:** whether Discord accepts the `DISCORD_TOKEN` in `.env`.
+
+  Each check prints a line. The service check prints one for each of its units. The model-calls check prints one for each agent that it names, and one plain line more for an agent's refusals. A check's line starts with ✓ where the check found no problem. It starts with ✗ where the check found one, and then a `Next:` line gives one next step. It starts with – where the check wasn't made, and then says why. Doctor ends with how many problems it found. With no problem on a systemd install, it then gives the command that runs `scripts/connectome-doctor`, which shows where an incoming message stops. Doctor exits 1 when it finds a problem. Run as root on an install that another user owns, it prints one refusal and exits 1.
+- `connectome doctor` hides, in every line it prints, each secret of 8 characters or more that setup stored. Setup tells the person when it stores a shorter secret. Where doctor can't read those secrets, it says why and runs no check.
+
+- `bunx @animalabs/connectome-host setup discord`, typed on a terminal, sets a resident up on Discord.
+  - **Where:** it works in the directory that it starts in, if that directory is empty or is already setup's. Otherwise it works in `~/resident`. It says which directory first. If `~/resident` holds other files and isn't setup's either, it stops and says so.
+  - **A user of its own:** on Linux with sudo and systemd, before it installs anything, it advises a user of the resident's own. Then it asks whether to go on as the user who ran it.
+  - **What it does:** it installs the host and `@animalabs/discord-mcpl`, and makes the install. It starts the install's host once, with a test setup that calls no model. It checks the Anthropic key with one call, and keeps the key in `.env`, which only the person can read. Then it starts the host's own setup agent, which talks with the person in the terminal.
+  - **Run again,** the agent picks up where it stopped.
+- `connectome shell install` is an install's own command. It installs the resident's shell, `term-sessions-mcp` 1.x, in the directory that holds the install, unless a 1.x is there already. It lists Bun's default trusted packages, and the shell's own, in `trustedDependencies` in that directory's `package.json`. Then it checks that node-pty opens a pty there. If it doesn't, and node-pty loads from inside that directory, the command installs node-pty once more.
+- A recipe's `modules.setup` gives its agent four tools. They work in any mode, and are made for readline mode on a terminal.
+  - `setup--run` runs one command in the install's directory. The stored secrets and the providers' keys aren't in the command's environment. Where the command prints one of their values exactly as stored, the value comes back as its name. Two kinds of value stay as they are: a value shorter than 8 characters, and a value that the cut of a long output runs through.
+  - `setup--ask_secret` asks the person for a secret, and shows nothing as they type. It checks a Discord token or a provider key once, and stores the secret in `.env`.
+  - `setup--discord` reads Discord with the stored bot token, so that the person copies no id by hand. It reads the application's id, and each server that the bot is in, with the server's owner and its text and announcement channels. For each channel, it says whether the bot can send there. It can also read one server, or those of a server's members whose username or nickname starts with the text it's given.
+  - `setup--finished`, in readline mode, ends the conversation when its turn ends.
+
+  In that conversation, a turn's wait has no time limit, and a refused turn says how to start a new conversation. `/help` lists the three commands that setup uses. The host's own diagnostics go to `readline-error.log`, from before its extensions load.
+
+- **`modules.fetch`: a fetch tool, off by default.** `fetch--fetch` reads a web
+  page as text, with HTML turned into markdown, either whole or through a small
+  model that answers a `prompt`, and every result says which part was read.
+  With `local: true` it reads workspace files too, with the workspace's own
+  `read`, so it shows what `workspace--read` shows and reaches nothing the
+  mounts don't allow. It reaches only public addresses unless
+  `allowPrivateNetwork` is set, checked by the address connected to on every
+  redirect, and untrusted HTML is converted in a separate process with time and
+  memory limits. A recipe on a provider other
+  than `anthropic` or `mock` sets `modules.fetch.model`.
+  Recipes that don't set `modules.fetch` are unchanged. New dependency: `turndown`.
+
+- **`agent.primaryWaitsForAuxiliary`** (default false) passes agent-framework's
+  setting of the same name: true holds a turn's start until the agent's
+  compression call already in flight ends. An agent-framework with the
+  setting no longer waits unless it is on, so a recipe for a Claude 3 Opus
+  resident, whose provider limits how fast input tokens per minute may grow,
+  sets it to true to keep the wait. An agent-framework that predates the
+  setting always waits.
+
+- `modules.selfUpdate` gives an agent `lifecycle--update`, its own `/update`. It is off by default. Its actions:
+  - `check`;
+  - `notes`: the notes of the releases after the running one, up to the one installed;
+  - `install`;
+  - `restart`: armed for the host's first quiet moment, once nothing is in flight here or on any fleet child that it asks;
+  - `cancel`.
+
+  `restart` arms only on a headless host that started with `CONNECTOME_SUPERVISED=1` in its environment. `connectome service install` sets that only for a service that restarts the host when it exits with 75 and when it exits with 1. A service written by hand needs that line and both restarts. Anywhere else, `restart` refuses and says why.
+  - **A busy host:** a host that is still busy at its quiet moment keeps the restart armed. It serves meanwhile, and tries again at least a minute later.
+  - **A busy fleet child:** a fleet child counts as busy while it holds turn work that its framework doesn't count. An example is a text that the framework refused, which the child keeps for the framework that a session switch installs next. A fleet child on a release that doesn't report its work in flight is counted by its turns and scripts alone.
+  - **Turns that the switch doesn't wait for:** a turn that a fleet child begins after the switch's last look asked its children, and a turn on a child that a resume reached after that look.
+  - **A child's socket:** while a restart stays armed, each try connects again to a fleet child whose socket another client took. A child's socket keeps one client. So a person connected to a child's socket loses that connection about once a minute.
+  - **An operator's Restart or Go back** takes an armed restart's place.
+
+  An armed restart lasts only while its host runs.
+  - **What shows it:** `/update` shows an armed restart, and what its last try waited on. It also shows a restart that didn't go ahead, and why. `/healthz` shows the same under the `ops` scope. Without that scope, `/healthz` empties the reasons.
+  - **A `cancel`:** any agent with the tool can cancel a restart, whoever armed it. A `cancel` leaves that record too, and the record names the agent that cancelled. A `cancel` also ends the switch's quiesce, and the record names any host that this end didn't reach.
+  - **Who asked:** a switch that an agent armed names that agent in its mark, and in each journal line that the launcher writes from it. `check`'s line for the last switch says which agent asked for it.
+
+- **`agent.sendSilencing`** (default false) passes agent-framework's setting
+  of the same name: true makes an explicit send (`send_message`,
+  `channel_publish`, a `drafts` resend and the like) silence the plain speech
+  its round and later rounds aim where the send may have posted, holding it
+  as drafts. An agent-framework with the setting no longer silences unless it
+  is on, so a recipe for a resident who writes a note beside each send sets
+  it to true to keep those notes unposted. The resident can change it for
+  itself with `agent_settings` (`send_silencing`). An agent-framework that
+  predates the setting always silences, and has no `send_silencing`: that
+  includes the 0.33 line this release asks for and installs, so the key does
+  nothing until the host runs with an agent-framework that has the setting
+  (a release after 0.34.0).
+
+- `connectome service install <recipe>` writes and starts this install's resident service. On Linux the service is a systemd user unit, and on macOS a launch agent. The command waits up to 60 s for the service's host to answer.
+  - **The service's name** comes from the name of the working directory that holds `.env`. The name is in lower case, and each run of characters other than `a` to `z` and `0` to `9` becomes one `-`, with none at either end. The unit is `~/.config/systemd/user/connectome-<name>.service` on Linux, and `~/Library/LaunchAgents/com.animalabs.connectome.<name>.plist` on macOS.
+  - **A shell daemon:** some recipes also get a localhost shell daemon where `term-sessions-mcp` is installed. These are a recipe whose text names `SESSION_SERVER_TOKEN` or `SESSION_SERVER_PORT`, and a recipe with a server whose command or arguments name the shell client. The daemon's port and token are kept in `.env`.
+  - **Restarts:** the host's unit restarts the host on any nonzero exit, by `Restart=on-failure` on Linux and by the agent's `KeepAlive` on macOS. So the unit sets `CONNECTOME_SUPERVISED=1`.
+  - **Bun:** the units run the `bun` on the PATH of `connectome service install` if that `bun` is the same Bun that the command runs on. Homebrew's link is such a `bun`, and it stays when `brew upgrade` removes the old version's file. Otherwise, the units run the path of the Bun that the command runs on.
+  - **Fleet children:** under the systemd unit, the host's fleet children end by SIGKILL when the host exits. This includes a child that the host detached.
+  - **Logs on macOS:** the logs in the working directory's `logs/` grow until someone cuts them. To cut one, stop the service, move the log, then start the service.
+
+### Changed
+
+- `docs/AGENT-ONBOARDING.md` is now the guide of the host's setup agent. It is for any agent that sets up a resident on the machine it runs on, after `connectome setup discord`. It covers:
+  - the person's decisions;
+  - whether the resident gets a shell, decided with the person, and on a yes installed by `connectome shell install`;
+  - secrets, by `setup--ask_secret`;
+  - the Discord bot and its scope, with its server, channel and person found by name with `setup--discord`;
+  - importing a claude.ai history;
+  - a recipe of the person's choices, with its servers defined in it, and discord-mcpl's state in the data directory;
+  - the update and code-execution grants;
+  - one read-back of all of it, with one yes, before the resident goes live;
+  - `connectome service install`, `connectome doctor` and the person's own hello;
+  - `SETUP.md`;
+  - restic backups, offered after the hello and run by the resident's user.
+
+  Each section is under 8 KiB. `setup--run`'s description says that it returns that much whole.
+- The old runbook's operator material is now in `docs/DEPLOYMENTS.md`, checked against this release:
+  - "A resident's memory: sizing, folding and repair". It covers the context budget against the model's window, the folding solver, the compression and token-count models, and a compile that can't fit. It also covers auditing and repairing a store with crossed summaries, refusals and signed thinking, and `/healthz`'s memory fields.
+  - Moving a resident off heartbeat-mcpl, under "Operating an agent".
+
+  Some of the runbook isn't carried over:
+  - its hand-written service units, its isolated-user phase, its budget numbers for a 200k-window model, and its backup cron and watchdog;
+  - its pre-compress step. `scripts/warmup-session.ts` gives the store no tool definitions, so it compresses none of a history's chunks that have tool calls in them;
+  - its warning about an image's `media_type`. membrane now checks that type against the image's own bytes;
+  - its advice to keep context-manager recent. The host's own dependency range sets the version that it gets;
+  - `flat-profile` as a fallback. The recipe's types call it a legacy planner, and a store can't switch to it without a change to its layout.
+
+  Its advice to keep a copy of the data off the machine is now the setup guide's offer of restic backups after the hello. The README describes Anthropic's `agent.thinking.effort`. It also describes code execution, as "Code execution (`codeExecution`)". That section is the old guide's "Code execution — turn it on for every resident", without that lead-in. `docs/DEPLOYMENTS.md` no longer suggests running `scripts/warmup-session.ts` on a stopped resident's store to make a restart's calls fewer. The script opens the store with a strategy of its own, not the one that the host builds from the recipe.
+- The store audit's line for a store refused for crossed summaries now names `docs/DEPLOYMENTS.md`'s "Crossed summaries: auditing and repairing a store", with the version of the release that wrote the line. Before, it named `AGENT-ONBOARDING.md` §11.8. So after a fallback to an older release, the line still says which release's docs have the section. A release's refusal before its commit carries such lines among its own. Its closing now says to do what each line says, and to correct each failure that it names. Before, it said to repair each refused store as §11.8 says.
+
+- A host quiesced for a release switch refuses what would change its session. A fleet child is quiesced in this way while its parent's switch runs. The host refuses:
+  - the pin and settings changes passed on to it, as the parent's Web UI passes one on for a child;
+  - its own Web UI's pin, settings, rollback and suppress;
+  - a command that changes the session, from its terminal, its Web UI, its socket or a fleet parent.
+
+  Before, it refused them only during a session switch. So a change started on such a host after the release switch's last check could be cut off by the switch's stop. The refusal says that nothing changed, and to try again once that quiesce has ended. It also says that `/update restart resume` ends a quiesce that a switch which has ended left behind. Resume, and what only reads, aren't refused.
+
+- `connectome update`: when a `restart` or a `back keep|restore` stops the host, it prints a line on stderr. The line names the install's own command, by its full path and with no words after it. Once the host is back, that command says which release runs and how the switch went.
+
+- Before a switch, these say what going back afterwards does: `/update`, `connectome update`, bare `connectome`, the Web UI's Health and its Restart dialog, and the host's `[update]` log line. Going back keeps the newer data only if the release that runs before the switch can still read it. Otherwise, going back restores the copy and sets aside what was lived since the switch. The update banner leaves this out. A host that isn't an install says nothing of it.
+
+- `/update back` and `connectome update back` say in plain words what each way brings back:
+  - Keeping the newer data brings the host back as it is now. It answers new turns, or holds them if its operator quiesced it. A switch's quiesce that was left behind ends at that start.
+  - Restoring the copy brings the host back answering new turns, whether or not it's quiesced now. The exception is a host that its operator quiesced before the Restart that took the copy, from the Web UI or through an MCPL server. That host comes back holding new turns until someone clicks "⏸ quiesced" in the Web UI's top bar.
+
+  Their last line says that either way, new turns are held first, and turns in progress get up to 2 min to end, as with Restart. Before, both said that the host "quiesces".
+- `/update restart` and `/update back`, and `connectome update restart` and `back`, open with "Asking the host to restart" or "to go back". Then they say that if it goes ahead, new turns are held and turns in progress get up to 2 min to end. Before, they said "unless refused". When a headless host that started with `CONNECTOME_SUPERVISED=1` then stops, they say that the service starts it again by itself, and that this start makes the switch.
+
+### Fixed
+
+- `scripts/connectome-doctor` reads a unit's output from its journal in one case: the unit file names no log file, and `logs/agent.log` is missing or was last written before the unit started. `connectome service install`'s units name no log file. From the journal, it reads the lines since the unit's latest start that hold a delivery or a failure, as journalctl's `-g` picks them out, with journal times to the fraction of a second. Where systemd gives no start time for the unit, it searches no journal, and says so. Before, it read the host's recent failures, last delivery and gate dump from a `logs/agent.log` that wasn't there, or was left from before.
+- `scripts/connectome-doctor` sends its gate dump's `SIGUSR2` only to a host whose `/proc/PID/status` shows that it catches the signal. So it no longer ends a host that is still starting. It waits up to 5 s for the host's `[diagnostics]` line.
+- `scripts/connectome-doctor` reads the chronicle ingest stage from the active session's `records.log`, as `sessions.json` names that session. Before, it read the `records.log` of whichever session the directory listed last.
+- `scripts/connectome-doctor` says "can't be seen here", with the reason, of a stage that it can't see. Before, it said "never". Such a stage is one of these:
+  - a Discord stage, when discord-mcpl's debug log isn't there. discord-mcpl writes that log only when `DISCORD_MCPL_DEBUG_LOG` names it;
+  - a stage whose file or store it can't read.
+- `scripts/connectome-doctor` counts every record in the last 400 KB of `logs/failures.log` as a failure, except the subscription GC's `subscription-gc-close`. It makes a finding of a reply that wasn't delivered, or whose delivery wasn't confirmed, after the last reply that was.
+- `scripts/connectome-doctor`'s inference stage is the newest turn's call in the call log, which is a streamed call. Before, it was the newest call of any kind. So the host's start-up thinking-binding probe, or a compression, read as the resident's inference. A subagent's turn is a streamed call too, and so is a streamed inference that an MCPL server asks for. So on a host with either, the stage's time and stop can be that call's, not the resident's. With no turn's call since the host last started, the stage says so, and counts the other calls and the keepalive pokes. A call whose `rawResponse`, or the response in it, isn't an object is read as a call with no stop reason. Before, the ladder stopped at such a call.
+- `scripts/connectome-doctor`'s inference-failure finding:
+  - When the call log's newest turn call came after the failure and succeeded, the finding says when that call was. It also says that the call log doesn't say whose call it was, so it isn't known whether the agent that failed has recovered.
+  - In some cases it isn't known whether a turn has succeeded since. Then the finding says so. This is the case when the call log can't be read, or when there is none while inference failures are on record. It is also the case when the part of the call log that it reads has no turn's call, and either starts after the failure or holds rows it can't read. It is also the case when the newest turn's call failed in a call log that started after the failure.
+- `scripts/connectome-doctor` takes `--data-dir` for a data directory other than `INSTALL_DIR/data`.
+
+- **Start (`start.js`):** sometimes start takes over a lock whose process has ended, and another process takes the lock in the same moment. Start now puts that process's lock back and tries once more. The second try refuses unless the lock is free by then. If start can't put the lock back, it refuses and names both lock files. Before, it went on and removed the other process's lock.
+
+- `/session new` and `/session switch` are refused while a host is quiesced for a release switch, as `/session rename` and `/session delete` are. Before, they went through, and a new session's framework served at once, outside the switch's quiesce. While a session switch is under way, they now give the refusal that the other commands give then.
+
+- When the install's host holds its lock for the whole wait, `bun start.js --go-back` names the install's own `connectome update back` as the host's way back. Before, it named `/update back`, which only the host's own terminal takes.
+- When no release newer than the running one is installed, `/update restart` and `connectome update restart` each name their own way to install one first. Before, each named the Web UI's Update.
+- The host logs an `[update]` notice when a newer release is offered. When the host couldn't read the installed releases, the notice now ends by saying so, and why. In that case, it also says that the release offered may be installed already. Before, it only said to install it and then restart.
+- When the launcher refuses a switch or a Go back, its report names each way that an install offers to ask again:
+  - Restart or Go back in the Web UI;
+  - `/update restart` or `/update back` in the host's terminal;
+  - the install's own `connectome update restart` or `connectome update back` in a shell;
+  - for a Go back, the whole `bun <root>/start.js --go-back` command, with `--keep-data` where it kept the newer data.
+
+  Before, it named only `/update restart`, `/update back` and a bare `--go-back`.
+- The answers to the Web UI's own Update controls name the page's own controls, such as Update, Restart and Go back. Before, they named the host terminal's `/update` commands.
+
+- When a host starts, it asks each fleet child that it adopted to end a switch's quiesce. A stop during a switch's try could leave that quiesce in place, holding the child's new turns. The host's log names each child that the request doesn't reach, or that refuses it. An operator's own quiesce of a child stays.
+
+- Once the release offered is installed, `/update` and bare `connectome` say to take it with the restart alone. Before, they said to install it and then restart, beside the line that said it was installed. The `[update]` line that the host logs when it first sees that release offered says the same, if the release is installed by then. `lifecycle--update check` gives the same line. For a headless host, that logged line names the install's own command by its full path. That is because its log is read in a shell, where `/update` isn't a command. `connectome update`'s own lines, and the update lines that bare `connectome` prints, name the install's own command by its full path.
+
 ## 0.25.1 — 2026-11-16
 
 ### Changed
