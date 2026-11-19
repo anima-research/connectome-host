@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { ModuleContext, TraceEvent } from '@animalabs/agent-framework';
 import {
+  DEFAULT_TIERS,
   NoticesModule,
   type NoticesModuleConfig,
   replyNoticeText,
@@ -1222,6 +1223,13 @@ describe("an alert's message stays with the operator", () => {
     expect(replyNoticeText('clerk', { kind: 'hasOwnProperty', until: 3_600_000 })).toBe(
       '⚠ [host notice] clerk cannot respond right now: it is temporarily unavailable (hasOwnProperty). Expected back after 1970-01-01 01:00 UTC. An operator has been alerted.',
     );
+  });
+
+  test('every kind the host tiers by default has fixed words of its own, and none takes the fallback', () => {
+    for (const [kind, tier] of Object.entries(DEFAULT_TIERS)) {
+      expect([kind, statusNoticeText('clerk', { kind })]).not.toEqual([kind, `⚠ [host notice] clerk — ${kind}: it needs an operator.`]);
+      if (tier === 'reply') expect([kind, replyNoticeText('clerk', { kind })]).not.toEqual([kind, expect.stringContaining('temporarily unavailable')]);
+    }
   });
 
   test('a clear says which kind cleared and which stays open, and nothing of why it cleared', async () => {
