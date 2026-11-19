@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, spyOn } from 'bun:test';
 import { continuesBody, type BodyShard } from '@animalabs/context-manager';
-import { OperatorActionError } from '@animalabs/agent-framework';
+import { OperatorActionError, type TraceEvent } from '@animalabs/agent-framework';
 import { BASIC, startObservedHost, type Connection, type ObservedHost } from './web-ui-observed-host.js';
 import { applyUndoneMarksTo, type MarkableRow } from '../web/src/undone-marks';
 
@@ -81,11 +81,15 @@ describe('what each client is sent', () => {
     'credential-action': { subscription: false },
     media: { mediaType: 'image/png', base64: 'CCCC' },
   };
+  let childEvent: ((childName: string, event: Record<string, unknown>) => void) | undefined;
   const fleet = {
     name: 'fleet',
     getChildren: () => new Map(),
     autoStartLaunching: () => new Set(),
-    onChildEvent: () => () => {},
+    onChildEvent: (name: string, listener: NonNullable<typeof childEvent>) => {
+      if (name === '*') childEvent = listener;
+      return () => { if (childEvent === listener) childEvent = undefined; };
+    },
     requestPanel: async (_child: string, op: string) => ({ ok: true, data: panels[op] }),
   };
   const open: Connection[] = [];
@@ -244,6 +248,31 @@ describe('what each client is sent', () => {
     expect(kinds(c.everything)).toEqual(['tool:started', 'inference:failed', 'host:quiesce', 'usage:updated']);
     for (const conn of [c.operator, c.dashboard, c.everything]) expect(conn.framesOf('usage').length).toBe(1);
     for (const conn of [c.reader, c.interior]) expect(conn.framesOf('usage')).toEqual([]);
+  });
+
+  test('local and fleet compression holds carry refusal text only to operators and observers with ops', async () => {
+    const dashboard = await host.observer('dashboard');
+    const watch = await host.observer('watch');
+    const operator = await host.operator();
+    const clients = [dashboard, watch, operator];
+    open.push(...clients);
+
+    const hold: Extract<TraceEvent, { type: 'inference:held' }> = {
+      type: 'inference:held', agentName: 'main', timestamp: 42,
+      errorType: 'over_budget', error: 'private compile refusal', budget: 100, actual: 120,
+      since: 41, heldRequests: 1,
+    };
+    const { error: _error, ...publicHold } = hold;
+    const ts = 43;
+    host.emitTrace(hold);
+    childEvent!('kid', { ...hold, ts });
+    await host.fence(clients);
+
+    for (const client of clients) {
+      const event = client === dashboard ? publicHold : hold;
+      expect(client.framesOf('trace')).toEqual([{ type: 'trace', event }]);
+      expect(client.framesOf('child-event')).toEqual([{ type: 'child-event', childName: 'kid', event: { ...event, ts } }]);
+    }
   });
 
   test("a client that holds messages but may not have a stream-end trace gets a stream-ended frame in its place, naming only the agent", async () => {
@@ -891,7 +920,7 @@ describe('what each client is sent', () => {
   // it was. The agent's reply with 200 rows of others' traffic stored after
   // it stayed shown as in its context after an undo, and a row a redo put
   // back after it left the tail kept its undone label.
-  test("an undo's and a redo's marks reach every row a page holds, one 200 rows or more before the record's end too, and so do a shed's", async () => {
+  test("an undo's and a redo's marks reach every row a page holds, one 200 rows or more before the record's end too, as do a shed's and a hold's unsent injections", async () => {
     const say = (id: string, participant: string, text: string) => ({ id, participant, content: [{ type: 'text', text }] });
     transcript = [
       say('u1', 'user', 'count the ledgers'),
@@ -933,10 +962,17 @@ describe('what each client is sent', () => {
       await host.fence([c.operator]);
       applyUndoneMarksTo(rows, frames().at(-1) as never);
       expect(marked()).toEqual(['x3']);
+
+      undone = new Set(['x3', 'x4']);
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['x4'], reason: 'unsent-injection' });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual(['x3', 'x4']);
       expect(frames()).toEqual([
         { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['a1'] },
         { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] },
         { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['x3'] },
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['x3', 'x4'] },
       ]);
     } finally {
       transcript = [];

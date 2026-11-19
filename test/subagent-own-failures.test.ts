@@ -29,8 +29,7 @@ type Internal = {
   reclaimZombieSlots(): number;
   stopRun(agent: unknown): void;
   withTimeout<T>(p: Promise<T>, name: string, kind: 'spawn' | 'fork', limitMs: number, deadline: number, stop: () => void): Promise<T>;
-  isRateLimitError(err: Error): boolean;
-  isTransientError(err: Error): boolean;
+  classifyRetry(err: Error): 'rate-limit' | 'transient' | undefined;
 };
 const internal = (s: SubagentModule) => s as unknown as Internal;
 
@@ -234,23 +233,44 @@ describe('a framework failure is read without the ephemeral agent\'s name, and n
     } finally { await h.cleanup(); }
   }, 20_000);
 
+  for (const kind of ['spawn', 'fork'] as const) {
+    for (const [message, cause, attempts, limit] of [
+      ['request timeout', 'connection closed', 2, 5],
+      ['HTTP 429', 'connection closed', 2, 1],
+      ['request timeout', 'HTTP 429', 2, 5],
+      ['the model call failed before admission', 'HTTP 429', 1, 5],
+    ] as const) {
+      test(`${kind} classifies "${message}" before its cause "${cause}"`, async () => {
+        const h = await harness({ maxRetries: 1 }, async () => { throw new Error(message, { cause: new Error(cause) }); });
+        internal(h.subagent).retryBackoffMs = 0;
+        try {
+          const call = kind === 'spawn' ? spawn : fork;
+          const res = await h.subagent.handleToolCall(call('scout', { sync: true }));
+          expect(res.success).toBe(false);
+          expect(h.runs()).toBe(attempts);
+          expect(h.subagent.getConcurrencyStatus().effective).toBe(limit);
+        } finally { await h.cleanup(); }
+      }, 20_000);
+    }
+  }
+
   test('the classifiers read status codes as whole numbers and rate limits by their phrases', async () => {
     const h = await harness({});
     try {
       const sub = internal(h.subagent);
-      expect(sub.isTransientError(new Error('no activity for 1500s (threshold 900s)'))).toBe(false);
-      expect(sub.isTransientError(new Error('HTTP 503 Service Unavailable'))).toBe(true);
-      expect(sub.isTransientError(new Error('status=529 overloaded'))).toBe(true);
-      expect(sub.isRateLimitError(new Error('failed to generate a moderate answer'))).toBe(false);
-      expect(sub.isRateLimitError(new Error('waited 14290ms'))).toBe(false);
-      expect(sub.isRateLimitError(new Error('rate_limit_error: slow down'))).toBe(true);
-      expect(sub.isRateLimitError(new Error('429 Too Many Requests'))).toBe(true);
-      expect(sub.isRateLimitError(new Error('Rate exceeded'))).toBe(true);
-      expect(sub.isRateLimitError(new Error('upstream_rate_limit_exceeded'))).toBe(true);
-      expect(sub.isRateLimitError(new Error('x-ratelimit-remaining: 0'))).toBe(true);
-      expect(sub.isRateLimitError(new Error('Too many concurrent requests'))).toBe(true);
-      expect(sub.isRateLimitError(new Error('the answer was rated poorly, rather than ratio'))).toBe(false);
-      expect(sub.isRateLimitError(new Error('too many tokens in the prompt'))).toBe(false);
+      expect(sub.classifyRetry(new Error('no activity for 1500s (threshold 900s)'))).toBeUndefined();
+      expect(sub.classifyRetry(new Error('HTTP 503 Service Unavailable'))).toBe('transient');
+      expect(sub.classifyRetry(new Error('status=529 overloaded'))).toBe('transient');
+      expect(sub.classifyRetry(new Error('failed to generate a moderate answer'))).toBeUndefined();
+      expect(sub.classifyRetry(new Error('waited 14290ms'))).toBeUndefined();
+      expect(sub.classifyRetry(new Error('rate_limit_error: slow down'))).toBe('rate-limit');
+      expect(sub.classifyRetry(new Error('429 Too Many Requests'))).toBe('rate-limit');
+      expect(sub.classifyRetry(new Error('Rate exceeded'))).toBe('rate-limit');
+      expect(sub.classifyRetry(new Error('upstream_rate_limit_exceeded'))).toBe('rate-limit');
+      expect(sub.classifyRetry(new Error('x-ratelimit-remaining: 0'))).toBe('rate-limit');
+      expect(sub.classifyRetry(new Error('Too many concurrent requests'))).toBe('rate-limit');
+      expect(sub.classifyRetry(new Error('the answer was rated poorly, rather than ratio'))).toBeUndefined();
+      expect(sub.classifyRetry(new Error('too many tokens in the prompt'))).toBeUndefined();
     } finally { await h.cleanup(); }
   });
 });

@@ -1,7 +1,7 @@
 /**
  * The ranges the host declares for the stack's release set (#291).
  *
- * agent-framework's range takes only the presentation release: main published
+ * agent-framework's range takes a later release of the presentation code: main published
  * 0.30.0 (Dendrite) without the presentation index and the exports the host
  * imports from it. context-manager's range takes only a release with the
  * window APIs agent-framework's presentation index calls. Main published
@@ -26,17 +26,23 @@
  * their presentation releases added are checked instead, the ones
  * agent-framework's create() doesn't check itself. An agent-framework without
  * the exports the host imports fails the host's load, and membrane's range
- * is the one the host declared before the presentation. Each range is also
- * asked to admit the release the host needs first (agent-framework 0.33.3;
- * chronicle 0.6.0, its presentation release; context-manager 0.25.3),
- * which no install layout changes. context-manager's floor is above its
- * presentation release, 0.25.0: 0.25.3 is the first of that line to price
- * what a recipe's `rewriteLambda` and `thinkingLambda` set, and an earlier
- * one would take the keys and price nothing. agent-framework's floor is
- * above its presentation release, 0.33.0: 0.33.3 is the first of that line
- * whose rewind marker, `/unstick` report and failed-turn note put no
- * provider's words in an agent's context, and whose note gives the
- * framework's own reasons. 0.33.2's note gives no reason.
+ * starts at 0.10.4, the release the stack's lockfiles and suites run on,
+ * within what agent-framework and context-manager admit. Each range is also
+ * asked to admit the release the host needs first (agent-framework 0.35.0;
+ * chronicle 0.7.0; context-manager 0.28.0), which no install layout
+ * changes. context-manager's floor is above its presentation release,
+ * 0.25.0: 0.28.0 is the release agent-framework 0.35.0 takes, so a lower one
+ * of the host's own would be a second copy, and the first with what a
+ * recipe's `compressionFallbackModel` and `carryStrandedSummaries` set.
+ * agent-framework's floor is above its presentation release, 0.33.0.
+ * 0.34.0 is the first release with `inference:held`, `inference:hold_ended`
+ * and the failed ephemeral turn's framework-written rejection with its
+ * original failure on `cause`; 0.35.0 is the first with `sendSilencing` and
+ * `primaryWaitsForAuxiliary`, which a recipe's keys of those names set, and
+ * the first without the `gate:wake-line-omitted` trace the host's table no
+ * longer names. chronicle's floor is above its presentation release, 0.6.0:
+ * 0.7.0 is the release the stack's lockfiles and suites run on, and it
+ * opens a store 0.6.0 wrote.
  */
 import { describe, test, expect } from 'bun:test';
 import { lstatSync, readFileSync } from 'node:fs';
@@ -89,17 +95,18 @@ const within = (inner: string, outer: string): boolean =>
   Bun.semver.satisfies(floorOf(inner), outer) && Bun.semver.satisfies(topOf(inner), outer);
 
 describe("the host's dependency ranges (#291's release set)", () => {
-  test("takes agent-framework from 0.33.3, the first of the presentation line whose notes put no provider's words in an agent's context and give the framework's own reasons: not main's 0.30.0, 0.31.0 or 0.32.0, which have no presentation index, nor 0.33.0 or 0.33.1, whose notes do, nor 0.33.2, whose note gives no reason", () => {
+  test("takes agent-framework from 0.35.0, the first with sendSilencing and primaryWaitsForAuxiliary and without the gate:wake-line-omitted trace: not 0.34.0, which has the compression hold traces but none of those", () => {
     const range = ours.dependencies?.['@animalabs/agent-framework'];
-    for (const published of ['0.29.0', '0.30.0', '0.31.0', '0.32.0', '0.33.0', '0.33.1', '0.33.2']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
-    admitsRelease('@animalabs/agent-framework', range!, '0.33.3');
+    for (const published of ['0.29.0', '0.30.0', '0.31.0', '0.32.0', '0.33.0', '0.33.1', '0.33.2', '0.33.3', '0.34.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    expect(floorOf(range!)).toBe('0.35.0');
+    admitsRelease('@animalabs/agent-framework', range!, '0.35.0');
     admitsInstalled('@animalabs/agent-framework', range!);
   });
 
-  test("takes context-manager from 0.25.3, the first of the window-API line that prices what a recipe's change-cost keys set: not main's 0.23.0 or 0.24.0, which have no window APIs, nor 0.25.0 to 0.25.2, which would take those keys and price nothing", () => {
+  test("takes context-manager from 0.28.0, the release agent-framework 0.35.0 takes and the first with what a recipe's compressionFallbackModel and carryStrandedSummaries set: not main's 0.23.0 or 0.24.0, which have no window APIs, nor 0.25.0 to 0.27.0, which would be a second copy beside the framework's", () => {
     const range = ours.dependencies?.['@animalabs/context-manager'];
-    for (const published of ['0.23.0', '0.24.0', '0.25.0', '0.25.1', '0.25.2']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
-    admitsRelease('@animalabs/context-manager', range!, '0.25.3');
+    for (const published of ['0.23.0', '0.24.0', '0.25.0', '0.25.1', '0.25.2', '0.25.3', '0.26.0', '0.27.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    admitsRelease('@animalabs/context-manager', range!, '0.28.0');
     // agent-framework's create() refuses a ContextManager without presentRows.
     const proto = ContextManager.prototype as unknown as Record<string, unknown>;
     for (const method of ['windowStatusOf', 'retractRows', 'getPresentedMessages']) {
@@ -108,10 +115,10 @@ describe("the host's dependency ranges (#291's release set)", () => {
     admitsInstalled('@animalabs/context-manager', range!);
   });
 
-  test('takes chronicle from its release with the batched append, 0.6.0: not 0.4.0, or the published 0.5.0, which has none', () => {
+  test('takes chronicle from 0.7.0, the release the stack runs on: not 0.4.0, or the published 0.5.0, which have no batched append, nor 0.6.0, the release before it', () => {
     const range = ours.dependencies?.['@animalabs/chronicle'];
-    for (const published of ['0.4.0', '0.5.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
-    admitsRelease('@animalabs/chronicle', range!, '0.6.0');
+    for (const published of ['0.4.0', '0.5.0', '0.6.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    admitsRelease('@animalabs/chronicle', range!, '0.7.0');
     // agent-framework's create() refuses a store without appendManyToStateJsonWithIdentity.
     const proto = JsStore.prototype as unknown as Record<string, unknown>;
     for (const method of ['appendManyToStateJson', 'getStateItemsJson', 'getRecords']) {
