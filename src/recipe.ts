@@ -415,6 +415,15 @@ export interface RecipeAgent {
    */
   primaryWaitsForAuxiliary?: boolean;
   /**
+   * Whether an explicit send (send_message, channel_publish, a `drafts`
+   * resend and the like) silences the plain speech its round and later
+   * rounds aim where the send may have posted, holding it as drafts
+   * (agent-framework `AgentConfig.sendSilencing`). Default false: plain
+   * speech beside a send is posted as any other is. An agent-framework that
+   * predates the setting always silences.
+   */
+  sendSilencing?: boolean;
+  /**
    * Continue until skip_reply (agent-framework `AgentConfig.autoContinue`,
    * agent-framework's docs/auto-continue.md; off when omitted): a turn the
    * model ends itself, with prose or with nothing, is followed by another
@@ -2093,7 +2102,7 @@ const RECIPE_AGENT_KEYS = [
   'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
   'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
   'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting', 'proseLock',
-  'toolWrapperProseGuard', 'primaryWaitsForAuxiliary', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
+  'toolWrapperProseGuard', 'primaryWaitsForAuxiliary', 'sendSilencing', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
   'refusalHandling', 'clock',
 ] as const;
 export const DEFAULT_RECIPE_CLOCK: ClockConfig = Object.freeze({ intervalMinutes: 10 }) as ClockConfig;
@@ -2524,6 +2533,10 @@ export function validateRecipe(raw: unknown): Recipe {
 
   if (agent.primaryWaitsForAuxiliary !== undefined && typeof agent.primaryWaitsForAuxiliary !== 'boolean') {
     throw new Error(`Recipe agent.primaryWaitsForAuxiliary must be a boolean, got ${JSON.stringify(agent.primaryWaitsForAuxiliary)}.`);
+  }
+
+  if (agent.sendSilencing !== undefined && typeof agent.sendSilencing !== 'boolean') {
+    throw new Error(`Recipe agent.sendSilencing must be a boolean, got ${JSON.stringify(agent.sendSilencing)}.`);
   }
 
   if (agent.autoContinue !== undefined && typeof agent.autoContinue !== 'boolean') {

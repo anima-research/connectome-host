@@ -246,6 +246,14 @@ if its `allowedTools` doesn't permit both `toolsets--open` and `toolsets--act`)
 and the web UI; `proseRouting` is fixed for the
 process lifetime.
 
+`agent.sendSilencing` (`false` default) decides whether an explicit send
+(`send_message`, `channel_publish`, a `drafts` resend and the like) holds
+back, as drafts, the plain text the agent writes in the same round and in the
+turn's later rounds, where that text would land where the send may have
+posted. With `false`, text beside a send is posted like any other. The agent
+can switch it for itself through `agent_settings` (`send_silencing`), and its
+choice persists across restarts.
+
 ```json
 {
   "agent": {
