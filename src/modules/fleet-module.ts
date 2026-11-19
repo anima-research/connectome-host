@@ -2604,8 +2604,6 @@ export class FleetModule implements Module {
 const PEEK_NOTE = "Each event is shown without a failure's own text: its error, stack and providerErrorCode, " +
   "an alert's message and data, and an errorType of safety.";
 
-/** A child's event as fleet--peek shows it to a parent: as it arrived, less
- *  the fields that carry a failure's own text, which can be a provider's. */
 function peekView(event: WireEvent): Record<string, unknown> {
   const shown: Record<string, unknown> = { ...event };
   delete shown.error;
