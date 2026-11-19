@@ -1,1 +1,1 @@
-- `connectome update`: after a `restart` or `back keep|restore` that stops the host, it says on stderr that the install's own command, by its full path and with no words after it, says which release runs and how the switch went once the host is back.
+- `connectome update`: when a `restart` or a `back keep|restore` stops the host, it prints a line on stderr. The line names the install's own command, by its full path and with no words after it. Once the host is back, that command says which release runs and how the switch went.
