@@ -711,8 +711,6 @@ describe('scope filters', () => {
     }
     expect(traceScopes({ type: 'operator:action' })).toEqual(['ops']);
     expect(traceScopes({ type: 'mcpl:server-closed' })).toEqual(['ops']);
-    // agent-framework's trace for a batched wake run without its gate line.
-    expect(traceScopes({ type: 'gate:wake-line-omitted' })).toEqual(['ops']);
     for (const type of [
       'gate:policy-added', 'gate:policy-removed', 'gate:config-reconciled', 'gate:shadow-warnings',
       'mcpl:channels-register', 'mcpl:channel-descriptor-rejected', 'mcpl:channels-changed', 'mcpl:channels-incoming',

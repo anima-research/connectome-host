@@ -30,7 +30,20 @@ function capture(retry?: Retry) {
     expect(result.exitCode).toBe(0);
     const line = result.stdout.toString().split('\n').find(line => line.startsWith('RETRY_CAPTURE='));
     if (!line) throw new Error(`create() not reached: ${result.stderr}`);
-    return JSON.parse(line.slice('RETRY_CAPTURE='.length));
+    const captured = JSON.parse(line.slice('RETRY_CAPTURE='.length));
+    // agent-framework 0.35.0's DefaultErrorPolicy also names, on each retry,
+    // the class it decided by and that class's bound (retryClass, maxTries),
+    // which a host shows and doesn't act on. The schedule is what these
+    // tests pin, so the two are kept apart from it, under `shown`.
+    const shown: Record<string, unknown[]> = {};
+    for (const [cls, decisions] of Object.entries((captured.decisions ?? {}) as Record<string, Array<Record<string, unknown>>>)) {
+      shown[cls] = decisions.map(({ retryClass, maxTries }) => ({ retryClass, maxTries }));
+      captured.decisions[cls] = decisions.map(({ retryClass: _class, maxTries: _tries, ...schedule }) => schedule);
+    }
+    for (const byWait of Object.values((captured.statedWaitDecisions ?? {}) as Record<string, Record<string, Record<string, unknown>>>)) {
+      for (const [wait, { retryClass: _class, maxTries: _tries, ...schedule }] of Object.entries(byWait)) byWait[wait] = schedule;
+    }
+    return { ...captured, shown };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -57,6 +70,12 @@ describe('recipe retry at the real AgentFramework.create call', () => {
       expect(observed.membraneSettings).toEqual(ownSettings(hostMembraneRetry(retry)));
     });
   }
+  test('each retry names the class it was decided by, and the tries that class allows', () => {
+    const observed = capture({ maxRetries: 4 });
+    expect(observed.shown.deadline[0]).toEqual({ retryClass: 'deadline', maxTries: 2 });
+    expect(observed.shown.overloaded[0].retryClass).toBe('overloaded');
+    expect(observed.shown.final[0]).toEqual({});
+  });
   test('control: an empty object counts as unset, omitting errorPolicy', () => {
     expect(capture({}).hasErrorPolicy).toBe(false);
   });

@@ -267,10 +267,8 @@ back, as drafts, the plain text the agent writes in the same round and in the
 turn's later rounds, where that text would land where the send may have
 posted. With `false`, text beside a send is posted like any other. The agent
 can switch it for itself through `agent_settings` (`send_silencing`), and its
-choice persists across restarts. The setting needs an Agent Framework that
-has it (a release after 0.34.0): an earlier one, the 0.33 line this host
-installs by default included, ignores the key, always holds that text, and
-has no `send_silencing` in `agent_settings`.
+choice persists across restarts. The setting came in Agent Framework
+0.35.0, which this host's dependency range starts at.
 
 ```json
 {

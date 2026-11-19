@@ -584,7 +584,6 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'presentation:failed': OPS,
   'presentation:hand-off-mismatch': OPS,
   'presentation:retracted': OPS,
-  'gate:wake-line-omitted': OPS,
   'gate:policy-added': OPS,
   'gate:policy-removed': OPS,
   'gate:config-reconciled': OPS,
