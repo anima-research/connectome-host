@@ -18,6 +18,15 @@ describe('recipe modules.selfRestart validation', () => {
     expect(validateRecipe(recipe({ selfRestart: {} })).modules?.selfRestart).toEqual({});
   });
 
+  test('modules.selfUpdate is off when omitted, takes true or false, and refuses anything else', () => {
+    expect(validateRecipe(recipe()).modules?.selfUpdate).toBeUndefined();
+    expect(validateRecipe(recipe({ selfUpdate: true })).modules?.selfUpdate).toBe(true);
+    expect(validateRecipe(recipe({ selfUpdate: false })).modules?.selfUpdate).toBe(false);
+    for (const selfUpdate of ['yes', 1, {}, null]) {
+      expect(() => validateRecipe(recipe({ selfUpdate }))).toThrow(/modules\.selfUpdate must be true or false/);
+    }
+  });
+
   test('rejects malformed shapes with a path-naming error', () => {
     const bad: Array<[unknown, RegExp]> = [
       [null, /modules\.selfRestart must be true, false or an object/],

@@ -14,7 +14,7 @@ import { DEFAULT_TIMEOUT_MS } from '../src/modules/setup-module.js';
 import { readRecipeDocument } from '../src/recipe-document.js';
 import { SHOWN_FILE } from '../src/setup/commands-shown.js';
 import { StoredSecrets, readEnvFile } from '../src/setup/secrets.js';
-import { shellWord } from '../src/update/launcher.js';
+import { shellWord } from '../src/update/install-command-name.js';
 
 const made: string[] = [];
 

@@ -3,7 +3,7 @@ import { FleetModule } from './modules/fleet-module.js';
 import type { ExtensionRegistry } from './extensions.js';
 import { auditBeforeCommit } from './update/audit-stores.js';
 import { commitRelease, currentForStart, type ReleaseHere } from './update/host.js';
-import { resumeIfSwitch } from './update/quiesce.js';
+import { resumeIfSwitch, resumeLeftChildren } from './update/quiesce.js';
 
 export async function startFramework(
   framework: Pick<AgentFramework, 'start' | 'stop' | 'getModule' | 'listMcplServers' | 'notifyOps' | 'quiesce' | 'resume' | 'getHostModeStatus'>,
@@ -34,5 +34,8 @@ export async function startFramework(
   const resumed = await resumeIfSwitch(framework);
   if (resumed.refused) framework.notifyOps('update-quiesce-stays', 'host', `This host's switch quiesce didn't end: ${resumed.why}`);
   const fleet = framework.getModule('fleet');
-  if (fleet instanceof FleetModule) fleet.launchAutoStart();
+  if (fleet instanceof FleetModule) {
+    void resumeLeftChildren(fleet, fleet.runningChildren());
+    fleet.launchAutoStart();
+  }
 }

@@ -7,9 +7,9 @@ import { SERVERS, SETUP_BUN_FLOOR, SHELL_NODE_TOP, installedVersion, packageJson
 import { DOTENV_FILES, readEnvFile, unwritableValue, withoutDotenv, writeEnvValue } from '../setup/secrets.js';
 import { macSessionCheck, ended, realWorld, withoutKeys, type SetupWorld } from '../setup/world.js';
 import { WRITE_RECORD_AGAIN, missingDataDir, readCurrent, readRecord, releaseDir, type InstallRecord } from '../update/contract.js';
-import { HOST_ENTRY, RELEASE_HOST, shellWord } from '../update/launcher.js';
+import { HOST_ENTRY, RELEASE_HOST } from '../update/launcher.js';
 import type { CliContext } from './connectome.js';
-import { INSTALL_COMMAND } from './install-command.js';
+import { INSTALL_COMMAND, shellWord } from '../update/install-command-name.js';
 
 export const SETUP_USAGE = 'connectome setup discord';
 export const SETUP_RECIPE = join(RELEASE_HOST, 'recipes', 'setup.json');

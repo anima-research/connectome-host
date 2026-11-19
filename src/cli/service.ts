@@ -6,14 +6,13 @@ import { createServer } from 'node:net';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { ContractError, SUPERVISED_ENV, installPaths, missingDataDir, writeTextAtomic } from '../update/contract.js';
-import { shellWord } from '../update/launcher.js';
 import { lingerOf } from '../setup/linger.js';
 import { SHELL_NODE_TOP } from '../setup/packages.js';
 import { StoredSecrets, readEnvFile, writeEnvValue } from '../setup/secrets.js';
 import { readRecipeDocument } from '../recipe-document.js';
 import { dataDirOf, openHost, socketOf, type HostClient, type HostReady, type NoHost } from './host-socket.js';
 import type { CliCommand, CliContext } from './connectome.js';
-import { INSTALL_COMMAND } from './install-command.js';
+import { INSTALL_COMMAND, shellWord } from '../update/install-command-name.js';
 import { systemdUnits } from '../update/systemd-units.js';
 import { lastingPath, lookup, serviceBun, type BunLookup } from '../update/service-bun.js';
 import {

@@ -36,7 +36,8 @@ import {
 import { copyTree, exists, makeDirs, removeTree, syncPath } from './data-swap.js';
 import { PACKAGE } from './install.js';
 import { HOST_ENTRY, LAUNCHER, isUnder } from './launcher.js';
-import { INSTALL_COMMAND, writeInstallCommand } from '../cli/install-command.js';
+import { writeInstallCommand } from '../cli/install-command.js';
+import { INSTALL_COMMAND } from './install-command-name.js';
 import { serviceBun } from './service-bun.js';
 import { type ServiceUnits, systemdUnits } from './systemd-units.js';
 

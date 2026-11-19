@@ -1,4 +1,5 @@
 import type { PanelOp } from './web/panel-data.js';
+import { isSwitchQuiesce } from './update/contract.js';
 
 export const SWITCH_UNDER_WAY = 'a session switch is under way, so this one isn\'t started; try again once it has finished';
 export const HOST_STOPPING = 'the host is stopping, so it starts no session switch';
@@ -77,6 +78,17 @@ export const PANEL_OPS_THAT_CHANGE_THE_SESSION: ReadonlySet<string> = new Set<Pa
 export function refusedWhileSwitching(app: { switching?: boolean }, what: string): string | null {
   return app.switching
     ? `${what} refused: a session switch is under way. Nothing changed; try again once the switch has finished.`
+    : null;
+}
+
+export function refusedWhileSwitchQuiesced(
+  app: { framework: { getHostModeStatus(): { quiesced: boolean; reason?: string } } }, what: string,
+): string | null {
+  const status = app.framework.getHostModeStatus();
+  return status.quiesced && isSwitchQuiesce(status.reason)
+    ? `${what} refused: this host is quiesced for a release switch. If that switch goes ahead, its stop can cut a change ` +
+      'to the session off. Nothing changed; try again once that quiesce has ended. Where a switch that has ended left it ' +
+      'behind, `/update restart resume` ends it.'
     : null;
 }
 

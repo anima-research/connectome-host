@@ -8,9 +8,8 @@ import { SHOWN_FILE } from '../setup/commands-shown.js';
 import { withoutDotenv } from '../setup/secrets.js';
 import { ended, realWorld, type SetupWorld } from '../setup/world.js';
 import { writeTextAtomic } from '../update/contract.js';
-import { shellWord } from '../update/launcher.js';
 import type { CliCommand, CliContext } from './connectome.js';
-import { INSTALL_COMMAND } from './install-command.js';
+import { INSTALL_COMMAND, shellWord } from '../update/install-command-name.js';
 import { shownToPerson } from './shown.js';
 
 export const SHELL_USAGE = 'connectome shell install';

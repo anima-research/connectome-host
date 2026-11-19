@@ -1382,6 +1382,19 @@ export interface RecipeModules {
   selfRestart?: boolean | { cooldownMinutes?: number };
   /** The host's own setup agent's tools, which `connectome setup` starts. */
   setup?: boolean;
+
+  /**
+   * The agent's own update (`lifecycle--update`). Off by default. The agent
+   * can check for, install and restart onto a release of its own install,
+   * as `/update` does; going back stays the person's. A restart begins at the
+   * host's first quiet moment, as `QUIET_MOMENT` in `src/web/update-text.ts`
+   * says, though no sooner than a minute after a try that found something
+   * still going, and is armed only on a host whose environment at its start holds
+   * `CONNECTOME_SUPERVISED=1`, which the service written by `connectome service
+   * install` sets only if that service starts the host again when it exits
+   * with 75 and when it exits with 1.
+   */
+  selfUpdate?: boolean;
 }
 
 export interface RecipeWebUi {
@@ -2076,7 +2089,7 @@ const RECIPE_AGENT_MOCK_KEYS = [
 const RECIPE_MODULE_KEYS = [
   'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
-  'channelMode', 'selfRestart', 'heartbeat', 'setup', 'fetch',
+  'channelMode', 'selfRestart', 'heartbeat', 'setup', 'fetch', 'selfUpdate',
 ] as const;
 const RECIPE_FETCH_KEYS = ['model', 'local', 'allowPrivateNetwork', 'maxBytes'] as const;
 /** The most a recipe can ask for: past this, little HTML would convert within its memory limit anyway. */
@@ -3401,6 +3414,10 @@ export function validateRecipe(raw: unknown): Recipe {
 
     if (mods.setup !== undefined && typeof mods.setup !== 'boolean') {
       throw new Error('modules.setup must be true or false');
+    }
+
+    if (mods.selfUpdate !== undefined && typeof mods.selfUpdate !== 'boolean') {
+      throw new Error('modules.selfUpdate must be true or false');
     }
 
     if (mods.ttsRelay !== undefined && mods.ttsRelay !== false) {
