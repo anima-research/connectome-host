@@ -146,11 +146,15 @@ the working directory):
   directory) — the child's stdio, opened by the parent at spawn.
 - **Inference failures** (agent-framework): when a turn's inference is
   exhausted after retries the framework prints
-  `[inference-failed] agent=… consecutive=N: <reason>` to stderr (in readline
+  `[inference-failed] agent=… consecutive=N type=… status=… code=…: <reason>`,
+  each label only where the error has it, to stderr (in readline
   mode, to `data/readline-error.log`), appends a
   JSONL record to `logs/failures.log`, and adds an `[inference-failed]` marker
-  to the agent's chronicle so the agent learns why its turn produced nothing
-  (`SUPPRESS_INFERENCE_FAILED_MARKER=1` disables the marker). At 3 consecutive
+  to the agent's chronicle, so the agent learns its turn failed
+  (`SUPPRESS_INFERENCE_FAILED_MARKER=1` disables the marker). The marker
+  names at most the error's type and HTTP status. It gives a reason only
+  where agent-framework, membrane's progress bounds or context-manager wrote
+  the failure's message, such as a progress bound's cut. At 3 consecutive
   failures it logs `[inference-hard-down]` and raises an ops alert: an
   `ops:alert` trace, plus a POST to `CONNECTOME_OPS_WEBHOOK` if set (throttled
   to one per agent and kind per 15 min). If those failures are

@@ -6,6 +6,52 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.25.1 — 2026-11-16
+
+### Changed
+
+- **connectome-host takes agent-framework 0.33.3 or later in the 0.33 line**
+  (it took 0.33.0). With it, every host gets what 0.33.1, 0.33.2 and 0.33.3
+  changed:
+  - **0.33.2 and 0.33.3, a provider's words:** the rewind marker,
+    `/unstick`'s give-up report, a failed turn's `[inference-failed]` note,
+    `gate_status` after a failed reply judge, `health--snapshot`'s recent
+    errors and the reason given to a script that a failed turn stops no
+    longer put a provider's words where an agent reads them: no refusal
+    category and no failure message. `gate_status`, `health--snapshot` and
+    the script's reason give the framework's words instead, such as "the
+    model call failed (invalid_request, HTTP 400)". In `health--snapshot`,
+    a failure logged before the update shows `null`. Rows already stored
+    keep their text.
+  - **0.33.2 and 0.33.3, the note's reason:** the `[inference-failed]` note
+    names the error's type and HTTP status when it has them, as before, and
+    a safety failure's note names neither. It gives a reason, after
+    "Reason:", only where agent-framework, membrane's progress bounds or
+    context-manager wrote the failure's message: a progress bound's cut,
+    which names the bound that ran out and the host's setting for it; a
+    compile that context-manager refuses; and a stream's abort. On 0.33.0
+    the note gave every failure's message there.
+  - **0.33.1:** the first start of a store that has a `gate.json` and no
+    `wake-decisions.json` records the MCPL servers it is configured with as
+    predating wake onboarding, and settles each as `unasked` at its first
+    event, with no `[wake onboarding]` notice and no wake. On 0.33.0, a host
+    updated from agent-framework 0.32.0 or earlier got that notice, and for
+    an event that waits on the agent a wake, for every server whose events
+    one of its catch-all rules lets by. A store that already has a
+    `wake-decisions.json` is not affected. A Go back that keeps the newer
+    data, to a release on agent-framework 0.33.0, drops the `unasked`
+    records, and the servers recorded as predating onboarding are offered.
+- **Not changed: connectome-host's own code still puts a provider's words
+  where an agent reads them,** as on 0.25.0, in places that include these:
+  - A subagent whose model call fails: its parent gets the error's message.
+    agent-framework 0.33.3's rejection for a failed run still carries it.
+  - Where `modules.notices` has a status channel: the `[host-notice]` row
+    written for the agent quotes the notice posted there, such as a
+    hard-down's last reason or an off-path refusal's category.
+  - A fleet parent that calls `fleet--peek`: the child's `inference:failed`
+    and `inference:exhausted` events come back as they arrived, with the
+    failure's message.
+
 ## 0.25.0 — 2026-11-10
 
 ### Breaking
