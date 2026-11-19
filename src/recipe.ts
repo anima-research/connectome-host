@@ -1077,7 +1077,8 @@ export interface RecipeModules {
    *   placed before the newest user-role message, and a tool result is one,
    *   so a request rebuilt mid-turn (a retry) can put it between a tool call
    *   and its result. It moves as 'afterUser' does, missing the prompt cache
-   *   from its old place whenever a newer user message arrives.
+   *   from its old place whenever a newer user message arrives, and losing
+   *   the replies' thinking after that place on a model that binds it.
    */
   instructions?: boolean | {
     /** Workspace path "<mountName>/<relativePath>". Default "instructions/AGENTS.md". */
@@ -1619,15 +1620,18 @@ export function deprecatedSurfaceNotices(modules: RecipeModules | undefined): st
   }
   // Deprecated in 0.25.0. The cost only "beforeUser" has is the split: it is
   // placed before the newest user-role message, and agent-framework stores a
-  // tool result as one. The cache miss on a newer user message it shares with
-  // "afterUser"; only "system" stays put. Said at start, where the two keys
-  // above are, and not only in the README and the changelog.
+  // tool result as one. The cache miss on a newer user message, and the
+  // thinking lost after the moved block on a model that binds it, it shares
+  // with "afterUser"; "system" stays put, and an edit to the file misses the
+  // cache from the system prompt on. Said at start, where the two keys above
+  // are, and not only in the README and the changelog.
   if (typeof modules?.instructions === 'object' && modules.instructions.position === 'beforeUser') {
     notices.push('modules.instructions.position "beforeUser" is deprecated (anima-research/agent-framework#171): it is ' +
       'placed before the newest user-role message, and a tool result is one, so a request rebuilt mid-turn (a retry) ' +
-      'can put it between a tool call and its result. "afterUser" avoids that but moves the same way, missing the ' +
-      'prompt cache from its old place whenever a newer user message arrives; "system" (the default) stays put and ' +
-      'misses the cache only when the file changes.');
+      'can put it between a tool call and its result. "afterUser" avoids that but moves the same way: whenever a ' +
+      'newer user message arrives, requests miss the prompt cache from its old place on, and on a model that binds ' +
+      'thinking, the replies after that place lose their thinking. "system" (the default) stays put; an edit to the ' +
+      'file misses the cache from the system prompt on, for every agent.');
   }
   return notices;
 }
