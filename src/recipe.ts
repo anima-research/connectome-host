@@ -98,6 +98,13 @@ export interface RecipeStrategy {
   compressionSplitFallback?: boolean;
   /** Allow a single-message placeholder inside a split-stitched L1 (default off). */
   compressionSplitPlaceholder?: boolean;
+  /**
+   * Context Manager: carry a summary no merge can take up a level, unchanged
+   * and with no model call, until it stands beside summaries of its level and
+   * the ordinary merge takes it (default off). A carried entry is never
+   * rendered, so a compile does not change at a carry.
+   */
+  carryStrandedSummaries?: boolean;
   /** Split-stitch: max sub-calls per chunk (default 40). */
   compressionSplitMaxCallsPerChunk?: number;
   /** Split-stitch: max sub-calls per strategy instance per 10-minute in-memory window (default 80). */
@@ -2849,6 +2856,7 @@ export function validateRecipe(raw: unknown): Recipe {
       'compressionMergeSourceOnlyFallback',
       'compressionSplitFallback',
       'compressionSplitPlaceholder',
+      'carryStrandedSummaries',
       'recoverLiteralThinkingWrappedCompression',
     ] as const) {
       if (strategy[key] !== undefined && typeof strategy[key] !== 'boolean') {
