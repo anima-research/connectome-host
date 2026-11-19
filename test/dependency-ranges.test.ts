@@ -26,7 +26,8 @@
  * their presentation releases added are checked instead, the ones
  * agent-framework's create() doesn't check itself. An agent-framework without
  * the exports the host imports fails the host's load, and membrane's range
- * is the one the host declared before the presentation. Each range is also
+ * starts at 0.10.4, the release the stack's lockfiles and suites run on,
+ * within what agent-framework and context-manager admit. Each range is also
  * asked to admit the release the host needs first (agent-framework 0.35.0;
  * chronicle 0.7.0; context-manager 0.28.0), which no install layout
  * changes. context-manager's floor is above its presentation release,
