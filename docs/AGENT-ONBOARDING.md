@@ -856,7 +856,8 @@ with `stop_reason: refusal` and this category; it halts residents built from den
 transcripts and residents that keep diaries in long tool arguments. Fleet mitigations, all
 recipe-level: `refusalHandling.retries: 2` (near-threshold refusals are nondeterministic and
 refused-up-front requests are not billed); `compressionToolProseFallback` into `journal` for
-long `think` / `skip_reply` arguments; `carrierPolicy: "live-strip"` when the live window
+long `think` / `skip_reply` arguments; `compressionFallbackModel` to have another model write
+a memory the compression model refused on every rung; `carrierPolicy: "live-strip"` when the live window
 refuses but compression is fine; a context-manager that defers tools-less compression (a
 compression request with no `tools` declared is a deterministic input-block on some model
 families). Symptoms, triage table and the localisation method are in
