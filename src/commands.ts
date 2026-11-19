@@ -48,7 +48,7 @@ import { hostUpdate, type UpdateAnswer } from './update/update.js';
 import {
   COMMAND_WAYS, PAGE_WAYS, cliWays, goBackLines, goBackUnread, statusLines, type UpdateWays,
 } from './web/update-text.js';
-import { agentActivity, type AgentRetrying } from './web/agent-activity.js';
+import { agentActivity, type AgentBudgetHold, type AgentRetrying } from './web/agent-activity.js';
 
 interface AppContext {
   framework: AgentFramework;
@@ -918,7 +918,7 @@ function handleUsage(app: AppContext): CommandResult {
   return { lines };
 }
 
-type AgentHealth = { name: string; status?: string; turnAlive?: boolean; retrying?: AgentRetrying | null };
+type AgentHealth = { name: string; status?: string; turnAlive?: boolean; retrying?: AgentRetrying | null; budgetHold?: AgentBudgetHold | null };
 
 function handleStatus(framework: AgentFramework): CommandResult {
   const agents = framework.getAllAgents();

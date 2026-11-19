@@ -35,8 +35,8 @@ import { FLEET_BEGIN_ENV } from '../fleet-begin.js';
 import { socketRefusesConnection } from './fleet-socket-probe.js';
 
 /** Events every child sends whatever its subscription asks for, for the
- *  host's own readers: its usage, and an undo, a redo or a shed on one of
- *  its agents' windows, at which the Web UI reads the child's panels again
+ *  host's own readers: its usage and the window traces at which the Web UI
+ *  reads the child's panels again
  *  (agent-streams.ts WindowFrames). */
 const HOST_FORCED_TELEMETRY_EVENTS: readonly string[] = ['usage:updated', 'window:undone', 'presentation:retracted'];
 export const CLOCK_SLACK_MS = 60_000;

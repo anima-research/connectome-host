@@ -9,19 +9,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentFramework, ProviderWaitNotSleptError } from '@animalabs/agent-framework';
 import type { Module, ToolCall } from '@animalabs/agent-framework';
-import { Membrane, MockAdapter, NativeFormatter } from '@animalabs/membrane';
+import { Membrane, MembraneError, MockAdapter, NativeFormatter } from '@animalabs/membrane';
 import { SubagentModule } from '../src/modules/subagent-module.js';
 
-// agent-framework's words for each wait it won't sleep (statedWaitNotSlept),
-// after the provider's own.
-const UNSLEPT = "429 rate_limit_error: try again later (the provider asked to wait 7200 s; an ephemeral run doesn't sleep a stated wait longer than 600 s, so it ends now)";
-const UNSLEPT_NAN = "429 rate_limit_error (the provider's stated wait is not a number, and an ephemeral run sleeps only a stated wait of 600 s or less, so it ends now)";
+const PROVIDER_WORDS = '429 rate_limit_error: try again later';
+const UNSLEPT = "the model call failed (rate_limit, HTTP 429) (the provider asked to wait 7200 s; an ephemeral run doesn't sleep a stated wait longer than 600 s, so it ends now)";
+const UNSLEPT_NAN = "the model call failed (rate_limit, HTTP 429) (the provider's stated wait is not a number, and an ephemeral run sleeps only a stated wait of 600 s or less, so it ends now)";
 
-type Classifier = { isTransientError(err: Error): boolean };
+type Classifier = { classifyRetry(err: Error): 'rate-limit' | 'transient' | undefined };
 
-async function harness(fail: () => Error) {
+async function harness(fail: () => Error, runThroughFramework = false) {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sub-wait-'));
-  const membrane = new Membrane(new MockAdapter({ defaultResponse: 'ok' }), { formatter: new NativeFormatter() });
+  const adapter = new MockAdapter({ responseGenerator: () => { throw fail(); } });
+  const membrane = new Membrane(adapter, { formatter: new NativeFormatter() });
   const subagent = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock', defaultMaxTokens: 256, maxRetries: 1 });
   (subagent as unknown as { rateLimitCooldownMs: number }).rateLimitCooldownMs = 0;
   (subagent as unknown as { retryBackoffMs: number }).retryBackoffMs = 0;
@@ -32,21 +32,26 @@ async function harness(fail: () => Error) {
     modules: [subagent as unknown as Module],
   });
   let runs = 0;
-  const fw = framework as unknown as {
-    runEphemeralToCompletion: (agent: unknown) => Promise<{ speech: string; toolCallsCount: number }>;
-  };
-  fw.runEphemeralToCompletion = async () => {
+  const run = framework.runEphemeralToCompletion.bind(framework);
+  let rejection: unknown;
+  framework.runEphemeralToCompletion = async (...args) => {
     runs++;
-    throw fail();
+    if (!runThroughFramework) throw fail();
+    try {
+      return await run(...args);
+    } catch (error) {
+      rejection = error;
+      throw error;
+    }
   };
   subagent.setFramework(framework);
   framework.start();
   const limits = subagent as unknown as { effectiveConcurrent: number; throttled: boolean };
   const concurrency = limits.effectiveConcurrent;
   return {
-    framework,
     subagent,
     runs: () => runs,
+    rejection: () => rejection,
     throttle: () => ({ halved: limits.effectiveConcurrent < concurrency, throttled: limits.throttled }),
     cleanup: async () => {
       try { await framework.stop(); } catch { }
@@ -106,16 +111,18 @@ describe("a provider's stated wait that the framework won't sleep", () => {
 
   test("reads agent-framework's own ProviderWaitNotSleptError as not worth a restart", () => {
     const mod = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock' }) as unknown as Classifier;
-    expect(mod.isTransientError(new ProviderWaitNotSleptError('503 overloaded', 7_200_000))).toBe(false);
+    expect(mod.classifyRetry(new ProviderWaitNotSleptError('503 overloaded', 7_200_000))).toBeUndefined();
   });
 
-  test('a rate-limit error without that class throttles the subagents and is tried again, as before', async () => {
-    const h = await harness(() => new Error('429 rate_limit_error: try again later'));
+  test('an ordinary rate-limit error on the cause still throttles and retries without giving the caller the provider’s words', async () => {
+    const h = await harness(() => new Error('the model call failed (unknown)', { cause: new Error(PROVIDER_WORDS) }));
     try {
       const res = await h.subagent.handleToolCall(call('spawn', 'plain-limited'));
       expect(res.success).toBe(false);
       expect(h.runs()).toBe(2);
       expect(h.throttle()).toEqual({ halved: true, throttled: true });
+      expect(JSON.stringify(res)).toContain('the model call failed (unknown)');
+      expect(JSON.stringify(res)).not.toContain(PROVIDER_WORDS);
     } finally {
       await h.cleanup();
     }
@@ -123,34 +130,35 @@ describe("a provider's stated wait that the framework won't sleep", () => {
 
   test('rate-limit errors without that class stay transient, whatever their words', () => {
     const mod = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock' }) as unknown as Classifier;
-    expect(mod.isTransientError(new Error(UNSLEPT))).toBe(true);
-    expect(mod.isTransientError(new Error('429 Too Many Requests'))).toBe(true);
-    expect(mod.isTransientError(new Error('rate_limit_error: try again later'))).toBe(true);
+    expect(mod.classifyRetry(new Error(UNSLEPT))).toBe('rate-limit');
+    expect(mod.classifyRetry(new Error('429 Too Many Requests'))).toBe('rate-limit');
+    expect(mod.classifyRetry(new Error('rate_limit_error: try again later'))).toBe('rate-limit');
   });
 
-  test("fails a subagent without a restart on the framework's own error, built as the framework builds it, for a long wait, one that can't be represented and one that isn't a number", async () => {
-    let next: Error = new Error('unset');
-    const h = await harness(() => next);
+  test("fails a subagent without a restart on the framework's own error for a long wait, one that can't be represented and one that isn't a number", async () => {
+    let retryAfterMs = 0;
+    const h = await harness(() => new MembraneError({
+      message: PROVIDER_WORDS, type: 'rate_limit', retryable: true, httpStatus: 429, retryAfterMs,
+    }), true);
     try {
-      const fw = h.framework as unknown as { statedWaitNotSlept(error: Error): { error: string; statedWaitMs: number } };
-      const stated = (retryAfterMs: number) => Object.assign(new Error('429 rate_limit_error: try again later'), {
-        name: 'MembraneError', type: 'rate_limit', retryable: true, retryAfterMs,
-      });
       const cases = [
         [7_200_000, 'the provider asked to wait 7200 s'],
         [Number.POSITIVE_INFINITY, 'the provider asked to wait longer than can be represented'],
         [Number.NaN, "the provider's stated wait is not a number"],
       ] as const;
       for (const [i, [wait, words]] of cases.entries()) {
-        const out = fw.statedWaitNotSlept(stated(wait));
-        expect(out.error.startsWith('429 rate_limit_error: try again later (')).toBe(true);
-        expect(out.error).toContain(words);
-        next = new ProviderWaitNotSleptError(out.error, out.statedWaitMs);
+        retryAfterMs = wait;
         const before = h.runs();
         const res = await h.subagent.handleToolCall(call('spawn', `framework-waiter-${i}`));
+        const error = h.rejection() as ProviderWaitNotSleptError;
+        expect(error).toBeInstanceOf(ProviderWaitNotSleptError);
+        expect(error.retryAfterMs).toBe(wait);
+        expect(error.cause).toMatchObject({ message: PROVIDER_WORDS, type: 'rate_limit', httpStatus: 429, retryAfterMs: wait });
         expect(res.success).toBe(false);
         expect(h.runs() - before).toBe(1);
+        expect(JSON.stringify(res)).toContain('the model call failed (rate_limit, HTTP 429)');
         expect(JSON.stringify(res)).toContain(words);
+        expect(JSON.stringify(res)).not.toContain(PROVIDER_WORDS);
         expect(h.throttle()).toEqual({ halved: false, throttled: false });
       }
     } finally {

@@ -1,7 +1,7 @@
 /**
  * The ranges the host declares for the stack's release set (#291).
  *
- * agent-framework's range takes only the presentation release: main published
+ * agent-framework's range takes a later release of the presentation code: main published
  * 0.30.0 (Dendrite) without the presentation index and the exports the host
  * imports from it. context-manager's range takes only a release with the
  * window APIs agent-framework's presentation index calls. Main published
@@ -27,16 +27,15 @@
  * agent-framework's create() doesn't check itself. An agent-framework without
  * the exports the host imports fails the host's load, and membrane's range
  * is the one the host declared before the presentation. Each range is also
- * asked to admit the release the host needs first (agent-framework 0.33.3;
+ * asked to admit the release the host needs first (agent-framework 0.34.0;
  * chronicle 0.6.0, its presentation release; context-manager 0.25.3),
  * which no install layout changes. context-manager's floor is above its
  * presentation release, 0.25.0: 0.25.3 is the first of that line to price
  * what a recipe's `rewriteLambda` and `thinkingLambda` set, and an earlier
  * one would take the keys and price nothing. agent-framework's floor is
- * above its presentation release, 0.33.0: 0.33.3 is the first of that line
- * whose rewind marker, `/unstick` report and failed-turn note put no
- * provider's words in an agent's context, and whose note gives the
- * framework's own reasons. 0.33.2's note gives no reason.
+ * above its presentation release, 0.33.0. 0.34.0 is the first release with
+ * `inference:held`, `inference:hold_ended` and the failed ephemeral turn's
+ * framework-written rejection with its original failure on `cause`.
  */
 import { describe, test, expect } from 'bun:test';
 import { lstatSync, readFileSync } from 'node:fs';
@@ -89,10 +88,11 @@ const within = (inner: string, outer: string): boolean =>
   Bun.semver.satisfies(floorOf(inner), outer) && Bun.semver.satisfies(topOf(inner), outer);
 
 describe("the host's dependency ranges (#291's release set)", () => {
-  test("takes agent-framework from 0.33.3, the first of the presentation line whose notes put no provider's words in an agent's context and give the framework's own reasons: not main's 0.30.0, 0.31.0 or 0.32.0, which have no presentation index, nor 0.33.0 or 0.33.1, whose notes do, nor 0.33.2, whose note gives no reason", () => {
+  test("takes agent-framework from 0.34.0, the first with the compression hold traces and an ephemeral run's framework-written failure with the original on its cause", () => {
     const range = ours.dependencies?.['@animalabs/agent-framework'];
-    for (const published of ['0.29.0', '0.30.0', '0.31.0', '0.32.0', '0.33.0', '0.33.1', '0.33.2']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
-    admitsRelease('@animalabs/agent-framework', range!, '0.33.3');
+    for (const published of ['0.29.0', '0.30.0', '0.31.0', '0.32.0', '0.33.0', '0.33.1', '0.33.2', '0.33.3']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    expect(floorOf(range!)).toBe('0.34.0');
+    admitsRelease('@animalabs/agent-framework', range!, '0.34.0');
     admitsInstalled('@animalabs/agent-framework', range!);
   });
 

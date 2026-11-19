@@ -701,6 +701,8 @@ describe('scope filters', () => {
     expect(traceScopes({ type: 'inference:completed' })).toEqual(['messages', 'health']);
     expect(traceScopes({ type: 'inference:usage' })).toEqual(['health']);
     expect(traceScopes({ type: 'host:quiesce' })).toEqual(['health']);
+    expect(traceScopes({ type: 'inference:held' })).toEqual(['health']);
+    expect(traceScopes({ type: 'inference:hold_ended' })).toEqual(['health']);
     expect(traceScopes({ type: 'inference:failed' })).toEqual(['ops']);
     expect(traceScopes({ type: 'inference:exhausted' })).toEqual(['ops']);
     expect(traceScopes({ type: 'inference:aborted' })).toEqual(['messages', 'ops']);
@@ -1064,7 +1066,7 @@ describe('scope filters', () => {
     expect(JSON.parse(JSON.stringify(keepNamedStrings(quota, QUOTA_STRINGS)))).toEqual({ ...quota, error: '' });
   });
 
-  test('frameWithoutFailureText gives the call ledger and the credential state without their failure text, and any other frame as it is', () => {
+  test('frameWithoutFailureText leaves out failure text from the call ledger and credential state', () => {
     const ledger = {
       type: 'call-ledger',
       ledger: { rows: [{ id: 'c1', model: 'a-model', verdict: 'ERROR', cause: 'raw', error: 'raw' }], summary: { calls: 1, byVerdict: { ERROR: 1 } } },
