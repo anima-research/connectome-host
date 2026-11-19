@@ -193,9 +193,7 @@ export class SubscriptionGcModule implements Module {
             'get also reports the read-only channel_idle_default, ' +
             'channel_idle_counters (ambient chars since your last activation), ' +
             'and channel_idle_pinned (channels held open by a channel mode; ' +
-            'not affected by update or reset — use set_channel_mode with mode mentions ' +
-            'to close and unpin on the saved owner; if cleanup fails or ownership is unclear, ' +
-            'ask whoever runs this host to arrange recovery).',
+            'not affected by update or reset — change the channel mode instead).',
         },
       },
       keys: ['channel_idle_limits'],

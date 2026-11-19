@@ -1,42 +1,47 @@
-- **Recipe authors and operators:** Channel attention modes route open,
-  debounce source, and close to the
-  channel's MCPL owner, not always Discord. Optional `serverId` disambiguates
-  shared ids; saved owners bind both modes until mentions cleanup completes.
-  Invalid debounced ownership is refused before changes; disconnected closes
-  remain durable. Configured owners missing a channel registration retain
-  their binding and request a close retry; registered disconnected owners
-  record a durable close and can release their binding. Saved bindings take
-  precedence over
-  registry replacement hints in both modes, unless explicitly abandoned by
-  naming the saved owner. Owner records follow branch switches and free after
-  rule/close/unpin cleanup even without subscription GC. Failed unpin and
-  unanswered close retain registered owners for safe retries. Branch moves can
-  forget bindings but leave the host-wide rule and open channel in place. Reapply
-  affected modes to replace or remove old wrong-source rules, and remove
-  hand-written workaround rules. Mentions naming a saved owner can release a
-  missing-channel binding after rule removal and unpin, without a replacement
-  or confirmed close; unconfirmed old-owner closes are reported, not claimed
-  as closed. Without subscription GC, pin and unpin are successful no-ops and
-  do not strand orphan records; results distinguish them from an actual unpin.
-  Re-adding GC restores any previously persisted pin; ask the host operator
-  to arrange recovery if ownership may have changed, rather than calling
-  mentions on a replacement. Direct GC unpin has no declared operator tool
-  or writable settings field. Mode names remain `debounced` and `mentions`.
+- **Recipe authors and operators:** `channel-mode--set_channel_mode` takes
+  each call's MCPL server from the prefix of its channel id (the text before
+  the first `:`), not from `modules.channelMode.serverId`. The open, the
+  debounce rule's `source` and the close all use that server, so
+  `zulip:backend` now opens, gates and closes on `zulip` rather than on
+  `discord` (#613). The prefix must name an MCPL server the host knows,
+  connected or not. An id with no prefix, or with an unknown one, is refused
+  before any step, and the message shows the expected `<serverId>:<channel>`
+  form. So is an id containing `*`, which the gate would read as a wildcard
+  matching other servers or channels. Nothing else chooses the server: not
+  the channel registry, not the config, and not a default. A second call for
+  a channel id while the first is still running is refused before any step.
   See `docs/ATTENTION-AND-GATING.md`.
-- **Operators:** The `set_channel_mode` tool description and schema, and
-  subscription GC's `channel_idle_limits` description in the `agent_settings`
-  schema, change on upgrade. Each resident whose requests carry either changed
-  tool (not hidden by its tool allowlist) rewrites its prompt cache in full on
-  its first such request, even if it never invokes the tool. The settings change
-  also affects residents with subscription GC and `agent_settings` enabled when
-  channelMode or wake is disabled.
-- **Recipe authors:** `modules.channelMode.serverId` is now only a legacy
-  fallback for unregistered bare ids or its own namespace, not a server override
-  for every call. Registry owners take precedence; use tool-call `serverId`
-  for explicit ownership (after cleaning up any saved owner).
-- **Recipe authors and operators:** Debounced setup now refuses disconnected or unregistered saved owners,
-  in-progress new bindings, and new ids at the 1,024-owner cap. Reconnect and
-  wait for registration, wait for setup to finish, or complete mentions cleanup
-  for a tracked id to free capacity, respectively.
-- Channel mode refuses malformed saved ownership before effects, and reports
-  owner-state save failures separately from rule installation or completed cleanup.
+  - **Discord-only hosts:** calls with `discord:<guildId>:<channelId>` ids
+    run the same steps as before, including while Discord is disconnected.
+    One difference: a second call for an id while the first is still running
+    is now refused, where both used to run. Calls with an unprefixed id, such
+    as a raw channel snowflake, are now refused. Before, a debounced call
+    tried the open on `discord`, set a rule for the raw id and pinned it. That
+    rule could match push events, whose `channelId` can be the raw id, but
+    not the channel's messages, which carry `discord:<guildId>:<channelId>`.
+    Migration: pass the channel's registered id, as `channel_list` shows it.
+    An agent removes a rule such a call left with `wake_remove_rule`
+    `{ "name": "channel-mode:debounced:<id>" }`. Its pin can't be removed
+    with an agent tool or `/puppet`: host code removes it with
+    `framework.executeToolCall`, naming
+    `subscription-gc--pin_channel_idle_limit` with input
+    `{ "channelId": "<id>", "pinned": false }`.
+  - **Recipe authors:** `modules.channelMode.serverId` is ignored, and a
+    startup line says so. If it named a server whose id differs from its
+    channels' prefix (say `discord-bot` serving `discord:…` ids), those calls
+    now go to the server the prefix names. With no `discord` server they are
+    refused as unknown. With one, they run there: for a channel only
+    `discord-bot` registers, the open fails, but the rule and pin steps
+    still run. Migration: give the MCPL server the id its channel ids
+    carry, then drop `serverId` from `modules.channelMode`.
+  - **Operators:** a rule an earlier release set for a prefixed id with
+    `source: "discord"` stays until that channel's mode is set again. The next
+    debounced call replaces it, and the next mentions call removes it.
+    Reapply the mode on affected channels, and remove any hand-written rules
+    that worked around this.
+- **Operators:** the `set_channel_mode` tool description and schema change on
+  upgrade. Each resident whose requests carry the tool (not hidden by its tool
+  allowlist) and use prompt caching rewrites its prompt cache in full on its
+  first such request, even if it never invokes the tool. A resident with
+  `promptCaching: false`, or on a model without prompt caching, has no cache
+  to rewrite.

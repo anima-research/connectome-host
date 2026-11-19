@@ -1272,15 +1272,11 @@ export interface RecipeModules {
    * bundles subscribe + a per-channel ambient debounce gate rule + pinning
    * subscription-gc off; mentions mode reverses all three. On by default when
    * the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
-   * `false` disables. The tool's optional `serverId` disambiguates shared ids;
-   * ownership otherwise uses the saved owner, registry, known id prefix, or
-   * this config's legacy fallback (default discord, bare ids or its namespace
-   * only). Unknown namespaces never use a different fallback. A saved owner
-   * binds both modes until mentions cleanup completes.
-   * See docs/ATTENTION-AND-GATING.md, ownership resolution and cleanup points
-   * 4 and 5, for disconnected/pending owners and explicit binding release.
-   * New ids are refused before effects at 1024 live owners, including in-flight
-   * opens; complete mentions cleanup to free a slot. Owners are never evicted.
+   * `false` disables. Each call's MCPL server is the prefix of its channel
+   * id (`zulip:backend` → `zulip`), which must name a server this host knows;
+   * an id without one, or with a `*` in it, is refused. `serverId` is
+   * deprecated and ignored (a startup line says so); it used to name the one
+   * server for every call.
    * `toolPrefix` is deprecated and read by nothing.
    * `defaultDebounceMs` sets the debounced-mode quiet window (180000 if
    * omitted).

@@ -32,7 +32,7 @@ describe('activity', () => {
 });
 
 describe('channel-mode', () => {
-  function wired(opts: { failing?: string[]; gateFails?: boolean; removeFails?: boolean; ruleExists?: boolean; config?: ConstructorParameters<typeof ChannelModeModule>[0] } = {}) {
+  function wired(opts: { failing?: string[]; gateFails?: boolean; ruleExists?: boolean; config?: ConstructorParameters<typeof ChannelModeModule>[0] } = {}) {
     const failing = opts.failing ?? ['channel_open'];
     const m = new ChannelModeModule(opts.config);
     const steps: string[] = [];
@@ -44,9 +44,9 @@ describe('channel-mode', () => {
         if (opts.gateFails) throw new Error('debounce rule refused');
         debounces.push(p.behavior.debounce);
       },
-      removeGatePolicy: () => { steps.push('removeGatePolicy'); if (opts.removeFails) throw new Error('cannot remove'); return opts.ruleExists ?? true; },
+      removeGatePolicy: () => { steps.push('removeGatePolicy'); return opts.ruleExists ?? true; },
     } as never);
-    void m.start({ getModule: () => m, getState: () => undefined, setState: () => {},
+    void m.start({
       callTool: async (c: { name: string }) => {
         steps.push(c.name);
         return failing.includes(c.name) ? { success: false, error: `${c.name} refused: Server not found: discord` } : { success: true };
@@ -134,55 +134,22 @@ describe('channel-mode', () => {
     expect(r.error).toContain('call channel-mode--set_channel_mode again with the same channelId and mode, and debounceMs 60000, to retry');
   });
 
-  test('R5-3 debounced retry preserves an explicit serverId', async () => {
-    const { m } = wired();
-    const r = await m.handleToolCall(call('set_channel_mode', {
-      channelId: 'discord:1:2', mode: 'debounced', serverId: 'discord', debounceMs: 60_000,
-    }));
-    expect(r.error).toContain(
-      'again with the same channelId, mode and serverId, and debounceMs 60000, to retry',
-    );
-  });
-
   test('in mentions mode, a removed rule, or none, reads as what happened', async () => {
     const removed = await wired({ failing: ['channel_close'] }).m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions' }));
     expect(removed.error).toStartWith(
       'Channel discord:1:2 is only partly in mentions mode: its debounce rule was removed and it isn\'t pinned, ' +
       'and closing the channel failed (channel_close refused: Server not found: discord).',
     );
-    // No saved binding protects a retry if channel ownership changes.
-    expect(removed.error).toContain('To retry, call channel-mode--set_channel_mode with the same channelId, mode and serverId "discord" only after verifying it is still the intended owner');
-    expect(removed.error).toContain('Do not select a replacement server');
-    expect(removed.error).toContain('if ownership has changed or is unclear, ask whoever runs this host');
-    expect(removed.error).not.toContain('Each step is safe to repeat');
+    expect(removed.error).toContain('with the same channelId and mode to retry');
     const none = await wired({ failing: ['channel_close'], ruleExists: false }).m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions' }));
     expect(none.error).toContain("it had no debounce rule to remove and it isn't pinned");
   });
 
-  test('R2-5 mentions keeps retry advice when close and another step fail', async () => {
-    for (const opts of [
-      { failing: ['channel_close', 'subscription-gc--pin_channel_idle_limit'] },
-      { failing: ['channel_close'], removeFails: true },
-    ]) {
-      const { m } = wired(opts);
-      const result = await m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions' }));
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('closing the channel failed');
-      expect(result.error).toContain(opts.removeFails
-        ? "the channel's debounce gate rule failed (cannot remove)"
-        : 'releasing its pin failed');
-      // Multiple failures still need retry advice, not an unconditional safety claim.
-      expect(result.error).toContain('To retry, call channel-mode--set_channel_mode with the same channelId, mode and serverId "discord" only after verifying it is still the intended owner');
-      expect(result.error).toContain('Do not select a replacement server');
-      expect(result.error).toContain('if ownership has changed or is unclear, ask whoever runs this host');
-      expect(result.error).not.toContain('Each step is safe to repeat');
-    }
-  });
-
-  test('when no step works, it says nothing changed', async () => {
+  test('when no step reports success, it says so, not that nothing changed', async () => {
     const { m } = wired({ failing: ['channel_open', 'subscription-gc--pin_channel_idle_limit'], gateFails: true });
     const r = await m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'debounced' }));
-    expect(r.error).toStartWith('Nothing changed for channel discord:1:2: opening the channel failed');
+    expect(r.error).toStartWith('No step for channel discord:1:2 reported success: opening the channel failed');
+    expect(r.error).not.toContain('Nothing changed');
     expect(r.error).toContain("the channel's debounce gate rule failed (debounce rule refused)");
     expect(r.error).toContain('Each step is safe to repeat');
     expect(r.error).not.toContain('only partly');
@@ -191,7 +158,7 @@ describe('channel-mode', () => {
   test('a step whose call threw may have taken effect, and the result says so', async () => {
     const m = new ChannelModeModule();
     m.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => { throw new Error('debounce rule refused'); }, removeGatePolicy: () => true } as never);
-    await m.start({ getModule: () => m, getState: () => undefined, setState: () => {},
+    await m.start({
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') throw new Error('timed out');
         return { success: false, error: `${c.name} refused` };
@@ -202,12 +169,10 @@ describe('channel-mode', () => {
       'Channel discord:1:2 may not have changed: opening the channel got no answer (timed out), so it may or may not have taken effect;',
     );
     expect(none.error).not.toContain('Nothing changed');
-    expect(none.error).toContain('pinning it open failed (subscription-gc--pin_channel_idle_limit refused)');
-    expect(none.error).not.toContain('pinning it open got no answer');
 
     const m2 = new ChannelModeModule();
     m2.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => {}, removeGatePolicy: () => true } as never);
-    await m2.start({ getModule: () => m2, getState: () => undefined, setState: () => {},
+    await m2.start({
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') throw new Error('timed out');
         return { success: true };
@@ -221,7 +186,7 @@ describe('channel-mode', () => {
     const m = new ChannelModeModule();
     const gate: string[] = [];
     m.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => { gate.push('add'); }, removeGatePolicy: () => true } as never);
-    await m.start({ getModule: () => m, getState: () => undefined, setState: () => {},
+    await m.start({
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') await m.stop();
         return { success: true };
