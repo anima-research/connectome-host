@@ -109,6 +109,14 @@ export interface RecipeStrategy {
   compressionSplitMaxCallsPerChunk?: number;
   /** Split-stitch: max sub-calls per strategy instance per 10-minute in-memory window (default 80). */
   compressionSplitMaxCallsPer10Min?: number;
+  /**
+   * Context Manager fallback-model rung (default unset). Once
+   * `compressionModel` has refused a compression or a merge on every rung
+   * that keeps it writing the memory in full, the canonical request goes once
+   * more to this model, before the split rung and before quarantine. The
+   * model is reached through the agent's own provider.
+   */
+  compressionFallbackModel?: string;
   /** Token budget for prior recall-pair context in compression/merge
    * requests (Context Manager `compressionRecallBudgetTokens`). */
   compressionRecallBudgetTokens?: number;
@@ -2887,6 +2895,12 @@ export function validateRecipe(raw: unknown): Recipe {
       }
       const unknown = Object.keys(hoist).filter((key) => !['intoTool', 'fromTools', 'field', 'result', 'minChars'].includes(key));
       if (unknown.length > 0) throw new Error(`${where} has unknown key(s): ${unknown.join(', ')}.`);
+    }
+    if (
+      strategy.compressionFallbackModel !== undefined
+      && (typeof strategy.compressionFallbackModel !== 'string' || !strategy.compressionFallbackModel)
+    ) {
+      throw new Error('Recipe agent.strategy.compressionFallbackModel must be a non-empty string.');
     }
     for (const key of ['compressionSplitMaxCallsPerChunk', 'compressionSplitMaxCallsPer10Min'] as const) {
       const value = strategy[key];
