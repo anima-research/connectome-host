@@ -744,10 +744,8 @@ test('fix1 F2: startup connecting, actual mcpl-down/reconnect, and new incident 
   expect((await journal(h.dir)).records.filter((r: any) => old.includes(r.id)).every((r: any) => r.outcome.state === 'not-dispatched')).toBe(true);
 });
 
-test('fix1 F3/F4: exact AF refusal streak order never clears; successful endTurn clears main refusal only', async () => {
+test('fix1 F3/F4: exact AF refusal streak order never clears; successful endTurn clears main refusal', async () => {
   const h = await harness();
-  h.alert('context-maintenance-failed', 'strategy init failed', 120, { data: { scope: 'agent', pending: 'compression' } });
-  h.alert('refusal-offpath', 'background refused', 121);
   for (let streak = 2; streak <= 4; streak++) {
     // AF completeTurn emits completed before noteRefusal; completed carries NO stopReason.
     h.trace('inference:completed');
@@ -758,13 +756,31 @@ test('fix1 F3/F4: exact AF refusal streak order never clears; successful endTurn
   expect(j.records.filter((r: any) => r.phase === 'recovery-observed')).toHaveLength(0);
   expect(new Set(j.records.filter((r: any) => r.kind === 'refusal').map((r: any) => r.incidentId)).size).toBe(1);
   h.trace('inference:failed'); h.trace('inference:aborted'); await h.settle();
-  expect((await journal(h.dir)).active).toHaveLength(3);
+  expect((await journal(h.dir)).active.map((a: any) => a.kind)).toEqual(['refusal']);
   h.trace('inference:turn_ended'); await h.settle();
   j = await journal(h.dir);
-  expect(j.active.map((a: any) => a.kind)).toEqual(['context-maintenance-failed', 'refusal-offpath']);
+  expect(j.active).toEqual([]);
   expect(j.records.find((r: any) => r.kind === 'refusal' && r.phase === 'recovery-observed').source.type).toBe('inference:turn_ended');
-  h.alert('context-maintenance-failed-clear', 'specific source clear', 140); await h.settle();
-  expect((await journal(h.dir)).active.map((a: any) => a.kind)).toEqual(['refusal-offpath']);
+});
+
+test('review6 1: a later successful turn closes the subject\'s auxiliary refusal and maintenance incidents', async () => {
+  const h = await harness();
+  h.alert('context-maintenance-failed', 'strategy init failed', 120, { data: { scope: 'agent', pending: 'compression' } });
+  h.alert('refusal-offpath', 'background refused', 121);
+  h.alert('context-maintenance-failed', 'pass failed', 122, { agentName: 'framework', data: { scope: 'pass' } });
+  await h.settle();
+  const before = await journal(h.dir);
+  // A natural completion emits only completed; AF has no clear for these kinds.
+  h.trace('inference:completed'); await h.settle();
+  const j = await journal(h.dir);
+  expect(j.records.filter((r: any) => r.phase === 'recovery-observed')
+    .map((r: any) => [r.kind, r.incidentId, r.source.type, r.outcome.state])).toEqual([
+    ['context-maintenance-failed', observed(before, 120).incidentId, 'inference:completed', 'sent'],
+    ['refusal-offpath', observed(before, 121).incidentId, 'inference:completed', 'sent'],
+  ]);
+  expect(j.active.map((a: any) => a.key)).toEqual([keyFor('context-maintenance-failed', 'framework')]);
+  expect(j.records.at(-1)).toMatchObject({ phase: 'status',
+    tracking: { activeIncidentIds: [observed(before, 122).incidentId] }, outcome: { state: 'sent' } });
 });
 
 test('review5 2: ordinary inference completion closes only the matching hard-down', async () => {
@@ -1049,7 +1065,7 @@ test('fix2 N2: fresh identical observation after server recovery sends once; no 
   expect(clear).toMatchObject({ incidentId: original.incidentId, phase: 'recovery-observed',
     source: { type: 'inference:turn_ended' }, outcome: { state: 'sent' } });
   expect(h.calls.filter(c => c.id === `notice-home-${clear.id}`)).toHaveLength(1);
-  expect(j.active.map((a: any) => a.kind)).toEqual(['refusal-offpath']);
+  expect(j.active).toEqual([]); // The same turn also closes the auxiliary refusal.
   expect(j.records.find((r: any) => r.id === original.id)).toEqual(original);
   expect(j.records.find((r: any) => r.id === uncertain.id).outcome).toEqual(uncertain.outcome);
   expect(h.calls.some(c => c.id === `notice-home-${original.id}`)).toBe(false);
@@ -1109,6 +1125,26 @@ test('review5 3: a fresh repeat that first delivers an incident also publishes i
   expect(h.calls).toHaveLength(3);
 });
 
+test('review6 2: an uncertain status is not the dedup baseline; the corrective status is sent', async () => {
+  const h = await harness();
+  const acknowledge = h.state.result;
+  // Startup status and the incident are acknowledged; the incident's status is lost.
+  h.state.result = async (call: ToolCall) => h.calls.length === 3 ? { success: false } : acknowledge(call);
+  h.alert('hard-down', 'outage', 9020); await h.settle();
+  let j = await journal(h.dir);
+  expect(j.records.at(-1)).toMatchObject({ phase: 'status',
+    tracking: { activeIncidentIds: [observed(j, 9020).incidentId] }, outcome: { state: 'uncertain' } });
+  h.alert('hard-down-clear', 'source clear', 9021); await h.settle();
+  j = await journal(h.dir);
+  const corrective = j.records.at(-1);
+  // Equal to the acknowledged startup view, but Zulip may show the lost one.
+  expect(corrective).toMatchObject({ phase: 'status', source: { timestamp: 9021 },
+    tracking: { activeIncidentIds: [] }, outcome: { state: 'sent' } });
+  expect(h.calls.at(-1)!.id).toBe(`notice-home-${corrective.id}`);
+  h.emit({ type: 'mcpl:server-reconnected', serverId: 'chat-ops', timestamp: 9022 }); await h.settle();
+  expect(h.calls).toHaveLength(5); // The acknowledged correction is the baseline again.
+});
+
 test('R3: more than 64 unresolved identities bound tracking without disabling delivery or claiming recovery', async () => {
   const h = await harness();
   for (let i = 0; i < 70; i++) {
@@ -1138,7 +1174,7 @@ test('R4: uncertainty rolls through bounded retention, without a lifetime halt',
   expect(observed(j, 11139).outcome.state).toBe('uncertain');
 }, 60000);
 
-test('R5: child turn-end closes only the matching child main-turn incidents', async () => {
+test('R5: child turn-end closes only the matching child\'s incidents', async () => {
   const h = await harness();
   h.alert('hard-down', 'child failed', 13000, { agentName: 'child-A' });
   h.alert('hard-down', 'other child failed', 13001, { agentName: 'child-B' });
@@ -1146,7 +1182,7 @@ test('R5: child turn-end closes only the matching child main-turn incidents', as
   await h.settle();
   h.emit({ type: 'inference:turn_ended', agentName: 'child-A', timestamp: 13003 }); await h.settle();
   const j = await journal(h.dir);
-  expect(j.active.map((a: any) => a.key)).toEqual([keyFor('hard-down', 'child-B'), keyFor('context-maintenance-failed', 'child-A')]);
+  expect(j.active.map((a: any) => a.key)).toEqual([keyFor('hard-down', 'child-B')]);
   expect(j.records.find((r: any) => r.phase === 'recovery-observed')).toMatchObject({ incidentId: observed(j, 13000).incidentId, kind: 'hard-down', outcome: { state: 'sent' } });
 });
 

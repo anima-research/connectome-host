@@ -4,8 +4,9 @@
   preflight declarations, bounded private delivery state and per-record no-retry
   uncertainty. New observations queue during delivery, including possible
   connector echoes; overload drops only newly arriving work while at capacity.
-  Inference completion can close a matching hard-down. Status reports tracked
-  incidents, including after delayed incident delivery, not routine turns.
+  Inference completion can close a matching hard-down, off-path refusal or
+  context-maintenance failure. Status reports tracked incidents, including
+  after delayed incident delivery or an uncertain status, not routine turns.
   Shutdown drains accepted work within a shared send budget
   and journals unsent work locally when it expires. Incident tracking and delivery evidence
   use finite retention windows rather than lifetime failure latches. Host

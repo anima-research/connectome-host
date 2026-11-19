@@ -30,9 +30,10 @@ const ALERT_KINDS = [
 ] as const;
 type AlertKind = typeof ALERT_KINDS[number];
 // AF 0.33 emits completed before reporting refusal and without a stop reason.
-// It signals inference is reachable again, not that a refusal has ended.
-const COMPLETED_CLOSES = ['hard-down'] as const;
-const TURN_END_CLOSES = ['hard-down', 'context-refusal', 'refusal'] as const;
+// It signals a successful turn, which closes these kinds as legacy episodes do
+// (AF emits no source clear for them), but not that a main refusal has ended.
+const COMPLETED_CLOSES = ['hard-down', 'refusal-offpath', 'context-maintenance-failed'] as const;
+const TURN_END_CLOSES = [...COMPLETED_CLOSES, 'context-refusal', 'refusal'] as const;
 const HOME_TRACES = ['ops:alert', 'inference:completed', 'inference:turn_ended', 'mcpl:server-reconnected', 'module:added'] as const;
 const oneOf = <T extends string>(values: readonly T[], value: unknown): value is T => values.some(v => v === value);
 const digest = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -359,7 +360,8 @@ export class NoticeHome {
       this.observationDeliveryFailed = true;
       console.error(`[notices:home] record ${r.id}: ${r.outcome.state}; detail=${r.outcome.detail}; serverId=${this.binding.serverId}; journal=${join(this.runtime.directory, 'journal.json')}; no replay. Agent core continues.`);
     }
-    if (statusKey && r.outcome.state === 'sent') this.journal.lastStatus = statusKey;
+    // An uncertain status may be what Zulip shows, so no baseline is known.
+    if (statusKey && r.outcome.state !== 'not-dispatched') this.journal.lastStatus = r.outcome.state === 'sent' ? statusKey : null;
     await this.save();
     return r.outcome.state === 'sent';
   }

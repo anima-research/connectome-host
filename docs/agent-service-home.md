@@ -88,7 +88,9 @@ policy before a pilot. No live qualification/activation is part of this slice.
   Reconnect or registration of the bound server, or the first successful
   delivery of a previously unsent incident on a fresh repeat, can report a
   view that was not previously acknowledged. Identical acknowledged snapshots dedup; local
-  refusal or uncertainty does not advance the baseline. The sink never polls.
+  refusal does not advance the baseline, and an uncertain status clears it, so
+  the next status is sent even if it matches the last acknowledged one. The
+  sink never polls.
 * Every accepted `ops:alert` observed by this framework sink is considered, including
   framework/component/child subjects, unknown kinds (generic presentation), and
   `refusal`; there is no category/tier censorship in home mode. Coalescing,
@@ -110,14 +112,15 @@ policy before a pilot. No live qualification/activation is part of this slice.
   alerts.
 * An explicit `*-clear` is a **source clear observation**, not a general healthy
   claim; correlation can be unknown. `inference:completed` and
-  `inference:turn_ended` both close a matching subject's hard-down episode,
-  including for a child agent. In AF 0.33, `inference:completed` precedes
-  refusal reporting and has no stop reason, so it does not clear refusal or
-  context-refusal; `inference:turn_ended` can close those as well.
-  Main-turn success never clears auxiliary `refusal-offpath` or
-  `context-maintenance-failed` (including agent-scoped background maintenance).
-  These need their own source clear; this slice does not infer CM repair or
-  fidelity from an ordinary reply. Absence of an incident does not prove health.
+  `inference:turn_ended` both close a matching subject's `hard-down`,
+  `refusal-offpath` and `context-maintenance-failed` incidents, including for
+  a child agent, as a successful turn closes those legacy episodes; AF emits
+  no source clear for them. A framework-scoped maintenance failure has no
+  matching turn and waits for a restart or session switch. In AF 0.33,
+  `inference:completed` precedes refusal reporting and has no stop reason, so
+  it does not clear refusal or context-refusal; `inference:turn_ended` can
+  close those as well. A closing turn is not evidence of maintenance repair
+  or fidelity. Absence of an incident does not prove health.
   A matching server-reconnected or `mcpl:<serverId>` module-added observation
   closes `mcpl-down`. Other kinds await their clear event; no cause/offending
   message is guessed from the last inbound item.
