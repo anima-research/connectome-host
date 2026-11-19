@@ -142,8 +142,10 @@ The evacuator can chain straight into Stage 3: it asks "Start a warmup pass now?
 Bulk-imported sessions land in Chronicle with thousands of raw messages and no autobiographical summaries computed yet. At first compile, autobio's uncompressed-fallback would emit everything raw and blow the context window. The warmup script pre-computes the L1/L2/L3 summaries before the session is opened: all of them for history with no tool calls on a compression model outside the Fable and Mythos families, and what it can without the agent's tool definitions otherwise (below).
 
 ```
-bun scripts/warmup-session.ts "<conversation name or session id>"
+bun scripts/warmup-session.ts '<conversation name or session id>'
 ```
+
+Put the name or id between single quotes, so that the shell passes it as it is. Write an apostrophe in it as `'\''`. Give the session id in place of the name in two cases. A name that begins with `-` is taken for an option. A name that several sessions share, ignoring case, warms only one of them. The import prints each conversation's id beside its name, and once the host runs, `/session list` shows the id in brackets.
 
 Compression should be driven by the same model used in the conversation. Autobio's prompts are explicitly first-person ("describe it as you would to yourself"), so the summarizer is writing the original Claude's own diary. Using Haiku here would be a different voice wearing the same name. When the evacuator chains into warmup it passes its model along with `--model`; run standalone, warmup defaults to Sonnet 4.5, so pass `--model` to match your recipe's model.
 
@@ -172,7 +174,7 @@ Order-of-magnitude estimates using Sonnet 4.5 pricing (input $3/Mtok, output $15
 | ~500 messages | $5–$20 | tens of minutes |
 | ~5000 messages | $50–$200 | hours |
 
-Use `--max-spend` if you want a hard ceiling — the script will halt cleanly and you can review what's been produced before deciding whether to continue. The `--model` flag also accepts cheaper models if you're willing to compromise on voice fidelity for cost.
+Use `--max-spend` for a soft cap. The script halts between ticks once its estimated spend reaches the cap, so the tick under way can take the spend past it. You can then review what it has produced before you decide whether to continue. The `--model` flag also accepts cheaper models if you're willing to compromise on voice fidelity for cost.
 
 For short conversations (under ~50 messages) you can skip warmup entirely; autobio will compress lazily at first compile.
 
@@ -200,7 +202,7 @@ Once you're on the right session, type a turn. The agent should recognize the co
 If you just want to verify the pipeline works end-to-end before committing to a long warmup, pick a 2–4 message conversation:
 
 ```
-bun scripts/import-claudeai-export.ts ~/claude-export --filter "<unique substring of the smoke convo name>"
+bun scripts/import-claudeai-export.ts ~/claude-export --filter '<a regular expression matching only the name of the smoke conversation>'
 bun src/index.ts recipes/claude-export-revive.json
 # in TUI:
 /session list

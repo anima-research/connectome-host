@@ -246,6 +246,7 @@ function stubWorld(answer: (name: string, move: () => void) => Promise<void>) {
   const agent = { name: 'a', state: { status: 'idle' }, getContextManager: () => cm };
   const app = {
     framework: {
+      getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
       getAgent: (name: string) => (name === 'a' ? agent : undefined),
       getAllAgents: () => [agent],
       getAllModules: () => [],
@@ -438,6 +439,7 @@ describe('a refusal offers stopping only for the turn an operator can stop', () 
     const app = {
       agentName: 'a',
       framework: {
+        getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
         getAgent: (name: string) => agents.find((agent) => agent.name === name),
         getAllAgents: () => agents,
         ...framework,
