@@ -145,7 +145,7 @@ Bulk-imported sessions land in Chronicle with thousands of raw messages and no a
 bun scripts/warmup-session.ts '<conversation name or session id>'
 ```
 
-The name or id goes between single quotes, so the shell passes it as it is, an apostrophe in it written `'\''`. A name that begins with `-` is taken for an option, and a name several sessions share, ignoring case, warms only one of them, so for either give its session id instead: the import prints each conversation's id beside its name, and once the host runs, `/session list` shows it in brackets.
+Put the name or id between single quotes, so that the shell passes it as it is. Write an apostrophe in it as `'\''`. Give the session id in place of the name in two cases. A name that begins with `-` is taken for an option. A name that several sessions share, ignoring case, warms only one of them. The import prints each conversation's id beside its name, and once the host runs, `/session list` shows the id in brackets.
 
 Compression should be driven by the same model used in the conversation. Autobio's prompts are explicitly first-person ("describe it as you would to yourself"), so the summarizer is writing the original Claude's own diary. Using Haiku here would be a different voice wearing the same name. When the evacuator chains into warmup it passes its model along with `--model`; run standalone, warmup defaults to Sonnet 4.5, so pass `--model` to match your recipe's model.
 
@@ -174,7 +174,7 @@ Order-of-magnitude estimates using Sonnet 4.5 pricing (input $3/Mtok, output $15
 | ~500 messages | $5–$20 | tens of minutes |
 | ~5000 messages | $50–$200 | hours |
 
-Use `--max-spend` for a soft cap: the script halts between ticks once its estimated spend reaches it, so the tick under way can take it past, and you can review what's been produced before deciding whether to continue. The `--model` flag also accepts cheaper models if you're willing to compromise on voice fidelity for cost.
+Use `--max-spend` for a soft cap. The script halts between ticks once its estimated spend reaches the cap, so the tick under way can take the spend past it. You can then review what it has produced before you decide whether to continue. The `--model` flag also accepts cheaper models if you're willing to compromise on voice fidelity for cost.
 
 For short conversations (under ~50 messages) you can skip warmup entirely; autobio will compress lazily at first compile.
 

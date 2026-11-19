@@ -209,15 +209,15 @@ conditions are required so the headers can never reach a vendor endpoint.
 - **`passthrough`** — no compression.
 - **Extension strategies** registered through `extensions`.
 
-Three keys are hot at runtime — `contextBudgetTokens`, `tailTokens`,
-`transitionPaceTokens` — changeable by the agent (`agent_settings`) or the
-operator (WebUI Settings), persisted in Chronicle and winning over the recipe.
-Raising the budget applies at once; lowering it converges gradually. Operators
-can also **pin** ranges (keep raw, cap the fold level, or fix a level) from the
-WebUI. How this feels from the inside is in
-[`docs/AGENT-MEMORY-GUIDE.md`](docs/AGENT-MEMORY-GUIDE.md); sizing for
-long-lived agents is in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)'s "A
-resident's memory: sizing, folding and repair".
+Three keys are hot at runtime: `contextBudgetTokens`, `tailTokens` and
+`transitionPaceTokens`. The agent (`agent_settings`) or the operator (WebUI
+Settings) can change them. Chronicle keeps each change, and a kept value wins
+over the recipe's. Raising the budget applies at once; lowering it converges
+gradually. Operators can also **pin** ranges (keep raw, cap the fold level, or
+fix a level) from the WebUI. How this feels from the inside is in
+[`docs/AGENT-MEMORY-GUIDE.md`](docs/AGENT-MEMORY-GUIDE.md). Sizing for
+long-lived agents is in the section "A resident's memory: sizing, folding and
+repair" of [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md).
 
 ## Modules
 
