@@ -64,6 +64,23 @@ describe('unknownRecipeKeys', () => {
     expect(unknownRecipeKeys(base({ modules: { files: false } }))).toEqual(['modules.files (replaced by modules.workspace)']);
   });
 
+  test('names a retired strategy key, and no other strategy key, since a strategy\'s keys are open', () => {
+    const retired = 'agent.strategy.identityReminderSilent (replaced by a sentence asking for silence at the end of ' +
+      'each nonblank reminder the recipe sets, agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
+      'if it was true; if it was false, nothing)';
+    for (const type of ['autobiographical', 'frontdesk', 'passthrough']) {
+      const strategy = { type, identityReminderSilent: true, anExtensionsOwnKey: 1 };
+      expect(unknownRecipeKeys(base({}, { strategy }))).toEqual([retired]);
+    }
+    expect(unknownRecipeKeys(base({}, { strategy: { identityReminderSilent: false } }))).toEqual([retired]);
+    expect(unknownRecipeKeys(base({}, { strategy: { type: 'autobiographical', identityReminder: 'R' } }))).toEqual([]);
+    expect(unknownRecipeKeys(base({}, { strategy: 'autobiographical' }))).toEqual([]);
+  });
+
+  test('names no strategy key for an extension strategy, whose factory gets the whole strategy config', () => {
+    expect(unknownRecipeKeys(base({}, { strategy: { type: 'custom', identityReminderSilent: true } }))).toEqual([]);
+  });
+
   test('a key named like an inherited property gets no false replacement', () => {
     const raw = JSON.parse('{"name":"T","agent":{"constructor":1},"__proto__":{"x":1},"constructor":1}');
     const found = unknownRecipeKeys(raw);

@@ -16,6 +16,7 @@ import { isBuiltinStrategyType, type ExtensionRegistry } from './extensions.js';
 const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'enforceBudget',
   'maxSpeculativeL1s',
+  'carryStrandedSummaries',
   'compressionRefusalCurveFallbacks',
   'compressionContextBudgetTokens',
   'compressionSourceOnly',
@@ -27,6 +28,7 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'compressionSplitPlaceholder',
   'compressionSplitMaxCallsPerChunk',
   'compressionSplitMaxCallsPer10Min',
+  'compressionFallbackModel',
   'compressionRecallBudgetTokens',
   'recoverLiteralThinkingWrappedCompression',
   'positionedRecallPairs',
@@ -62,7 +64,6 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'witnessedInstruction',
   'identityReminder',
   'witnessedIdentityReminder',
-  'identityReminderSilent',
 ];
 
 /**

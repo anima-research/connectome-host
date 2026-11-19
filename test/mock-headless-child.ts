@@ -143,6 +143,14 @@ function dispatch(msg: Record<string, unknown>): void {
       setTimeout(() => simulateFinalInference(`echo: ${msg.content}`, true), 300);
       return;
     }
+    if (msg.content === 'empty-reply') {
+      simulateFinalInference('', true);
+      return;
+    }
+    if (msg.content === 'whitespace-reply') {
+      simulateFinalInference('  ', true);
+      return;
+    }
     if (msg.content === 'no-texts') {
       started();
       emit({ type: 'inference:completed', agentName: 'mock' });

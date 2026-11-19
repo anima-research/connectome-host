@@ -244,16 +244,17 @@ describe("the frames that move a window, and the panels' reads", () => {
   // Host #485 bot review wave 3, finding 18: a fleet child's undo or shed
   // reached the page only as a child-event, which read nothing, so the
   // child's panels stayed stale.
-  test("a fleet child's undo or shed reads its panels, for the agent they answer for", () => {
+  test("a fleet child's undo, shed or unsent-injection retraction reads its panels, for the agent they answer for", () => {
     const { calls, take } = frames();
     const miner: ShownPanels = { scope: 'miner', agent: 'digger' };
     take(child('miner', { type: 'window:undone', agentName: 'digger', retracted: 1 }), miner);
     take(child('miner', { type: 'presentation:retracted', agentName: 'digger', messageIds: ['r1'], reason: 'shed' }), miner);
-    expect(calls).toEqual(['read', 'read']);
+    take(child('miner', { type: 'presentation:retracted', agentName: 'digger', messageIds: ['r3'], reason: 'unsent-injection' }), miner);
+    expect(calls).toEqual(['read', 'read', 'read']);
     take(child('miner', { type: 'presentation:retracted', agentName: 'digger', messageIds: ['r2'], reason: 'hide' }), miner);
     take(child('smelter', { type: 'window:undone', agentName: 'digger', retracted: 1 }), miner);
     take(child('miner', { type: 'inference:started', agentName: 'digger' }), miner);
-    expect(calls).toEqual(['read', 'read']);
+    expect(calls).toEqual(['read', 'read', 'read']);
   });
 
   // Host #485 bot review wave 4, finding 15: the child's panels named the

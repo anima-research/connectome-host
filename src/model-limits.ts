@@ -21,9 +21,17 @@ const TWO_HUNDRED_K: ModelLimits = { maxContextTokens: 200_000, maxOutputTokens:
 // request past 200k is refused
 // (https://platform.claude.com/docs/en/release-notes/overview), so its row is
 // 200k whatever betas a recipe sends.
+//
+// Claude Fable 5.2's row is from Anthropic's models API (`max_input_tokens`
+// and `max_tokens`), and Claude Mythos 5.2's from its docs page
+// (https://platform.claude.com/docs/en/models/mythos-5-2/overview), since the
+// models API didn't list it for the key it was read with; the page says it
+// requires verification. Both read 2026-11-09.
 export const LIMITS_TABLE: readonly LimitsRow[] = [
+  { id: 'claude-fable-5-2', ...ONE_M },
   { id: 'claude-fable-5-1', ...ONE_M },
   { id: 'claude-fable-5', ...ONE_M },
+  { id: 'claude-mythos-5-2', ...ONE_M },
   { id: 'claude-mythos-5-1', ...ONE_M },
   { id: 'claude-mythos-5', ...ONE_M },
   { id: 'claude-mythos-preview', ...ONE_M },
