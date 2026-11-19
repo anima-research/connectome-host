@@ -222,7 +222,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     if (!shell.newPort && !(await sys.portFree(Number(shell.port))) && !shellRuns(sys, manager, env, names.shell)) {
       throw new Refusal(`SESSION_SERVER_PORT in ${envFile} is ${shell.port}, and something is listening on it, but ` +
         `${manager === 'launchd' ? 'launchd' : 'systemd'} doesn't show this install's shell daemon, ${names.shell.name}, ` +
-        'running. That happens when another install takes the port while this one is down. This install\'s shell ' +
+        'running. That can happen when another install takes the port while this one is down. This install\'s shell ' +
         `clients would reach that listener, with ${shell.newToken ? 'a new' : 'the stored'} token. Give this install a ` +
         `port of its own as SESSION_SERVER_PORT in ${envFile}, or remove that line so that one is picked. Then repeat ` +
         'this service install command. Nothing was written.');
@@ -349,8 +349,8 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     ctx.err(`connectome: ${ready}`);
     ctx.out(`Its log shows what happened${log}. Put that right, then run ${cmd} service ` +
       `install ${shellWord(recipe)} again. Until then ${manager === 'systemd-user'
-      ? 'systemd restarts the host each time it fails, while its unit is loaded and its start limit allows. That ' +
-        'run clears the limit'
+      ? 'systemd restarts the host each time it fails, while its unit is loaded and its start limit allows. Running ' +
+        'service install again clears that limit'
       : 'launchd starts the host again each time it exits with a status other than 0, while its agent is loaded'}.`);
   } else if ('late' in ready) {
     ctx.err(`connectome: ${ready.late}`);

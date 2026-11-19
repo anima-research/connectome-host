@@ -1237,7 +1237,7 @@ test('a host whose unit stops before it answers fails the install, which says to
   expect(await installService(f.ctx(['install', at.recipe]), f.system)).toBe(1);
   expect(f.out).toContain(`Its log shows what happened: journalctl --user -u ${HOST} -f. Put that right, then run ` +
     `${commandOf(at)} service install '${at.recipe}' again. Until then systemd restarts the host each time it fails, while ` +
-    'its unit is loaded and its start limit allows. That run clears the limit.');
+    'its unit is loaded and its start limit allows. Running service install again clears that limit.');
 });
 
 test('an install whose data directory\'s socket answers with a host its unit doesn\'t run, as a copy\'s original would, is refused, naming that pid, before anything is written', async () => {
