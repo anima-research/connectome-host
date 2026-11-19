@@ -1,0 +1,1 @@
+- **Start (`start.js`):** taking over a lock whose process has ended, where another process takes the lock in the same moment, puts that process's lock back and tries once more, which refuses unless the lock is free by then. Where it can't put the lock back, it refuses, naming both lock files. Before, it went on and removed the other process's lock.

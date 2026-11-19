@@ -9,6 +9,8 @@ import { CLI_WAYS, COMMAND_WAYS, statusLines, type UpdateStatus } from '../web/u
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
 import { INSTALL_COMMAND } from './install-command.js';
+import { ROOT_IN_WORKDIR, SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, setup, setupDirectory } from './setup.js';
+import { shellCommand } from './shell.js';
 
 export interface CliContext {
   root: string | null;
@@ -25,14 +27,19 @@ export interface CliCommand {
   run(ctx: CliContext): Promise<number>;
 }
 
-export const ROOT_IN_WORKDIR = 'connectome-host';
-
 const HEALTH_WAIT_MS = 10_000;
 
 const UPDATE_USAGE = 'connectome update [check | install | restart [wait | now | resume | <version>] | ' +
   'back [(keep | restore) [<version>]]]';
 
 export const COMMANDS: CliCommand[] = [
+  {
+    name: 'setup',
+    usage: SETUP_USAGE,
+    summary: SETUP_SUMMARY,
+    run: (ctx) => setup({ ...ctx, root: ctx.root ?? resolve(ROOT_IN_WORKDIR) }),
+  },
+  shellCommand,
   {
     name: 'send',
     usage: 'connectome send <text>',
@@ -115,9 +122,11 @@ function usage(print: (line: string) => void): void {
 }
 
 async function fromPackage(argv: string[]): Promise<number> {
-  const root = resolve(ROOT_IN_WORKDIR);
+  const [word] = argv;
+  const root = word === 'setup' ? join(setupDirectory(process.cwd(), process.env.HOME), ROOT_IN_WORKDIR)
+    : resolve(ROOT_IN_WORKDIR);
   const command = join(root, INSTALL_COMMAND);
-  if (existsSync(command)) {
+  if (existsSync(command) && (word !== 'setup' || existsSync(join(root, 'current', SETUP_RECIPE)))) {
     const ran = spawnSync(process.execPath, [command, ...argv], { stdio: 'inherit' });
     if (ran.error !== undefined) {
       io.err(`connectome: ${command} couldn't be run: ${ran.error.message}`);
@@ -130,7 +139,7 @@ async function fromPackage(argv: string[]): Promise<number> {
     }
     return ran.status ?? 1;
   }
-  const [word] = argv;
+  if (word === 'setup') return setup({ root, argv: argv.slice(1), ...io });
   if (isHelp(word)) {
     usage(io.out);
     return 0;
@@ -145,7 +154,8 @@ async function fromPackage(argv: string[]): Promise<number> {
       `start.js. ${setupAgain(root)}`);
     return 1;
   }
-  io.err(`connectome: there's no connectome-host install here (${process.cwd()}).`);
+  io.err(`connectome: there's no connectome-host install here (${process.cwd()}). \`${firstLine()}\` sets one up, ` +
+    'in this directory where it\'s empty or already setup\'s, and in ~/resident otherwise.');
   return 1;
 }
 
