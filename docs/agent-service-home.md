@@ -4,7 +4,7 @@ This is a delivery mode of **NoticesModule**, not another incident service.
 The host posts observations without an LLM turn, context marker, channel open,
 locus change, or admission change. There is no dashboard polling, pin/edit
 loop, chat control, pause, restart, rewind, new IPC, or operator authority in
-notification data. A diagnostic is data, **not an instruction**.
+notification data.
 
 Omitting `home` preserves legacy notices (including legacy tiers, replies and
 unknown-kind behavior). `home` cannot be combined with legacy notices options:
@@ -56,62 +56,57 @@ It validates supplied values against enum/const/length constraints and refuses
 unsupported schema constraints rather than guessing a default or reply target.
 
 **This trust mode does NOT independently verify the authenticated realm.**
-AF 0.33.0's public server listing does not expose that realm. State, attachment
-and status label it `verification=operator-attested/unverified`. The operator
+AF 0.33.0's public server listing does not expose that realm. The display and
+attachment label it `verification=operator-attested/unverified`. The operator
 attests the registered-server/declaredRealm association. An optional backend
 `realm` value, if exposed, must match or the adapter refuses. Unchanged server
-ID/prefix cannot detect changed credentials, endpoint or realm; a changed
-declared destination refuses journal reuse. Stronger connector-attested realm
-identity/an expected-realm guard is future work, not implemented here.
+ID/prefix cannot detect changed credentials, endpoint or realm. Stronger
+connector-attested realm identity/an expected-realm guard is future work, not
+implemented here.
 
 The self-echo attestation represents a **required deployment preflight**, not
 runtime enforcement, a security boundary, or evidence supplied by these tests.
 Before any later pilot, separately qualify the selected connector's own-send
 filter (including startup/profile-read failure behavior). The inspected public
 Zulip connector can have unknown self identity after a failed profile read.
-Do not attest readiness without that qualification. The host escapes display
-mentions/fences/control characters and `[[msg:...]]` macros (also inside code fences) and never routes notification text into its
-own model context; it cannot promise a connector will not echo messages.
+Do not attest readiness without that qualification. Display content is built
+from fixed labels and typed values and never routed into the host's own model
+context; the host cannot promise a connector will not echo messages.
 
 Private vs public stream, access, grants and subscriptions are operator
 deployment policy. Provision/qualify them separately; this feature creates
 none. A shared stream **may wake other agents** even though these sends do not
-invoke this agent's model. Consider diagnostic confidentiality and destination
+invoke this agent's model. Consider incident confidentiality and destination
 policy before a pilot. No live qualification/activation is part of this slice.
 
 ## What is actually observed
 
-* Startup takes one public `healthSnapshot()` observation. Thereafter the host
-  samples on observed `ops:alert`, this agent's inference started/aborted/failed/
-  waiting/exhausted/completed, any subject's turn_ended, server-reconnected, module-added and
-  module-removed traces. There is **no periodic timer**. It posts a status only
-  when its bounded projection/active incident IDs change (plus startup); the
-  dedup baseline advances only after acknowledged delivery, not local refusal or
-  uncertainty. Status lists IDs referencing incident records, not unbounded
-  copies of kind/subject text.
-* The health projection is agent status, consecutive inference failures,
-  refusal total, and scalar provider-admission counters/flags. Missing values
-  stay null; missing agent/read failure is **unknown**, never recovery. No gate
-  reasons, pending payloads or active stream bodies are copied. A snapshot is
-  observation at the record's timestamp, **not a current/continuous health claim**.
-  AF can emit traces before releasing provider admission; `idle` with
-  `primaryActive:true` is recorded as null/`transition-unsettled`, not a claim
-  that the idle agent is currently active. No periodic refresh is implied.
+* Status reports **tracked incidents only**: active incident IDs and a count
+  of forgotten identities. It is a startup observation and a report on changes
+  to local tracking, not a health snapshot. Routine turns do not post status;
+  the sink does not read inference, refusal totals or provider admission state.
+  Reconnect or registration of the bound server can report a view that was
+  not previously acknowledged. Identical acknowledged snapshots dedup; local
+  refusal or uncertainty does not advance the baseline. The sink never polls.
 * Every accepted `ops:alert` observed by this framework sink is considered, including
   framework/component/child subjects, unknown kinds (generic presentation), and
   `refusal`; there is no category/tier censorship in home mode. Coalescing,
   publication-local suppression, overload drops and storage disablement mean
-  not every alert gets a remote post. Stop unsubscribes and rejects new work,
-  then drains accepted observations (including their derived statuses) before
-  returning; it is not an immediate send-cancellation fence. Kind-less alerts
-  get `unknown-alert-kind`. Current-boot traces cached by AF are requested with
+  not every alert gets a remote post. Stop unsubscribes, rejects new work and
+  drains accepted observations. Sends share one five-second budget from stop;
+  an in-flight send keeps its existing deadline and later sends use only the
+  time remaining. After expiry, work that would otherwise dispatch is recorded
+  locally as `not-dispatched`, subject to the normal coalescing and retention
+  bounds. Stop waits for the journal writes in addition to the delivery budget
+  and does not cancel a remote send. Unrecognized or missing kinds display as
+  `unknown-alert-kind`. Current-boot traces cached by AF are requested with
   `replay: true`; events not emitted, before the cache, or beyond its bounded
   early-trace retention are not reconstructed. There is no failures.log tailer.
 * AF 0.33.0 logs **each individual refusal** to its existing failures.log, but
   emits a refusal `ops:alert` only at consecutive streak **>= 2**. This path does
-  not publish an individual incident for a first refusal. A later sampled
-  refusal-total change can be visible in status; absence of an alert does not
-  mean no refusal occurred. Categories are not used to hide observed alerts.
+  not publish an individual incident for a first refusal; absence of an alert
+  does not mean no refusal occurred. Categories are not used to hide observed
+  alerts.
 * An explicit `*-clear` is a **source clear observation**, not a general healthy
   claim; correlation can be unknown. Only successful `inference:turn_ended`
   closes the matching subject's (including a child agent's) main-turn hard-down, context-refusal and refusal episodes.
@@ -121,57 +116,32 @@ policy before a pilot. No live qualification/activation is part of this slice.
   Main-turn success never clears auxiliary `refusal-offpath` or
   `context-maintenance-failed` (including agent-scoped background maintenance).
   These need their own source clear; this slice does not infer CM repair or
-  fidelity from an ordinary reply. Unknown health alone never clears anything.
+  fidelity from an ordinary reply. Absence of an incident does not prove health.
   A matching server-reconnected or `mcpl:<serverId>` module-added observation
   closes `mcpl-down`. Other kinds await their clear event; no cause/offending
   message is guessed from the last inbound item.
 
-Records are an **allowlisted diagnostic projection, NOT a full trace**. Public
-message/ref text is retained with the existing redaction and bounds. Structured
-`ops:alert.data` retains these operational fields, regardless of alert category:
-nonnegative safe-integer `count`, `mail`, `keptForRecovery`, `heldBySurgery`,
-`passedOn`, `streak`; boolean `agentEnded`; redacted/bounded `category`, `scope`,
-`pending`; up to 16 redacted kind-name/count entries in `kinds`; and known CM
-`progress` counters (`totalChunks`, `chunksCompressed`, `l1QueueLength`,
-`l1WaitingOnTools`, `mergeQueueLength`, `mergesWaitingOnTools`), boolean `pending`
-and `summaryCounts.l1/l2/l3`. This preserves loss/mail state, refusal category
-and streak, and maintenance scope/pending/progress without capturing arbitrary
-nested payloads. Changed retained metadata is a changed diagnostic, not an
-identical repeat.
+The journal, Zulip display and inline JSON attachment contain **no diagnostic
+free text**. They carry fixed labels (including a fixed set of alert kinds),
+times, IDs, counts and delivery state. Raw subjects, trace IDs, messages and
+structured alert data are not copied. Diagnostics remain in the existing local
+producer logs; this mode does not add a text forwarding path. Operator routing
+strings go to the connector only as routing arguments, not into the contents
+of these three sinks.
 
-AF's `boundFailureFields` bounds values and projects Errors but is **not a
-secret-free guarantee**. No raw requests/responses/headers/env/private history,
-conversation bodies, stacks, thinking or arbitrary nested Trace data is copied.
-Unknown or invalid metadata fields are omitted; a count of omissions (not their
-possibly sensitive names), truncation flag and redaction flag are explicit in
-`metadata`. Text fields are capped at 512, kind names at 128, and projected
-fields at 3,072 JSON characters (metadata <=4,096); excess fields are dropped
-with an explicit truncated/omitted disposition, not secretly treated as full
-fidelity. Original v1 records without metadata stay message-only; missing
-metadata is not retrospectively reconstructed.
-
-Recognizable secret/header assignments in allowed text are visibly redacted;
-this is not a universal secret detector. Producers must keep raw bodies/secrets
-out of public diagnostics. Diagnostics are capped at 8,192 input characters,
-kind/subject/reference fields at 256 (kind/subject caps visibly marked); excess
-is not captured. AF messages are already source-bounded to 2,000 characters.
-There is no recovery of source-omitted/truncated text.
-
-Display is fenced/escaped and visibly truncated at 1,200 characters. Each send
-includes the **allowlisted pre-dispatch diagnostic projection as an inline JSON attachment**
-using the connector's existing upload facility; it is not a delivery receipt.
-The filename is the stable local record ID. No `file://` remote-access claim,
-new webserver, or attachment-root/private-file access. Attachment upload can
-have succeeded even if message acknowledgement is uncertain. The private
-journal retains the record and final known outcome; no attachment cleanup or
-external-effect rollback is attempted.
+The attachment is the pre-dispatch record, not a delivery receipt. Its filename
+is the local record ID, and upload uses the connector's existing facility. No
+`file://` remote-access claim, new webserver or attachment-root/private-file
+access. Upload can succeed even when delivery is uncertain. The host journal
+records the final known outcome; no attachment cleanup or remote rollback is
+attempted.
 
 ## Journal, uncertainty and bounded retention
 
 Host-owned location: `$DATA_DIR/notice-home/<sha256(logicalAgent)>/journal.json`,
-not the conversation/session checkpoint. Directory is 0700, files 0600. Refuse
-non-private/non-regular/symlink leaf state, malformed/oversized journals and
-binding/schema drift without replacing the existing journal. Fixed temporary
+not the conversation/session checkpoint. Directory is 0700, files 0600.
+The host starts a fresh journal on host startup and session switch; see
+**Restart and session switch**. Fixed temporary
 `journal.next` plus fsync/atomic rename/directory fsync serializes durable intent
 **before** entering the delivery boundary, then outcome. File sync errors stop
 delivery, not the agent core. Filesystem durability still depends on its fsync
@@ -180,13 +150,14 @@ recursive parent-directory creation is not power-loss qualified: provision the
 private directory durably before activation. A missing journal is treated as
 first run, not as proof that no remote messages exist.
 
-The immutable binding includes logical agent and destination. Each record has
-its origin runtime instance (random per host process), local record and incident
-ID, source trace type/timestamp/trace ID when available, observed time, count,
-last-seen time and outcome. Source message/turn/checkpoint references remain
-unknown; a local incident ID is not a provider's incident ID. A new instance
-preserves retained record identities and tracked active incidents, and adds a startup
-observation. **Single active host per logical-agent journal is a v1 assumption.**
+A binding fingerprint ties the file to the configured logical agent and
+destination without carrying their literal strings. The record contains
+generated record/incident IDs, a runtime instance fingerprint, event and
+incident keys, fixed source type, times, count and outcome. The event key
+uses the source time and trace ID for replay detection without retaining the
+raw trace ID. Source message/turn/checkpoint references remain unknown; a
+local incident ID is not a provider's incident ID.
+**Single active host per logical-agent journal is a v1 assumption.**
 Cloning state does not stop/fence the old host; do not run both copies.
 The journal resides in the host data tree: update rollback/backup restoration
 can restore stale delivery evidence while remote Zulip posts remain. Preserve
@@ -200,17 +171,21 @@ no cross-rollback deduplication guarantee.
   bound `serverId`. A tag is **not proof of a realm URL**; there is no trusted
   tag/URL mapping here. Mixed namespaces, malformed IDs, success=false,
   missing ack or observable receipt routing/realm mismatch stay uncertain.
-  New sent outcomes include `serverId`; old numeric receipts remain readable.
+  The journal's binding fingerprint scopes numeric and branded receipts to
+  the configured server without storing the server name in the outcome.
   Old uncertain receipts are never silently upgraded to sent.
-* `not-dispatched`: definitive local preflight refusal, or conservatively local-only publication-related observation.
+* `not-dispatched`: definitive local preflight refusal, local-only publication-related
+  observation, or a send skipped because the shared shutdown budget expired
+  before dispatch.
 * `uncertain`: dispatch threw/timed out (5 seconds), returned failure/malformed
-  acknowledgement, or restart found a pending intent. Timeout does not cancel a
-  remote send; a late acknowledgement is not used to upgrade/replay it.
+  acknowledgement. Timeout does not cancel a remote send; a late
+  acknowledgement is not used to upgrade or replay it.
 
-**No automatic resend/retry of a retained record**, even after reconnect/restart.
-Uncertain/pending records are retained within the finite window and never automatically replayed; they do **not**
-permanently disable unrelated new observations. A startup-connecting/schema
-refusal is local to its record. New observations after connection/schema
+**No automatic resend or retry.** While running, uncertain records stay within
+the finite retention window and do **not** permanently disable unrelated new
+observations. A restart or session switch never replays records from the old journal. A refusal
+because the server is still connecting or has an incompatible schema is local
+to its record. New observations after connection/schema
 recovery can deliver normally, without a reset command or evidence deletion.
 
 Publication never emits a failure ops notice of its own. A private async context
@@ -233,46 +208,60 @@ alerts/reconnects after delivery-triggered transport failure. No new AF API or
 lifecycle-fencing guarantee is provided here.
 
 Console diagnostics and read-only `homeState()` expose
-storage disablement and queue drops (the cumulative runtime `dropped` count). The original journal `deliveryHalted` flag is retained
-as **historical evidence only**, not consulted as a future-message latch;
-`homeState().legacyDeliveryHalted` exposes it separately. Actual corrupt journal,
-binding drift or actual storage failure still fail closed
-without overwriting the invalid journal or blocking core processing. Disablement
-logs include the scrubbed exception, journal path and preservation/rebinding
-guidance. Missing/ambiguous bound server IDs name configured candidates and
-require configuration repair, unlike a disconnected known server. No home
-delivery failure is recursively sent as an ops alert; operators must monitor
-console logs or the inspection hook.
+storage disablement and overload drops (the cumulative runtime `dropped` count).
+Shutdown non-dispatch is journaled, not counted as an overload drop. None of
+these block core processing.
 
-Identical diagnostic repetitions in an active episode coalesce into count /
-lastSeen / first+last source reference in a retained record, **except a prior
-`not-dispatched` record is not a coalescing anchor**. A fresh identical observation
-with a new source identity after recovery can send once as a new record with
-the same incident ID, preserving the original non-dispatch evidence. This is
-not a retry of the old record: exact retained source-event replay still dedups,
-and uncertain/pending records are not automatically resent (identical fresh
-observations can still coalesce into an uncertain record). Coalescing into sent
-records is unchanged; changed diagnostics get new records with the same
-incident ID. Exact retained first/
-last event identities are not resent across restart. Counts are observations,
-not a complete per-event audit; without a distinct source trace identity,
-same-timestamp identified events cannot be distinguished. When both source
-timestamp and trace ID are absent, a fresh local random event key avoids
-wall-clock collisions; those unidentified observations cannot dedup on replay. Counts saturate at
-the maximum safe integer. Attachments are immutable snapshots: later repeat
-counts live in the private journal, not in an edited remote board.
+### Restart and session switch
+
+On host startup and when a session switch recreates the framework, the host
+renames the existing `journal.json` and `journal.next` entries to distinct
+`journal.archived-<time>-<id>.json` names in the journal directory. This does
+not read journal contents, unlink old entries or replace an existing archive.
+Symlinks, including dangling ones, are archived as links with their original
+bytes. Their targets are never followed or moved by virtue of being targets;
+the two fixed entries are handled independently. If a rename or its sync
+fails, no fresh journal is started and home delivery is disabled for that run.
+Check both the original locations and any completed moves before retrying.
+
+**Incident IDs start fresh after a restart or session switch.** An incident
+still active may be reported again as new, and a later clear may not match
+its earlier incident. Earlier delivery evidence and dedup history are not
+used or replayed. Inspect the archives if needed and manage their retention
+separately.
+
+Disablement logs include the cause and the journal path on stderr.
+Missing/ambiguous bound server IDs name registered candidates and
+point to recipe and runtime-overlay configuration, unlike a disconnected
+known server. No home delivery failure is recursively sent as an ops alert;
+operators must monitor console logs or the inspection hook.
+
+Fresh repeats in an active episode coalesce into count, last-seen time and
+first/last event identity. Prose changes do not start a new record. A prior
+`not-dispatched` record is not a coalescing anchor: a fresh observation after
+recovery can send as a new record with the same incident ID. Exact retained
+event replay still dedups, and repeats may coalesce into an uncertain record,
+which is never retried. Counts are observations, not a complete per-event
+audit; two events with the same timestamp and no trace ID cannot be told apart
+within one incident. If neither source time nor trace ID is present, a random
+event key prevents fresh observations from colliding; such events cannot dedup
+on replay. Counts saturate at the maximum safe integer. Attachments are immutable
+snapshots: later repeat counts live in the journal, not in the remote post.
 
 Hard bounds: 128 retained records, 64 tracked active incidents, 64 queued work
-items, 2 MiB per file (current + fixed temporary, at most 4 MiB total). Queue
+items, 2 MiB per active or staging file (at most 4 MiB excluding archives). Queue
 saturation drops **only newly arriving excess observations**, logs once per
-saturation burst and increments `homeState().dropped`; accepted work drains and
-later independent work can deliver. This also applies to startup replay; there
-is no unbounded replay buffer or backpressure on the framework/core.
+saturation burst and increments `homeState().dropped`. While running, work
+continues and acceptance resumes as soon as a slot opens. This also applies
+to startup replay; there is no unbounded replay buffer or backpressure on the
+framework/core.
 
-This is a **finite diagnostic window, not an audit log**. When making room,
-the oldest records leave regardless of outcome, including uncertain records;
-the latest incident record anchoring each tracked identity and the current
-publication are protected. Byte pressure can shorten the record window.
+This is a **finite observation window, not an audit log**. When making room,
+the least recently observed records leave regardless of outcome, including
+uncertain records; the most recently observed incident record anchoring each
+tracked identity and the current publication are protected. A coalesced repeat
+refreshes its record's position. The fixed schema fits below the byte cap,
+which remains a defensive file-size check.
 `retention.evicted` counts removed records. When a 65th unresolved identity
 arrives, the oldest tracked identity is forgotten, **not recovered**;
 `retention.forgottenActive` counts this loss of tracking and is included in
@@ -280,13 +269,13 @@ status. The original record remains until normal record eviction. A late clear
 of a forgotten incident has unknown correlation. No time-based recovery is
 inferred, no old record is resent, and unknown delivery evidence does not
 create a lifetime halt. Export evidence elsewhere if indefinite retention is
-required; there is no reconciliation/archive worker in this slice.
+required; there is no reconciliation or archive cleanup worker in this slice.
 
 Dedup is explicitly limited to retained first/last identities in this at-most
-128-record window, not forever-history/exactly-once. Lossy redacted/truncated kind/subject
-projections are the correlation keys: colliding names can share an episode;
-use distinct short operational subjects. Adding a second raw identity registry
-is intentionally outside this small sink. Reobserving an old evicted
+128-record window, not forever-history/exactly-once. Exact source kind and
+subject are hashed together for correlation, so distinct unknown kinds can
+share a display label without merging their episodes. Digests are identifiers,
+not anonymity guarantees. Reobserving an old evicted
 event (including one with an unknown delivery outcome) can produce a new notice. This small bounded retention permits
 healthy long-running reconnect/refusal cycles without a lifetime stop, but is
 not an audit platform. Existing AF logs have their own independent retention.
@@ -297,9 +286,10 @@ not an audit platform. Existing AF logs have their own independent retention.
 synthetic private journals, fake MCP results and a real AF ModuleContext dispatch
 to an offline fake API module. Model callbacks are forbidden; visible locus,
 channel-open and admission hooks/state stay unchanged. Tests cover binding,
-unknowns, source clear/recovery, formatting/full-record reference, dedup/restart,
-durable ambiguity/no replay, known non-dispatch, drift, malformed answers,
-per-record uncertainty, non-recursive publication, bounded rolling compaction, overload recovery, child recovery and stop draining. They do **not** prove a live connector's
+unknowns, source clear/recovery, a free-text canary in all three sinks, in-run
+dedup, preservation and reset on restart and session switch, durable ambiguity/no replay, known
+non-dispatch, drift, malformed answers,
+per-record uncertainty, non-recursive publication, bounded rolling compaction, overload and child recovery, quiet routine turns, and bounded stop. They do **not** prove a live connector's
 authenticated realm, echo suppression, upload availability, destination access,
 shared-stream wake policy, or crash/power-loss behavior of a production disk.
 No other connector implementation is claimed.

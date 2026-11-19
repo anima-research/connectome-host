@@ -12,15 +12,9 @@ Source-only inspection, no connector execution or network calls:
 - `src/tool-runtime.ts:430-438,815-850`: receipt projection and optional explicit
   routing fields. The fixture does not invoke these handlers or import connector
   code; no private files, sessions, grants, APIs or source worktree dependency.
-- `src/message-links.ts:17-31,78-109`: scan anywhere, immediate backslash escape
-  removed for literal display; unreadable or >20 unescaped macros fail before
-  posting. The independent model forbids lookups; successful host output must
-  take only the escaped-literal path in legacy, compat and strict modes.
 
 AF event regressions use installed stock `@animalabs/agent-framework` 0.33.0:
 `src/framework.ts` completeTurn before noteRefusal (29347-29365), successful
 endTurn-only `inference:turn_ended` (19082-19100), background maintenance failure
-(7920-7947), boundFailureFields (3818-3833), opsAlert projection (34883-34900),
-heldWritesTold and store-held-lost data (1956-1969,16447-16449), plus stock CM's
-AutobiographicalProgressSnapshot counters. These are synthetic module events,
+(7920-7947) and store-held-lost alerts (16447-16449). These are synthetic module events,
 not provider turns or claims of live connector/realm/self-echo qualification.

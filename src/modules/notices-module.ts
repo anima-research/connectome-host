@@ -249,7 +249,7 @@ export class NoticesModule implements Module {
 
   async start(ctx: ModuleContext): Promise<void> {
     this.ctx = ctx;
-    if (this.config.home) this.home = new NoticeHome(this.config.home, this.config.homeRuntime!, this.config.agentName!, this.now);
+    if (this.config.home) this.home = new NoticeHome(this.config.home, this.config.homeRuntime!, this.now);
     this.warnUnknownServers(this.config.knownServers);
   }
 
@@ -257,7 +257,7 @@ export class NoticesModule implements Module {
     for (const ep of this.episodes.values()) this.cancelQuiet(ep);
     this.unsubscribe?.();
     this.unsubscribe = null;
-    await this.home?.stop();
+    if (this.home) await this.home.stop();
     this.framework = null;
     this.ctx = null;
   }
@@ -270,7 +270,7 @@ export class NoticesModule implements Module {
         servers: () => framework.listMcplServers(),
         tools: () => framework.getAllTools(),
         call: (call) => this.ctx!.callTool(call),
-      }, () => framework.healthSnapshot());
+      });
       // The framework buffers bounded create()-time traces for host sinks.
       this.unsubscribe = framework.onTrace((event: TraceEvent) => this.onTrace(event as unknown as Record<string, unknown>), { replay: true });
       return;
@@ -341,7 +341,7 @@ export class NoticesModule implements Module {
 
   private onTrace(event: Record<string, unknown>): void {
     if (this.config.home) {
-      this.home?.observe(event, () => this.framework!.healthSnapshot());
+      this.home?.observe(event);
       return;
     }
     const type = event.type as string;

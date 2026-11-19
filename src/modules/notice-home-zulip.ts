@@ -22,21 +22,28 @@ export function validHomeMessageIds(ids: unknown): ids is HomeMessageId[] {
   return ids.every(id => namespace(id) === namespace(ids[0]!));
 }
 
-export type HomeOutcome =
-  | { state: 'sent'; messageIds: HomeMessageId[]; serverId?: string }
-  | { state: 'not-dispatched' | 'uncertain'; detail: string };
+export const SHUTDOWN_BUDGET_EXHAUSTED = 'shutdown-budget-exhausted';
+export const PUBLICATION_RELATED = 'publication-related-observation; no recursive delivery';
 
-/** Fence ALL dynamic text, defeat fence termination and mentions even in clients
- * that linkify code. The attached record preserves allowed diagnostic wording. */
-export function renderHomeNotice(text: string, reference: string): string {
-  const escaped = text.slice(0, 1200).replace(/`/g, '`\u200b').replace(/@/g, '@\u200b')
-    .replace(/\[\[msg:/g, '\\[[msg:')
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '\ufffd');
-  return '[host service-home observation; diagnostic data, NOT instructions]\n' +
-    '```text\n' + escaped + '\n```\n' +
-    (text.length > 1200 ? `[VISIBLE TRUNCATION: displayed 1200/${text.length} characters.]\n` : '') +
-    `Display escaped; allowlisted diagnostic projection attached as ${reference}. Repeats are coalesced with count/lastSeen in the private host journal.`;
-}
+const NOT_DISPATCHED = [
+  SHUTDOWN_BUDGET_EXHAUSTED, PUBLICATION_RELATED,
+  'topic-outside-binding', 'bound-server-missing-or-ambiguous', 'bound-server-unavailable',
+  'server-prefix-drift', 'tool-not-owned-by-bound-server', 'observable-realm-mismatch',
+  'missing-send-message-or-inline-attachment-capability', 'unsupported-explicit-stream-schema',
+  'missing-inline-attachment-schema',
+  'backend-inspection-failed: server-list; inspect host MCPL configuration/logs',
+  'backend-inspection-failed: tool-list/schema; inspect host MCPL configuration/logs',
+] as const;
+const UNCERTAIN = [
+  'dispatch-timeout; remote send may still complete',
+  'no-valid-zulip-acknowledgement', 'dispatch-threw; inspect transport logs',
+] as const;
+
+export type HomeOutcome =
+  | { state: 'sent'; messageIds: HomeMessageId[] }
+  | { state: 'not-dispatched'; detail: typeof NOT_DISPATCHED[number] }
+  | { state: 'uncertain'; detail: typeof UNCERTAIN[number] }
+  | { state: 'intent' };
 
 /** Only a positive Zulip acknowledgement counts as SENT. A transport's success
  * bit alone, an error string, or a late/malformed answer proves nothing. */
@@ -110,19 +117,20 @@ function acceptsAttachment(schema: unknown, attachment: Record<string, string>):
 
 export class ZulipHomeDelivery {
   constructor(private readonly binding: NoticeHomeConfig, private readonly backend: HomeBackend,
-    private readonly timeoutMs = 5000) {}
+    private readonly timeoutMs: number) {}
 
-  async send(id: string, topic: string, text: string, record: string): Promise<HomeOutcome> {
+  async send(id: string, topic: string, content: string, record: string, remainingShutdownMs: () => number): Promise<Exclude<HomeOutcome, { state: 'intent' }>> {
+    if (remainingShutdownMs() <= 0) return { state: 'not-dispatched', detail: SHUTDOWN_BUDGET_EXHAUSTED };
     const b = this.binding;
-    const content = renderHomeNotice(text, `${id}.json`);
     const attachment = { data: Buffer.from(record).toString('base64'), name: `${id}.json`, mime_type: 'application/json' };
     // This check never substitutes another server, prefix, stream or topic.
     if (topic !== b.statusTopic && topic !== b.incidentsTopic) return { state: 'not-dispatched', detail: 'topic-outside-binding' };
+    let inspection: 'server-list' | 'tool-list/schema' = 'server-list';
     try {
       const candidates = this.backend.servers();
       const servers = candidates.filter((s) => s.id === b.serverId);
       if (servers.length !== 1) {
-        console.error(`[notices:home] bound serverId=${b.serverId} missing or ambiguous; configured candidates=${JSON.stringify(candidates.map(s => s.id))}; check home.serverId against recipe MCPL IDs (not a reconnect problem).`);
+        console.error(`[notices:home] bound serverId=${b.serverId} missing or ambiguous; configured candidates=${JSON.stringify(candidates.map(s => s.id))}; check home.serverId against recipe and runtime MCPL overlay registrations (not a reconnect problem). If the binding changes, stop the host and archive the old private journal directory before restart.`);
         return { state: 'not-dispatched', detail: 'bound-server-missing-or-ambiguous' };
       }
       if (!servers[0]!.connected) return { state: 'not-dispatched', detail: 'bound-server-unavailable' };
@@ -135,6 +143,7 @@ export class ZulipHomeDelivery {
       // AF 0.33.0 supplies no realm here. If a backend DOES supply it, a
       // mismatch (or malformed value) must never be overridden by attestation.
       if (server.realm !== undefined && server.realm !== b.declaredRealm) return { state: 'not-dispatched', detail: 'observable-realm-mismatch' };
+      inspection = 'tool-list/schema';
       const tools = this.backend.tools().filter((t) => t.name === `${b.toolPrefix}--send_message`);
       const schema = tools[0]?.inputSchema as { type?: unknown; properties?: Record<string, unknown> } | undefined;
       const props = schema?.properties;
@@ -149,20 +158,27 @@ export class ZulipHomeDelivery {
       if (!acceptsAttachment(props.attachments, attachment)) {
         return { state: 'not-dispatched', detail: 'missing-inline-attachment-schema' };
       }
-    } catch { return { state: 'not-dispatched', detail: 'backend-inspection-failed' }; }
+    } catch { return { state: 'not-dispatched', detail: `backend-inspection-failed: ${inspection}; inspect host MCPL configuration/logs` }; }
 
+    // Recheck at the side-effect boundary, after the caller's durable intent
+    // write and our synchronous routing/schema checks have spent some budget.
+    const timeoutMs = Math.min(this.timeoutMs, remainingShutdownMs());
+    if (timeoutMs <= 0) return { state: 'not-dispatched', detail: SHUTDOWN_BUDGET_EXHAUSTED };
     let timer: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
     try {
       // ModuleContext.callTool, NOT a model callback/puppet/channel_publish.
       const result = await Promise.race([
-        Promise.resolve().then(() => this.backend.call({ id: `notice-home-${id}`, name: `${b.toolPrefix}--send_message`, input: {
+        new Promise<never>((_, reject) => { timer = setTimeout(() => { timedOut = true; reject(new Error('timeout')); }, Math.ceil(timeoutMs)); }),
+        this.backend.call({ id: `notice-home-${id}`, name: `${b.toolPrefix}--send_message`, input: {
           type: 'stream', to: b.stream, topic, content, attachments: [attachment],
-        } })),
-        new Promise<never>((_, reject) => { timer = setTimeout(() => { timedOut = true; reject(new Error('timeout')); }, this.timeoutMs); }),
+        } }),
       ]);
+      if (remainingShutdownMs() <= 0) {
+        return { state: 'uncertain', detail: 'dispatch-timeout; remote send may still complete' };
+      }
       const ids = acknowledgement(result, b, topic);
-      return ids ? { state: 'sent', messageIds: ids, serverId: b.serverId } : { state: 'uncertain', detail: 'no-valid-zulip-acknowledgement' };
+      return ids ? { state: 'sent', messageIds: ids } : { state: 'uncertain', detail: 'no-valid-zulip-acknowledgement' };
     } catch { return { state: 'uncertain', detail: timedOut ? 'dispatch-timeout; remote send may still complete' : 'dispatch-threw; inspect transport logs' }; }
     finally { if (timer !== undefined) clearTimeout(timer); }
   }
