@@ -38,6 +38,7 @@ import { SELF_RESTART_EXIT_CODE, selfRestart } from './self-restart.js';
 import { RESTART_EXIT_CODE } from './update/contract.js';
 import { hostUpdate } from './update/update.js';
 import { traceFollower } from './piped-turns.js';
+import { SWEEPS } from './sweeps.js';
 import {
   PANEL_OPS_THAT_CHANGE_THE_SESSION, operatorWorkRunning, refusedWhileSwitching, switchLeftForStop, trackOperatorWork,
 } from './session-switch.js';
@@ -714,6 +715,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       idle: hadAtLeastOneInference && idleEmitted,
       turnWork,
       agent: primaryAgentName,
+      sweeps: SWEEPS.map((sweep) => sweep.name),
     });
 
     // The first client then hears the boot it missed, oldest first and each

@@ -7,7 +7,7 @@ import {
 import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { bare, send } from '../src/cli/connectome.js';
+import { bare, send, sweep } from '../src/cli/connectome.js';
 import { openHost } from '../src/cli/host-socket.js';
 import { writeInstallCommand } from '../src/cli/install-command.js';
 import { installPaths } from '../src/update/contract.js';
@@ -225,9 +225,10 @@ test('help lists the commands, and a word that isn\'t one is a usage error', asy
     'is back when nothing listens on the host\'s socket: then back says whether a Go back is offered, and back keep ' +
     'or back restore asks the next start to go back.');
   expect(help.out).toContain('\n  connectome help\n');
-  expect(help.out).toContain('Its own refusals go to stderr, and what the host answers to update to stdout, a refusal ' +
-    'or a failure it answers included; an error that stops the host\'s update command goes to stderr. send prints only ' +
-    'what the agent says on stdout, and its own notes on stderr.');
+  expect(help.out).toContain('connectome sweep [<name> [--write]]');
+  expect(help.out).toContain('Its own refusals go to stderr, and what the host answers to update and sweep to stdout, a ' +
+    'refusal or a failure it answers included; an error that stops the host\'s update or sweep command goes to stderr. ' +
+    'send prints only what the agent says on stdout, and its own notes on stderr.');
   for (const word of ['check, or no word', 'install', 'restart', 'restart wait', 'restart now', 'restart resume', 'back',
     'back keep', 'back restore']) {
     expect(help.out).toMatch(new RegExp(`\\n +${word}: `));
@@ -944,6 +945,120 @@ test('update with a word it doesn\'t take is a usage error before any host is lo
   expect(wrong.status).toBe(2);
   expect(wrong.err).toStartWith('connectome: usage: connectome update ');
   expect(connections).toBe(0);
+});
+
+const NOTES = [{ name: 'test-notes', line: 'Rewrites the test notes.', rewrite: () => null }];
+
+function sweepCtx(root: string, argv: string[]) {
+  const out: string[] = [];
+  const err: string[] = [];
+  return { ctx: { root, argv, out: (line: string) => { out.push(line); }, err: (line: string) => { err.push(line); } }, out, err };
+}
+
+test('sweep with no name lists the sweeps the release knows, this release none, and looks for no host', async () => {
+  const { root, data } = install();
+  const { path } = writeInstallCommand(root, '');
+  let connections = 0;
+  await fakeHost(data, (message) => {
+    if (message.type === 'connected') connections += 1;
+  });
+  const listed = await run(path, ['sweep'], root);
+  expect(listed.status).toBe(0);
+  expect(listed.out).toBe('This release knows no sweep.\n');
+  const given = sweepCtx(root, []);
+  expect(await sweep(given.ctx, NOTES)).toBe(0);
+  expect(given.out).toEqual(['The sweeps this release knows:', '  test-notes: Rewrites the test notes.']);
+  expect(connections).toBe(0);
+});
+
+test('sweep with a name the release doesn\'t know, or a word it doesn\'t take, is a usage error before any host is looked for', async () => {
+  const { root, data } = install();
+  const { path } = writeInstallCommand(root, '');
+  let connections = 0;
+  await fakeHost(data, (message) => {
+    if (message.type === 'connected') connections += 1;
+  });
+  const unknown = await run(path, ['sweep', 'test-notes'], root);
+  expect(unknown.status).toBe(2);
+  expect(unknown.err).toBe('connectome: no sweep is named test-notes.\nThis release knows no sweep.\n');
+  for (const words of [['other'], ['test-notes', '--wirte'], ['test-notes', '--write', 'now']]) {
+    const given = sweepCtx(root, words);
+    expect(await sweep(given.ctx, NOTES)).toBe(2);
+    expect(given.err[0]).toBe(words[0] === 'other'
+      ? 'connectome: no sweep is named other.'
+      : 'connectome: usage: connectome sweep [<name> [--write]]');
+  }
+  expect(connections).toBe(0);
+});
+
+test('sweep NAME asks the host /sweep with the same words and prints its answer, exiting 1 when the host refuses', async () => {
+  const { root, data } = install();
+  const asked: string[] = [];
+  await fakeHost(data, (message, reply) => {
+    if (message.type !== 'command') return;
+    asked.push(String(message.command));
+    reply({ type: 'command-output', text: 'Sweep test-notes rewrote 1 of 2 rows.', style: 'system', corrId: message.corrId });
+    reply({ type: 'command-output', text: 'Another client\'s line.', style: 'system', corrId: 'someone-else' });
+    reply({ type: 'command-done', corrId: message.corrId, ...(String(message.command).endsWith('--write') ? { refused: true } : {}) });
+  }, { pid: 4242, dataDir: data, recipe: 'Resident', turnWork: false, agent: 'resident', sweeps: ['test-notes'] });
+  const shown = sweepCtx(root, ['test-notes']);
+  expect(await sweep(shown.ctx, NOTES)).toBe(0);
+  expect(shown.out).toEqual(['Sweep test-notes rewrote 1 of 2 rows.']);
+  const written = sweepCtx(root, ['test-notes', '--write']);
+  expect(await sweep(written.ctx, NOTES)).toBe(1);
+  expect(asked).toEqual(['/sweep test-notes', '/sweep test-notes --write']);
+});
+
+test('sweep NAME with no host answering asks nothing and exits 1, and one whose command fails or closes says so', async () => {
+  const { root, data } = install();
+  const none = sweepCtx(root, ['test-notes']);
+  expect(await sweep(none.ctx, NOTES)).toBe(1);
+  expect(none.err.join('\n')).toContain('no host answers');
+  let closing = false;
+  await fakeHost(data, (message, reply, socket) => {
+    if (message.type !== 'command') return;
+    if (closing) socket.end();
+    else reply({ type: 'command-done', corrId: message.corrId, error: 'the store is closed' });
+  }, { pid: 4242, dataDir: data, recipe: 'Resident', turnWork: false, agent: 'resident', sweeps: ['test-notes'] });
+  const failed = sweepCtx(root, ['test-notes', '--write']);
+  expect(await sweep(failed.ctx, NOTES)).toBe(1);
+  expect(failed.err).toEqual(['connectome: the host\'s sweep command failed: the store is closed']);
+  closing = true;
+  const closed = sweepCtx(root, ['test-notes', '--write']);
+  expect(await sweep(closed.ctx, NOTES)).toBe(1);
+  expect(closed.err.join('\n')).toContain('closed the connection before its answer ended, so which rows it rewrote isn\'t known here');
+  const shown = sweepCtx(root, ['test-notes']);
+  expect(await sweep(shown.ctx, NOTES)).toBe(1);
+  expect(shown.err.join('\n')).toContain('closed the connection before its answer ended');
+  expect(shown.err.join('\n')).not.toContain('rewrote');
+});
+
+test('sweep NAME against a host that knows /sweep but not that sweep asks nothing and exits 1, naming the remedy', async () => {
+  const { root, data } = install();
+  const asked: string[] = [];
+  await fakeHost(data, (message) => {
+    if (message.type === 'command') asked.push(String(message.command));
+  }, { pid: 4242, dataDir: data, recipe: 'Resident', turnWork: false, agent: 'resident', sweeps: [] });
+  const given = sweepCtx(root, ['test-notes', '--write']);
+  expect(await sweep(given.ctx, NOTES)).toBe(1);
+  expect(asked).toEqual([]);
+  expect(given.err.join('\n')).toContain('the running host is an earlier release, which doesn\'t know the sweep test-notes');
+  expect(given.err.join('\n')).toContain('Then connectome sweep test-notes works.');
+});
+
+test('sweep NAME against a host that doesn\'t say it knows /sweep asks nothing and exits 1', async () => {
+  const { root, data } = install();
+  const asked: string[] = [];
+  await fakeHost(data, (message, reply) => {
+    if (message.type !== 'command') return;
+    asked.push(String(message.command));
+    reply({ type: 'command-output', text: 'Unknown command: /sweep. Type /help.', style: 'system', corrId: message.corrId });
+    reply({ type: 'command-done', corrId: message.corrId });
+  }, { pid: 4242, dataDir: data, recipe: 'Resident', turnWork: true, agent: 'resident' });
+  const given = sweepCtx(root, ['test-notes', '--write']);
+  expect(await sweep(given.ctx, NOTES)).toBe(1);
+  expect(asked).toEqual([]);
+  expect(given.err.join('\n')).toContain('the running host is an older release than this command, and it doesn\'t know /sweep');
 });
 
 function offerGoBack(root: string, data: string): void {

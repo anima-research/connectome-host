@@ -23,6 +23,7 @@
  *   /usage         — Show session token usage and costs
  *   /bug <text>    — Assemble a bug report to file on GitHub (nothing is sent)
  *   /update        — Update, Restart and Go back
+ *   /sweep [name [--write]] — List the sweeps, or show what one would rewrite in rows already stored
  *   /help          — List commands
  */
 
@@ -45,6 +46,7 @@ import { HOST_STOPPING, SWITCH_UNDER_WAY, refusedWhileSwitching, sessionChangesR
 import { hostUpdate, type UpdateAnswer } from './update/update.js';
 import { goBackLines, goBackUnread, statusLines } from './web/update-text.js';
 import { agentActivity, type AgentRetrying } from './web/agent-activity.js';
+import { SWEEPS, sweepNames, type Sweep } from './sweeps.js';
 
 interface AppContext {
   framework: AgentFramework;
@@ -372,6 +374,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
           { text: '                         (subcommands: list | status [name] | view | peek <name> | stop <name> | restart <name>)', style: 'system' },
           { text: '  /update                Whether a newer release is out, and this install\'s update state', style: 'system' },
           { text: '                         (subcommands: check | install | restart [wait | now | resume | <version>] | back [(keep | restore) [<version>]])', style: 'system' },
+          { text: '  /sweep [name [--write]] List the sweeps, or show what one would rewrite in rows already stored (--write rewrites)', style: 'system' },
         ],
       };
 
@@ -458,6 +461,9 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
     case 'update':
       return handleUpdate(args);
 
+    case 'sweep':
+      return handleSweep(app, args, requester);
+
     default:
       return {
         lines: [{ text: `Unknown command: /${cmd}. Type /help.`, style: 'system' }],
@@ -503,6 +509,157 @@ function handleUpdate(args: string[]): CommandResult {
     }
   }
   return usage;
+}
+
+// Keep /sweep free of await: a turn could start between a row's idle check and its edit.
+export function handleSweep(app: AppContext, args: string[], requester: OperatorRequester, sweeps: readonly Sweep[] = SWEEPS): CommandResult {
+  const say = (text: string): Line => ({ text, style: 'system' });
+  const [name, flag, extra] = args;
+  if (name === undefined) return { lines: sweepNames(sweeps).map(say) };
+  const switching = refusedWhileSwitching(app, '/sweep');
+  if (switching) return { lines: [say(switching)], refused: true };
+  const sweep = sweeps.find((each) => each.name === name);
+  if (sweep === undefined) return { lines: [`No sweep is named ${name}.`, ...sweepNames(sweeps)].map(say), refused: true };
+  if ((flag !== undefined && flag !== '--write') || extra !== undefined) {
+    return { lines: [say('Usage: /sweep [<name> [--write]]')], refused: true };
+  }
+  const running = flag === '--write' ? sessionChangesRunning(app) : [];
+  if (running.length > 0) {
+    const names = running.join(', ');
+    const one = running.length === 1;
+    return {
+      lines: [say(`Sweep ${name} wrote nothing, since ${names} ${one ? 'is' : 'are'} still running. Run it again once ${names} ${one ? 'has' : 'have'} finished.`)],
+      refused: true,
+    };
+  }
+  const open = app.sessionManager.getActiveSession()?.id;
+  const others = app.sessionManager.listSessions().filter((session) => session.id !== open).length;
+  const elsewhere = others === 0 ? [] : [say(`This host has ${others} other ${others === 1 ? 'session' : 'sessions'}: the sweep ` +
+    'reached the open session alone. Each other session takes its own run after a /session switch.')];
+  const children = [...(getFleet(app)?.getChildren().keys() ?? [])];
+  const fleetLine = children.length === 0 ? [] : [say(`This host has ${children.length} fleet ` +
+    `${children.length === 1 ? 'child' : 'children'} (${children.join(', ')}): the sweep reached this host's own agents alone. ` +
+    `An agent here sends a child /sweep ${name}, or /sweep ${name} --write, with fleet--command, and reads the child's answer ` +
+    'with fleet--peek.')];
+  const outside = [...elsewhere, ...fleetLine];
+  const framework = app.framework;
+  const live = framework.getAllAgents().filter((agent) => !agent.getContextManager().isClosed());
+  type Found = { id: string; agent: string; cm: ContextManager; kind: string; text: string; was: number; at: Date; holders: string[] };
+  const found: Found[] = [];
+  const sharded: Array<Found & { group: string; shards: number }> = [];
+  const seen = new Set<string>();
+  for (const agent of live) {
+    const cm = agent.getContextManager();
+    const rows = cm.getAllMessages();
+    for (const row of rows) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      if (!row.content.every((block) => block.type === 'text')) continue;
+      const next = sweep.rewrite(row);
+      if (next === null) continue;
+      const holders = live.filter((other) => other.getContextManager().windowStatusOf(row.id) === 'in').map((other) => other.name);
+      const entry = { id: row.id, agent: agent.name, cm, ...next, was: textLength(row.content), at: new Date(row.timestamp), holders };
+      const group = row.bodyGroupId;
+      if (group === undefined) {
+        found.push(entry);
+      } else if (!sharded.some((each) => each.group === group)) {
+        const shards = typeof row.shardCount === 'number' ? row.shardCount : rows.filter((each) => each.bodyGroupId === group).length;
+        sharded.push({ ...entry, group, shards });
+      }
+    }
+  }
+  if (found.length === 0 && sharded.length === 0) return { lines: [say(`Sweep ${name} finds no row to rewrite.`), ...outside] };
+  const where = (row: Found): string =>
+    `${row.kind} row ${row.id} of ${row.at.toISOString()}, in the window of ${row.holders.length > 0 ? row.holders.join(', ') : 'no agent'}`;
+  const inShards = (row: (typeof sharded)[number]): string =>
+    `it is stored in ${row.shards} shards of body group ${row.group}, which this sweep can't rewrite in place, so its old text stays.`;
+  const summarizing = [...new Set([...found, ...sharded].flatMap((row) => [row.agent, ...row.holders]))]
+    .filter((agent) => framework.getAgent(agent)?.getContextManager().describeRenderedForms().forms?.includes('summary') === true);
+  const summaries = summarizing.length === 0 ? [] : [say(`For ${listed(summarizing)}, whose ${summarizing.length === 1 ? 'strategy renders' : 'strategies render'} ` +
+    'summaries, a summary already built from these rows keeps their old words.')];
+  const headline = (counted: string): string =>
+    (found.length === 0 ? `Sweep ${name} finds no row it can rewrite.` : counted);
+  if (flag === undefined) {
+    const earliest = new Map<string, Date>();
+    for (const row of found) {
+      for (const holder of row.holders) {
+        const before = earliest.get(holder);
+        if (before === undefined || row.at < before) earliest.set(holder, row.at);
+      }
+    }
+    return {
+      lines: [
+        say(headline(`Sweep ${name} would rewrite ${found.length} ${found.length === 1 ? 'row' : 'rows'}. Nothing is written without --write.`)),
+        ...found.map((row) => say(`- ${where(row)}: ${row.was} characters now, ${row.text.length} after. Its new text: ${row.text}`)),
+        ...sharded.map((row) => say(`- ${where(row)}: ${inShards(row)}`)),
+        ...(found.length === 0 ? [] : [say(earliest.size === 0
+          ? 'No agent\'s window holds these rows, so --write rewrites no prompt cache.'
+          : `With --write, each of these agents has its prompt cache rewritten once, from its earliest row above: ${[...earliest].map(([agent, at]) => `${agent} (from ${at.toISOString()})`).join(', ')}.`)]),
+        ...summaries,
+        ...outside,
+      ],
+    };
+  }
+  const lines: Line[] = [];
+  const rewritten: Found[] = [];
+  const left: Found[] = [];
+  const failed: Found[] = [];
+  const store = framework.getStore();
+  const branch = store.currentBranch().name;
+  const sequenceBefore = store.currentSequence();
+  for (const row of found) {
+    const busy = row.holders.filter((agent) => !idleWithNoTurn(framework, agent));
+    if (busy.length > 0) {
+      left.push(row);
+      lines.push(say(`- left as it was, since a turn of ${busy.join(', ')} is alive: the ${where(row)}. Run the sweep again once ${busy.length === 1 ? 'it ends' : 'they end'}.`));
+      continue;
+    }
+    try {
+      row.cm.editMessage(row.id, [{ type: 'text', text: row.text }]);
+      rewritten.push(row);
+      lines.push(say(`- rewrote the ${where(row)}.`));
+    } catch (error) {
+      failed.push(row);
+      lines.push(say(`- its edit failed, so it may or may not have changed: the ${where(row)}: ${messageOf(error)}`));
+    }
+  }
+  for (const row of sharded) lines.push(say(`- left as it was: the ${where(row)}: ${inShards(row)} A second run won't change that.`));
+  if (failed.length > 0) lines.push(say('Run the sweep again without --write to see whether a row whose edit failed is still listed.'));
+  if (rewritten.length > 0) {
+    lines.push(say('A later rollback to a row stored before now (/restore to a message, /branchto or the Web UI\'s Rollback) ' +
+      'brings these rows\' old text back. Run the sweep again after one.'));
+  }
+  framework.recordOperatorAction({
+    kind: 'sweep',
+    requester,
+    params: { sweep: name },
+    result: {
+      rewritten: rewritten.length, leftForTurns: left.length, failed: failed.length, inShards: sharded.length,
+      branch, sequenceBefore,
+      ...loggedRows('rewrittenRows', rewritten), ...loggedRows('leftRows', left),
+      ...loggedRows('failedRows', failed), ...loggedRows('shardedRows', sharded),
+    },
+  });
+  return {
+    lines: [say(headline(`Sweep ${name} rewrote ${rewritten.length} of ${found.length} ${found.length === 1 ? 'row' : 'rows'}.`)), ...lines, ...summaries, ...outside],
+    ...(rewritten.length === found.length && sharded.length === 0 ? {} : { refused: true }),
+  };
+}
+
+// agent-framework's operator log caps the ids it records at 50 (capIds), with the full count beside them.
+const LOGGED_ROWS = 50;
+
+function loggedRows(key: string, rows: ReadonlyArray<{ agent: string; id: string }>): Record<string, unknown> {
+  const kept = rows.slice(0, LOGGED_ROWS).map((row) => ({ agent: row.agent, id: row.id }));
+  return { [key]: kept, ...(rows.length > LOGGED_ROWS ? { [`${key}Truncated`]: true } : {}) };
+}
+
+function listed(names: string[]): string {
+  return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+}
+
+function textLength(content: ReadonlyArray<{ type: string; text?: unknown }>): number {
+  return content.reduce((sum, block) => sum + (block.type === 'text' && typeof block.text === 'string' ? block.text.length : 0), 0);
 }
 
 function credentialLines(state: CredentialState): Line[] {
