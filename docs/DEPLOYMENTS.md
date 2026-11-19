@@ -88,7 +88,31 @@ module. Keep it on **loopback** and reach it via SSH tunnel. See
 
 Labels/units follow `cc.<agent>.agent` (launchd) / `<agent>-agent.service`
 (systemd). (launchd: a plain `kill`/`stop` respawns via KeepAlive — use `bootout`
-to stop, `kickstart -k` to restart.)
+to stop, `kickstart -k` to restart.) A service `connectome service install`
+writes is named after the install's working directory instead:
+`com.animalabs.connectome.<name>` / `connectome-<name>.service`, and for its
+shell daemon `com.animalabs.connectome.<name>.shell` /
+`connectome-<name>.shell.service`, with `<name>` the directory's name in lower
+case, each run of characters other than `a` to `z` and `0` to `9` made one `-` and
+none at either end. `connectome` alone shows its own stop and
+start commands, and how to follow its log. A stop that runs past the
+platform's timeout is ended by SIGKILL, and what was still in flight is cut
+off: on macOS that timeout is the exit timeout `launchctl print
+gui/$(id -u)/<label>` shows, 5 s for these agents on macOS 26, and under
+systemd it's the unit's `TimeoutStopSec`, 90 s by default. The host's own stop
+has no time limit.
+
+Under the systemd unit, a host's fleet children end when the host exits. The
+unit's `KillMode=mixed` sends a stop's SIGTERM to the host alone, and SIGKILL to
+what is left once the host exits, a child it detached included. So when a
+fleet's parent exits without stopping its children, as at a crash, they are
+killed in the middle of what they do.
+
+On macOS, the host's log, `logs/agent.log`, and the shell daemon's,
+`logs/shell.log`, grow until someone cuts them. launchd appends to each and
+holds it open, so a log deleted while its service runs isn't written again
+until the next load. To cut one: stop the service with its stop line, move or
+delete the log, then start the service with its start line.
 
 A restart can make auxiliary model calls before any user message: agent-framework
 immediately drains restored Context Manager compression/merge debt. This happens only

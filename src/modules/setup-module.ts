@@ -28,7 +28,7 @@ export interface SetupModuleConfig {
   fetch?: typeof fetch;
 }
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+export const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 30 * 60_000;
 // Each stream keeps at most 2 * KEPT_BYTES, so the two, as text, fit in one tool result with room for its JSON:
 // agent-framework 0.33.0 caps a tool result at 24,000 characters by default (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS,
