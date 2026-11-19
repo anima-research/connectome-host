@@ -633,6 +633,21 @@ a typo fails at boot rather than silently disabling the rung.
 6. **`compressionRefusalCurveFallbacks: <n>`** and **`compressionSplitFallback:
    true`** — further rungs on a refused L1: try coverage-equivalent recall curves,
    then split-and-stitch the chunk. Cost: extra compression calls.
+   **`compressionFallbackModel: "<model>"`** — a last resort before the split rung
+   and before quarantine: once `compressionModel` has refused a compression or a
+   merge on every rung that keeps it writing the memory in full, the context
+   manager sends the canonical request once more to this model, and only then.
+   Provider errors and overloads never lead to it. The memory is stored as any
+   other and its `provenance.model` names the model that wrote it. The model is
+   reached through the agent's own provider, and takes the same `max_tokens` as
+   `compressionModel`. Setting it gives chunks already in the compression
+   quarantine a fresh attempt; a quarantined merge still needs an operator's
+   clear. It is another model writing a memory in the agent's voice, so mention
+   it to the user as you would a `compressionModel` that isn't the agent's own
+   (AGENT-ONBOARDING's "Compression needs a model that keeps answering"). It
+   takes a context-manager later than 0.27.0. This host's
+   `@animalabs/context-manager` range doesn't admit one yet, so until that
+   range is raised the key loads and nothing changes.
 
 7. **`thinking.display: "summarized"`** — rendered thinking *text* (the 💭 summaries
    some UIs emit) inside the transcript can itself trip refusals; never store it.

@@ -27,6 +27,7 @@ const PASSTHROUGH_KEYS: ReadonlyArray<keyof RecipeStrategy> = [
   'compressionSplitPlaceholder',
   'compressionSplitMaxCallsPerChunk',
   'compressionSplitMaxCallsPer10Min',
+  'compressionFallbackModel',
   'compressionRecallBudgetTokens',
   'recoverLiteralThinkingWrappedCompression',
   'positionedRecallPairs',
