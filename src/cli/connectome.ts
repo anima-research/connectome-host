@@ -1,14 +1,24 @@
 #!/usr/bin/env bun
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { ENTRY_POINT, readCurrent } from '../update/contract.js';
 import { EXACT_VERSION } from '../update/install.js';
-import { KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRecord, shellWord } from '../update/launcher.js';
-import { CLI_WAYS, COMMAND_WAYS, statusLines, type UpdateStatus } from '../web/update-text.js';
+import {
+  KEEP_DATA_FLAG, goBackFromShell, goBackOffer, machineOps, readInstallRecord, type LauncherOps,
+} from '../update/launcher.js';
+import { serviceBun } from '../update/service-bun.js';
+import {
+  COMMAND_WAYS, cliWays, statusLines, type UpdateStatus,
+} from '../web/update-text.js';
 import { STOPPED_READING_MS } from '../client-stall.js';
 import { openHost, type HostClient, type HostEvent, type NoHost } from './host-socket.js';
-import { INSTALL_COMMAND } from './install-command.js';
+import { INSTALL_COMMAND, installCommandAt, shellWord } from '../update/install-command-name.js';
+import { serviceCommand, serviceCommands, serviceLines, unitElsewhere } from './service.js';
+import { serviceUnits } from './service-unit.js';
+import { ROOT_IN_WORKDIR, SETUP_RECIPE, SETUP_SUMMARY, SETUP_USAGE, firstLine, setup, setupDirectory } from './setup.js';
+import { shellCommand } from './shell.js';
 
 export interface CliContext {
   root: string | null;
@@ -25,14 +35,19 @@ export interface CliCommand {
   run(ctx: CliContext): Promise<number>;
 }
 
-export const ROOT_IN_WORKDIR = 'connectome-host';
-
 const HEALTH_WAIT_MS = 10_000;
 
 const UPDATE_USAGE = 'connectome update [check | install | restart [wait | now | resume | <version>] | ' +
   'back [(keep | restore) [<version>]]]';
 
 export const COMMANDS: CliCommand[] = [
+  {
+    name: 'setup',
+    usage: SETUP_USAGE,
+    summary: SETUP_SUMMARY,
+    run: (ctx) => setup({ ...ctx, root: ctx.root ?? resolve(ROOT_IN_WORKDIR) }),
+  },
+  shellCommand,
   {
     name: 'send',
     usage: 'connectome send <text>',
@@ -68,6 +83,15 @@ export const COMMANDS: CliCommand[] = [
         'taken is set aside, not deleted.',
     ],
     run: update,
+  },
+  serviceCommand,
+  {
+    name: 'doctor',
+    usage: 'connectome doctor',
+    summary: 'Checks the service, the host, the recipe, the model calls and the Discord token, each with a next step ' +
+      'for a problem. Exits 1 when a check finds a problem. The host takes one client at a time, so doctor\'s ' +
+      'connection to it closes another command\'s.',
+    run: async (ctx) => (await import('./doctor.js')).doctor(ctx),
   },
 ];
 
@@ -115,9 +139,11 @@ function usage(print: (line: string) => void): void {
 }
 
 async function fromPackage(argv: string[]): Promise<number> {
-  const root = resolve(ROOT_IN_WORKDIR);
+  const [word] = argv;
+  const root = word === 'setup' ? join(setupDirectory(process.cwd(), process.env.HOME), ROOT_IN_WORKDIR)
+    : resolve(ROOT_IN_WORKDIR);
   const command = join(root, INSTALL_COMMAND);
-  if (existsSync(command)) {
+  if (existsSync(command) && (word !== 'setup' || existsSync(join(root, 'current', SETUP_RECIPE)))) {
     const ran = spawnSync(process.execPath, [command, ...argv], { stdio: 'inherit' });
     if (ran.error !== undefined) {
       io.err(`connectome: ${command} couldn't be run: ${ran.error.message}`);
@@ -130,7 +156,7 @@ async function fromPackage(argv: string[]): Promise<number> {
     }
     return ran.status ?? 1;
   }
-  const [word] = argv;
+  if (word === 'setup') return setup({ root, argv: argv.slice(1), ...io });
   if (isHelp(word)) {
     usage(io.out);
     return 0;
@@ -145,7 +171,8 @@ async function fromPackage(argv: string[]): Promise<number> {
       `start.js. ${setupAgain(root)}`);
     return 1;
   }
-  io.err(`connectome: there's no connectome-host install here (${process.cwd()}).`);
+  io.err(`connectome: there's no connectome-host install here (${process.cwd()}). \`${firstLine()}\` sets one up: ` +
+    'in this directory if it is empty or already setup\'s, and in ~/resident otherwise.');
   return 1;
 }
 
@@ -168,16 +195,21 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
     release = readCurrent(root);
   } catch (error) {
     ctx.err(`connectome: ${root}'s current release can't be read: ${errorText(error)}`);
+    service(ctx);
     return 1;
   }
   ctx.out(`Release: ${release ?? `none is current: run setup again in ${dirname(root)}, which says how to put it right`}`);
   const status = release === null ? 1 : 0;
   const host = await reach(ctx);
-  if (host === null) return 1;
+  if (host === null) {
+    service(ctx);
+    return 1;
+  }
   if ('reason' in host) {
     ctx.out(`Its host doesn't answer: ${host.reason}.`);
     if (host.down) ctx.out(startHost(root, 'ask again'));
     ctx.out('Its update state isn\'t known while no host answers.');
+    service(ctx);
     return status;
   }
   ctx.out(`Its host is running: pid ${host.ready.pid}, recipe ${host.ready.recipe}.`);
@@ -197,10 +229,30 @@ export async function bare(ctx: CliContext, healthWaitMs = HEALTH_WAIT_MS): Prom
   } else {
     ctx.out(`Its update state, as the running host gives it` +
       `${update.check === null ? '' : `, from its last read of the registry at ${update.check.at}`}:`);
-    const ways = host.ready.turnWork === undefined ? COMMAND_WAYS : CLI_WAYS;
+    const shell = host.ready.turnWork !== undefined;
+    const typed = installCommandAt(root);
+    const ways = shell ? cliWays(typed) : COMMAND_WAYS;
     for (const line of statusLines(update, ways)) ctx.out(`  ${line}`);
   }
+  service(ctx);
   return status;
+}
+
+function service(ctx: CliContext): void {
+  const lines = serviceLines(ctx.root!);
+  if (lines === null) ctx.out(noService(ctx.root!));
+  for (const line of lines ?? []) ctx.out(line);
+}
+
+function noService(root: string): string {
+  if (serviceUnits(root, process.platform, homedir()) === null) return '`service install` hasn\'t set up a service for it here.';
+  const taken = unitElsewhere(root);
+  if (taken !== null) {
+    return '`service install` hasn\'t set up a service for it here, and a name it would give one is taken: ' +
+      `${taken.unit.file}, the file of ${taken.unit.name}, names ` +
+      `${taken.runsIn === null ? 'no working directory' : `${taken.runsIn} as its working directory`}.`;
+  }
+  return `\`service install\` hasn't set up a service for it here: \`${shellWord(join(root, INSTALL_COMMAND))} service install <recipe>\` sets one up.`;
 }
 
 export const SEND_QUIET_LIMIT_MS = 15 * 60_000;
@@ -318,39 +370,45 @@ export async function send(ctx: CliContext, quietLimitMs = SEND_QUIET_LIMIT_MS):
   return 0;
 }
 
-async function update(ctx: CliContext): Promise<number> {
+export async function update(ctx: CliContext, launcher: LauncherOps = machineOps()): Promise<number> {
   const words = ctx.argv;
   if (!updateWords(words)) {
-    ctx.err(`connectome: usage: ${UPDATE_USAGE}`);
+    const typed = installCommandAt(ctx.root!);
+    ctx.err(`connectome: usage: ${UPDATE_USAGE.replace(/^connectome/, () => typed)}`);
     return 2;
   }
   const host = await reach(ctx);
   if (host === null) return 1;
-  if ('reason' in host) return words[0] === 'back' ? backWithNoHost(ctx, words, host) : noHost(ctx, host);
+  if ('reason' in host) return words[0] === 'back' ? backWithNoHost(ctx, words, host, launcher) : noHost(ctx, host);
   if (host.ready.turnWork === undefined) {
     host.close();
-    ctx.err('connectome: nothing was asked: the running host is an older release than this command, and it ' +
-      'doesn\'t mark where a command\'s answer ends, so this couldn\'t tell when to stop reading. ' +
-      `${thisRelease(ctx.root!)} Then connectome update works.`);
+    ctx.err('connectome: nothing was asked: the running host is an older release than this command. It doesn\'t ' +
+      'mark where a command\'s answer ends, so this command couldn\'t tell when to stop reading. ' +
+      `${thisRelease(ctx.root!)} Then ${installCommandAt(ctx.root!)} update works.`);
     return 1;
   }
-  const answer = await command(host, ['/update', ...words].join(' '), (line) => ctx.out(inCliWords(line)));
+  const typed = installCommandAt(ctx.root!);
+  const inShellWords = (line: string): string =>
+    line.replace(/(^|[^\w/])\/update(?![\w/-])/g, (_, before: string) => `${before}${typed} update`);
+  const answer = await command(host, ['/update', ...words].join(' '), (line) => ctx.out(inShellWords(line)), typed);
   host.close();
   if (answer.how === 'closed') {
-    ctx.err('connectome: the host closed the connection before its answer ended, so how it ended isn\'t known ' +
-      'here. A restart or a Go back closes it as the host stops, and so does another connectome command ' +
-      'connecting. `connectome` says what runs now.');
+    ctx.err('connectome: the host closed the connection before its answer ended, so this command can\'t tell how ' +
+      'the update ended. A restart or a Go back closes it as the host stops, and so does another connectome command ' +
+      `connecting. \`${typed}\` says what runs now.`);
     return 1;
   }
   if (answer.error !== undefined) {
-    ctx.err(`connectome: the host's update command failed: ${inCliWords(answer.error)}`);
+    ctx.err(`connectome: the host's update command failed: ${inShellWords(answer.error)}`);
     return 1;
   }
-  return answer.refused ? 1 : 0;
+  if (answer.refused) return 1;
+  if (stops(words)) ctx.err(`connectome: once the host is back, \`${typed}\` says which release runs and how the switch went.`);
+  return 0;
 }
 
-function inCliWords(line: string): string {
-  return line.replace(/(^|[^\w/])\/update(?![\w/-])/g, '$1connectome update');
+function stops([sub, choice]: string[]): boolean {
+  return (sub === 'restart' && choice !== 'resume') || (sub === 'back' && choice !== undefined);
 }
 
 function updateWords([sub, choice, release, ...more]: string[]): boolean {
@@ -365,7 +423,7 @@ function updateWords([sub, choice, release, ...more]: string[]): boolean {
   return false;
 }
 
-function backWithNoHost(ctx: CliContext, [, choice, release]: string[], host: NoHost): number {
+function backWithNoHost(ctx: CliContext, [, choice, release]: string[], host: NoHost, launcher: LauncherOps): number {
   if (!host.down) return noHost(ctx, host);
   const root = ctx.root!;
   let offer: { to: string; since: string } | null;
@@ -394,12 +452,15 @@ function backWithNoHost(ctx: CliContext, [, choice, release]: string[], host: No
   if (choice === undefined) {
     ctx.out(`No host answers (${host.reason}). Going back to ${offer.to} is offered, with the copy of its data ` +
       `taken ${offer.since}. Either of these asks the next start to go back:`);
-    ctx.out(`- ${CLI_WAYS.keep} ${offer.to}: ${offer.to} runs on the data as it is now.`);
-    ctx.out(`- ${CLI_WAYS.restore} ${offer.to}: the copy is restored, and everything since ${offer.since} is set aside, not ` +
+    const ways = cliWays(installCommandAt(root));
+    ctx.out(`- ${ways.keep} ${offer.to}: ${offer.to} runs on the data as it is now.`);
+    ctx.out(`- ${ways.restore} ${offer.to}: the copy is restored, and everything since ${offer.since} is set aside, not ` +
       'deleted.');
     return 0;
   }
-  return goBackFromShell(root, choice === 'keep' ? [KEEP_DATA_FLAG] : [], machineOps(), release);
+  const typed = installCommandAt(root);
+  return goBackFromShell(root, choice === 'keep' ? [KEEP_DATA_FLAG] : [],
+    { ...launcher, report: (text) => ctx.err(text) }, release, cliWays(typed).back);
 }
 
 function noHost(ctx: CliContext, host: NoHost): number {
@@ -408,12 +469,15 @@ function noHost(ctx: CliContext, host: NoHost): number {
 }
 
 function startHost(root: string, then: string): string {
-  return `If no host is running, have its service start it with \`${startCommand(root)}\`, ` +
-    `followed by the arguments it gives the host now, then ${then}.`;
+  const start = serviceCommands(root)?.start;
+  return start !== undefined
+    ? `If no host is running, start its service with \`${start}\`, then ${then}.`
+    : `If no host is running, have its service start it with \`${startCommand(root)}\`, followed by the arguments it ` +
+      `gives the host now, then ${then}.`;
 }
 
 function startCommand(root: string): string {
-  return `${shellWord(process.execPath)} ${shellWord(join(root, ENTRY_POINT))}`;
+  return `${shellWord(serviceBun(process.execPath, process.env.PATH ?? ''))} ${shellWord(join(root, ENTRY_POINT))}`;
 }
 
 function thisRelease(root: string): string {
@@ -432,7 +496,7 @@ async function reach(ctx: CliContext): Promise<HostClient | NoHost | null> {
 
 type Answer = { how: 'done'; error?: string; refused?: true } | { how: 'closed' };
 
-async function command(host: HostClient, text: string, print: (line: string) => void): Promise<Answer> {
+async function command(host: HostClient, text: string, print: (line: string) => void, typed?: string): Promise<Answer> {
   host.subscribe([]);
   const corrId = `connectome-command-${process.pid}`;
   const ended = new Promise<Answer>((done) => {
@@ -449,7 +513,7 @@ async function command(host: HostClient, text: string, print: (line: string) => 
     });
     void host.closed.then(() => done({ how: 'closed' }));
   });
-  host.send({ type: 'command', command: text, corrId });
+  host.send({ type: 'command', command: text, corrId, ...(typed === undefined ? {} : { typed }) });
   return ended;
 }
 

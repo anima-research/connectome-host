@@ -71,6 +71,32 @@ describe('startFramework', () => {
     ]);
   });
 
+  test("asks each fleet child the start adopted to end a switch's quiesce the last stop may have left, and logs one it can't reach", async () => {
+    const order: string[] = [];
+    const fleet = watchedFleet(order);
+    spyOn(fleet, 'runningChildren').mockReturnValue([{ name: 'kid' }, { name: 'gone' }]);
+    spyOn(fleet, 'requestSwitch').mockImplementation(async (name, request) => {
+      order.push(`${name} is asked: ${request.op}`);
+      return name === 'kid' ? { ok: true, data: { resumed: true } } : { ok: false, error: 'the socket closed' };
+    });
+    let logged: (line: string) => void = () => {};
+    const line = new Promise<string>((done) => { logged = done; });
+    const errors = spyOn(console, 'error').mockImplementation((said: unknown) => {
+      if (String(said).includes('"gone"')) logged(String(said));
+    });
+    try {
+      await startFramework(framework(order, { fleet }), null);
+      expect(await line).toBe('[update] Fleet child "gone" was asked at this start to end a switch\'s quiesce the last stop ' +
+        'may have left, and it didn\'t answer (the socket closed), so it may still be holding its new turns until a resume ' +
+        'reaches it, such as an operator\'s Resume, or until its own next start.');
+    } finally {
+      errors.mockRestore();
+    }
+    expect(order).toContain('kid is asked: resume');
+    expect(order).toContain('gone is asked: resume');
+    expect(order.filter((step) => step.endsWith('is asked: resume'))).toHaveLength(2);
+  });
+
   test("leaves a quiesce that isn't the switch's, such as an operator's", async () => {
     const order: string[] = [];
     await startFramework(framework(order, { fleet: watchedFleet(order), quiesceReason: 'operator: maintenance' }), null);

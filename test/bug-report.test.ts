@@ -112,7 +112,7 @@ function canaryRecipe(model = `${CANARY}-finetune`) {
       proseRouting: 'locus',
       thinking: { enabled: true },
     },
-    modules: { subagents: true, wake: true, lessons: false, [`${CANARY}Module`]: true },
+    modules: { subagents: true, wake: true, lessons: false, selfUpdate: true, [`${CANARY}Module`]: true },
     extensions: { [`${CANARY}Ext`]: { path: `/home/${CANARY}/ext.js` } },
     mcpServers: {
       [`${CANARY}-server`]: { command: `/home/${CANARY}/bin/server`, args: [CANARY], env: { TOKEN: CANARY } },
@@ -163,7 +163,7 @@ describe('the guarantee', () => {
         expectNoCanary(text, where);
       }
       expect(full.report).toContain('provider: openai-compatible · model: custom');
-      expect(full.report).toContain('modules: subagents, wake · custom: 2');
+      expect(full.report).toContain('modules: subagents, wake, selfUpdate · custom: 2');
       expect(full.report).toContain('server 1: a local command · stdio · legacy · connected · 4 tools');
       expect(full.report).toContain('server 2: @animalabs/discord-mcpl@1.2.3 · stdio · legacy · retrying · 0 tools');
       expect(full.report).toContain('server 5: a registry package · stdio · legacy · connected · 1 tools');
@@ -804,6 +804,11 @@ describe('the running setup and the saved file', () => {
     expect(facts).toMatchObject({ model: 'claude-sonnet-4-5', maxTokens: 2000, thinking: false, modules: ['wake', 'lessons', 'subscription-gc', 'workspace'], customModules: 1 });
     expectNoCanary(JSON.stringify(facts), 'the setup');
     expect(setupFacts(recipe)).toMatchObject({ model: 'claude-opus-4-6', maxTokens: 1000, thinking: true, modules: ['lessons'] });
+  });
+
+  test('the setup agent\'s module counts as the host\'s own, from the recipe and from the running agent', () => {
+    expect(setupFacts({ modules: { setup: true } })).toMatchObject({ modules: ['setup'], customModules: 0 });
+    expect(setupFacts({}, { agent: {}, modules: ['setup'], wake: false })).toMatchObject({ modules: ['setup'], customModules: 0 });
   });
 
   test('the fetch module is named as one of the host\'s own, from the recipe and from the running setup', () => {

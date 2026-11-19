@@ -3,7 +3,7 @@ import type { ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { decodeText, htmlToMarkdown, isHtmlPath, looksBinary, looksLikeScriptShell, mediaType } from '../src/modules/fetch-convert.js';
+import { decodeText, htmlToMarkdown, htmlToPage, isHtmlPath, looksBinary, looksLikeScriptShell, mediaType } from '../src/modules/fetch-convert.js';
 import { FetchRefusal } from '../src/modules/fetch-http.js';
 
 const page = (body: string, head = ''): string => `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
@@ -210,6 +210,65 @@ describe('htmlToMarkdown', () => {
   test('a heading\'s permalink mark is left out, and a link that says something stays', async () => {
     const markdown = await htmlToMarkdown(page('<h2>Tasks<a href="#tasks">¶</a></h2><p><a href="/more">more</a> <a href="#x">#</a></p>'), 'https://x.test/');
     expect(markdown).toBe('## Tasks\n\n[more](https://x.test/more)');
+  });
+
+  test('for a reader that can look, an image with no alt text keeps its address, unless its own size says it is decoration', async () => {
+    const html = page('<img src="/chart.png"><img src="/icon.png" width="16" height="16"><img src="/pixel.gif" height="1"><img alt="logo" src="/logo.png" width="24"><img src="data:image/png;base64,AAAA" data-src="/late.png">');
+    expect(await htmlToMarkdown(html, 'https://x.test/', { images: true })).toBe('![](https://x.test/chart.png)![logo](https://x.test/logo.png)![](https://x.test/late.png)');
+    // Without it, as before: only what has alt text, and no data-src.
+    expect(await htmlToMarkdown(html, 'https://x.test/')).toBe('![logo](https://x.test/logo.png)');
+    // A placeholder in src gives way to the real image in data-src, and a width that is a share of the page isn't a small one.
+    const late = page('<img src="/placeholder.gif" data-src="/real.png"><img src="/wide.png" width="10%">');
+    expect(await htmlToMarkdown(late, 'https://x.test/', { images: true })).toBe('![](https://x.test/real.png)![](https://x.test/wide.png)');
+    expect(await htmlToMarkdown(page('<img alt="a" src="/placeholder.gif" data-src="/real.png">'), 'https://x.test/')).toBe('![a](https://x.test/placeholder.gif)');
+    // Only a web address counts, in data-src and for an image with no alt text.
+    const mail = page('<img alt="chart" data-src="mailto:a@x.test" src="/chart.png"><img src="mailto:b@x.test">');
+    const kept = await htmlToPage(mail, 'https://x.test/', { images: true });
+    expect(kept.markdown).toBe('![chart](https://x.test/chart.png)');
+    expect(kept.images).toEqual([{ written: 'https://x.test/chart.png', address: 'https://x.test/chart.png' }]);
+  });
+
+  test('a conversion lists the web images it wrote, each as written and as its address is, and none without being asked', async () => {
+    const html = page('<img src="/a(1).png"><img alt="two" src="https://other.test/b.png"><img src="/a(1).png"><img src="/tiny.png" width="4"><img alt="local" src="data:image/png;base64,AAAA">');
+    const converted = await htmlToPage(html, 'https://x.test/', { images: true });
+    expect(converted.markdown).toBe('![](https://x.test/a%281%29.png)![two](https://other.test/b.png)![](https://x.test/a%281%29.png)local');
+    expect(converted.images).toEqual([
+      { written: 'https://x.test/a%281%29.png', address: 'https://x.test/a(1).png' },
+      { written: 'https://other.test/b.png', address: 'https://other.test/b.png' },
+    ]);
+    expect((await htmlToPage(html, 'https://x.test/')).images).toEqual([]);
+    // A local file's relative addresses aren't the web's, and aren't listed.
+    expect((await htmlToPage(page('<img alt="here" src="pics/a.png">'), undefined, { images: true })).images).toEqual([]);
+  });
+
+  test('an image inside something hidden is not listed, and a crowd of them leaves room for the ones shown', async () => {
+    const hidden = Array.from({ length: 70 }, (_, n) => `<img src="/hidden${n}.png">`).join('');
+    const html = page(`<div hidden>${hidden}</div><div style="display:none"><p><img src="/deep.png"></p></div><img src="/shown.png"><a href="/hidden0.png">link</a>`);
+    const { markdown, images } = await htmlToPage(html, 'https://x.test/', { images: true });
+    expect(images).toEqual([{ written: 'https://x.test/shown.png', address: 'https://x.test/shown.png' }]);
+    expect(markdown).toBe('![](https://x.test/shown.png)[link](https://x.test/hidden0.png)');
+    // A fenced code block is written from its text, so an image inside one is never written either.
+    const coded = page(`<pre><code>let a = 1;${hidden}</code></pre><img src="/chart.png">`);
+    const fenced = await htmlToPage(coded, 'https://x.test/', { images: true });
+    expect(fenced.images).toEqual([{ written: 'https://x.test/chart.png', address: 'https://x.test/chart.png' }]);
+    expect(fenced.markdown).toBe('```\nlet a = 1;\n```\n\n![](https://x.test/chart.png)');
+  });
+
+  test('with images kept, a bar in an image\'s address is encoded, so a table cell can\'t change what is written; a link\'s is left alone', async () => {
+    const html = page('<table><tr><td>k</td><td>v</td></tr><tr><td><a href="https://x.test/l|m">link</a></td><td><img alt="p" src="https://x.test/a|b.png"></td></tr></table>');
+    const kept = await htmlToPage(html, undefined, { images: true });
+    expect(kept.markdown).toContain('![p](https://x.test/a%7Cb.png)');
+    expect(kept.markdown).toContain('[link](https://x.test/l\\|m)');
+    expect(kept.images).toEqual([{ written: 'https://x.test/a%7Cb.png', address: 'https://x.test/a|b.png' }]);
+    // Without the option, an image's address is written as it was before the option existed.
+    expect((await htmlToPage(html, undefined)).markdown).toContain('![p](https://x.test/a\\|b.png)');
+  });
+
+  test('at most 64 of a page\'s images are listed', async () => {
+    const html = page(Array.from({ length: 70 }, (_, n) => `<img src="/p${n}.png">`).join(''));
+    const { images } = await htmlToPage(html, 'https://x.test/', { images: true });
+    expect(images).toHaveLength(64);
+    expect(images.at(-1)!.address).toBe('https://x.test/p63.png');
   });
 
   test('an image embedded as data keeps its alt text and not its megabytes', async () => {

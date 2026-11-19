@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadRecipe, substituteEnvVars } from '../src/recipe.js';
+import { loadRecipe, loadRecipeDocument, readRecipeDocument, substituteEnvVars } from '../src/recipe.js';
 
 describe('substituteEnvVars', () => {
   const originalEnv = process.env;
@@ -113,6 +113,37 @@ describe('loadRecipe — end-to-end with env substitution', () => {
     writeFileSync(recipePath, JSON.stringify(recipe), 'utf-8');
 
     await expect(loadRecipe(recipePath)).rejects.toThrow(/NEVER_SET/);
+  });
+
+  test('a recipe loaded for another process substitutes from that process\'s environment, not this one\'s', async () => {
+    process.env.SERVICE_TOKEN = 'from-this-process';
+    delete process.env.SERVICE_ONLY;
+    const recipe = {
+      name: 'Env Test',
+      agent: { systemPrompt: 'placeholder' },
+      mcpServers: { foo: { command: 'node', env: { TOKEN: '${SERVICE_TOKEN}', ONLY: '${SERVICE_ONLY}' } } },
+    };
+    writeFileSync(recipePath, JSON.stringify(recipe), 'utf-8');
+
+    const document = await readRecipeDocument(recipePath);
+    const { recipe: loaded } = await loadRecipeDocument(document, recipePath, {
+      fetchSystemPrompt: false,
+      env: { SERVICE_TOKEN: 'from-the-service', SERVICE_ONLY: 'only-there' },
+    });
+    expect((loaded.mcpServers!.foo as { env: Record<string, string> }).env).toEqual({ TOKEN: 'from-the-service', ONLY: 'only-there' });
+    await expect(loadRecipeDocument(document, recipePath, { fetchSystemPrompt: false, env: {} })).rejects.toThrow(/SERVICE_TOKEN/);
+  });
+
+  test('a recipe loaded for another process checks its fit against that process\'s MODEL, not this one\'s', async () => {
+    writeFileSync(recipePath, JSON.stringify({ name: 'Env Test',
+      agent: { systemPrompt: '', model: 'claude-opus-4-6', contextBudgetTokens: 400_000 } }), 'utf-8');
+    const document = await readRecipeDocument(recipePath);
+    process.env.MODEL = 'claude-opus-4-6';
+    await expect(loadRecipeDocument(document, recipePath, { env: { MODEL: 'claude-haiku-4-5' } }))
+      .rejects.toThrow('claude-haiku-4-5 is MODEL in the environment');
+    process.env.MODEL = 'claude-haiku-4-5';
+    const { recipe } = await loadRecipeDocument(document, recipePath, { env: { MODEL: 'claude-opus-4-6' } });
+    expect(recipe.agent.contextBudgetTokens).toBe(400_000);
   });
 
   describe('${VAR:-default} syntax', () => {

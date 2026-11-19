@@ -114,6 +114,51 @@ describe('the wait for a line\'s turn', () => {
   });
 });
 
+describe('a wait given no cap', () => {
+  test('doesn\'t give up, where a wait with a cap would, and ends with the turn', async () => {
+    const capped = setUp();
+    const gaveUp = capped.turns.waitForTurn(10);
+    capped.emit('inference:started');
+    let bound: Timer | undefined;
+    await Promise.race([gaveUp, new Promise((_, fail) => {
+      bound = setTimeout(() => fail(new Error('the capped wait didn\'t give up within 5 s')), 5_000);
+    })]);
+    clearTimeout(bound);
+    expect(capped.out).toContain('err:(no answer after 0.01 s: going on without it)');
+    const capless = setUp();
+    const wait = capless.turns.waitForTurn(null);
+    capless.emit('inference:started');
+    await Bun.sleep(50);
+    expect(await settled(wait)).toBe(false);
+    expect(capless.out.some((line) => line.startsWith('err:'))).toBe(false);
+    capless.emit('inference:completed');
+    expect(await settled(wait)).toBe(true);
+  });
+});
+
+describe('tools that show themselves', () => {
+  test('aren\'t listed again as tool lines', () => {
+    const out: string[] = [];
+    const turns = createPipedTurns('clerk', {
+      write: (text) => { out.push(`out:${text}`); },
+      log: (line) => { out.push(`log:${line}`); },
+      error: (line) => { out.push(`err:${line}`); },
+    }, undefined, (tool) => tool.startsWith('setup--'));
+    const emit = (type: string, extra: Record<string, unknown> = {}) => turns.onTrace({ type, agentName: 'clerk', ...extra });
+    emit('inference:tool_calls_yielded', { calls: [{ name: 'setup--run' }, { name: 'time--now' }] });
+    emit('tool:started', { tool: 'setup--run', input: { command: 'ls' } });
+    emit('inference:tool_calls_yielded', { calls: [{ name: 'setup--ask_secret' }] });
+    expect(out).toEqual(['log:\n[tools] time--now', 'out:\n']);
+  });
+
+  test('leave a trace with no calls its [tools] line, as before', () => {
+    const { out, emit } = setUp();
+    emit('inference:tool_calls_yielded', { calls: [] });
+    emit('inference:tool_calls_yielded');
+    expect(out).toEqual(['log:\n[tools] ', 'log:\n[tools] ']);
+  });
+});
+
 describe('what piped mode prints', () => {
   test('every agent\'s prose, with each stream\'s first end closing its line', () => {
     const { turns, emit, out } = setUp();
