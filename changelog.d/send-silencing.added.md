@@ -6,4 +6,7 @@
   is on, so a recipe for a resident who writes a note beside each send sets
   it to true to keep those notes unposted. The resident can change it for
   itself with `agent_settings` (`send_silencing`). An agent-framework that
-  predates the setting always silences.
+  predates the setting always silences, and has no `send_silencing`: that
+  includes the 0.33 line this release asks for and installs, so the key does
+  nothing until the host runs with an agent-framework that has the setting
+  (a release after 0.34.0).
