@@ -419,6 +419,17 @@ describe("a fleet child's answer", () => {
     expect(calls).toEqual([`quiesce ${SWITCH} for 0 ms`, 'resume']);
   });
 
+  test("a child its operator quiesced answers the switch's quiesce with its operator's hold, and keeps it", async () => {
+    for (const reason of ['maintenance', undefined]) {
+      const { framework, mode } = fakeFramework({ quiesced: true, reason, holders: [] });
+      expect(await answerSwitchRequest(framework, { op: 'quiesce', to: '0.14.0', waitMs: 0 })).toEqual({
+        host: 'this host', answered: true, drained: true, activeTurnAgents: [], backgroundScripts: 1,
+        operatorHold: reason === undefined ? {} : { reason },
+      });
+      expect(mode()).toMatchObject({ quiesced: true, reason });
+    }
+  });
+
   test("a request it can't read is refused, and changes nothing", async () => {
     for (const request of [
       null, {}, { op: 'resum' }, { op: 'quiesce', waitMs: 0 }, { op: 'quiesce', to: '', waitMs: 0 },

@@ -136,10 +136,10 @@ test('/session new and /session switch during a switch are refused before any se
   const other = sessions.createSession('other');
   sessions.setActiveSession(running.id);
   const app = { switching: true, sessionManager: sessions, branchState: createBranchState() } as unknown as Parameters<typeof handleCommand>[1];
-  const refusal = "A session switch is under way, so this one isn't started; try again once it has finished.";
-  for (const line of ['/session new later', `/session switch ${other.id}`]) {
+  const refusal = (what: string) => `${what} refused: a session switch is under way. Nothing changed; try again once the switch has finished.`;
+  for (const [line, what] of [['/session new later', '/session new'], [`/session switch ${other.id}`, '/session switch']] as const) {
     const answer = handleCommand(line, app);
-    expect(answer.lines.map((l) => l.text)).toEqual([refusal]);
+    expect(answer.lines.map((l) => l.text)).toEqual([refusal(what)]);
     expect(answer.switchToSessionId).toBeUndefined();
   }
   expect(sessions.listSessions().map((s) => s.name).sort()).toEqual(['other', 'running']);

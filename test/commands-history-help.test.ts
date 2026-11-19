@@ -9,7 +9,7 @@ function appWithMessages(count: number) {
     content: [{ type: 'text', text: `message ${i + 1}` }],
   }));
   const cm = { queryMessages: () => ({ messages }) };
-  return { framework: { getAllAgents: () => [{ getContextManager: () => cm }] } } as never;
+  return { framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }), getAllAgents: () => [{ getContextManager: () => cm }] }, recipe: {} } as never;
 }
 
 const rows = (command: string, count: number) =>
@@ -99,6 +99,7 @@ test("/history, /find and /branches read the command agent's context, where /bra
     agentName: 'mira',
     branchState: { checkpoints: new Map() },
     framework: {
+      getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
       getAllAgents: () => agents,
       getAgent: (name: string) => agents.find((a) => a.name === name),
       getPrimaryAgentName: () => 'clerk',

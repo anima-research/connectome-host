@@ -30,7 +30,7 @@ export interface PipedOutput {
 
 export interface PipedTurns {
   onTrace(event: { type: string; [key: string]: unknown }): void;
-  waitForTurn(capMs?: number): Promise<void>;
+  waitForTurn(capMs?: number | null): Promise<void>;
   /** The host follows another framework, whose turns owe nothing to the
    *  failures counted so far, and a line waiting on the old one's turn is
    *  released. */
@@ -44,6 +44,7 @@ export function createPipedTurns(
   primaryAgentName: string,
   out: PipedOutput,
   hint: (errorType: string | undefined) => string | undefined = () => undefined,
+  showsItself: (tool: string) => boolean = () => false,
 ): PipedTurns {
   const streams = new Map<string, 'open' | 'failed'>();
   let failures = createTurnFailures();
@@ -62,10 +63,13 @@ export function createPipedTurns(
         return;
       case 'inference:tool_calls_yielded': {
         const calls = (event.calls as Array<{ name: string }> | undefined) ?? [];
-        out.log(`\n[tools] ${calls.map((c) => c.name).join(', ')}`);
+        const listed = calls.filter((c) => !showsItself(c.name));
+        if (listed.length > 0 || calls.length === 0) out.log(`\n[tools] ${listed.map((c) => c.name).join(', ')}`);
+        else out.write('\n');
         return;
       }
       case 'tool:started': {
+        if (showsItself(String(event.tool))) return;
         const toolInput = event.input ? JSON.stringify(event.input) : '';
         const truncated = toolInput.length > 120 ? toolInput.slice(0, 120) + '...' : toolInput;
         out.log(`[tool] ${String(event.tool)}${truncated ? ' ' + truncated : ''}`);
@@ -105,11 +109,11 @@ export function createPipedTurns(
     }
   }
 
-  function waitForTurn(capMs = PIPED_TURN_CAP_MS): Promise<void> {
+  function waitForTurn(capMs: number | null = PIPED_TURN_CAP_MS): Promise<void> {
     return new Promise((resolve) => {
       // A pending timer holds the event loop open, so it's cleared once the turn
       // settles.
-      const timer = setTimeout(() => {
+      const timer = capMs === null ? undefined : setTimeout(() => {
         if (settle !== done) return;
         settle = null;
         out.error(`(no answer after ${capMs / 1000} s: going on without it)`);
