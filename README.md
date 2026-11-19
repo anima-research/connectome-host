@@ -20,34 +20,23 @@ Built on the Connectome stack: [@animalabs/agent-framework](https://github.com/a
 
 ## A resident, from one line
 
-Setup needs Bun 1.4.4 or later, which `curl -fsSL https://bun.sh/install | bash`
-installs, and Node 22.12.0 or later. On the machine the resident will live on:
+Setup needs Bun 1.4.4 or later and Node 22.12.0 or later. `curl -fsSL https://bun.sh/install | bash` installs Bun. On the machine where the resident will live, run:
 
 ```bash
 bunx @animalabs/connectome-host setup discord
 ```
 
-Setup puts the resident in the directory you run it in where that's empty
-or already the resident's, and in `~/resident` otherwise, and says which
-before it asks anything. Where `~/resident` holds other files and isn't the
-resident's either, setup stops and says so.
+Setup puts the resident in the directory that you run it in, if that directory is empty or is already the resident's. Otherwise it puts the resident in `~/resident`. It says which directory before it asks anything. If `~/resident` holds other files and isn't the resident's either, setup stops and says so.
 
-If `bunx` doesn't have the package yet, it first downloads it and what it
-depends on, showing its own progress, before setup says anything.
+If `bunx` doesn't have the package yet, it first downloads the package and what it depends on, and shows its own progress. This comes before setup says anything.
 
-The host's own agent sets the resident up from there, and asks you only what
-only you can answer. Afterwards the install's own `connectome` command looks
-after it: `./connectome-host/connectome` in the resident's directory, or
-plain `connectome` once its directory comes first on your PATH.
-With nothing after it, it says how the install is. Type the package's whole
-name, `bunx @animalabs/connectome-host`, and never `bunx connectome`, which is
-another package on npm.
+From there, the host's own agent sets the resident up. It asks you only what only you can answer. Afterwards, the install's own `connectome` command looks after the resident. In the resident's directory, the command is `./connectome-host/connectome`. Once its directory comes first on your PATH, it is plain `connectome`. With nothing after it, the command says how the install is. Type the package's whole name, `bunx @animalabs/connectome-host`. Never type `bunx connectome`, which is another package on npm.
 
 ## What people run on it
 
 | Use | Start here |
 |---|---|
-| **A resident** — a persistent agent on Discord (or other surfaces), headless on a VPS, with autobiographical memory | [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md), [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md) |
+| **A resident** — a persistent agent on Discord (or other surfaces), headless on a VPS, with autobiographical memory | `bunx @animalabs/connectome-host setup discord` (above), which hands over to the setup agent's guide, [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md); [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md) for running one |
 | **A continued conversation** — bring a claude.ai conversation, a Claude Code session or a Codex rollout across and keep going | [`docs/claudeai-evacuation.md`](docs/claudeai-evacuation.md), [`docs/claude-code-ingest.md`](docs/claude-code-ingest.md), `scripts/import-codex-rollout.ts` |
 | **A fleet** — a conductor agent supervising headless child processes, one agent tree in the TUI and WebUI | [`docs/fleet-protocol.md`](docs/fleet-protocol.md), [`recipes/TRIUMVIRATE-SETUP.md`](recipes/TRIUMVIRATE-SETUP.md) |
 | **Knowledge mining** — miner / reviewer / clerk agents over Zulip and GitLab | [`recipes/SETUP.md`](recipes/SETUP.md), [`docs/LIBRARY-PIPELINE.md`](docs/LIBRARY-PIPELINE.md) |
@@ -58,7 +47,7 @@ the host is put together is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick start
 
-Install a release from npm, in a folder of its own. You need [Bun](https://bun.sh/) 1.4.3+ and credentials for one provider, or none for the offline run. The package carries the rest, the Web UI built.
+Install a release from npm, in a folder of its own. You need [Bun](https://bun.sh/) 1.4.3 or later, the host's own floor. Setup needs 1.4.4. You also need credentials for one provider, or none for the offline run. The package carries the rest, with the Web UI built.
 
 ```bash
 mkdir my-agent && cd my-agent
@@ -190,7 +179,8 @@ number to change. Set a `strategy` block only to tune windows/budgets, to pin
 `foldingStrategy: "kv-stable"` for a resident whose store was built under it,
 or to opt into a different strategy type (`frontdesk`
 for channel-staffing agents, `passthrough` for none) — see
-`docs/AGENT-ONBOARDING.md` for sizing guidance on long-lived agents and
+`docs/DEPLOYMENTS.md`'s "A resident's memory: sizing, folding and repair" for
+sizing guidance on long-lived agents and
 [`docs/AGENT-MEMORY-GUIDE.md`](docs/AGENT-MEMORY-GUIDE.md) for how it works.
 
 `maintenanceIntervalMs`, at the recipe's top level, is how often
@@ -524,6 +514,16 @@ Each MCPL server can also be presented as a tab. `presentation` on its entry set
 
 Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) with `mcpl-admin--mcpl_deploy`'s `presentation`. A value other than those three stops the load, or in the agent's own overlay is left out, named in a startup line.
 
+### Code execution (`codeExecution`)
+
+`"codeExecution": { "enabled": true }`, at the top level beside `modules`, gives the agent agent-framework's `code_execution` tool. The agent writes JavaScript that calls its own tools by name, such as `await tools["module--tool"]({...})`. Only what the script writes or returns comes back, with how each call ended. The calls, and the results between them, stay out of the context. So reading ten files, querying every channel or paging through a log takes one tool round instead of ten. The window keeps the answer, not the haystack.
+
+A script that runs long yields and keeps going. The agent can wait on it, stop it, or leave it running past its turn. A script can wake the agent with `wake_agent(payload)`. The agent is also woken if the script fails or reaches its lifetime.
+
+Each script starts fresh, and reaches nothing but the agent's tools: no network, files, timers or packages. So by design it adds no authority: anything a script does, the agent could already do one call at a time. That holds as far as the engine holds. The script runs in QuickJS's WebAssembly sandbox, inside a child process of the host, as the host's user. No operating-system sandbox is around it. agent-framework claims no containment beyond its engine and its glue (see the security note on `RecipeCodeExecution` in `src/recipe.ts`). A resident that already has a shell tool can already do far more than a script can. For a resident without one, weigh that before you turn code execution on.
+
+There is nothing to install. The engine, QuickJS in a child process, ships with agent-framework 0.24 and later. Releases before that ran Python and took other keys (`pythonPath`, `idleReclaimMs`, `env`, `scriptTimeoutMs` …). In a block with `"enabled": true`, current hosts refuse those keys, with a message that says what replaced each. Every limit has a default (`yieldMs`, `maxYieldMs`, `scriptLifetimeMs`, `maxRunningScripts`, `maxScriptChildren`, `toolCallTimeoutMs`, `wakeMinIntervalMs`, `maxWakesPerScript`, `memoryMaxBytes`). So `{ "enabled": true }` is the whole setting. Code execution is off unless the recipe turns it on. The host's built-in default recipe leaves it off, so an agent started with no recipe has none. Turning it on for a running resident adds one tool. So the resident's first turn after the restart is one full cache write.
+
 ### Included recipes
 
 | Recipe | What it is |
@@ -538,7 +538,8 @@ Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) wi
 | [`recipes/mcpl-editor-test.json`](recipes/mcpl-editor-test.json), [`webui-test.json`](recipes/webui-test.json), [`webui-fleet-test.json`](recipes/webui-fleet-test.json) | Development test recipes |
 
 The production residents' recipes live in their own install directories, not
-here; [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md) shows the shape.
+here; [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md)'s "The recipe" and
+"The recipe's servers" show the shape of a new one.
 
 ### Claude subscription provider
 
@@ -569,6 +570,10 @@ action is pasting a new token. A credentials file with a refresh token
 30 minutes before expiry. See the credential-alerts note under the ChatGPT
 provider and [docs/subscription-transport.md](docs/subscription-transport.md).
 
+### Anthropic effort
+
+For Anthropic streaming turns, `agent.thinking.effort` sets the recipe's baseline effort. It does so whether or not `agent.thinking.enabled` is on. `enabled` is still required, and can be `false`. An effort set explicitly with `agent_settings` overrides the recipe's effort until reset, from the point where it was set. `agent_settings` is in the agent's built-in `settings` toolset, or in its tool list if its `allowedTools` doesn't permit both `toolsets--open` and `toolsets--act`. A model that doesn't take the effort level gets none, and the model's default applies. Then stderr says so once for each model and level, in a line that begins `[reasoning-effort] <model> does not accept effort=<level> — not sent`. Compression calls are unaffected. Other providers ignore the field: OpenAI recipes use `agent.responses.reasoningEffort`, below.
+
 ### OpenAI reasoning
 
 For `openai-responses` and `openai-codex`, primary-agent reasoning is configured
@@ -592,7 +597,7 @@ The host accepts `none`, `low`, `medium`, `high`, `xhigh`, or `max` for
 selected model must support the requested effort. These settings apply to the
 primary agent; `modules.retrieval` has its own reasoning setting described below.
 Memory sizing and compression-model settings are covered in
-`docs/AGENT-ONBOARDING.md`.
+`docs/DEPLOYMENTS.md`'s "A resident's memory: sizing, folding and repair".
 
 ### ChatGPT subscription provider
 
@@ -771,7 +776,7 @@ unknown-key warning, like those at the other levels.
   `tune_out` channels; **code execution** (top-level `codeExecution`) —
   JavaScript scripts that call the agent's tools, in a QuickJS engine
   (agent-framework 0.24); recommended for every resident, and off unless a
-  recipe turns it on (see docs/AGENT-ONBOARDING.md)
+  recipe turns it on (see "Code execution (`codeExecution`)" above)
 - **Activity** (`modules.activity`) typing indicators and a **TTS relay**
   (`modules.ttsRelay`) for voice clients
 - **Extensions** (top-level `extensions`) — local modules that register
@@ -783,7 +788,7 @@ unknown-key warning, like those at the other levels.
 - **TUI, readline and batch modes** — OpenTUI interactive terminal, `--no-tui` for a plain prompt, or piped stdin for a one-shot batch run
 - **Headless mode** — `--headless`: no terminal, JSONL over a Unix socket; how residents run under a supervisor
 - **Self-restart** (opt-in, `modules.selfRestart`) — `lifecycle--restart`: the agent restarts its own host, for an edited recipe or rebuilt code. It happens once the asking turn has ended; the host exits with code 75 for its supervisor to start it again, so enable it only under one that does (launchd `KeepAlive`, systemd `Restart=on-failure`, a fleet parent's `autoRestart`, which is off unless the child's entry sets it, and which counts a self-restart toward its cap of 3 restarts in 60 s). A fleet parent's own self-restart stops its children as any shutdown does, and the restarted parent starts again only its `autoStart` children. `cooldownMinutes` (default 10) spaces restarts out
-- **Self-update** (opt-in, `modules.selfUpdate`) — `lifecycle--update`: the agent's own `/update`. It checks what's out, installs a release beside the running one, and arms a restart onto it for the host's first quiet moment. A restart arms only on a headless host started with `CONNECTOME_SUPERVISED=1`, which `connectome service install` sets only for a service that restarts the host when it exits with 75 and with 1; anywhere else it refuses and says why. The changelog's entry has the rest
+- **Self-update** (opt-in, `modules.selfUpdate`) — `lifecycle--update`: the agent's own `/update`. It checks what's out, installs a release beside the running one, and arms a restart onto it for the host's first quiet moment. A restart arms only on a headless host that started with `CONNECTOME_SUPERVISED=1`. `connectome service install` sets that only for a service that restarts the host when it exits with 75 and when it exits with 1. Anywhere else, the restart refuses and says why. The changelog's entry has the rest
 - **Time-travel** — undo/redo on the agent's window; Chronicle-backed checkpoints, rollback and branch exploration; in the web UI, rolling back to a message and suppressing messages
 - **Session management** — isolated sessions with auto-naming
 - **Ops alerts** — compression quarantine, refusal streaks, inference exhaustion and more surface as `ops:alert` traces, `logs/failures.log` records, and an optional webhook (`CONNECTOME_OPS_WEBHOOK`)
@@ -973,7 +978,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `CONNECTOME_OPS_WEBHOOK` | — | Webhook for ops alerts |
 | `COUNT_TOKENS_MODEL` | the agent's model | Override the model used for exact token counts in the context-makeup panel |
 | `LLM_CALLS_FULL_PAYLOADS` | off | `1`/`true`: keep the full request on every llm-calls log entry (large; a line over 16 MiB drops it) |
-| `THINKING_BINDING_PROBE` | on | `off`: skip the start-up check of what the account does with a signed thinking block whose earlier conversation changed (see `docs/AGENT-ONBOARDING.md` §11.10); agents on a model whose thinking binds then leave such thinking out, as on an account that refuses it |
+| `THINKING_BINDING_PROBE` | on | `off`: skip the start-up check of what the account does with a signed thinking block whose earlier conversation changed (see `docs/DEPLOYMENTS.md`'s "Refusals and signed thinking"); agents on a model whose thinking binds then leave such thinking out, as on an account that refuses it |
 | `GATE_TELEMETRY` | off | `1`: send `x-gate-*` telemetry headers — only when `ANTHROPIC_BASE_URL` is also set |
 
 Recipes may reference any further variables they need as `${VAR}` (for
@@ -1135,13 +1140,13 @@ a value. The forms of those three that only list or show answer as they do
 without a switch. The same goes for the fleet view's stop and restart keys,
 and for the Web UI's rollback, suppress, fleet stop and restart, host
 quiesce and resume, and pin and settings changes. A pin or settings change
-made for a fleet child is passed on to it, and the child refuses it while
+made for a fleet child is passed on to it. The child refuses it while
 its own session is switching, and while it is quiesced for a release
 switch. Once the switch has stopped the old
 session's framework, the Web UI answers "host not ready" until the next one
 is installed, as before. `/session new` and `/session switch` also start no
-switch while one of the commands above, given earlier, or one of these
-actions on this host is still running.
+switch while a command above, given earlier, or one of these actions is
+still running on this host.
 
 ## TUI controls
 

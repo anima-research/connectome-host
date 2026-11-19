@@ -14,8 +14,8 @@ import { INSTALL_COMMAND, shellWord } from '../update/install-command-name.js';
 export const SETUP_USAGE = 'connectome setup discord';
 export const SETUP_RECIPE = join(RELEASE_HOST, 'recipes', 'setup.json');
 export const SETUP_SUMMARY = 'Sets a resident up on Discord with the host\'s own setup agent, in the directory that ' +
-  'holds the install (from bunx, the directory it runs in where that\'s empty or setup\'s, and ~/resident otherwise). ' +
-  'Run again, its agent picks up where it stopped.';
+  'holds the install. Run from bunx, it uses the directory it runs in if that is empty or setup\'s, and ~/resident ' +
+  'otherwise. When it runs again, its agent picks up where it stopped.';
 export const ROOT_IN_WORKDIR = 'connectome-host';
 
 const PACKAGE = '@animalabs/connectome-host';
@@ -112,11 +112,11 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
     if (go === null) return stopped(out);
     if (!go) {
       out(`Setup needs Node ${pkg.engines.node.replace('>=', '')} or later there too, and at most Node ` +
-        `${SHELL_NODE_TOP} if the resident may get a shell: if this machine's Node is installed for your user ` +
+        `${SHELL_NODE_TOP} if the resident may get a shell. If this machine's Node is installed for your user ` +
         `alone, as one from nvm is, install Node for ${OWN_USER} as well. \`command -v node\` shows where yours is: ` +
-        'one in your home is yours alone.');
-      out(`Then open a shell as ${OWN_USER}, with \`sudo -iu ${OWN_USER}\` where you can use sudo, or by whoever ran ` +
-        'the line, and run this same version of setup there:');
+        'a Node in your home directory is yours alone.');
+      out(`Then open a shell as ${OWN_USER} (with \`sudo -iu ${OWN_USER}\` if you can use sudo, or ask whoever ran ` +
+        'the line to open one), and run this same version of setup there:');
       out(`  ${firstLine()}`);
       out('Nothing was installed here.');
       return 0;
@@ -129,24 +129,24 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
       'when it exits with 75 or 1, as docs/DEPLOYMENTS.md in the host\'s package says.');
   }
   if (linger === false) {
-    out(`Linger is off for ${world.user}, so a service of ${world.user}'s stops when ${world.user} logs out. One line ` +
-      `turns it on, run once ${world.hasSudo ? 'with sudo. You can run it if you can use sudo here, or whoever ' +
+    out(`Linger is off for ${world.user}, so ${world.user}'s services stop when ${world.user} logs out. One line ` +
+      `turns it on. It runs once, ${world.hasSudo ? 'with sudo. You can run it if you can use sudo here, or whoever ' +
         'administers this machine can.' : 'as root. You or whoever administers this machine can run it.'} It can run ` +
       'at any time before the resident goes live, and setup goes on meanwhile:');
     out(`  ${lingerLine(world)}`);
   } else if (session !== undefined) {
-    out(`On macOS, a service of ${world.user}'s stops when ${world.user} logs out of the Mac's graphical session, not ` +
-      `when an ssh session ends, and launchd starts it when ${world.user} logs in there. ${session === null
+    out(`On macOS, ${world.user}'s services stop when ${world.user} logs out of the Mac's graphical session, not ` +
+      `when an ssh session ends. launchd starts them again when ${world.user} logs in there. ${session === null
         ? `${world.user} is logged in there now.`
         : `\`${macSessionCheck().join(' ')}\` didn't give 0 for ${world.user}'s graphical session (${session}). It ` +
-          `gives 0 only while ${world.user} is logged in there, and the service's install refuses until it does, so ` +
-          'setup goes on meanwhile.'}`);
+          `gives 0 only while ${world.user} is logged in there. The service's install refuses until then, so setup ` +
+          'goes on meanwhile.'}`);
   }
 
   const upgrade = '`bun upgrade` upgrades it, or the package manager that installed it does; then run setup again.';
   if (bunBelowFloor(SETUP_BUN_FLOOR, world.bun.version) === true) {
-    err(`Setup needs Bun ${SETUP_BUN_FLOOR.replace('>=', '')} or later, whose \`bun add --no-env-file\` keeps .env's ` +
-      `values from the packages' install scripts, and this is Bun ${world.bun.version}. ${upgrade}`);
+    err(`Setup needs Bun ${SETUP_BUN_FLOOR.replace('>=', '')} or later, since its \`bun add --no-env-file\` keeps ` +
+      `.env's values from the packages' install scripts. This is Bun ${world.bun.version}. ${upgrade}`);
     return 1;
   }
   const env = withoutDotenv(world.env, world.cwd);
@@ -211,8 +211,8 @@ async function setupIn(ctx: CliContext & { root: string }, world: SetupWorld): P
   }
   const ownSetup = join(dir, RELEASE_HOST, 'src', 'update', 'setup.ts');
   out(record === null
-    ? `Setting up ${root}, the folder the resident's host runs from, which later updates install into. It starts as a ` +
-      'copy of what was just installed here.'
+    ? `Setting up ${root}, the folder that the resident's host runs from and that later updates install into. It ` +
+      'starts as a copy of what was just installed here.'
     : `Checking the install at ${root}.`);
   const made = await world.run([world.bun.path, '--no-env-file', ownSetup, '--root', root], {
     cwd: dir, env: { ...withoutKeys(env, ['CONNECTOME_INSTALL_ROOT']), DATA_DIR: dataDir },
@@ -352,8 +352,8 @@ async function keyFor(
   const gateway = baseUrl === undefined && Boolean(env.ANTHROPIC_BASE_URL?.trim());
   if (key === null && gateway) {
     out(`An ANTHROPIC_BASE_URL is exported in this shell, and ${envFile} sets none. Setup, its agent and the resident ` +
-      `take a base URL from ${envFile} alone, so setup offers no exported key, and checks the key it asks for at ` +
-      `Anthropic's own API. To go on with that gateway, write ANTHROPIC_BASE_URL into ${envFile}, and run setup again.`);
+      `take a base URL from ${envFile} alone. So setup doesn't offer an exported key, and it checks the key it asks for ` +
+      `at Anthropic's own API. To go on with that gateway, write ANTHROPIC_BASE_URL into ${envFile}, and run setup again.`);
   }
   if (key === null && exported && !gateway) {
     const use = await yesNo(world, 'An ANTHROPIC_API_KEY is exported in this shell. Use it for setup\'s agent? Setup ' +
@@ -374,8 +374,8 @@ async function keyFor(
       key = null;
       continue;
     }
-    out(`Checking ${from}: one call at ${baseUrl === undefined ? ANTHROPIC_API : new URL(baseUrl).origin} to ${model}, ` +
-      'the model setup\'s agent runs on, which the key\'s account has to be able to use.');
+    out(`Checking ${from}: one call at ${baseUrl === undefined ? ANTHROPIC_API : new URL(baseUrl).origin} to ${model}. ` +
+      'Setup\'s agent runs on that model, so the key\'s account has to be able to use it.');
     const checked = await world.checkKey({ key, model, ...(baseUrl === undefined ? {} : { baseUrl }) });
     if (checked.ok) break;
     err(checked.said);
@@ -423,9 +423,9 @@ function adviseOwnUser(world: SetupWorld, out: (line: string) => void): void {
     'as another user. Later, with setup\'s agent, you decide what the resident may do, such as whether it gets a shell ' +
     `to run commands on this machine. With a shell, the resident can read and change whatever ${world.user} can, and ` +
     'whoever talks to it on Discord can ask it to. So if this is your own account and the resident may get a shell, ' +
-    `give it a user of its own. This line makes one, named ${OWN_USER}, unless a user by that name is there already, ` +
-    'keeps its services running while it\'s logged out, and gives it Bun on its PATH. Run it where you can use sudo, ' +
-    'and if a step fails, put right what it names and run the line again:');
+    `give it a user of its own. This line makes a user named ${OWN_USER}, unless one by that name is there already. ` +
+    'It keeps that user\'s services running while it\'s logged out, and gives it Bun on its PATH. Run it where you ' +
+    'can use sudo, and if a step fails, put right what it names and run the line again:');
   out(`  ${OWN_USER_LINE}`);
   if (world.userExists(OWN_USER) === true) {
     out(`This machine already has a user named ${OWN_USER}. If an earlier line of setup's made it for the resident, ` +

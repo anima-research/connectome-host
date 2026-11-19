@@ -72,8 +72,8 @@ export async function doctor(
       owner = null;
     }
     if (owner !== null && owner !== 0) {
-      ctx.err(`connectome: ${work} belongs to uid ${owner}, and doctor runs as root, so it would read root's service ` +
-        `and service manager, not those of the user the resident runs as. Run \`${shellWord(join(root, INSTALL_COMMAND))} ` +
+      ctx.err(`connectome: ${work} belongs to uid ${owner}, but doctor runs as root. As root, it would read root's ` +
+        `service and service manager, not those of the user who runs the resident. Run \`${shellWord(join(root, INSTALL_COMMAND))} ` +
         `doctor\` as the user who owns ${work}, without sudo.`);
       return 1;
     }
@@ -191,15 +191,15 @@ async function reachHost(report: Report, parts: DoctorParts, root: string, typed
   const next = !reached.down
     ? 'put right what that names, then run doctor again, or run it again in a minute if a host is still starting.'
     : !installable
-    ? 'no service can be installed here, so start the host as this machine runs a program, from ' +
-      `${dirname(root)}: \`${moved === null ? '' : `DATA_DIR=${shellWord(moved)} `}` +
+    ? 'no service can be installed here. Start the host from ' +
+      `${dirname(root)}, the way this machine runs its other programs: \`${moved === null ? '' : `DATA_DIR=${shellWord(moved)} `}` +
       `${shellWord(bun)} ${shellWord(join(root, 'start.js'))} <recipe> --headless\``
     : commands === null ? `\`${typed} service install <recipe>\``
     : runs === true ? `it may still be starting, so run doctor again in a minute. Its log: \`${commands.log}\``
     : runs === 'changing' ? `it may be starting or stopping, so run doctor again in a minute. Its log: \`${commands.log}\``
     : runs === false ? `start the service with \`${commands.start}\`.`
-    : 'its service manager couldn\'t be asked whether the service runs, so ask it as the line for the service says, ' +
-      'then run doctor again.';
+    : 'doctor couldn\'t ask the service manager whether the service runs. Ask it yourself, as the service\'s line ' +
+      'says, then run doctor again.';
   report.check('✗', `No host answers: ${reached.reason}.`, next);
   return null;
 }
@@ -234,8 +234,8 @@ async function checkRecipe(report: Report, parts: DoctorParts, root: string, hos
   try {
     dataDir = dataDirOf(root);
   } catch {
-    report.check('–', 'Not checked: the install record can\'t be read, as the host\'s line says, so the data directory the ' +
-      'service starts the host with isn\'t known.');
+    report.check('–', 'Not checked: the install record can\'t be read, as the host\'s line says, so doctor doesn\'t know ' +
+      'which data directory the service starts the host with.');
     return;
   }
   const env = { ...Object.fromEntries(dotenv), ...parts.sys.env, DATA_DIR: dataDir };
@@ -247,8 +247,8 @@ async function checkRecipe(report: Report, parts: DoctorParts, root: string, hos
     report.check('✓', `${recipe} loads.`);
   } catch (error) {
     if (error instanceof TooLong) {
-      report.check('–', `Not checked: ${recipe} ${error.message}, so whether it loads isn't known.`,
-        'run doctor again: the recipe, or a system prompt it names by URL, may be slow to answer.');
+      report.check('–', `Not checked: ${recipe} ${error.message}, so doctor can't tell whether it loads.`,
+        'run doctor again, since the recipe, or a system prompt that it names by URL, may be slow to answer.');
       return;
     }
     report.check('✗', `${recipe} doesn't load: ${errorText(error)}.`,
@@ -294,7 +294,7 @@ async function checkCalls(report: Report, parts: DoctorParts, host: HostClient |
         ? `${agent.name}'s last turn failed at the model call${at}.`
         : `${agent.name}'s last ${agent.failures} turns failed at the model call${at}.`,
         `each failure's reason is in the host's log, in a line that starts \`[inference-failed] agent=${agent.name}\`. ` +
-        'They can quote the model provider, so doctor doesn\'t print them' + failureSearch(units, commands, agent.name));
+        'Those lines can quote the model provider, so doctor doesn\'t print them' + failureSearch(units, commands, agent.name));
     } else if (agent.lastCall === null) {
       report.check('–', `${agent.name} has made no model call since this host started or last switched session.`);
     } else {
@@ -326,7 +326,7 @@ function countsOf(data: unknown): AgentCounts[] {
       const { total, lastAt } = (typeof refusalStats === 'object' ? refusalStats : {}) as Record<string, unknown>;
       const at = time(lastAt);
       if (typeof total !== 'number' || !Number.isInteger(total) || total < 0 || (total > 0 && at === null)) {
-        throw new Error('an agent in its answer has refusal counts with no total or no time of the last');
+        throw new Error('an agent in its answer has refusal counts with no total or no time of the last refusal');
       }
       if (total > 0 && at !== null) refusals = { total, lastAt: at };
     }
@@ -355,9 +355,8 @@ async function checkToken(report: Report, parts: DoctorParts, dotenv: Map<string
     report.check('–', `Not checked: .env holds no ${DISCORD_TOKEN}.`);
     return;
   }
-  const store = 'store the bot token from the Developer Portal\'s Bot page with ' +
-    `\`${typed} setup discord\`, which stores it in ${join(work, '.env')}, then restart the service and run ` +
-    `\`${typed} doctor\` again.`;
+  const store = `run \`${typed} setup discord\` to store the bot token from the Developer Portal's Bot page in ` +
+    `${join(work, '.env')}. Then restart the service, and run \`${typed} doctor\` again.`;
   const check = await checkDiscordToken(token, parts.fetch);
   if (check.kind === 'accepted') report.check('✓', 'Discord accepts the token.');
   else if (check.kind === 'refused') report.check('✗', `The token in .env isn't accepted: ${check.why}.`, store);

@@ -28,7 +28,7 @@ const MINIMAL_RECIPE = {
 };
 
 const quiescedRefusal = (what: string): string => `${what} refused: this host is quiesced for a release switch. If that ` +
-  'switch goes ahead, its stop can cut a change to the session off. Nothing changed; try again once that quiesce has ended. ' +
+  'switch goes ahead, its stop can cut off a change to the session. Nothing changed; try again once that quiesce has ended. ' +
   'Where a switch that has ended left it behind, `/update restart resume` ends it.';
 
 function lineReader(socket: Socket): { events: Array<Record<string, unknown>>; stop: () => void } {

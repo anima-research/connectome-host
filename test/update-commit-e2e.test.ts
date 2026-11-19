@@ -473,7 +473,7 @@ describe("a host's update, on a real start", () => {
       "Asking the host to restart. If it goes ahead, new turns are held, and turns in progress get up to 2 min to end…",
       refusal,
       "Asking the host to restart. If it goes ahead, new turns are held, and turns in progress get up to 2 min to end…",
-      "Stopping to switch to 9.9.10: the host's next start does it, which a service set up for updates makes by itself.",
+      "Stopping to switch to 9.9.10. The host's next start does it, and a service set up for updates starts the host by itself.",
     ]);
   }, 60_000);
 
@@ -532,7 +532,7 @@ describe("a host's update, on a real start", () => {
       await until(() => out.includes('connectome-host (readline mode)'), 30_000, `readline mode starts (output: ${out.slice(-1500)})`);
       host.stdin!.write('/update restart\r');
       expect(await exit).toBe(0);
-      expect(out).toContain('Stopping to switch to 9.9.10: once it has stopped, start the host again, and that start does it.');
+      expect(out).toContain('Stopping to switch to 9.9.10. Once the host has stopped, start it again: that start does it.');
       expect(readRecord<{ to: string; why: string }>(installPaths(root).mark, 'mark')).toMatchObject({ to: '9.9.10', why: 'update' });
       expect(readCurrent(root)).toBe('9.9.9');
     }, 60_000);

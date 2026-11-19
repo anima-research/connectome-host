@@ -172,7 +172,7 @@ describe("the web UI's own entry during a session switch", () => {
 
   test("while a switch's quiesce holds the host, its own rollback, suppress, pin and settings changes, and a fleet child's stop and restart, are refused and change nothing, while a read and a Resume aren't, and a rollback goes once it has resumed", async () => {
     const quiescedRefusal = (what: string) => `${what} refused: this host is quiesced for a release switch. If that switch ` +
-      'goes ahead, its stop can cut a change to the session off. Nothing changed; try again once that quiesce has ended. ' +
+      'goes ahead, its stop can cut off a change to the session. Nothing changed; try again once that quiesce has ended. ' +
       'Where a switch that has ended left it behind, `/update restart resume` ends it.';
     const reached: string[] = [];
     const modules: unknown[] = [];
@@ -522,7 +522,7 @@ test("a host-quiesce over a switch's quiesce on a host that can't tell whether t
   expect(answer).toMatchObject({ type: 'error', corrId: 'quiesce' });
   const message = String((answer as { message?: unknown }).message);
   expect(message).toStartWith('host-quiesce refused: ');
-  expect(message).toContain('may still be under way or may have ended and left this quiesce behind');
-  expect(message).toContain('clicking "⏸ quiesced" in the top bar ends it, and then quiesce again');
+  expect(message).toContain('may still be under way, or it may have ended and left this quiesce behind');
+  expect(message).toContain('clicking "⏸ quiesced" in the top bar ends that quiesce, and then quiesce again');
   expect(message).not.toContain('Resume');
 });

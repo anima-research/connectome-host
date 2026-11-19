@@ -23,10 +23,10 @@ const SHELL_RANGE = '^1';
 export const shellCommand: CliCommand = {
   name: 'shell',
   usage: SHELL_USAGE,
-  summary: `Installs the resident's shell, ${SHELL} 1.x, in the directory that holds this install, unless it's there, ` +
-    'and checks that node-pty opens a pty there, installing node-pty once more if it doesn\'t. It writes no recipe ' +
-    'and sets up no service. Setup\'s agent runs it when the person wants the resident to have a shell, and it can be ' +
-    'run again.',
+  summary: `Installs the resident's shell, ${SHELL} 1.x, in the directory that holds this install, unless it's there ` +
+    'already. Then it checks that node-pty opens a pty there, and installs node-pty again if it doesn\'t. It writes no ' +
+    'recipe and sets up no service. Setup\'s agent runs it when the person wants the resident to have a shell, and it ' +
+    'can be run again.',
   run: (ctx) => shell(ctx),
 };
 
@@ -50,8 +50,8 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
   const dir = dirname(ctx.root!);
   const again = `run \`${line}\` again`;
   if (bunBelowFloor(SETUP_BUN_FLOOR, world.bun.version) === true) {
-    err(`The resident's shell is installed with Bun ${SETUP_BUN_FLOOR.replace('>=', '')} or later, whose \`bun add ` +
-      `--no-env-file\` keeps .env's values from the packages' install scripts, and this is Bun ${world.bun.version}. ` +
+    err(`The resident's shell is installed with Bun ${SETUP_BUN_FLOOR.replace('>=', '')} or later, since its \`bun add ` +
+      `--no-env-file\` keeps .env's values from the packages' install scripts. This is Bun ${world.bun.version}. ` +
       `\`bun upgrade\` upgrades it, or the package manager that installed it does; then ${again}.`);
     return 1;
   }
@@ -79,9 +79,10 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
   }, dir);
   const listed = Array.isArray(trusted) ? addTrusted(manifest, [...trusted, ...HOST_TRUSTED]) : trusted.reason;
   if (listed !== null) {
-    out(`This couldn't add the packages whose install scripts Bun runs by default to ${manifest} (${listed}), so ` +
-      `unless it already names ${SHELL} among its trustedDependencies, Bun runs no install script of ${SHELL}'s, and ` +
-      'through a mirror or a company registry it may run none of the others\', node-pty\'s among them.');
+    out(`This couldn't add the packages whose install scripts Bun runs by default to ${manifest} (${listed}). So ` +
+      `unless ${manifest} already names ${SHELL} among its trustedDependencies, Bun runs none of ${SHELL}'s install ` +
+      'scripts. Through a mirror or a company registry, it may also run none of the other packages\' scripts, ' +
+      'node-pty\'s among them.');
   }
 
   const found = installedVersion(dir, SHELL);
@@ -126,13 +127,15 @@ async function install(ctx: CliContext, world: ShellWorld, line: string): Promis
     }
   }
   if (pty !== null) {
-    const linux = world.platform !== 'linux' ? '' : 'On Linux, its native part is built as it\'s installed, with ' +
-      'python3, make and a C++ compiler; on Debian and Ubuntu, ' +
-      `\`${world.hasSudo ? 'sudo ' : ''}apt install build-essential python3\` installs them, run ` +
-      `${world.hasSudo ? 'by you if you can use sudo here, or by whoever administers this machine'
-        : 'as root, by you or by whoever administers this machine'}. Then ${again}, which installs node-pty again. `;
-    const mac = helper === null ? '' : `On macOS, node-pty runs from binaries it ships prebuilt, whose spawn-helper ` +
-      `has to be executable, and ${helper}. Run \`${line}\` again once that's put right, which installs node-pty again. `;
+    const linux = world.platform !== 'linux' ? '' : 'On Linux, node-pty\'s native part is built when it\'s installed, ' +
+      'with python3, make and a C++ compiler. On Debian and Ubuntu, ' +
+      `\`${world.hasSudo ? 'sudo ' : ''}apt install build-essential python3\` installs them. ` +
+      `${world.hasSudo ? 'You can run that if you can use sudo here, or whoever administers this machine can'
+        : 'It runs as root: you or whoever administers this machine can run it'}. Then ${again}, which installs ` +
+      'node-pty again. ';
+    const mac = helper === null ? '' : 'On macOS, node-pty runs from prebuilt binaries that it ships. Their ' +
+      `spawn-helper has to be executable, and ${helper}. Run \`${line}\` again once that's put right, which installs ` +
+      'node-pty again. ';
     err(`The resident's shell runs on node-pty, and here it doesn't work: ${pty}. ${linux}${mac}A resident without a ` +
       'shell needs none of this.');
     return 1;

@@ -171,8 +171,8 @@ async function fromPackage(argv: string[]): Promise<number> {
       `start.js. ${setupAgain(root)}`);
     return 1;
   }
-  io.err(`connectome: there's no connectome-host install here (${process.cwd()}). \`${firstLine()}\` sets one up, ` +
-    'in this directory where it\'s empty or already setup\'s, and in ~/resident otherwise.');
+  io.err(`connectome: there's no connectome-host install here (${process.cwd()}). \`${firstLine()}\` sets one up: ` +
+    'in this directory if it is empty or already setup\'s, and in ~/resident otherwise.');
   return 1;
 }
 
@@ -382,8 +382,8 @@ export async function update(ctx: CliContext, launcher: LauncherOps = machineOps
   if ('reason' in host) return words[0] === 'back' ? backWithNoHost(ctx, words, host, launcher) : noHost(ctx, host);
   if (host.ready.turnWork === undefined) {
     host.close();
-    ctx.err('connectome: nothing was asked: the running host is an older release than this command, and it ' +
-      'doesn\'t mark where a command\'s answer ends, so this couldn\'t tell when to stop reading. ' +
+    ctx.err('connectome: nothing was asked: the running host is an older release than this command. It doesn\'t ' +
+      'mark where a command\'s answer ends, so this command couldn\'t tell when to stop reading. ' +
       `${thisRelease(ctx.root!)} Then ${installCommandAt(ctx.root!)} update works.`);
     return 1;
   }
@@ -393,8 +393,8 @@ export async function update(ctx: CliContext, launcher: LauncherOps = machineOps
   const answer = await command(host, ['/update', ...words].join(' '), (line) => ctx.out(inShellWords(line)), typed);
   host.close();
   if (answer.how === 'closed') {
-    ctx.err('connectome: the host closed the connection before its answer ended, so how it ended isn\'t known ' +
-      'here. A restart or a Go back closes it as the host stops, and so does another connectome command ' +
+    ctx.err('connectome: the host closed the connection before its answer ended, so this command can\'t tell how ' +
+      'the update ended. A restart or a Go back closes it as the host stops, and so does another connectome command ' +
       `connecting. \`${typed}\` says what runs now.`);
     return 1;
   }

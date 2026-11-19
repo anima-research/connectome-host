@@ -170,7 +170,7 @@ describe('connectome doctor: the frame', () => {
     const r = await run(at, { uid: 0, owner: 1000 });
     expect(r.status).toBe(1);
     expect(r.out).toBe('');
-    expect(r.err).toContain(`connectome: ${at.work} belongs to uid 1000, and doctor runs as root`);
+    expect(r.err).toContain(`connectome: ${at.work} belongs to uid 1000, but doctor runs as root`);
   });
 
   test('it names the install first, then five checks, then the closing line', async () => {
@@ -325,8 +325,8 @@ describe('connectome doctor: check 2, the host', () => {
     const at = install();
     const r = await run(at, { states: { [HOST]: { fails: 'Failed to connect to bus' } } });
     expect(r.lines[3]).toStartWith('✗ No host answers: ');
-    expect(r.lines[4]).toBe('  Next: its service manager couldn\'t be asked whether the service runs, so ask it as the line for ' +
-      'the service says, then run doctor again.');
+    expect(r.lines[4]).toBe('  Next: doctor couldn\'t ask the service manager whether the service runs. Ask it yourself, as ' +
+      'the service\'s line says, then run doctor again.');
   });
 
   test('a socket that answers, but not as a host, gets no start step', async () => {
@@ -355,7 +355,7 @@ describe('connectome doctor: check 2, the host', () => {
     const at = { ...install({ unit: false }), platform: 'win32' as NodeJS.Platform };
     const r = await run(at, { env: { PATH: '/nonexistent' } });
     expect(r.lines[2]).toStartWith('✗ No host answers: ');
-    expect(r.lines[3]).toBe(`  Next: no service can be installed here, so start the host as this machine runs a program, from ${at.work}: ` +
+    expect(r.lines[3]).toBe(`  Next: no service can be installed here. Start the host from ${at.work}, the way this machine runs its other programs: ` +
       `\`${process.execPath} ${join(at.root, 'start.js')} <recipe> --headless\``);
   });
 
@@ -364,7 +364,7 @@ describe('connectome doctor: check 2, the host', () => {
     dirs.push(top);
     const at = { ...install({ unit: false, dataDir: join(top, 'elsewhere') }), platform: 'win32' as NodeJS.Platform };
     const r = await run(at, { env: { PATH: '/nonexistent' } });
-    expect(r.lines[3]).toBe(`  Next: no service can be installed here, so start the host as this machine runs a program, from ${at.work}: ` +
+    expect(r.lines[3]).toBe(`  Next: no service can be installed here. Start the host from ${at.work}, the way this machine runs its other programs: ` +
       `\`DATA_DIR=${join(top, 'elsewhere')} ${process.execPath} ${join(at.root, 'start.js')} <recipe> --headless\``);
   });
 
@@ -395,8 +395,8 @@ describe('connectome doctor: check 3, the recipe', () => {
     rmSync(join(at.root, 'install.json'));
     const r = await run(at, { states: { [HOST]: 'inactive/dead' } });
     expect(r.lines[3]).toStartWith('✗ No host answers: This install has no record at ');
-    expect(r.lines[5]).toBe('– Not checked: the install record can\'t be read, as the host\'s line says, so the data directory the ' +
-      'service starts the host with isn\'t known.');
+    expect(r.lines[5]).toBe('– Not checked: the install record can\'t be read, as the host\'s line says, so doctor doesn\'t know ' +
+      'which data directory the service starts the host with.');
     expect(r.out).not.toContain('loads.');
   });
 
@@ -480,8 +480,8 @@ describe('connectome doctor: check 3, the recipe', () => {
       const at = install({ recipe });
       const r = await run(at, { states: { [HOST]: 'inactive/dead' }, recipeLimitMs: 300 });
       expect(r.lines.slice(5, 7)).toEqual([
-        `– Not checked: ${join(at.work, 'recipe.json')} didn't load within 0.3 s, so whether it loads isn't known.`,
-        '  Next: run doctor again: the recipe, or a system prompt it names by URL, may be slow to answer.',
+        `– Not checked: ${join(at.work, 'recipe.json')} didn't load within 0.3 s, so doctor can't tell whether it loads.`,
+        '  Next: run doctor again, since the recipe, or a system prompt that it names by URL, may be slow to answer.',
       ]);
     } finally {
       server.stop(true);
@@ -517,7 +517,7 @@ describe('connectome doctor: check 4, the model calls', () => {
     })] } });
     expect(r.lines.slice(4, 6)).toEqual([
       '✗ ember\'s last 3 turns failed at the model call, the latest at 2026-11-14T10:05:00.000Z.',
-      '  Next: each failure\'s reason is in the host\'s log, in a line that starts `[inference-failed] agent=ember`. They can ' +
+      '  Next: each failure\'s reason is in the host\'s log, in a line that starts `[inference-failed] agent=ember`. Those lines can ' +
         `quote the model provider, so doctor doesn't print them: \`journalctl --user -u ${HOST} --no-pager | grep -F -- '[inference-failed] agent=ember '\` lists them.`,
     ]);
   });
@@ -585,7 +585,7 @@ describe('connectome doctor: check 4, the model calls', () => {
     expect((await run(at, { states: RUNNING, health: { agents: [{ name: 'ember' }] } })).lines[4])
       .toBe('– Not checked: the host didn\'t give its counts of model calls: an agent in its answer has no name or no count of failed turns.');
     const refusals = '– Not checked: the host didn\'t give its counts of model calls: an agent in its answer has refusal counts with ' +
-      'no total or no time of the last.';
+      'no total or no time of the last refusal.';
     for (const refusalStats of [{ total: 2, lastCategory: 'cyber' }, { lastAt: FAILED }, 'two']) {
       const r = await run(at, { states: RUNNING, health: { agents: [agent('ember', { refusalStats })] } });
       expect(r.lines[4], JSON.stringify(refusalStats)).toBe(refusals);
@@ -608,7 +608,7 @@ describe('connectome doctor: check 4, the model calls', () => {
     const at4 = r.lines.indexOf('✗ ember\'s last 2 turns failed at the model call.');
     expect(at4).toBeGreaterThan(0);
     expect(r.lines[at4 + 1]).toBe('  Next: each failure\'s reason is in the host\'s log, in a line that starts ' +
-      '`[inference-failed] agent=ember`. They can quote the model provider, so doctor doesn\'t print them.');
+      '`[inference-failed] agent=ember`. Those lines can quote the model provider, so doctor doesn\'t print them.');
   });
 });
 
@@ -623,9 +623,8 @@ describe('connectome doctor: check 5, the Discord token', () => {
     const r = await run(at, { states: RUNNING, health: HEALTHY });
     expect(r.lines.slice(5, 7)).toEqual([
       '✗ The token in .env isn\'t accepted: discord.com refused it (401).',
-      '  Next: store the bot token from the Developer Portal\'s Bot page with ' +
-        `\`${join(at.root, 'connectome')} setup discord\`, which stores it in ${join(at.work, '.env')}, then restart the ` +
-        `service and run \`${join(at.root, 'connectome')} doctor\` again.`,
+      `  Next: run \`${join(at.root, 'connectome')} setup discord\` to store the bot token from the Developer Portal's Bot ` +
+        `page in ${join(at.work, '.env')}. Then restart the service, and run \`${join(at.root, 'connectome')} doctor\` again.`,
     ]);
   });
 

@@ -292,7 +292,7 @@ describe('Update', () => {
     const { ops } = manager();
     const { update } = hostUpdate({ root, dataDir, installOps: ops, fetchManifest: registry({ '0.12.1': {}, '0.13.0': field(false, false) }).fetchManifest });
     expect(await update.install(PAGE_WAYS)).toEqual({ done: true, lines: [
-      '0.13.0 is installed beside 0.12.1, which runs on: Restart switches to the newest release installed.',
+      '0.13.0 is installed beside 0.12.1, which keeps running. Restart switches to the newest release installed.',
     ] });
   });
 
@@ -302,7 +302,7 @@ describe('Update', () => {
     const { update } = hostUpdate({ root, dataDir, installOps: ops, fetchManifest: registry({ '0.12.1': {}, '0.13.0': field(false, false) }).fetchManifest });
     const answer = await update.install();
     expect(answer).toEqual({ done: true, lines: [
-      '0.13.0 is installed beside 0.12.1, which runs on: /update restart switches to the newest release installed.',
+      '0.13.0 is installed beside 0.12.1, which keeps running. /update restart switches to the newest release installed.',
     ] });
     expect(runs).toEqual(['npm install --save-exact --no-audit --no-fund @animalabs/connectome-host@0.13.0']);
     expect(readMark(root)).toBeNull();
@@ -316,7 +316,7 @@ describe('Update', () => {
     expect(await floor.update.install()).toEqual({ done: false, lines: [expect.stringContaining('0.13.0 needs Bun >=1.4.3, and this host runs on Bun 1.4.2')] });
     const none = hostUpdate({ root, dataDir, installOps: ops, fetchManifest: registry({ '0.12.1': { deprecated: 'use 0.12.2' }, '0.12.2': { deprecated: 'no' } }).fetchManifest });
     expect(await none.update.install()).toEqual({ done: false, lines: [
-      "No release newer than 0.12.1 is offered, so nothing was installed: Update offers final releases that aren't " +
+      "No release newer than 0.12.1 is offered, so nothing was installed. Update offers only final releases that aren't " +
         'deprecated. 0.12.1 is deprecated on npm (use 0.12.2).',
     ] });
     expect(runs).toEqual([]);
@@ -422,7 +422,7 @@ describe('Restart', () => {
       const { root, dataDir } = install('0.12.1', ['0.13.0']);
       const { update, stops } = hostUpdate({ root, dataDir, env }, { supervised: false });
       expect((await update.restartToInstalled()).lines).toEqual([
-        'Stopping to switch to 0.13.0: once it has stopped, start the host again, and that start does it.',
+        'Stopping to switch to 0.13.0. Once the host has stopped, start it again: that start does it.',
       ]);
       expect(stops).toHaveLength(1);
     }
@@ -432,7 +432,7 @@ describe('Restart', () => {
     const { root, dataDir } = install('0.12.1', ['0.13.0']);
     const { update, stops } = hostUpdate({ root, dataDir, env: {} }, { supervised: true });
     expect((await update.restartToInstalled()).lines).toEqual([
-      'Stopping to switch to 0.13.0: the host\'s next start does it, which a service set up for updates makes by itself.',
+      'Stopping to switch to 0.13.0. The host\'s next start does it, and a service set up for updates starts the host by itself.',
     ]);
     expect(stops).toHaveLength(1);
   });
@@ -589,14 +589,14 @@ describe('Restart', () => {
     expect(await failing.resume()).toEqual({ done: false, lines: [
       "No restart is waiting, and the switch's quiesce couldn't be ended.",
       expect.stringMatching(/^this host: it stays quiesced, since agent-framework refused its resume \(it would wedge\)/),
-      "For a host still quiesced, /update restart resume tries again, as does the host's next start.",
+      "If a host is still quiesced, /update restart resume tries again, and so does the host's next start.",
     ] });
     const kid: SwitchFleet = { runningChildren: () => [{ name: 'kid' }], requestSwitch: async () => ({ ok: true, data: { resumed: true } }) };
     const partly = hostUpdate({ root, dataDir, framework: stuck.framework, fleet: kid }, { supervised: true }).update;
     expect(await partly.resume()).toEqual({ done: false, lines: [
       "The switch's quiesce is ended on kid, but not on every host.",
       expect.stringMatching(/^this host: it stays quiesced, since agent-framework refused its resume \(it would wedge\)/),
-      "For a host still quiesced, /update restart resume tries again, as does the host's next start.",
+      "If a host is still quiesced, /update restart resume tries again, and so does the host's next start.",
     ] });
     expect(hostUpdate({ framework: stuck.framework }).update.status().switchQuiesceLeft).toBe(false);
   });
@@ -662,7 +662,7 @@ describe('Restart', () => {
           'such as try later or the next start, can succeed once that is resolved.',
         "busy: it's serving, though agent-framework's resume failed after the quiesce ended: EIO.",
         'gone: its socket closed.',
-        "For a host still quiesced, /update restart resume tries again, as does the host's next start.",
+        "If a host is still quiesced, /update restart resume tries again, and so does the host's next start.",
       ],
     });
   });
@@ -740,7 +740,7 @@ describe('Restart', () => {
     }
     placeRelease(root, '0.13.0');
     expect((await hostUpdate({ root, dataDir }).update.restartToInstalled()).lines)
-      .toEqual([expect.stringContaining('This host has no stop a restart can use')]);
+      .toEqual([expect.stringContaining('This host has no stop that a restart can use')]);
     moveCurrent(root, '0.11.0');
     expect((await hostUpdate({ root, dataDir }, { supervised: true }).update.restartToInstalled()).lines)
       .toEqual([expect.stringContaining("This host runs 0.12.1, and the install's data runs on 0.11.0")]);
@@ -821,13 +821,13 @@ describe('Go back', () => {
     expect(goBackLines(update.status())).toEqual([
       'Going back to 0.12.1, whose data the copy holds as it was at 2026-10-20T10:00:00.000Z. Two ways:',
       '- /update back keep: 0.12.1 runs on the data as it is now, so residents lose nothing. It comes back as the ' +
-        'host is now: answering new turns, or holding them if its operator quiesced it, though a switch\'s quiesce ' +
-        'left behind ends at that start. If 0.12.1 can\'t read the data, its start goes back to 0.13.0 by itself, and ' +
+        'host is now: answering new turns, or holding them if its operator quiesced it. But a switch\'s quiesce ' +
+        'that was left behind ends at that start. If 0.12.1 can\'t read the data, its start goes back to 0.13.0 by itself, and ' +
         '/update back restore is the way then.',
       '- /update back restore: the copy is restored, and everything since 2026-10-20T10:00:00.000Z is set aside, ' +
         'not deleted. For residents, that is everything they have lived since then. The host comes back answering ' +
-        'new turns, unless its operator had quiesced it before the Restart that took the copy, from the Web UI or ' +
-        'through an MCPL server: then it comes back holding them, and clicking "⏸ quiesced" in the Web UI\'s top bar ' +
+        'new turns, unless its operator had quiesced it, from the Web UI or through an MCPL server, before the ' +
+        'Restart that took the copy. Then it comes back holding them, and clicking "⏸ quiesced" in the Web UI\'s top bar ' +
         'lets them through. Whether it\'s quiesced now makes no difference.',
       'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
     ]);
@@ -939,8 +939,8 @@ describe('the last switch', () => {
     expect(status.lastSwitch).toMatchObject({ outcome: 'fell-back', trialLog: ['connecting lost', 'Fatal error: Error: no server'] });
     const lines = statusLines(status);
     const at = lines.indexOf('Last switch: 0.12.1 came back with its data at 2026-10-21T09:00:00.000Z, from a try of ' +
-      '0.13.0: 0.13.0 ended before its commit. What 0.13.0 wrote last, as it kept it (the service\'s log, or the terminal ' +
-      'it was started in, also has what this leaves out, such as an error Bun reported itself):');
+      '0.13.0: 0.13.0 ended before its commit. What 0.13.0 wrote last, as it kept it. The service\'s log, or the terminal ' +
+      'it was started in, also has what this leaves out, such as an error that Bun reported itself:');
     expect(at).toBeGreaterThanOrEqual(0);
     expect(lines.slice(at + 1, at + 3)).toEqual(['  connecting lost', '  Fatal error: Error: no server']);
     writeJsonAtomic(installPaths(root).trialLog, { ...log, v: 2 });

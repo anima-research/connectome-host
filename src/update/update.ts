@@ -117,14 +117,14 @@ function notesAnswer(
   try {
     text = readFileSync(path, 'utf-8');
   } catch (error) {
-    return refused(`No notes were given: ${installed}'s notes can't be read from ${path} (${said(error)}): ` +
+    return refused(`No notes were given: ${installed}'s notes can't be read from ${path} (${said(error)}). ` +
       `${notesUrl(installed)} has them.`);
   }
   const sections = notesSections(text)
     .filter(({ version: v }) => Bun.semver.order(v, running) > 0 && Bun.semver.order(v, installed) <= 0);
   if (sections.length === 0) {
-    return refused(`No notes were given: ${path} has no notes for the releases after ${running} up to ${installed}: ` +
-      `${notesUrl(installed)} has ${installed}'s.`);
+    return refused(`No notes were given: ${path} has no notes for the releases after ${running} up to ${installed}. ` +
+      `${notesUrl(installed)} has the notes of ${installed}.`);
   }
   const fits = (answer: UpdateAnswer): boolean => answer.lines.join('\n').length <= budget;
   if (version === undefined) {
@@ -132,9 +132,9 @@ function notesAnswer(
       sections.map(({ text: body }) => body).join('\n\n'));
     if (fits(whole)) return whole;
     if (sections.length > 1) {
-      return done(`The notes of the releases after ${running} up to ${installed} come to more than one answer carries ` +
-        `(${characters(budget)}), so here is each release's size, from ${path}. Ask for one release's notes with ` +
-        'lifecycle--update notes with its `version`:',
+      return done(`The notes of the releases after ${running} up to ${installed} are longer than one answer can carry ` +
+        `(${characters(budget)}), so here is the size of each release's notes, from ${path}. To read one release's ` +
+        'notes, call lifecycle--update notes with its `version`:',
         ...sections.map(({ version: v, text: body }) => `- ${v}: ${characters(body.length)}`));
     }
   }
@@ -229,7 +229,7 @@ export class HostUpdate {
       if (unread === null) this.logged.add(candidate);
       const lines = noticeLines(this.check, setup.running, setup.here !== null, this.hostWays(), installed);
       if (unread !== null) {
-        lines.push(`Which releases are installed couldn't be read, so ${candidate} may be installed already: ${unread}`);
+        lines.push(`The installed releases couldn't be read, so ${candidate} may be installed already: ${unread}`);
       }
       for (const line of lines) this.log(`[update] ${line}`);
     }
@@ -245,7 +245,8 @@ export class HostUpdate {
     const begun = await this.beginInstall(ways);
     if ('refusal' in begun) return begun.refusal;
     void begun.installed;
-    return done(`Installing ${begun.version} beside ${this.need().running}, which runs on. ${ways.check} shows when it's done.`);
+    return done(`Installing ${begun.version} beside ${this.need().running}, which keeps running. ${ways.check} shows when ` +
+      'the install is done.');
   }
 
   private async beginInstall(ways: UpdateWays):
@@ -268,8 +269,8 @@ export class HostUpdate {
     }
     if (check.candidate === null) {
       this.installing = null;
-      return { refusal: refused(`No release newer than ${setup.running} is offered, so nothing was installed: Update offers ` +
-        'final releases that aren\'t deprecated.' +
+      return { refusal: refused(`No release newer than ${setup.running} is offered, so nothing was installed. Update offers ` +
+        'only final releases that aren\'t deprecated.' +
         (check.runningDeprecated !== null ? ` ${deprecatedLine(setup.running, check.runningDeprecated)}` : '')) };
     }
     if (check.bunFloorUnmet !== null) {
@@ -290,8 +291,8 @@ export class HostUpdate {
         this.installing = null;
       }
       this.lastInstall = { version, at, ok: true };
-      return done(`${version} is installed beside ${setup.running}, which runs on: ${ways.restart} switches to the newest ` +
-        'release installed.');
+      return done(`${version} is installed beside ${setup.running}, which keeps running. ${ways.restart} switches to the ` +
+        'newest release installed.');
     })();
     return { version, installed };
   }
@@ -340,7 +341,7 @@ export class HostUpdate {
     try {
       to = this.installedTarget();
     } catch (error) {
-      return refused(`Nothing was armed: which releases are installed can't be read: ${said(error)}`);
+      return refused(`Nothing was armed, since the installed releases can't be read: ${said(error)}`);
     }
     if (to === null) {
       return refused(`Nothing was armed: no release newer than ${this.need().running} is installed, and ` +
@@ -435,11 +436,12 @@ export class HostUpdate {
   private arm(request: Pick<ArmedSwitch, 'to'>, by: string | null, ways: UpdateWays): UpdateAnswer {
     this.armed = { ...request, since: this.now().toISOString(), by, lastTry: null };
     this.armedDropped = null;
-    return done(`${armedName(this.armed)} is armed. It begins at the host's first quiet moment, once ${QUIET_MOMENT}, ` +
-      `${ASKS_NOBODY}. ${UNASKED_CHILD_TURN} ${ARMED_RETRY} The host then stops, and its service starts it again on ${request.to}. If the host ` +
+    return done(`${armedName(this.armed)} is armed. It begins at the host's first quiet moment. ${QUIET_MOMENT} ` +
+      `${ASKS_NOBODY} ${UNASKED_CHILD_TURN} ${ARMED_RETRY} The host then stops, and its service starts it again on ` +
+      `${request.to}. If the host ` +
       'stops for any other reason first, nothing stays armed. An operator\'s own ' +
-      'Restart or Go back also takes its place. Until the host next starts, or until you arm another, check says when ' +
-      'one didn\'t go ahead for another reason, and why. ' +
+      'Restart or Go back also takes its place. Until the host next starts, or until you arm another restart, check ' +
+      'says whether an armed restart didn\'t go ahead for another reason, and why. ' +
       `Until it begins, ${TOOL_CANCEL} disarms it. After the restart, ${ways.check} shows whether it committed or ` +
       'went back, and why.');
   }
@@ -606,8 +608,8 @@ export class HostUpdate {
   notesPointer(installed: string | null): string[] {
     const setup = this.need();
     if (setup.here === null || installed === null) return [];
-    return [`For the notes of each release after ${setup.running} up to ${installed}: lifecycle--update notes reads ` +
-      `them from ${notesPath(setup.here.root, installed)}.`];
+    return [`lifecycle--update notes reads the notes of each release after ${setup.running} up to ${installed} from ` +
+      `${notesPath(setup.here.root, installed)}.`];
   }
 
   installedNotes(version?: string, ways: UpdateWays = TOOL_WAYS, cap?: number): UpdateAnswer {
@@ -617,7 +619,7 @@ export class HostUpdate {
     try {
       installed = this.installedTarget();
     } catch (error) {
-      return refused(`No notes were given: which releases are installed can't be read: ${said(error)}`);
+      return refused(`No notes were given, since the installed releases can't be read: ${said(error)}`);
     }
     if (installed === null) {
       return refused(`No notes were given: no release newer than ${setup.running} is installed. ${ways.check} ` +
@@ -640,8 +642,8 @@ export class HostUpdate {
     const here = this.need().here;
     if (here === null) return notAnInstall(ways);
     if (this.stopper === null) {
-      return 'This host has no stop a restart can use: a batch run ends on its own, and the next start, once it has, ' +
-        'runs whatever release is installed and asked for.';
+      return 'This host has no stop that a restart can use. A batch run ends on its own, and once it has ended, the ' +
+        'next start runs whatever release is installed and asked for.';
     }
     if (this.installing !== null) return `An install of ${this.installing} is under way. Restart once it has ended.`;
     if (this.restart !== null) {
@@ -714,10 +716,11 @@ export class HostUpdate {
     const stopper = this.stopper!;
     const going = restart.why === 'go-back' ? `go back to ${restart.to}` : `switch to ${restart.to}`;
     const farewell = (!stopper.supervised
-      ? `Stopping to ${going}: once it has stopped, start the host again, and that start does it.`
+      ? `Stopping to ${going}. Once the host has stopped, start it again: that start does it.`
       : this.serviceLine
         ? `Stopping to ${going}. The service starts the host again by itself, and that start does it.`
-        : `Stopping to ${going}: the host's next start does it, which a service set up for updates makes by itself.`) +
+        : `Stopping to ${going}. The host's next start does it, and a service set up for updates starts the host by ` +
+          'itself.') +
       (unsynced !== null ? ` ${unsyncedText(unsynced)}` : '');
     stopper.stop(`update: ${going}`, farewell);
     return done(farewell);
@@ -755,15 +758,15 @@ export class HostUpdate {
 
 const SESSION_CHANGED = 'the session changed while turns were ending, so this host now serves one the restart didn\'t ' +
   'quiesce. Ask again.';
-const SESSION_CHANGED_AT_LOOK = 'the session changed while the fleet\'s children were asked whether they were busy, ' +
-  'before this host was quiesced, so the try ended there. Ask again.';
+const SESSION_CHANGED_AT_LOOK = 'the session changed while this host asked the fleet\'s children whether they were ' +
+  'busy, before it was quiesced, so the try ended there. Ask again.';
 const resumeAgain = (ways: UpdateWays): string =>
-  `For a host still quiesced, ${ways.resume} tries again, as does the host's next start.`;
+  `If a host is still quiesced, ${ways.resume} tries again, and so does the host's next start.`;
 const ENDING_SWITCH_QUIESCE = 'A switch\'s quiesce is being ended. Ask again once that has answered.';
 const ASK_AGAIN = 'Asking again won\'t change that: whoever runs this host can.';
 const NO_INSTALL_OF_ITS_OWN = 'Nothing was armed: this host has no install of its own to restart onto a release. A fleet ' +
-  'child is updated with its parent\'s install where its parent has one, and any other host, or a child whose parent has ' +
-  'none, by hand (docs/DEPLOYMENTS.md, "Updating an install"). ' +
+  'child is updated with its parent\'s install, where its parent has one. Any other host, or a child whose parent has ' +
+  'no install, is updated by hand (docs/DEPLOYMENTS.md, "Updating an install"). ' +
   ASK_AGAIN;
 const WRITES_ONE = '`connectome service install` writes such a service; docs/DEPLOYMENTS.md, "Updating an install", says ' +
   'what one written by hand needs.';
@@ -773,10 +776,10 @@ const IN_A_TERMINAL = 'Nothing was armed: this host runs in a terminal, not head
   `${WRITES_ONE} ${ASK_AGAIN}`;
 const NO_SERVICE = 'Nothing was armed: nothing shows that a service starts this host again when it stops, so a restart ' +
   'could leave it down until someone starts it by hand. Ask whoever runs your host for a service that sets ' +
-  '`CONNECTOME_SUPERVISED=1` in its environment, which says the service starts the host again when it exits with 75 ' +
-  `and when it exits with 1. ${WRITES_ONE} ${ASK_AGAIN}`;
-const NO_STOP = 'Nothing was armed: this host has no stop a restart can use, as in a batch run, which ends on its own. ' +
-  ASK_AGAIN;
+  '`CONNECTOME_SUPERVISED=1` in its environment. That setting says that the service starts the host again when it ' +
+  `exits with 75 and when it exits with 1. ${WRITES_ONE} ${ASK_AGAIN}`;
+const NO_STOP = 'Nothing was armed: this host has no stop that a restart can use. A batch run, for example, ends on ' +
+  `its own. ${ASK_AGAIN}`;
 const STOPPING_FIRST = 'the host began stopping for another reason first.';
 const STOPPING_NOW = 'Nothing was armed: this host is stopping, so nothing armed now could begin. Ask again once ' +
   'it has started again.';

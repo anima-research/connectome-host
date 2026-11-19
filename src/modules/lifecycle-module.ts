@@ -77,9 +77,9 @@ const UPDATE_DESCRIPTION =
   'nobody: your turn ends as it would, as does every other agent\'s on this host, and so does each turn going on a fleet ' +
   `child when the switch asks it. ${UNASKED_CHILD_TURN}\n` +
   '- cancel: disarms an armed restart before it begins, whoever armed it.\n' +
-  '`version`, with restart, is the release you looked at: if it would go to another by then, nothing is armed. ' +
-  'Restart needs a headless host started with `CONNECTOME_SUPERVISED=1`; elsewhere it refuses and ' +
-  'says why. After a restart nothing tells you it happened: check says what you run now. ';
+  'With restart, `version` is the release that you looked at. If the restart would go to another release by then, ' +
+  'nothing is armed. Restart needs a headless host started with `CONNECTOME_SUPERVISED=1`. Elsewhere it refuses ' +
+  'and says why. After a restart nothing tells you it happened: check says what you run now. ';
 
 const personWord = (headless: boolean, command: string | null): string =>
   'The person who runs your host can\'t call this tool' + (

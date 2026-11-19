@@ -174,23 +174,24 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   }
   const owner = sys.owner(work);
   if (sys.uid === 0 && owner !== 0) {
-    throw new Refusal(`${work} belongs to uid ${owner}, and this runs as root, so its service would run the resident as ` +
-      `root on files uid ${owner} can change. Run this command as the user who owns ${work}, without sudo. Nothing was ` +
-      'written.');
+    throw new Refusal(`${work} belongs to uid ${owner}, but this command runs as root. Its service would then run the ` +
+      `resident as root, on files that uid ${owner} can change. Run this command as the user who owns ${work}, without ` +
+      'sudo. Nothing was written.');
   }
   const manager = managerOf(sys);
   if (manager === 'launchd') {
     const domain = sys.run('launchctl', ['print', `gui/${sys.uid}`], childEnv(sys));
     if (domain.status !== 0) {
-      throw new Refusal(`launchctl print gui/${sys.uid} failed: ${launchctlFailure(domain)}. launchd loads this ` +
-        `service's agents, which name no session type, only once ${sys.user} has logged in to the Mac's graphical ` +
-        `session. Repeat this command once ${sys.user} is logged in to it. Nothing was written.`);
+      throw new Refusal(`launchctl print gui/${sys.uid} failed: ${launchctlFailure(domain)}. This service's agents name ` +
+        `no session type, so launchd loads them only once ${sys.user} has logged in to the Mac's graphical session. ` +
+        `Repeat this command once ${sys.user} is logged in to it. Nothing was written.`);
     }
   }
   const names = serviceUnits(root, sys.platform, sys.home);
   if (names === null) {
     throw new Refusal(`a service's name comes from its working directory's name, and ${basename(work)} has no letter ` +
-      `or digit to make one from, so nothing was written. Set this resident up again in a directory whose name has one.`);
+      'or digit to make one from. Nothing was written. Set this resident up again in a directory whose name has a ' +
+      'letter or a digit.');
   }
   const dataDir = plain(dataDirOf(root), 'DATA_DIR');
   let missing: string | null;
@@ -219,12 +220,12 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
   const shell = shellBin === null ? null : await shellPlan(sys, work, shellBin);
   if (shell !== null) {
     if (!shell.newPort && !(await sys.portFree(Number(shell.port))) && !shellRuns(sys, manager, env, names.shell)) {
-      throw new Refusal(`SESSION_SERVER_PORT in ${envFile} is ${shell.port}. Something is listening on it, and ` +
+      throw new Refusal(`SESSION_SERVER_PORT in ${envFile} is ${shell.port}, and something is listening on it, but ` +
         `${manager === 'launchd' ? 'launchd' : 'systemd'} doesn't show this install's shell daemon, ${names.shell.name}, ` +
-        'running, as when another install took that port while this one was down. This install\'s shell clients would ' +
-        `reach that listener, with ${shell.newToken ? 'a new' : 'the stored'} token. Give this install a port of its own ` +
-        `as SESSION_SERVER_PORT in ${envFile}, or take that line away to have one picked, then repeat this service ` +
-        'install command. Nothing was written.');
+        'running. That can happen when another install takes the port while this one is down. This install\'s shell ' +
+        `clients would reach that listener, with ${shell.newToken ? 'a new' : 'the stored'} token. Give this install a ` +
+        `port of its own as SESSION_SERVER_PORT in ${envFile}, or remove that line so that one is picked. Then repeat ` +
+        'this service install command. Nothing was written.');
     }
     if (!shell.newPort || !shell.newToken) {
       const kept = [...(shell.newPort ? [] : [`SESSION_SERVER_PORT ${shell.port}`]),
@@ -280,15 +281,15 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     }
     writeUnit(names.host, texts.host);
     systemctl(sys, env, ['daemon-reload']);
-    ctx.out(`Wrote ${names.host.file}. Restart=on-failure restarts the host whenever it exits other than with 0, so ` +
-      `its unit sets ${SUPERVISED_ENV}=1.`);
+    ctx.out(`Wrote ${names.host.file}. Restart=on-failure restarts the host whenever it exits with a status other than ` +
+      `0, so its unit sets ${SUPERVISED_ENV}=1.`);
     systemctl(sys, env, ['enable', ...units.map((unit) => unit.name)]);
     ctx.out(`Enabled ${units.map((unit) => unit.name).join(' and ')}, so systemd starts ` +
       `${units.length === 1 ? 'it' : 'them'} at boot.`);
     systemctl(sys, env, ['reset-failed', ...units.map((unit) => unit.name)]);
     let shellUp = false;
     const sofar = () => `The units' files are written and enabled${shellUp ? `, and ${names.shell.name} is started` : ''}. ` +
-      'The host\'s unit isn\'t started or restarted by this run.';
+      'This run doesn\'t start or restart the host\'s unit.';
     for (const unit of units) {
       const shown = showUnit(sys, env, unit.name, ['ActiveState']);
       if (typeof shown === 'string') throw new Refusal(`${shown}. ${sofar()}`);
@@ -308,7 +309,8 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     chmodSync(dirname(logPath), 0o700);
     if (texts.shell !== null) writeUnit(names.shell, texts.shell);
     writeUnit(names.host, texts.host);
-    ctx.out(`KeepAlive restarts the host whenever it exits other than with 0, so its launch agent sets ${SUPERVISED_ENV}=1.`);
+    ctx.out(`KeepAlive restarts the host whenever it exits with a status other than 0, so its launch agent sets ` +
+      `${SUPERVISED_ENV}=1.`);
     for (const unit of units) {
       const stateBefore = agentState(sys, env, unit);
       const loaded = stateBefore.kind === 'running' || stateBefore.kind === 'loaded';
@@ -322,7 +324,7 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
         const consequence = state.kind === 'running'
           ? `The ${subject} is running: launchd shows pid ${state.pid}.`
           : state.kind === 'unknown'
-            ? `Whether the ${subject} is running can't be told: launchctl list ${unit.name} failed: ${state.why}.`
+            ? `This run can't tell whether the ${subject} is running: launchctl list ${unit.name} failed: ${state.why}.`
             : `The ${subject} isn't running now.`;
         const host = unit === names.host ? '' : " This run hasn't started or restarted the resident's service.";
         throw new Refusal(`launchctl bootstrap gui/${sys.uid} ${unit.file} failed: ${launchctlFailure(ran)}. ` +
@@ -347,9 +349,9 @@ async function install(ctx: CliContext, sys: ServiceSystem, root: string, recipe
     ctx.err(`connectome: ${ready}`);
     ctx.out(`Its log shows what happened${log}. Put that right, then run ${cmd} service ` +
       `install ${shellWord(recipe)} again. Until then ${manager === 'systemd-user'
-      ? 'systemd restarts the host each time it fails, while it has its unit loaded and its start limit allows; the ' +
-        'run clears that limit'
-      : 'launchd starts the host again each time it exits other than with 0, while it has its agent loaded'}.`);
+      ? 'systemd restarts the host each time it fails, while its unit is loaded and its start limit allows. Running ' +
+        'service install again clears that limit'
+      : 'launchd starts the host again each time it exits with a status other than 0, while its agent is loaded'}.`);
   } else if ('late' in ready) {
     ctx.err(`connectome: ${ready.late}`);
     ctx.out(`Its log shows how its start is going${log}.`);
@@ -375,7 +377,7 @@ function shellLost(sys: ServiceSystem, env: Record<string, string>, manager: Man
   const daemon = `the resident's shell daemon, ${unit.name},`;
   if (manager === 'systemd-user') {
     const shown = showUnit(sys, env, unit.name, ['ActiveState', 'SubState', 'InvocationID']);
-    if (typeof shown === 'string') return `whether ${daemon} still runs can't be told: ${shown}.`;
+    if (typeof shown === 'string') return `this run can't tell whether ${daemon} still runs: ${shown}.`;
     const again = shown.get('InvocationID') !== started;
     const up = RUNNING.has(shown.get('ActiveState') ?? '') && shown.get('SubState') !== 'auto-restart';
     if (up && !again) return null;
@@ -383,7 +385,9 @@ function shellLost(sys: ServiceSystem, env: Record<string, string>, manager: Man
       `${again ? ', in a later start than this run\'s' : ''}.`;
   }
   const state = agentState(sys, env, unit);
-  if (state.kind === 'unknown') return `whether ${daemon} still runs can't be told: launchctl list ${unit.name} failed: ${state.why}.`;
+  if (state.kind === 'unknown') {
+    return `this run can't tell whether ${daemon} still runs: launchctl list ${unit.name} failed: ${state.why}.`;
+  }
   if (state.kind === 'running' && (started === undefined || state.pid === started)) return null;
   return `${daemon} didn't stay up after this run started it: launchd shows it ${state.kind === 'running'
     ? `running as pid ${state.pid}, where this run started pid ${started}` : 'not running'}.`;
@@ -395,18 +399,19 @@ async function noOtherHost(root: string, dataDir: string, manager: Manager, unit
   try {
     host = await sys.openHost(root);
   } catch (error) {
-    throw new Refusal(`whether a host already serves ${dataDir} can't be told: ${errorText(error)}. Nothing was written.`);
+    throw new Refusal(`this command can't tell whether a host already serves ${dataDir}: ${errorText(error)}. Nothing ` +
+      'was written.');
   }
   if ('reason' in host) {
     if (host.down) return;
-    throw new Refusal(`whether a host already serves ${dataDir} can't be told: ${host.reason}. Nothing was written. ` +
-      'Once that is put right, repeat this service install command with the same recipe.');
+    throw new Refusal(`this command can't tell whether a host already serves ${dataDir}: ${host.reason}. Nothing was ` +
+      'written. Once that is put right, repeat this service install command with the same recipe.');
   }
   const answering = String(host.ready.pid);
   host.close();
   if (answering === mainPid(manager, unit, sys, env)) return;
-  throw new Refusal(`a host already serves ${dataDir}, on ${socketOf(root)}: pid ${answering}, which ${unit.name} ` +
-    "doesn't run. A second host there would stop at its store's lock. Stop that host, and whatever starts it again, " +
+  throw new Refusal(`a host already serves ${dataDir}, on ${socketOf(root)}: pid ${answering}, and ${unit.name} ` +
+    "doesn't run it. A second host there would stop at the store's lock. Stop that host, and whatever starts it again, " +
     'then repeat this service install command with the same recipe. Nothing was written.');
 }
 
@@ -418,7 +423,8 @@ function mainPid(manager: Manager, unit: ServiceUnit, sys: ServiceSystem, env: R
   }
   const state = agentState(sys, env, unit);
   if (state.kind === 'unknown') {
-    throw new Refusal(`whether ${unit.name} runs the host that answers can't be told: ${state.why}. Nothing was written.`);
+    throw new Refusal(`this command can't tell whether ${unit.name} runs the host that answers: ${state.why}. Nothing ` +
+      'was written.');
   }
   return state.kind === 'running' ? state.pid : '0';
 }
@@ -491,12 +497,12 @@ async function awaitReady(root: string, manager: Manager, unit: ServiceUnit, sys
         pid = shown.get('MainPID') ?? '0';
       } else {
         const state = agentState(sys, env, unit);
-        if (state.kind === 'unknown') return `Whether ${name} runs the answering host can't be told: ${state.why}.`;
+        if (state.kind === 'unknown') return `This run can't tell whether ${name} runs the answering host: ${state.why}.`;
         pid = state.kind === 'running' ? state.pid : '0';
       }
       return pid === String(ready.pid) ? ready
         : `A host answers with pid ${ready.pid}, but ${name}'s main process is ${pid}. ` +
-          "That answer doesn't establish that this service's host is ready.";
+          "So that answer doesn't show that this service's host is ready.";
     }
     last = host.reason;
     if (manager === 'systemd-user') {
@@ -513,8 +519,8 @@ async function awaitReady(root: string, manager: Manager, unit: ServiceUnit, sys
     }
     await sys.sleep(Math.min(1_000, Math.max(until - sys.now(), 0)));
     if (sys.now() >= until) {
-      return { late: `no host said it was ready within ${READY_WAIT_MS / 1000} s: ${last}. It may still be starting: ` +
-        `${shellWord(join(root, INSTALL_COMMAND))} alone says whether its host answers.` };
+      return { late: `no host said it was ready within ${READY_WAIT_MS / 1000} s: ${last}. It may still be starting. ` +
+        `Run ${shellWord(join(root, INSTALL_COMMAND))} alone to see whether its host answers.` };
     }
   }
 }
@@ -524,9 +530,9 @@ function insideNeither(sys: ServiceSystem, manager: Manager,
   const inside = insideOf(sys, manager, [names.host, names.shell]);
   if (inside === undefined) return;
   throw new Refusal(`${cmd} service install ${units.includes(inside) ? 'restarts' : 'stops'} ${inside.name}, and ` +
-    'this command runs inside it, so that would end this command partway, before it knows whether the host ' +
-    'answers. Nothing was written. Ask whoever runs this machine to run it from a terminal outside the resident\'s ' +
-    'service, such as over ssh.');
+    `this command runs inside it. The ${units.includes(inside) ? 'restart' : 'stop'} would end this command partway, ` +
+    'before it knows whether the host answers. Nothing was written. Ask whoever runs this machine to run it from a ' +
+    'terminal outside the resident\'s service, such as over ssh.');
 }
 
 function noOtherUnit(ctx: CliContext, work: string, names: { host: ServiceUnit; shell: ServiceUnit },
@@ -537,8 +543,8 @@ function noOtherUnit(ctx: CliContext, work: string, names: { host: ServiceUnit; 
   };
   const listed = systemdUnits(work, run as never, sys.home);
   for (const scope of listed.unasked) {
-    ctx.out(`systemd's ${scope} manager couldn't be asked which of its units run from ${work}, so one that runs a ` +
-      'host there isn\'t ruled out.');
+    ctx.out(`This run couldn't ask systemd's ${scope} manager which of its units run from ${work}, so it can't rule ` +
+      'out one that runs a host there.');
   }
   const others = listed.found.filter((unit) => unit.scope === 'system' ||
     (unit.id !== names.host.name && unit.id !== names.shell.name));
@@ -563,8 +569,8 @@ function noOtherUnit(ctx: CliContext, work: string, names: { host: ServiceUnit; 
     const them = others.length === 1 ? 'it' : 'them';
     throw new Refusal(`${others.map((unit) => `${unit.id} (a ${unit.scope} unit, ${unit.file === '' ? 'with no unit file'
       : `at ${unit.file}`})`).join(' and ')} ${others.length === 1 ? 'is' : 'are'} already set up to run from ${work}, ` +
-      `even if stopped now. Started beside this install's host, as at a boot, one of the two would stop at the store's ` +
-      `lock, over and over. ${statuses.join(' and ')} shows ` +
+      `even if stopped now. If one starts beside this install's host, as at a boot, one of the two would stop at the ` +
+      `store's lock, over and over. ${statuses.join(' and ')} shows ` +
       `${others.length === 1 ? 'its state, and its process if it\'s running' : 'their states, and their processes if ' +
         'they\'re running'}. If that shows nothing uses ${them}, take ${them} away: ` +
       `${steps.join('; and ')}. If ${others.length === 1 ? 'it runs' : 'they run'} something other than a host, give ` +
@@ -573,9 +579,10 @@ function noOtherUnit(ctx: CliContext, work: string, names: { host: ServiceUnit; 
   const few = listed.defaulted.length === 1;
   if (listed.defaulted.length > 0) {
     ctx.out(`${listed.defaulted.join(', ')} ${few ? 'sets' : 'set'} no working directory, so ${few ? 'it runs' :
-      'they run'} in ${few ? 'its' : 'their'} systemd manager's default, which is ${work}. Most units that do are no ` +
-      `host's, so ${few ? 'it isn\'t' : 'they aren\'t'} checked. If ${few ? 'it runs' : 'one of them runs'} a host, one ` +
-      'of two hosts would stop at the store\'s lock: give it a working directory of its own, or take it away.');
+      'they run'} in ${few ? 'its' : 'their'} systemd manager's default, which is ${work}. Most units with no working ` +
+      `directory don't run a host, so this run doesn't check ${few ? 'it' : 'them'}. If ` +
+      `${few ? 'it runs' : 'one of them runs'} a host, one of two hosts would stop at the store's lock: give it a ` +
+      'working directory of its own, or take it away.');
   }
   const one = listed.unresolved.length === 1;
   const scoped = (['user', 'system'] as const).flatMap((scope) => {
@@ -583,8 +590,8 @@ function noOtherUnit(ctx: CliContext, work: string, names: { host: ServiceUnit; 
     return ids.length === 0 ? [] : [`the ${scope} unit${ids.length === 1 ? '' : 's'} ${ids.join(', ')}`];
   }).join(' and ');
   if (listed.unresolved.length > 0) {
-    ctx.out(`The working director${one ? 'y' : 'ies'} of ${scoped} couldn't be resolved, so whether ` +
-      `${one ? 'it runs' : 'one of them runs'} a host from ${work} can't be told, and one that does isn't ruled out.`);
+    ctx.out(`The working director${one ? 'y' : 'ies'} of ${scoped} couldn't be resolved, so this run can't tell ` +
+      `whether ${one ? 'it runs' : 'one of them runs'} a host from ${work}, and can't rule that out.`);
   }
 }
 
@@ -598,7 +605,7 @@ async function removeShell(ctx: CliContext, sys: ServiceSystem, env: Record<stri
   } else {
     const state = agentState(sys, env, unit);
     if (state.kind === 'unknown') {
-      throw new Refusal(`whether ${unit.name} is loaded can't be told: ${state.why}. It was left as it is.`);
+      throw new Refusal(`this run can't tell whether ${unit.name} is loaded: ${state.why}. It was left as it is.`);
     }
     if (state.kind !== 'unloaded') {
       await bootout(ctx, sys, env, unit, 'Repeat this service install command with the same recipe to finish ' +
@@ -678,14 +685,14 @@ function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: Ser
     : `The service files already written remain in place. ${afterWrite}No further unit was changed.`;
   if (owner.kind === 'other') {
     throw new Refusal(configConflict(unit, owner.from, owner.runsIn, work, stopLine(sys, manager, unit.name)) +
-      (owner.loadedOnly ? ` systemd shows ${unit.name} as it last loaded it, while its file names ${work}: if its file ` +
-        `or drop-ins changed since, ${systemctlLine(sys, 'daemon-reload')} loads them again, then repeat this service ` +
-        'install command with the same recipe.' : '') +
+      (owner.loadedOnly ? ` systemd shows ${unit.name} as it last loaded it, but its file names ${work}. If its file ` +
+        `or drop-ins changed since then, run ${systemctlLine(sys, 'daemon-reload')} to load them again, then repeat ` +
+        'this service install command with the same recipe.' : '') +
       ` ${effect} Its name comes from this directory's name. Remove that unit if nothing uses it, or set this ` +
       'install up again in a directory of another name.');
   }
   if (owner.kind === 'unshown') {
-    throw new Refusal(`${owner.shown}, so whether it runs another install can't be told. ${effect}`);
+    throw new Refusal(`${owner.shown}, so this run can't tell whether it runs another install. ${effect}`);
   }
   if (owner.kind === 'untold') {
     throw new Refusal(`${untold(sys, manager, unit)}. ${effect} If it's this install's, stop it ` +
@@ -695,7 +702,7 @@ function ownedOrFree(unit: ServiceUnit, manager: Manager, work: string, sys: Ser
 
 function untold(sys: ServiceSystem, manager: Manager, unit: ServiceUnit): string {
   return `${unit.name} is still ${manager === 'systemd-user' ? 'running' : 'loaded'}, but its file, ${unit.file}, is ` +
-    'gone, so which install it runs can\'t be told';
+    'gone, so this run can\'t tell which install it runs';
 }
 
 function stopLine(sys: ServiceSystem, manager: Manager, name: string): string {
@@ -726,7 +733,7 @@ async function bootout(ctx: CliContext, sys: ServiceSystem, env: Record<string, 
     if (shown.status === 113) return;
     if (shown.status !== 0) {
       throw new Refusal('launchctl print ' + target + ' failed: ' + launchctlFailure(shown) +
-        '. Its stop was requested, but whether ' + unit.name + ' finished unloading cannot be told. ' + next);
+        '. Its stop was requested, but this run can\'t tell whether ' + unit.name + ' finished unloading. ' + next);
     }
     if (sys.now() >= until) {
       throw new Refusal(unit.name + " hasn't finished unloading after " + unloadMs / 1000 +
@@ -747,7 +754,7 @@ function shellOf(work: string, sys: ServiceSystem): string | null {
     lstatSync(pkg);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw new Refusal(`whether ${SHELL_PACKAGE} is installed in ${work}, for the resident's shell, can't be told: ` +
+    throw new Refusal(`this run can't tell whether ${SHELL_PACKAGE} is installed in ${work}, for the resident's shell: ` +
       `${errorText(error)}. Nothing was written.`);
   }
   let bin: unknown;
@@ -802,19 +809,20 @@ function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, sh
   try {
     new StoredSecrets(join(work, '.setup')).record('SESSION_SERVER_TOKEN');
   } catch (error) {
-    throw new Refusal('the shell daemon\'s token can\'t be kept out of setup\'s answers, since the names of the stored ' +
-      `secrets can't be recorded: ${errorText(error).replace(/\.+$/, '')}. No unit was written.`);
+    throw new Refusal('the names of the stored secrets can\'t be recorded: ' +
+      `${errorText(error).replace(/\.+$/, '')}. So the shell daemon's token can't be kept out of setup's answers. No unit ` +
+      'was written.');
   }
   if ((mode & 0o077) !== 0) {
     try {
       chmodSync(file, 0o600);
     } catch (error) {
       throw new Refusal(`${file} ${shell.newToken ? 'is to hold' : 'holds'} the shell daemon's token and is open to ` +
-        `others than ${sys.user} (mode ${mode.toString(8)}), and it can't be made readable by ${sys.user} alone: ` +
+        `users other than ${sys.user} (mode ${mode.toString(8)}). It can't be made readable by ${sys.user} alone: ` +
         `${errorText(error)}. No unit was written.`);
     }
-    ctx.out(`${file} ${shell.newToken ? 'is to hold' : 'holds'} the shell daemon's token and was open to others than ` +
-      `${sys.user} (mode ${mode.toString(8)}), so it's now readable by ${sys.user} alone.`);
+    ctx.out(`${file} ${shell.newToken ? 'is to hold' : 'holds'} the shell daemon's token and was open to users other ` +
+      `than ${sys.user} (mode ${mode.toString(8)}), so this run made it readable by ${sys.user} alone.`);
   }
   const keep = (name: string, value: string) => {
     try {
@@ -825,8 +833,8 @@ function keepShellSettings(ctx: CliContext, sys: ServiceSystem, work: string, sh
   };
   if (shell.newPort) {
     keep('SESSION_SERVER_PORT', shell.port);
-    ctx.out(`Port ${shell.port} was free when picked, so it's the resident's shell daemon's port, on localhost only: ` +
-      `written to ${file} as SESSION_SERVER_PORT.`);
+    ctx.out(`Port ${shell.port} was free, so this run picked it for the resident's shell daemon, on localhost only, ` +
+      `and wrote it to ${file} as SESSION_SERVER_PORT.`);
   }
   if (shell.newToken) {
     keep('SESSION_SERVER_TOKEN', shell.token);

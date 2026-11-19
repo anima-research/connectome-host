@@ -63,7 +63,7 @@ export function openingMessage(held: boolean, after: 'start' | 'switch'): string
 }
 
 export const REFUSED_TURN = 'The model refused that turn. This can come from anything in the conversation, not only ' +
-  'what you just wrote. Try once more; if it refuses again, /session new starts a new conversation with setup\'s ' +
+  'what you just wrote. Try once more. If it refuses again, /session new starts a new conversation with setup\'s ' +
   'agent, and what setup has done stays on disk.';
 
 export function showsItself(tool: string): boolean {
@@ -120,13 +120,13 @@ export class SetupModule implements Module {
       {
         name: 'run',
         description: 'Run one command with bash -c in the install\'s directory, and get back its exit status and ' +
-          `output: of an output longer than ${2 * KEPT_BYTES / 1024} KiB, its first and last ${KEPT_BYTES / 1024} KiB. ` +
-          'Its environment is the host\'s, less setup\'s own variables, the secrets setup stored and the providers\' ' +
-          `keys. Where one of their values appears in the output exactly as stored, it comes back as <NAME>, unless ` +
-          `it's shorter than ${SHORT_CHARACTERS} characters. A command still running at its ` +
-          'time limit, or when the host stops, is stopped with its process group. A process it leaves running when it ' +
-          'ends keeps running, after the host ends too, but setup closes the command\'s output about a second after ' +
-          'it ends, so give such a process output of its own, such as > file 2>&1.',
+          `output. Of an output longer than ${2 * KEPT_BYTES / 1024} KiB, you get its first and last ${KEPT_BYTES / 1024} KiB. ` +
+          'Its environment is the host\'s, less setup\'s own variables, the secrets that setup stored and the ' +
+          `providers' keys. Where one of those values appears in the output exactly as stored, it comes back as <NAME>, ` +
+          `unless it's shorter than ${SHORT_CHARACTERS} characters. A command still running at its ` +
+          'time limit, or when the host stops, is stopped with its process group. A process that it leaves running when ' +
+          'it ends keeps running, after the host ends too. But setup closes the command\'s output about a second after ' +
+          'the command ends. So give such a process output of its own, such as > file 2>&1.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -140,8 +140,8 @@ export class SetupModule implements Module {
         name: 'ask_secret',
         description: 'Ask the person for a secret in this terminal, with nothing shown as they type, and store it in ' +
           'the install\'s .env. You get back where it was stored, never the value. A DISCORD_TOKEN is checked once ' +
-          `with Discord, and an ${Object.keys(PROVIDER_KEYS).join(', ')} with its provider, at the base URL .env names ` +
-          'for it if it names one. One that is refused isn\'t stored.',
+          `with Discord. An ${Object.keys(PROVIDER_KEYS).join(', ')} is checked with its provider, at the base URL that ` +
+          '.env names for it, if it names one. A secret that is refused isn\'t stored.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -154,11 +154,12 @@ export class SetupModule implements Module {
       {
         name: 'discord',
         description: 'Read Discord with the bot token stored as DISCORD_TOKEN, so that the person copies no id by hand. ' +
-          'With no input: the application\'s id, which the invite link needs, and each server the bot is in, with its ' +
-          'owner and its text and announcement channels under their categories, each with whether the bot can send ' +
-          'there. Discord lists a bot only the channels it can view. With server alone: that server. With server and ' +
-          'username: that server\'s members whose username or server nickname starts with it, of the up to 1,000 ' +
-          'Discord gives. Discord matches no display name. The token is never shown.',
+          'With no input, it gives the application\'s id, which the invite link needs. It also gives each server that ' +
+          'the bot is in, with its owner and its text and announcement channels under their categories, each with ' +
+          'whether the bot can send there. Discord lists to a bot only the channels that it can view. With server ' +
+          'alone, it gives that server. With server and username, it gives that server\'s members whose username or ' +
+          'server nickname starts with it, of the up to 1,000 that Discord gives. Discord matches no display name. ' +
+          'The token is never shown.',
         inputSchema: {
           type: 'object',
           properties: {
