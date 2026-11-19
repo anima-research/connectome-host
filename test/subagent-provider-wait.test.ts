@@ -16,7 +16,7 @@ const PROVIDER_WORDS = '429 rate_limit_error: try again later';
 const UNSLEPT = "the model call failed (rate_limit, HTTP 429) (the provider asked to wait 7200 s; an ephemeral run doesn't sleep a stated wait longer than 600 s, so it ends now)";
 const UNSLEPT_NAN = "the model call failed (rate_limit, HTTP 429) (the provider's stated wait is not a number, and an ephemeral run sleeps only a stated wait of 600 s or less, so it ends now)";
 
-type Classifier = { isTransientError(err: Error): boolean };
+type Classifier = { classifyRetry(err: Error): 'rate-limit' | 'transient' | undefined };
 
 async function harness(fail: () => Error, runThroughFramework = false) {
   const tmpDir = mkdtempSync(join(tmpdir(), 'sub-wait-'));
@@ -111,7 +111,7 @@ describe("a provider's stated wait that the framework won't sleep", () => {
 
   test("reads agent-framework's own ProviderWaitNotSleptError as not worth a restart", () => {
     const mod = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock' }) as unknown as Classifier;
-    expect(mod.isTransientError(new ProviderWaitNotSleptError('503 overloaded', 7_200_000))).toBe(false);
+    expect(mod.classifyRetry(new ProviderWaitNotSleptError('503 overloaded', 7_200_000))).toBeUndefined();
   });
 
   test('an ordinary rate-limit error on the cause still throttles and retries without giving the caller the provider’s words', async () => {
@@ -130,9 +130,9 @@ describe("a provider's stated wait that the framework won't sleep", () => {
 
   test('rate-limit errors without that class stay transient, whatever their words', () => {
     const mod = new SubagentModule({ parentAgentName: 'parent', defaultModel: 'mock' }) as unknown as Classifier;
-    expect(mod.isTransientError(new Error(UNSLEPT))).toBe(true);
-    expect(mod.isTransientError(new Error('429 Too Many Requests'))).toBe(true);
-    expect(mod.isTransientError(new Error('rate_limit_error: try again later'))).toBe(true);
+    expect(mod.classifyRetry(new Error(UNSLEPT))).toBe('rate-limit');
+    expect(mod.classifyRetry(new Error('429 Too Many Requests'))).toBe('rate-limit');
+    expect(mod.classifyRetry(new Error('rate_limit_error: try again later'))).toBe('rate-limit');
   });
 
   test("fails a subagent without a restart on the framework's own error for a long wait, one that can't be represented and one that isn't a number", async () => {

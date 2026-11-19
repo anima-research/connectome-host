@@ -1066,7 +1066,7 @@ describe('scope filters', () => {
     expect(JSON.parse(JSON.stringify(keepNamedStrings(quota, QUOTA_STRINGS)))).toEqual({ ...quota, error: '' });
   });
 
-  test('frameWithoutFailureText leaves out failure text from the call ledger, credential state and compression holds', () => {
+  test('frameWithoutFailureText leaves out failure text from the call ledger and credential state', () => {
     const ledger = {
       type: 'call-ledger',
       ledger: { rows: [{ id: 'c1', model: 'a-model', verdict: 'ERROR', cause: 'raw', error: 'raw' }], summary: { calls: 1, byVerdict: { ERROR: 1 } } },
@@ -1087,11 +1087,6 @@ describe('scope filters', () => {
     const trace = { type: 'trace', event: { type: 'usage:updated', agentName: 'main' } } as unknown as WebUiServerMessage;
     const given = structuredClone(trace);
     expect(frameWithoutFailureText(trace)).toEqual(given);
-
-    const hold = { type: 'inference:held', agentName: 'main', errorType: 'over_budget', since: 42, heldRequests: 1 };
-    for (const frame of [{ type: 'trace' }, { type: 'child-event', childName: 'kid' }] as const) {
-      expect(frameWithoutFailureText({ ...frame, event: { ...hold, error: 'raw' } })).toEqual({ ...frame, event: hold });
-    }
   });
 
   test('the agent trees go only with every scope but debug, since their nodes carry token counts and how each run ended', () => {

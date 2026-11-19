@@ -33,7 +33,7 @@ export function agentActivity(
   at: string | undefined,
   inFor: (ms: number) => string = waitText,
 ): { word: string; detail?: string } {
-  if (a.budgetHold && a.status === 'idle') {
+  if (a.budgetHold) {
     return { word: 'waiting for compression', detail: a.budgetHold.errorType || undefined };
   }
   const r = a.retrying;

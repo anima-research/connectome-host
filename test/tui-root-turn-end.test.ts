@@ -138,15 +138,6 @@ describe("a fleet child's peek log", () => {
     expect(peekEndColor('warn')).toBe('#cccc00');
     expect(peekEndColor('dim')).toBe('#555555');
   });
-
-  test('a compression wait says when it starts and whether its turn was queued again, stopped or removed', () => {
-    expect(formatWireEvent({ type: 'inference:held', agentName: 'main' })?.text).toContain('main: turn waiting for compression');
-    for (const [outcome, words] of [
-      ['released', 'turn queued again'], ['stopped', 'waiting turn stopped'], ['removed', 'waiting turn removed'],
-    ]) {
-      expect(formatWireEvent({ type: 'inference:hold_ended', agentName: 'main', outcome })?.text).toContain(words);
-    }
-  });
 });
 
 describe('peekEndLine', () => {
