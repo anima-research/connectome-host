@@ -644,8 +644,10 @@ a typo fails at boot rather than silently disabling the rung.
    quarantine a fresh attempt; a quarantined merge still needs an operator's
    clear. It is another model writing a memory in the agent's voice, so mention
    it to the user as you would a `compressionModel` that isn't the agent's own
-   (AGENT-ONBOARDING §11.3). Needs a context-manager that has the option; an
-   earlier one ignores it.
+   (AGENT-ONBOARDING's "Compression needs a model that keeps answering"). It
+   takes a context-manager later than 0.27.0. This host's
+   `@animalabs/context-manager` range doesn't admit one yet, so until that
+   range is raised the key loads and nothing changes.
 
 7. **`thinking.display: "summarized"`** — rendered thinking *text* (the 💭 summaries
    some UIs emit) inside the transcript can itself trip refusals; never store it.
