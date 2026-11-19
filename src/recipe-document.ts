@@ -6,7 +6,8 @@ export const ENV_REFERENCE = String.raw`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*)
 
 /**
  * Walk a parsed-JSON value tree and substitute `${VAR_NAME}` patterns in
- * string values with `process.env.VAR_NAME`. Applied at recipe-load time,
+ * string values with `env.VAR_NAME`, `env` being process.env unless
+ * another is given. Applied at recipe-load time,
  * before schema validation, so secrets can live in `.env` (gitignored)
  * while the recipe itself stays commit-safe.
  *
@@ -25,12 +26,16 @@ export const ENV_REFERENCE = String.raw`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*)
  * No escape syntax yet — a literal `${...}` in recipe JSON is not a
  * supported case.
  */
-export function substituteEnvVars(value: unknown, source: string): unknown {
+export function substituteEnvVars(
+  value: unknown,
+  source: string,
+  env: Record<string, string | undefined> = process.env,
+): unknown {
   if (typeof value === 'string') {
     return value.replace(
       new RegExp(ENV_REFERENCE, 'g'),
       (_match, name: string, defaultValue: string | undefined) => {
-        const v = process.env[name];
+        const v = env[name];
         if (defaultValue !== undefined) {
           return v !== undefined && v !== '' ? v : defaultValue;
         }
@@ -47,12 +52,12 @@ export function substituteEnvVars(value: unknown, source: string): unknown {
     );
   }
   if (Array.isArray(value)) {
-    return value.map((v) => substituteEnvVars(v, source));
+    return value.map((v) => substituteEnvVars(v, source, env));
   }
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = substituteEnvVars(v, source);
+      out[k] = substituteEnvVars(v, source, env);
     }
     return out;
   }

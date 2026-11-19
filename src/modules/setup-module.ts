@@ -6,6 +6,7 @@ import type {
   EventResponse, Module, ModuleContext, ProcessEvent, ProcessState, ToolCall, ToolDefinition, ToolResult,
 } from '@animalabs/agent-framework';
 import { SHOWN_FILE, shown } from '../setup/commands-shown.js';
+import { DiscordFailed, DiscordReader, botServers, memberOf, serverOf, type DiscordFailure } from '../setup/discord-read.js';
 import { checkDiscordToken } from '../setup/discord-token.js';
 import { PROVIDER_KEYS, checkProviderKey, type KeyAnswer } from '../setup/provider-key.js';
 import {
@@ -37,6 +38,14 @@ const MAX_TIMEOUT_MS = 30 * 60_000;
 const KEPT_BYTES = 4 * 1024;
 const KILL_GRACE_MS = 5_000;
 const DRAIN_MS = 1_000;
+// agent-framework 0.33.0's inline cap for a tool result where a call gives none
+// (DEFAULT_TOOL_RESULT_INLINE_MAX_CHARS, its src/tool-result-history.ts, which the package doesn't export).
+const INLINE_MAX_CHARS = 24_000;
+// Discord's most for a member search, which takes no page after it
+// (https://discord.com/developers/docs/resources/guild#search-guild-members).
+const MEMBERS_ASKED = 1000;
+const COPY_ID = (what: 'server' | 'channel', label: string) => `The person can copy a ${what}'s id in Discord: with ` +
+  `Developer Mode on (User Settings, Advanced), right-click the ${what} and choose Copy ${label} ID.`;
 
 const NOT_FOR_COMMANDS = (name: string) =>
   name === 'DATA_DIR' || name === 'CONNECTOME_UPDATE_CHECK' || name.startsWith('CONNECTOME_SETUP_');
@@ -143,6 +152,22 @@ export class SetupModule implements Module {
         },
       },
       {
+        name: 'discord',
+        description: 'Read Discord with the bot token stored as DISCORD_TOKEN, so that the person copies no id by hand. ' +
+          'With no input: the application\'s id, which the invite link needs, and each server the bot is in, with its ' +
+          'owner and its text and announcement channels under their categories, each with whether the bot can send ' +
+          'there. Discord lists a bot only the channels it can view. With server alone: that server. With server and ' +
+          'username: that server\'s members whose username or server nickname starts with it, of the up to 1,000 ' +
+          'Discord gives. Discord matches no display name. The token is never shown.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            server: { type: 'string', description: 'A server\'s id, as this tool gives it.' },
+            username: { type: 'string', description: 'The start of a member\'s username or server nickname, given with server.' },
+          },
+        },
+      },
+      {
         name: 'finished',
         description: 'Say that setup is finished, once the person has nothing more to set up. In readline mode, the ' +
           'conversation ends when this turn ends, so say whatever is left to say in this same turn.',
@@ -157,8 +182,9 @@ export class SetupModule implements Module {
       this.finishRequested = true;
       return { success: true, data: 'In readline mode, the conversation ends when this turn ends.' };
     }
-    if (call.name !== 'run' && call.name !== 'ask_secret') return unknownToolResult(this, call.name);
-    const turn = this.queue.then(() => (call.name === 'run' ? this.run(input) : this.askSecret(input)));
+    if (call.name !== 'run' && call.name !== 'ask_secret' && call.name !== 'discord') return unknownToolResult(this, call.name);
+    const turn = this.queue.then(() => (call.name === 'run' ? this.run(input)
+      : call.name === 'ask_secret' ? this.askSecret(input) : this.discord(input, call.resultMaxChars ?? INLINE_MAX_CHARS)));
     this.queue = turn.catch(() => {});
     return turn;
   }
@@ -290,6 +316,86 @@ export class SetupModule implements Module {
       : `, though whether it works isn't known: ${answer.why}.`;
     return { success: true, data: `Stored as ${name} in ${envFile}${checked}` };
   }
+
+  private async discord(input: Record<string, unknown>, cap: number): Promise<ToolResult> {
+    const { server, username } = input;
+    if (server !== undefined && (typeof server !== 'string' || !/^\d+$/.test(server))) {
+      return failed('setup--discord\'s server is a server\'s id: digits, given as text.');
+    }
+    if (username !== undefined && (typeof username !== 'string' || username.trim() === '' || server === undefined)) {
+      return failed('setup--discord\'s username is the start of a username or server nickname, given as text with server.');
+    }
+    const envFile = join(this.config.dir, '.env');
+    let token: string | undefined;
+    try {
+      token = readEnvFile(envFile).get(DISCORD_TOKEN);
+    } catch (error) {
+      return failed(`Nothing was read: ${(error as Error).message}.`);
+    }
+    if (!token) {
+      return failed(`Nothing is stored as ${DISCORD_TOKEN} in ${envFile}, so Discord can't be read. Ask the person for the ` +
+        'bot\'s token with setup--ask_secret first.');
+    }
+    this.config.show(typeof username === 'string'
+      ? `Setup's agent searches a Discord server's members for ${shown(shownByName(username, this.secrets()))}.`
+      : server === undefined ? 'Setup\'s agent reads the bot\'s servers and channels from Discord.'
+        : 'Setup\'s agent reads one of the bot\'s servers from Discord.');
+    const reader = new DiscordReader(token, this.config.fetch);
+    try {
+      const bot = await reader.get<{ id: string }>('/users/@me');
+      if (typeof username === 'string') {
+        const found = await reader.get<Parameters<typeof memberOf>[0][]>(
+          `/guilds/${server}/members/search?query=${encodeURIComponent(username)}&limit=${MEMBERS_ASKED}`);
+        return fitted({
+          members: found.map(memberOf),
+          ...(found.length >= MEMBERS_ASKED ? { note: 'Discord gives at most 1,000 members, so more may match: call ' +
+            'setup--discord again with more of the username or nickname.' } : {}),
+        }, cap, 'The members that match don\'t fit in one answer: call setup--discord again with more of the username or nickname.');
+      }
+      if (typeof server === 'string') {
+        return fitted({ server: await serverOf(reader, server, bot.id) }, cap,
+          `That server's channels don't fit in one answer. ${COPY_ID('channel', 'Channel')}`);
+      }
+      const application = { id: (await reader.get<{ id: string }>('/applications/@me')).id };
+      const servers = [];
+      for (const id of await botServers(reader)) servers.push(await serverOf(reader, id, bot.id));
+      const whole = { application, servers };
+      if (JSON.stringify(whole).length <= cap) return { success: true, data: whole };
+      return fitted({
+        application, servers: servers.map(({ channels: _channels, ...each }) => each),
+        note: 'Every server\'s channels together don\'t fit in one answer: call setup--discord with a server\'s id as ' +
+          'server to read its channels.',
+      }, cap, `The bot's servers don't fit in one answer, even without their channels. ${COPY_ID('server', 'Server')}`);
+    } catch (error) {
+      if (error instanceof DiscordFailed) return failed(discordWords(error.failure));
+      return failed(`Discord's answer to GET ${reader.last.replace(/\?.*$/s, '')} isn't one setup can read, so the read ` +
+        'stopped there. Tell the person: something between this machine and Discord may be answering in its place.');
+    }
+  }
+}
+
+function fitted(data: unknown, cap: number, otherwise: string): ToolResult {
+  return JSON.stringify(data).length <= cap ? { success: true, data } : failed(otherwise);
+}
+
+function discordWords(failure: DiscordFailure): string {
+  const at = `GET ${failure.path.replace(/\?.*$/s, '')}`;
+  if (failure.status === null) {
+    return `Discord couldn't be reached for ${at} (${failure.why}), so the read stopped there. Call setup--discord ` +
+      'again, and if it fails the same way, tell the person: their connection to discord.com is theirs to check.';
+  }
+  const said = `Discord answered ${failure.status}${failure.code === undefined ? '' : ` (code ${failure.code})`} to ${at}` +
+    `${failure.unreadable ? ' with something other than JSON' : ''}, so the read stopped there.`;
+  if (failure.status === 401) {
+    return `${said} It refused the bot token stored as ${DISCORD_TOKEN}: ask the person for it again with setup--ask_secret.`;
+  }
+  if (failure.retryAfter !== undefined) {
+    return `${said} It asks for ${Math.ceil(failure.retryAfter)} s: call setup--discord again once that has passed.`;
+  }
+  if ((failure.status === 403 || failure.status === 404) && at.startsWith('GET /guilds/')) {
+    return `${said} The bot may no longer be in that server: call setup--discord with no input to see the servers it's in now.`;
+  }
+  return `${said} Tell the person what it answered.`;
 }
 
 function failed(error: string): ToolResult {
