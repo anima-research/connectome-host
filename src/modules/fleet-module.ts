@@ -921,8 +921,7 @@ export class FleetModule implements Module {
       },
       {
         name: 'peek',
-        description: "Return the last N events from a child's rolling event buffer, without a failure's own text: " +
-          "each event's error, stack and providerErrorCode, an alert's message and data, and an errorType of safety.",
+        description: "Return the last N events from a child's rolling event buffer.",
         inputSchema: {
           type: 'object',
           properties: {
@@ -1589,7 +1588,7 @@ export class FleetModule implements Module {
     const requested = input.lines ?? 50;
     const n = Math.max(1, Math.min(requested, c.events.length || 1));
     const slice = c.events.length > 0 ? c.events.slice(-n) : [];
-    return { success: true, data: { name: c.name, count: slice.length, events: slice.map(peekView) } };
+    return { success: true, data: { name: c.name, count: slice.length, events: slice.map(peekView), note: PEEK_NOTE } };
   }
 
   private async handleKill(input: { name: string }): Promise<ToolResult> {
@@ -2601,6 +2600,9 @@ export class FleetModule implements Module {
     });
   }
 }
+
+const PEEK_NOTE = "Each event is shown without a failure's own text: its error, stack and providerErrorCode, " +
+  "an alert's message and data, and an errorType of safety.";
 
 /** A child's event as fleet--peek shows it to a parent: as it arrived, less
  *  the fields that carry a failure's own text, which can be a provider's. */
