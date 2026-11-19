@@ -104,6 +104,7 @@ function fakeFramework(name: string) {
     },
     stop: async () => {},
     getStore: () => ({ currentBranch: () => ({ name: storeBranch }) }),
+    getHostModeStatus: () => ({ quiesced: false, drained: true, activeTurnAgents: [] }),
     async switchBranch(branch: string) {
       storeBranch = branch;
       history.splice(1, history.length, { id: 's1', participant: 'agent', content: [{ type: 'text', text: 'the side branch reply' }] });

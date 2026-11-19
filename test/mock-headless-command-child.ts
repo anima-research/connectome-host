@@ -6,6 +6,14 @@ import { TuiModule } from '../src/modules/tui-module.js';
 import { hostUpdate } from '../src/update/update.js';
 
 const tui = new TuiModule();
+if (process.env.UPDATE_INSTALL_ROOT !== undefined) {
+  hostUpdate.configure({
+    here: { root: process.env.UPDATE_INSTALL_ROOT, release: '0.13.0' }, running: '0.13.0',
+    env: { CONNECTOME_UPDATE_CHECK: '0' },
+    host: { framework: () => ({ getHostModeStatus: () => ({ quiesced: false }) }) as never, fleet: () => null },
+    fetchManifest: (async () => { throw new Error('this fixture reads no registry'); }) as unknown as typeof fetch,
+  });
+}
 if (process.env.UPDATE_NOT_AN_INSTALL === '1') {
   hostUpdate.configure({
     here: null, running: '0.0.0', env: { CONNECTOME_UPDATE_CHECK: '0' },

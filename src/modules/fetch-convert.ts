@@ -39,14 +39,47 @@ async function turnToConvert(): Promise<() => void> {
 export interface ConvertOptions {
   timeoutMs?: number;
   memoryLimitBytes?: number;
+  /**
+   * Keep the address of every image worth looking at, one with no alt text
+   * too, for a reader that can look. Without it an image with no alt text is
+   * left out, as decoration.
+   */
+  images?: boolean;
   /** Told of the process doing the work, so a test can check on it. */
   onChild?: (child: ChildProcess) => void;
 }
 
-function convertInChild(html: string, baseUrl: string | undefined, options: ConvertOptions): Promise<string> {
+/** An image a page's markdown names: as it is written there, and the address to fetch for it. */
+export interface PageImage {
+  written: string;
+  address: string;
+}
+
+/** What a conversion gives: the markdown, and with `images` asked for, the web images written into it. */
+export interface ConvertedPage {
+  markdown: string;
+  images: PageImage[];
+}
+
+/** Most images of one page that are listed, each once: enough for any page that is about its images, and a bound on what a reader may choose among. */
+const MOST_IMAGES = 64;
+
+/** The images a converter's answer lists, held to their shape and their number, since the page chose them. */
+function listedImages(listed: unknown): PageImage[] {
+  const images = new Map<string, PageImage>();
+  for (const entry of Array.isArray(listed) ? listed : []) {
+    const { written, address } = (entry ?? {}) as Partial<PageImage>;
+    if (typeof written !== 'string' || typeof address !== 'string' || images.has(written)) continue;
+    if (images.size >= MOST_IMAGES) break;
+    images.set(written, { written, address });
+  }
+  return [...images.values()];
+}
+
+function convertInChild(html: string, baseUrl: string | undefined, options: ConvertOptions): Promise<ConvertedPage> {
   const timeoutMs = options.timeoutMs ?? CONVERT_TIMEOUT_MS;
   const memoryLimitBytes = options.memoryLimitBytes ?? CONVERT_MEMORY_BYTES;
-  return new Promise<string>((resolve, reject) => {
+  return new Promise<ConvertedPage>((resolve, reject) => {
     // It starts with an empty environment, and --no-env-file keeps Bun from
     // reading a .env file back in, so code there that reads its own
     // environment finds no credentials. That isn't a sandbox: the process
@@ -55,7 +88,7 @@ function convertInChild(html: string, baseUrl: string | undefined, options: Conv
     // separate process gives is the time and memory limits.
     const child = spawn(
       process.execPath,
-      ['--no-env-file', CHILD_PATH, JSON.stringify({ memoryLimitBytes, deadlineMs: timeoutMs + CHILD_GRACE_MS })],
+      ['--no-env-file', CHILD_PATH, JSON.stringify({ memoryLimitBytes, deadlineMs: timeoutMs + CHILD_GRACE_MS, images: options.images === true })],
       { cwd: dirname(CHILD_PATH), env: {}, stdio: ['pipe', 'pipe', 'ignore'] },
     );
     options.onChild?.(child);
@@ -99,8 +132,8 @@ function convertInChild(html: string, baseUrl: string | undefined, options: Conv
         return;
       }
       try {
-        const answer = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { markdown?: string; error?: string };
-        if (typeof answer.markdown === 'string') finish(() => resolve(answer.markdown!));
+        const answer = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { markdown?: string; images?: unknown; error?: string };
+        if (typeof answer.markdown === 'string') finish(() => resolve({ markdown: answer.markdown!, images: listedImages(answer.images) }));
         else refuse(`its converter failed (${answer.error ?? 'no reason given'})`);
       } catch {
         refuse('its converter gave an answer that could not be read');
@@ -110,12 +143,17 @@ function convertInChild(html: string, baseUrl: string | undefined, options: Conv
   });
 }
 
+/** Markdown for a document: htmlToPage, for a caller that wants only the text. */
+export async function htmlToMarkdown(html: string, baseUrl: string | undefined, options: ConvertOptions = {}): Promise<string> {
+  return (await htmlToPage(html, baseUrl, options)).markdown;
+}
+
 /**
  * Markdown for a document, with its relative links resolved against `baseUrl`
- * when there is one. A conversion past its time or memory limit is killed and
- * refused, with a FetchRefusal.
+ * when there is one, and the images written into it. A conversion past its
+ * time or memory limit is killed and refused, with a FetchRefusal.
  */
-export async function htmlToMarkdown(html: string, baseUrl: string | undefined, options: ConvertOptions = {}): Promise<string> {
+export async function htmlToPage(html: string, baseUrl: string | undefined, options: ConvertOptions = {}): Promise<ConvertedPage> {
   const done = await turnToConvert();
   let child: ChildProcess | undefined;
   try {
