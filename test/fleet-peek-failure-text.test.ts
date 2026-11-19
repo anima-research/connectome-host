@@ -34,7 +34,7 @@ const SHOWN: Array<Record<string, unknown>> = [
   { type: 'inference:speech', agentName: 'leaf', content: 'Looking into it.', ts: 6 },
 ];
 
-test("fleet--peek shows a child's events without a failure's own text, and the buffer keeps them whole", async () => {
+test("fleet--peek shows a child's events without a failure's own text, says so, and the buffer keeps them whole", async () => {
   const dir = mkdtempSync(join(tmpdir(), 'fleet-peek-'));
   dirs.push(dir);
   const fleet = new FleetModule({ childIndexPath: join(import.meta.dir, 'mock-fleet-lifecycle-child.ts') });
@@ -50,7 +50,10 @@ test("fleet--peek shows a child's events without a failure's own text, and the b
 
   const peek = await fleet.handleToolCall({ id: 'peek', name: 'peek', input: { name: 'leaf' } });
   expect(peek.success).toBe(true);
-  expect(peek.data).toEqual({ name: 'leaf', count: SHOWN.length, events: SHOWN });
+  expect(peek.data).toEqual({
+    name: 'leaf', count: SHOWN.length, events: SHOWN,
+    note: "Each event is shown without a failure's own text: its error, stack and providerErrorCode, an alert's message and data, and an errorType of safety.",
+  });
   expect(JSON.stringify(peek.data)).not.toContain('sentinel-5d8b');
   expect(children.get('leaf')!.events).toEqual(ARRIVED);
 });
