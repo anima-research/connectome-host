@@ -248,18 +248,19 @@ export function switchQuiesceRefusalFor(
   if (!status.quiesced || !isSwitchQuiesce(status.reason)) return null;
   if (underWay === false) {
     return refusalReply(message, (what) => `${what} refused: this host is still quiesced for a switch that isn't ` +
-      'going ahead, and a quiesce asked for now would be taken as that switch\'s, which the host\'s next start ends. ' +
-      `Nothing changed; ${PAGE_WAYS.resume} ends the switch's quiesce, and then quiesce again.`);
+      'going ahead. A quiesce asked for now would be taken as that switch\'s quiesce, which the host\'s next start ' +
+      `ends. Nothing changed; ${PAGE_WAYS.resume} ends the switch's quiesce, and then quiesce again.`);
   }
   if (underWay === null) {
-    return refusalReply(message, (what) => `${what} refused: this host is quiesced for an update's switch, which may ` +
-      'still be under way or may have ended and left this quiesce behind, and a quiesce asked for now would be taken as ' +
-      'the switch\'s and end with it. Nothing changed; quiesce again once the switch has gone ahead, or, if it has ' +
-      'ended and left this quiesce behind, clicking "⏸ quiesced" in the top bar ends it, and then quiesce again.');
+    return refusalReply(message, (what) => `${what} refused: this host is quiesced for an update's switch. The switch ` +
+      'may still be under way, or it may have ended and left this quiesce behind. A quiesce asked for now would be ' +
+      'taken as the switch\'s quiesce and end with it. Nothing changed. Quiesce again once the switch has gone ahead. ' +
+      'If it has ended and left this quiesce behind, clicking "⏸ quiesced" in the top bar ends that quiesce, and then ' +
+      'quiesce again.');
   }
-  return refusalReply(message, (what) => `${what} refused: this host is quiesced for an update's switch right now, and ` +
-    'a quiesce asked for now would be taken as the switch\'s and end with it. Nothing changed; quiesce again once the ' +
-    'switch has gone ahead or ended.');
+  return refusalReply(message, (what) => `${what} refused: this host is quiesced for an update's switch right now. A ` +
+    'quiesce asked for now would be taken as the switch\'s quiesce and end with it. Nothing changed; quiesce again once ' +
+    'the switch has gone ahead or ended.');
 }
 
 export function releaseQuiesceRefusalFor(

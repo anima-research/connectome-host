@@ -2640,7 +2640,7 @@ describe('a host on trial, before its commit', () => {
     expect(existsSync(join(root, 'not-yet'))).toBe(false);
     const message = result.message!;
     expect(result.refused).toBe(true);
-    expect(message).toStartWith("This release couldn't open every store it would open only after its commit, so it starts none of its agents, and the next start goes back to 0.10.2:\n");
+    expect(message).toStartWith("This release couldn't open every store that it opens only after its commit. So it starts none of its agents, and the next start goes back to 0.10.2:\n");
     expect(message).toContain(`\n${stores[1]} (agents/agent): refused: store topology rejected: `);
     expect(message).toContain(`\n${child.stores[0]} (agents/agent): refused: store topology rejected: `);
     expect(message).toContain(`\n${farLine}\n`);
@@ -2815,7 +2815,7 @@ describe('a host on trial, before its commit', () => {
     ]);
     const { status, stderr } = await startOnTrial(dir);
     expect(status, stderr.slice(-3000)).toBe(1);
-    expect(stderr).toContain("This release couldn't open every store it would open only after its commit, so it starts none of its agents, and the next start goes back to 0.10.2:\n");
+    expect(stderr).toContain("This release couldn't open every store that it opens only after its commit. So it starts none of its agents, and the next start goes back to 0.10.2:\n");
     expect(stderr).toContain(`\n${stores[1]} (agents/agent): refused: store topology rejected: `);
     expect(readCurrent(install)).toBe('0.10.2');
     expect(stderr).not.toContain('Fatal error');

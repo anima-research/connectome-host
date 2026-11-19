@@ -201,10 +201,11 @@ function residentHost(options: {
 }
 
 const text = (result: ToolResult): string => String(result.success ? result.data : result.error);
-const QUIET = 'first quiet moment, once nothing the host counts as in flight is still going here, such as a turn, ' +
-  'subagent run, background script, session switch, operator\'s work or credential action, and each fleet child it asks ' +
-  'says nothing is going there, such as a turn, background script, operator\'s work or credential action, though a child on a ' +
-  'release that doesn\'t report its work outside turns says only that its turns and scripts are done';
+const QUIET = 'first quiet moment. In a quiet moment, nothing that the host counts as in flight is still going here, ' +
+  'such as a turn, subagent run, background script, session switch, operator\'s work or credential action. Each fleet ' +
+  'child that it asks also says that nothing is going there, such as a turn, background script, operator\'s work or ' +
+  'credential action. A child on a release that doesn\'t report its work outside turns says only that its turns and ' +
+  'scripts are done.';
 const RETRY = 'A try that finds something still going waits at least a minute before the next.';
 const UNASKED = 'A turn that a fleet child begins after the switch last asked its children isn\'t waited for.';
 const alwaysQuiet = () => true;
@@ -367,7 +368,7 @@ test('restart answers at once, says it waits for the host to be quiet and how to
   const host = residentHost({ root });
   const answer = await host.call({ action: 'restart' });
   expect(answer.success).toBe(true);
-  for (const words of ['0.15.0', 'quiet', QUIET, 'once every host it asked has said no turn is running there', UNASKED, 'cancel', 'check', RETRY]) {
+  for (const words of ['0.15.0', 'quiet', QUIET, 'once every host it asked has said that no turn is running there', UNASKED, 'cancel', 'check', RETRY]) {
     expect(text(answer)).toContain(words);
   }
   expect(text(answer)).toContain('If the host stops for any other reason first, nothing stays armed. An operator\'s own ' +
@@ -661,8 +662,8 @@ test('a try on a host its operator has quiesced waits for a later quiet moment, 
 
 for (const [what, reason] of [
   ['its mark can\'t be written', 'its mark couldn\'t be written'],
-  ['the session changes during it', 'the session changed while the fleet\'s children were asked whether they were busy, ' +
-    'before this host was quiesced'],
+  ['the session changes during it', 'the session changed while this host asked the fleet\'s children whether they were ' +
+    'busy, before it was quiesced'],
   ['it throws once hosts are quiesced', 'its try failed: the quiet check failed'],
 ] as const) {
   test(`a try that can't go ahead because ${what} drops the restart, with every host serving again, and check says why`, async () => {
@@ -826,9 +827,9 @@ test('check on a headless host quotes what a failed release wrote as it wrote it
   appendJournal(root, { at: '2026-10-26T20:00:00.000Z', step: 'fallback', from: '0.15.0', to: '0.14.1', outcome: 'ok',
     reason: '0.15.0 ended before its commit', mark: 'm1' });
   writeFileSync(installPaths(root).trialLog, JSON.stringify({ v: 1, release: '0.15.0', mark: 'm1',
-    lines: ['[update] For a host still quiesced, /update restart resume tries again.'] }));
+    lines: ['[update] If a host is still quiesced, /update restart resume tries again.'] }));
   const check = text(await residentHost({ root }).call({ action: 'check' }));
-  expect(check).toContain('\n  [update] For a host still quiesced, /update restart resume tries again.');
+  expect(check).toContain('\n  [update] If a host is still quiesced, /update restart resume tries again.');
 });
 
 test('check after a fallback says the quoted lines are the host\'s to the person who runs it, theirs to do, for the agent to pass on, where /update says nothing of it', async () => {
@@ -837,7 +838,7 @@ test('check after a fallback says the quoted lines are the host\'s to the person
     reason: '0.15.0 ended before its commit', mark: 'm1' });
   const refusal = [
     '[update] Couldn\'t open the store at /data/alice: its topology is from a newer release',
-    'This release couldn\'t open every store it would open only after its commit, so it starts none of its agents, and the next start goes back to 0.14.1:',
+    'This release couldn\'t open every store that it opens only after its commit. So it starts none of its agents, and the next start goes back to 0.14.1:',
     'Couldn\'t open the store at /data/alice: its topology is from a newer release',
     'To take this release, repair each refused store as AGENT-ONBOARDING.md §11.8 says, or correct what a line names, and update again; or stay on 0.14.1 until a release opens them.',
   ];
@@ -847,8 +848,8 @@ test('check after a fallback says the quoted lines are the host\'s to the person
   const last = lines.lastIndexOf(`  ${refusal.at(-1)}`);
   expect(last).toBeGreaterThan(0);
   expect(lines[last + 1]).toBe('Those quoted lines are your host\'s, written to the person who runs it: what they ask of that ' +
-    'person is theirs to do, so pass it on. Where they say a store was refused, trying that release again before what they ' +
-    'ask is done falls back the same way.');
+    'person is theirs to do, so pass it on. Where they say that a store was refused, a new try of that release falls back ' +
+    'the same way until what they ask is done.');
   expect(statusLines(host.update.status(), COMMAND_WAYS).join('\n')).not.toContain('Those quoted lines');
 });
 
@@ -937,8 +938,8 @@ test('a host with no install of its own, such as a fleet child, refuses restart'
   const host = residentHost({ root: null });
   const answer = await host.call({ action: 'restart' });
   expect(answer.success).toBe(false);
-  expect(text(answer)).toContain('A fleet child is updated with its parent\'s install where its parent has one, and any ' +
-    'other host, or a child whose parent has none, by hand');
+  expect(text(answer)).toContain('A fleet child is updated with its parent\'s install, where its parent has one. Any ' +
+    'other host, or a child whose parent has no install, is updated by hand');
   expect(text(answer)).toContain('Asking again');
   expect(host.update.armedSwitch()).toBeNull();
 });
@@ -1014,7 +1015,7 @@ test('a host with no stop at all, as a batch run, refuses restart and arms nothi
   const host = residentHost({ root, noStop: true });
   const answer = await host.call({ action: 'restart' });
   expect(answer.success).toBe(false);
-  expect(text(answer)).toContain('no stop a restart can use');
+  expect(text(answer)).toContain('no stop that a restart can use');
   expect(text(answer)).toContain('Asking again');
   expect(host.update.armedSwitch()).toBeNull();
 });
@@ -1243,7 +1244,7 @@ test('on a host outside an install, notes refuses, saying no notes were given', 
 const longNotes = (mark: string, lines: number) =>
   `${mark}\n` + 'a line of notes that runs on for a while\n'.repeat(lines) + `the last line of ${mark}`;
 
-test('notes that come to more than one answer carries are listed release by release, with each one\'s size, and the answer fits', async () => {
+test('notes that are longer than one answer can carry are listed release by release, with each one\'s size, and the answer fits', async () => {
   const { root } = installRunning0141(['0.17.0']);
   const sections = [section('0.17.0', longNotes('seventeen', 300)), section('0.16.0', longNotes('sixteen', 180)),
     section('0.15.0', longNotes('fifteen', 180))];
@@ -1276,7 +1277,7 @@ test("notes keep to the call's own cap where the agent's is lower than 24,000 ch
   const listed = text(await notes({ action: 'notes' }, 4_000));
   expect(listed.length).toBeLessThanOrEqual(4_000);
   expect(listed).not.toContain('a line of notes');
-  expect(listed).toContain('(4,000 characters), so here is each release\'s size');
+  expect(listed).toContain('(4,000 characters), so here is the size of each release\'s notes');
   const cut = await notes({ action: 'notes', version: '0.16.0' }, 1_000);
   expect(cut.success).toBe(true);
   expect(text(cut).length).toBeLessThanOrEqual(1_000);
@@ -1298,7 +1299,7 @@ test("notes keep to the call's own cap where it's higher than 24,000 characters,
   const whole = text(await notes(40_000));
   expect(whole.length).toBeGreaterThan(24_000);
   expect(whole).toContain('the last line of fifteen');
-  expect(text(await notes())).toContain('(24,000 characters), so here is each release\'s size');
+  expect(text(await notes())).toContain('(24,000 characters), so here is the size of each release\'s notes');
 });
 
 test('notes with a version gives that release\'s notes whole, and none of the others', async () => {
@@ -1405,7 +1406,7 @@ test('a notice written while the installed releases couldn\'t be read is written
   }
   const take = `[update] To take it: ${shellWord(join(root, 'connectome'))} update restart.`;
   expect(logged).not.toContain(take);
-  const unread = logged.findIndex((line) => line.startsWith("[update] Which releases are installed couldn't be read, so " +
+  const unread = logged.findIndex((line) => line.startsWith("[update] The installed releases couldn't be read, so " +
     '0.15.0 may be installed already: '));
   expect({ unread: unread >= 0, last: unread === logged.length - 1, afterTake: logged[unread - 1]?.startsWith('[update] To take it: ') })
     .toEqual({ unread: true, last: true, afterTake: true });

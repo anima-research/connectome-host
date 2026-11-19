@@ -162,13 +162,14 @@ export function toolWays(headless: boolean, command = 'connectome'): UpdateWays 
 
 export const TOOL_WAYS = toolWays(true);
 
-export const QUIET_MOMENT = 'nothing the host counts as in flight is still going here, such as a turn, subagent run, ' +
-  'background script, session switch, operator\'s work or credential action, and each fleet child it asks says ' +
-  'nothing is going there, such as a turn, background script, operator\'s work or credential action, though a child ' +
-  'on a release that doesn\'t report its work outside turns says only that its turns and scripts are done';
+export const QUIET_MOMENT = 'In a quiet moment, nothing that the host counts as in flight is still going here, such ' +
+  'as a turn, subagent run, background script, session switch, operator\'s work or credential action. Each fleet child ' +
+  'that it asks also says that nothing is going there, such as a turn, background script, operator\'s work or ' +
+  'credential action. A child on a release that doesn\'t report its work outside turns says only that its turns and ' +
+  'scripts are done.';
 
-export const ASKS_NOBODY = 'however long that takes, so it goes only once every host it asked has said no turn is ' +
-  'running there, and asks nobody';
+export const ASKS_NOBODY = 'The switch waits for a quiet moment however long that takes, so it goes only once every ' +
+  'host it asked has said that no turn is running there, and it asks nobody.';
 
 export const UNASKED_CHILD_TURN = 'A turn that a fleet child begins after the switch last asked its children isn\'t ' +
   'waited for.';
@@ -181,8 +182,8 @@ export const LAST_SWITCH = 'the last switch';
 
 export const QUOTED = '  ';
 
-const WROTE_LAST = ', as it kept it (the service\'s log, or the terminal it was started in, also has what this leaves ' +
-  'out, such as an error Bun reported itself):';
+const WROTE_LAST = ', as it kept it. The service\'s log, or the terminal it was started in, also has what this leaves ' +
+  'out, such as an error that Bun reported itself:';
 
 export function bunUpgrade(ways: UpdateWays): string {
   return ways.reader === 'agent'
@@ -211,9 +212,9 @@ export function notAnInstall(ways: UpdateWays): string {
     (ways.reader === 'agent'
       ? 'Nothing you call changes that: only the person who runs your host can, by making it an install with setup or ' +
         'by updating it by hand.'
-      : 'Installed from npm, it can: run the package\'s src/update/setup.ts with bun once, from the directory you start ' +
-        'the host in and with the DATA_DIR you start it with ' +
-        '(`bun node_modules/@animalabs/connectome-host/src/update/setup.ts` when it\'s installed there); setup then says ' +
+      : 'If it was installed from npm, it can: run the package\'s src/update/setup.ts with bun once, from the directory ' +
+        'that you start the host in and with the DATA_DIR that you start it with. Where the package is installed in ' +
+        'that directory, that is `bun node_modules/@animalabs/connectome-host/src/update/setup.ts`. Setup then says ' +
         'how to start the host. A clone updates by hand: docs/DEPLOYMENTS.md, "Updating an install", "By hand".');
 }
 
@@ -237,8 +238,8 @@ export function registryPassOn(ways: UpdateWays): string[] {
 }
 
 const HOST_LINES = 'Those quoted lines are your host\'s, written to the person who runs it: what they ask of that person ' +
-  'is theirs to do, so pass it on. Where they say a store was refused, trying that release again before what they ask is ' +
-  'done falls back the same way.';
+  'is theirs to do, so pass it on. Where they say that a store was refused, a new try of that release falls back the ' +
+  'same way until what they ask is done.';
 
 export const GO_BACK_UNREAD = 'whether a Go back is offered';
 
@@ -377,7 +378,7 @@ export function statusLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   const armed = status.armed ?? null;
   if (armed !== null) {
     lines.push(`${armedName(armed)} is armed since ${armed.since}${armed.by !== null ? `, asked for by ${armed.by}` : ''}: it ` +
-      `begins at the host's first quiet moment, once ${QUIET_MOMENT}. ${UNASKED_CHILD_TURN}` +
+      `begins at the host's first quiet moment. ${QUIET_MOMENT} ${UNASKED_CHILD_TURN}` +
       (armed.lastTry === null ? ` ${ARMED_RETRY}` : ''));
     const last = armed.lastTry;
     if (last !== null) {
@@ -472,13 +473,14 @@ export function goBackLines(status: UpdateStatus, ways: UpdateWays = COMMAND_WAY
   return [
     `Going back to ${to}, whose data the copy holds as it was at ${since}. Two ways:`,
     `- ${ways.keep}: ${to} runs on the data as it is now, so residents lose nothing. It comes back as the host is ` +
-      'now: answering new turns, or holding them if its operator quiesced it, though a switch\'s quiesce left behind ' +
-      `ends at that start. If ${to} can't read the data, its start goes back to ${status.running} by itself, and ` +
+      'now: answering new turns, or holding them if its operator quiesced it. But a switch\'s quiesce that was left ' +
+      `behind ends at that start. If ${to} can't read the data, its start goes back to ${status.running} by itself, and ` +
       `${ways.restore} is the way then.`,
     `- ${ways.restore}: the copy is restored, and everything since ${since} is set aside, not deleted. For ` +
       'residents, that is everything they have lived since then. The host comes back answering new turns, unless its ' +
-      'operator had quiesced it before the Restart that took the copy, from the Web UI or through an MCPL server: then ' +
-      'it comes back holding them, and clicking "⏸ quiesced" in the Web UI\'s top bar lets them through. Whether it\'s quiesced now makes no difference.',
+      'operator had quiesced it, from the Web UI or through an MCPL server, before the Restart that took the copy. ' +
+      'Then it comes back holding them, and clicking "⏸ quiesced" in the Web UI\'s top bar lets them through. ' +
+      'Whether it\'s quiesced now makes no difference.',
     'Either way new turns are held first, and turns in progress get up to 2 min to end, as Restart does.',
   ];
 }

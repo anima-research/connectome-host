@@ -283,8 +283,8 @@ describe('a first setup', () => {
     expect(m.asked.some((question) => question.includes('exported'))).toBe(false);
     expect(out.filter((line) => line.startsWith('An ANTHROPIC_BASE_URL is exported'))).toEqual([
       `An ANTHROPIC_BASE_URL is exported in this shell, and ${join(dir, '.env')} sets none. Setup, its agent and the ` +
-      `resident take a base URL from ${join(dir, '.env')} alone, so setup offers no exported key, and checks the key it ` +
-      `asks for at Anthropic's own API. To go on with that gateway, write ANTHROPIC_BASE_URL into ${join(dir, '.env')}, ` +
+      `resident take a base URL from ${join(dir, '.env')} alone. So setup doesn't offer an exported key, and it checks ` +
+      `the key it asks for at Anthropic's own API. To go on with that gateway, write ANTHROPIC_BASE_URL into ${join(dir, '.env')}, ` +
       'and run setup again.']);
     expect(m.checked).toEqual([KEY]);
     expect(m.bases).toEqual([undefined]);
@@ -526,7 +526,7 @@ describe('the service manager', () => {
     const dir = scratch();
     const m = machine(dir, { platform: 'darwin', linger: null, macSession: 'exit 113', hidden: [KEY] });
     const { out } = await runSetup(dir, m.world);
-    expect(out.some((line) => line.startsWith('On macOS, a service of ada\'s stops when ada logs out'))).toBe(true);
+    expect(out.some((line) => line.startsWith('On macOS, ada\'s services stop when ada logs out'))).toBe(true);
     expect(m.launched[0]!.env.CONNECTOME_SETUP_MAC_SESSION).toBe('exit 113');
   });
 });

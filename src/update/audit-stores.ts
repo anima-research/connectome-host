@@ -203,7 +203,7 @@ export async function auditBeforeCommit(
   });
   if (failures.length === 0) return;
   throw new StartRefusal(
-    `This release couldn't open every store it would open only after its commit, so it starts none of its ` +
+    `This release couldn't open every store that it opens only after its commit. So it starts none of its ` +
     `agents, and the next start goes back to ${committed}:\n${failures.join('\n')}\n` +
     `To take this release, do what each line says and correct each failure it names, then update again; ` +
     `or stay on ${committed} until a release opens every store.`,

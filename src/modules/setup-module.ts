@@ -63,7 +63,7 @@ export function openingMessage(held: boolean, after: 'start' | 'switch'): string
 }
 
 export const REFUSED_TURN = 'The model refused that turn. This can come from anything in the conversation, not only ' +
-  'what you just wrote. Try once more; if it refuses again, /session new starts a new conversation with setup\'s ' +
+  'what you just wrote. Try once more. If it refuses again, /session new starts a new conversation with setup\'s ' +
   'agent, and what setup has done stays on disk.';
 
 export function showsItself(tool: string): boolean {

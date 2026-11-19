@@ -676,7 +676,7 @@ test('bare gives a reason the host stored, such as an armed try\'s, as the host 
   const { root, data } = install();
   const { path } = writeInstallCommand(root, '');
   const waited = 'turns were still going. Ending the switch\'s quiesce didn\'t reach every host: kid: it didn\'t say why. ' +
-    'An operator\'s /update restart resume tries again, as does the host\'s next start.';
+    'An operator\'s /update restart resume tries again, and so does the host\'s next start.';
   await fakeHost(data, (message, reply) => {
     if (message.type === 'panel-request' && message.op === 'health') {
       reply({ type: 'panel-response', corrId: message.corrId, op: 'health', ok: true, data: { update: { ...STATUS, armed: {
@@ -1089,7 +1089,7 @@ test('update runs /update with the same words in the host and prints its answer 
 test('update the host answers no to prints its words and exits 1', async () => {
   const { root, data } = install();
   const { path } = writeInstallCommand(root, '');
-  const nothing = 'No release newer than 0.14.1 is offered, so nothing was installed: Update offers final releases ' +
+  const nothing = 'No release newer than 0.14.1 is offered, so nothing was installed. Update offers only final releases ' +
     'that aren\'t deprecated.';
   await fakeHost(data, (message, reply) => {
     if (message.type !== 'command') return;
@@ -1149,7 +1149,7 @@ test('update whose connection closes before its answer ends exits 1 and says how
   const ran = await run(path, ['update', 'restart'], root);
   expect(ran.status).toBe(1);
   expect(ran.out).toBe('Asking the host to restart…\n');
-  expect(ran.err).toContain('closed the connection before its answer ended, so how it ended isn\'t known');
+  expect(ran.err).toContain('closed the connection before its answer ended, so this command can\'t tell how the update ended');
   expect(ran.err).toContain(`\`${path}\` says what runs now.`);
 });
 

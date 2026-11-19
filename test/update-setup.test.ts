@@ -566,9 +566,9 @@ describe('setup', () => {
       `node_modules/@animalabs/connectome-host/src/update/setup.ts --root ${root}`;
     const wayOn = (): string => `stop its service, move ${root} aside, keeping it until the new install runs, and run ` +
       `\`${setupThere()}\`, with DATA_DIR the data directory its host was started with if that isn't ${data}, and ` +
-      '--extra-state PATH added for each place of state kept outside the data directory that\'s there now: setup then ' +
-      'makes the install afresh there, serving that data directory, with no journal or copy, so with no Go back, and ' +
-      'starting the service again starts the new install, since its path is the same, and ' +
+      '--extra-state PATH added for each place of state kept outside the data directory that\'s there now. Setup then ' +
+      'makes the install afresh there, serving that data directory, with no journal or copy, so with no Go back. ' +
+      'Starting the service again starts the new install, since its path is the same, and ' +
       `\`${join(root, 'connectome')} service install <recipe>\` then writes the service again, if that's what set ` +
       'it up. Those places: a setup run that ' +
       'finished printed them after "State kept outside the data directory", and the moved root\'s copy/copy.json, if it ' +
