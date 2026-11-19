@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { AnthropicXmlFormatter } from '@animalabs/membrane';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
-import { unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
+import { recipeFormatter } from '../src/recipe-formatter.js';
+import { unknownRecipeKeys, validateRecipe, type Recipe } from '../src/recipe.js';
 
 const recipe = (agent: Record<string, unknown> = {}) => ({
   name: 'skip-reply-text-policy',
@@ -37,6 +39,28 @@ describe('agent.sameRoundSkipReplyTextPolicy', () => {
       expect(message).toContain("formatter 'anthropic-xml'");
       expect(message).toContain(`provider '${provider ?? 'anthropic'}'`);
       expect(message).toContain("thinking");
+    }
+  });
+
+  test("refuses 'ask' exactly where the host builds the XML formatter, for each provider and formatter", () => {
+    const providers: Array<Record<string, string>> = [
+      {}, { provider: 'anthropic' }, { provider: 'openrouter' }, { provider: 'bedrock' },
+      { provider: 'openai-compatible', baseUrl: 'https://llm.example/v1' },
+      { provider: 'openai-responses' }, { provider: 'openai-codex' },
+    ];
+    for (const extra of providers) {
+      for (const formatter of [undefined, 'native', 'anthropic-xml']) {
+        const agent = { model: 'm-1', sameRoundSkipReplyTextPolicy: 'ask', ...extra, ...(formatter ? { formatter } : {}) };
+        let refused = false;
+        try {
+          validateRecipe(recipe(agent));
+        } catch (err) {
+          if (!(err as Error).message.includes('sameRoundSkipReplyTextPolicy')) throw err;
+          refused = true;
+        }
+        const xml = recipeFormatter(recipe(agent) as unknown as Recipe, extra.provider ?? 'anthropic', 'm-1') instanceof AnthropicXmlFormatter;
+        expect({ ...extra, formatter, refused }).toEqual({ ...extra, formatter, refused: xml });
+      }
     }
   });
 
