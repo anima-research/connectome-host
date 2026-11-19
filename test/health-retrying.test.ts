@@ -71,6 +71,13 @@ describe('a health client gets the retry', () => {
     expect(sent.agents[0]!.turnAlive).toBe(true);
     expect(agentActivity(sent.agents[0]!, at(1_000), inFor)).toEqual({ word: 'retrying', detail: 'overloaded · try 7 of 13 · in 60s' });
   });
+
+  test("an idle agent with a held turn reads as waiting for compression, with its refusal type and no progress text", () => {
+    const agent = { name: 'main', status: 'idle', budgetHold: { errorType: 'context_refusal', pending: 'raw', heldRequests: 2 } } as const;
+    const sent = keepNamedStrings({ agents: [agent] }, HEALTH_STRINGS) as { agents: [typeof agent] };
+    expect(sent.agents[0].budgetHold).toEqual({ errorType: 'context_refusal', pending: '', heldRequests: 2 });
+    expect(agentActivity(sent.agents[0], at(0))).toEqual({ word: 'waiting for compression', detail: 'context_refusal' });
+  });
 });
 
 describe('the countdown', () => {

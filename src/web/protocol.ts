@@ -369,8 +369,8 @@ export interface BranchChangedMessage {
 }
 
 /** After an undo or a redo on the conversation agent's window
- *  (agent-framework #291, the `window:undone` trace), or a shed from it
- *  (`presentation:retracted`, reason `shed`), and right after each welcome:
+ *  (`window:undone`), a retraction that marks rows undone (`shed` or
+ *  `unsent-injection`), and right after each welcome:
  *  which of the transcript's rows from `fromIndex` on are out of that window
  *  as undone (`WelcomeMessageEntry.undone`), by store id. A row from there
  *  that isn't named isn't undone. This host sends `fromIndex` 0, every row

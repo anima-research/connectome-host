@@ -1815,10 +1815,12 @@ export class SubagentModule implements Module {
   /** agent-framework quotes the ephemeral agent's name in its own messages
    *  ("Ephemeral agent \"spawn-migrate-…\" failed to start inference …"), and
    *  the name is the agent's choice, so it's taken out before the classifiers
-   *  read the words. */
+   *  read the words. A failed ephemeral turn's plain Error carries its
+   *  original failure on cause. Keep that text inside the classifiers, so
+   *  the result and retry notices still give the framework's words. */
   private classifiedText(err: Error, agentName?: string): string {
-    const text = agentName ? err.message.split(agentName).join('') : err.message;
-    return text.toLowerCase();
+    const { message } = err.name === 'Error' && err.cause instanceof Error ? err.cause : err;
+    return (agentName ? message.split(agentName).join('') : message).toLowerCase();
   }
 
   private isRateLimitError(err: unknown, agentName?: string): boolean {

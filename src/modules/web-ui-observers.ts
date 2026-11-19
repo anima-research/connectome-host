@@ -514,6 +514,8 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'host:resume': HEALTH,
   'host:quiesced_boot': HEALTH,
   'inference:waiting': HEALTH,
+  'inference:held': HEALTH,
+  'inference:hold_ended': HEALTH,
   // Alerts: failures and refusals, the gate's decisions, modules coming and
   // going, MCPL servers and conversations, and what operators did.
   'ops:alert': OPS,
@@ -809,6 +811,7 @@ export const HEALTH_STRINGS: KeptStrings = {
     // A turn's wait for its next try: what the error policy retries it as
     // (`overloaded`, `rate_limited`), a class name, never the failure's text.
     retrying: { retryClass: true },
+    budgetHold: { errorType: true },
   },
   agentPhases: { '*': { phase: true } },
   credential: CREDENTIAL_STRINGS,
@@ -844,6 +847,12 @@ export const QUOTA_STRINGS: KeptStrings = {
 
 export function frameWithoutFailureText(frame: WebUiServerMessage): WebUiServerMessage {
   switch (frame.type) {
+    case 'trace':
+    case 'child-event': {
+      if (frame.event.type !== 'inference:held') return frame;
+      const { error: _error, ...event } = frame.event;
+      return { ...frame, event };
+    }
     case 'call-ledger':
       return { ...frame, ledger: keepNamedStrings(frame.ledger, LEDGER_STRINGS) as CallLedgerSnapshot };
     case 'credential-state':

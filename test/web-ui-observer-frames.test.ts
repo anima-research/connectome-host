@@ -891,7 +891,7 @@ describe('what each client is sent', () => {
   // it was. The agent's reply with 200 rows of others' traffic stored after
   // it stayed shown as in its context after an undo, and a row a redo put
   // back after it left the tail kept its undone label.
-  test("an undo's and a redo's marks reach every row a page holds, one 200 rows or more before the record's end too, and so do a shed's", async () => {
+  test("an undo's and a redo's marks reach every row a page holds, one 200 rows or more before the record's end too, as do a shed's and a hold's unsent injections", async () => {
     const say = (id: string, participant: string, text: string) => ({ id, participant, content: [{ type: 'text', text }] });
     transcript = [
       say('u1', 'user', 'count the ledgers'),
@@ -933,10 +933,17 @@ describe('what each client is sent', () => {
       await host.fence([c.operator]);
       applyUndoneMarksTo(rows, frames().at(-1) as never);
       expect(marked()).toEqual(['x3']);
+
+      undone = new Set(['x3', 'x4']);
+      host.emitTrace({ type: 'presentation:retracted', agentName: 'main', messageIds: ['x4'], reason: 'unsent-injection' });
+      await host.fence([c.operator]);
+      applyUndoneMarksTo(rows, frames().at(-1) as never);
+      expect(marked()).toEqual(['x3', 'x4']);
       expect(frames()).toEqual([
         { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['a1'] },
         { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: [] },
         { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['x3'] },
+        { type: 'undone-marks', agent: 'main', fromIndex: 0, undone: ['x3', 'x4'] },
       ]);
     } finally {
       transcript = [];

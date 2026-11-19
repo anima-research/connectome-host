@@ -8,6 +8,10 @@ export interface AgentRetrying {
   retryClass?: string;
 }
 
+export interface AgentBudgetHold {
+  errorType?: 'over_budget' | 'context_refusal';
+}
+
 /** How long until a time `ms` away, for a retry's countdown: seconds under
  *  two minutes, then minutes, then hours and minutes. */
 export function waitText(ms: number): string {
@@ -19,17 +23,19 @@ export function waitText(ms: number): string {
 
 /** What an agent's health row says it is doing. agent-framework's `status` is
  *  its agent's state machine, which reads `idle` between a failed call and
- *  its retry: the failed call reset it. `retrying` and `turnAlive` say what it
- *  doesn't, from the agent-framework release that adds them; before it, the
- *  row reads `status` as it always did. */
+ *  its retry: the failed call reset it. `budgetHold`, `retrying` and
+ *  `turnAlive` describe a turn that's still pending. */
 export function agentActivity(
-  a: { status?: string; turnAlive?: boolean; retrying?: AgentRetrying | null },
+  a: { status?: string; turnAlive?: boolean; retrying?: AgentRetrying | null; budgetHold?: AgentBudgetHold | null },
   /** The snapshot's `at`, the host's time when it was taken: `until` is the
    *  host's clock, and the browser's may be minutes off. Without an `at` it
    *  can read, it counts from this process's clock. */
   at: string | undefined,
   inFor: (ms: number) => string = waitText,
 ): { word: string; detail?: string } {
+  if (a.budgetHold && a.status === 'idle') {
+    return { word: 'waiting for compression', detail: a.budgetHold.errorType || undefined };
+  }
   const r = a.retrying;
   if (r) {
     const parts: string[] = [];
