@@ -8,7 +8,7 @@
   `restart` arms only on a headless host that started with `CONNECTOME_SUPERVISED=1` in its environment. `connectome service install` sets that only for a service that restarts the host when it exits with 75 and when it exits with 1. A service written by hand needs that line and both restarts. Anywhere else, `restart` refuses and says why.
   - **A busy host:** a host that is still busy at its quiet moment keeps the restart armed. It serves meanwhile, and tries again at least a minute later.
   - **A busy fleet child:** a fleet child counts as busy while it holds turn work that its framework doesn't count. An example is a text that the framework refused, which the child keeps for the framework that a session switch installs next. A fleet child on a release that doesn't report its work in flight is counted by its turns and scripts alone.
-  - **Turns that the switch doesn't wait for:** a turn on a fleet child that started after the switch's last look asked the others, and a turn that a resume reached after that look.
+  - **Turns that the switch doesn't wait for:** a turn that a fleet child begins after the switch's last look asked its children, and a turn on a child that a resume reached after that look.
   - **A child's socket:** while a restart stays armed, each try connects again to a fleet child whose socket another client took. A child's socket keeps one client. So a person connected to a child's socket loses that connection about once a minute.
   - **An operator's Restart or Go back** takes an armed restart's place.
 

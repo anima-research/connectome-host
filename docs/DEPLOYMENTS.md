@@ -547,8 +547,8 @@ errors or reasons either.
   ends a switch's quiesce left on a host after an earlier try. Restart doesn't
   wait for scripts that a turn left running in the background, and the stop ends
   them. Just before the stop, the switch asks its fleet children once more. It
-  doesn't wait for a turn on a child that started after that look asked the
-  others, or that a resume reached after it. That resume can be the child's
+  doesn't wait for a turn that a child begins after that look asked the
+  children, or for a turn on a child that a resume reached after that look. That resume can be the child's
   person's, or one that this host sent earlier, such as at its start. An MCPL
   server can ask for a quiesce with `host/command` while the switch's quiesce
   holds a host. That quiesce is taken into the switch's, since agent-framework
