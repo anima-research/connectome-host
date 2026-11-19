@@ -295,6 +295,31 @@ authenticated realm, echo suppression, upload availability, destination access,
 shared-stream wake policy, or crash/power-loss behavior of a production disk.
 No other connector implementation is claimed.
 
+### Known limits
+
+* **Repeated status sends when the connector reconnects on every send.** An
+  uncertain status clears the dedup baseline, and a reconnect or registration
+  of the bound server triggers a status check. If the connector reconnects
+  while handling each home send, and every send ends uncertain (timeout or no
+  valid acknowledgement), each reconnect sends another status, which can cause
+  another reconnect. There is no retry limit, and the next send does not wait
+  for a separate observation. The operator sees repeated status posts or
+  attempts in the status topic. Stderr shows a
+  `[notices:home] record <id>: uncertain; detail=...` line for each send, and
+  the journal's `retention.evicted` count rises as older records leave the
+  128-record window. The loop ends when a status is acknowledged (the next
+  identical view is then deduplicated), when the connector stops
+  reconnecting, or when the host stops. Stop the host or fix the connector.
+* **Refusal and context-refusal are not closed by `inference:completed`
+  alone.** After a subject's `refusal` or `context-refusal` incident, a later
+  successful turn that emits `inference:completed` but no
+  `inference:turn_ended` for that agent leaves the incident active. Legacy
+  notices close those episodes on that completion. The operator sees the
+  incident ID stay in later status posts under `Tracked incident IDs`, with no
+  `recovery-observed` post. It stays until a matching `inference:turn_ended`
+  or explicit clear, eviction from the 64 tracked incidents (counted as
+  forgotten), or a host restart or session switch.
+
 Future owner-authenticated preemptive controls must be a separate authority
 path, not interpreted from this data. Context rewind would not undo external
 effects. This feature implements no control topic, buttons, pause/resume,

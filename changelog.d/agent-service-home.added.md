@@ -17,4 +17,11 @@
   and counts, never diagnostic free text. Fork nullable schemas and branded
   receipts are supported. Legacy notices are unchanged when home is omitted;
   live connector/realm/echo qualification and activation remain operator work.
+  Known limits: a connector that reconnects while handling every home send,
+  with every send uncertain, repeats status sends with no retry limit (the
+  status topic can show repeated posts and stderr logs each uncertain send) until a
+  status is acknowledged, the reconnects stop or the host stops. A `refusal` or
+  `context-refusal` incident is not closed by `inference:completed` alone, as
+  it is in legacy notices; it stays in the tracked incident IDs of later status
+  posts until a matching turn end or clear, eviction, restart or session switch.
 - Recognize home-notice log prefixes in bug reports.
