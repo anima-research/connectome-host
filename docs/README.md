@@ -8,8 +8,8 @@ A map of the guides, by who they are for. The top-level
 
 | Guide | For |
 |---|---|
-| [AGENT-ONBOARDING.md](./AGENT-ONBOARDING.md) | Deploying a new resident end to end — interview, host user, install dir, recipe, history import, Discord, services, launch checks. Written as a runbook for an assisting Claude instance. |
-| [DEPLOYMENTS.md](./DEPLOYMENTS.md) | Day-to-day operations: supervision, logs, wake gating, known gaps. |
+| [AGENT-ONBOARDING.md](./AGENT-ONBOARDING.md) | Setting up a new resident with the person it's for, after `connectome setup discord`: who it is, Discord, a history to import, the recipe, the service and its checks, `SETUP.md`. Written for the host's setup agent, which reads it a section at a time, and for any other agent doing the same. |
+| [DEPLOYMENTS.md](./DEPLOYMENTS.md) | Day-to-day operations: supervision, logs, a resident's memory (sizing, the folding solver, repairing a store), updates, wake gating, known gaps. |
 | [DEV-ENVIRONMENT.md](./DEV-ENVIRONMENT.md) | Working on the libraries themselves: sibling checkouts wired to one shared instance of each. |
 | [webui-deployment.md](./webui-deployment.md) | Serving the web console behind a proxy; auth and observers. |
 | [webui-live-surgery.md](./webui-live-surgery.md) | Rolling back, suppressing messages, quiescing — from the web console. |

@@ -2325,8 +2325,6 @@ export class FleetModule implements Module {
 
   async requestSwitch(childName: string, request: SwitchRequest, timeoutMs: number): Promise<{ ok: boolean; data?: unknown; error?: string }> {
     const child = this.children.get(childName);
-    // Keep the switch's requests outside the bound: a switch sends a child three at most, so they make no loop,
-    // and a child whose resume can't be sent stays quiesced until a later resume or its next start.
     if (child) await this.tryReopen(child, { withinBound: true });
     return this.requestAnswer(childName, `update-${request.op}`, 'update-response', `the switch's ${request.op}`, timeoutMs,
       (corrId) => ({ type: 'update-request', request, corrId }));

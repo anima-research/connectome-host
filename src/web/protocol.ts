@@ -892,6 +892,8 @@ export interface CommandMessage {
   type: 'command';
   command: string;
   corrId?: string;
+  /** Sent by the page's own Update controls, so /update answers in the page's words. */
+  page?: true;
 }
 
 /** @childname routing for fleet children; bypasses the conductor agent. */
@@ -1349,7 +1351,8 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
     }
     case 'command':
       return typeof v.command === 'string'
-        && (v.corrId === undefined || typeof v.corrId === 'string');
+        && (v.corrId === undefined || typeof v.corrId === 'string')
+        && (v.page === undefined || v.page === true);
     case 'route-to-child':
       return isNonEmptyString(v.childName) && typeof v.content === 'string';
     case 'cancel-subagent':
