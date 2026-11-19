@@ -149,7 +149,7 @@ const STATUS_WORDS: Readonly<Record<string, string>> = Object.freeze({
   'quota-unreadable': "its subscription quota couldn't be read, so no spent-quota hold is possible; an operator's Re-read quota reads it again",
   'auth-expiring': 'its provider credential expires soon',
   'credential-unsaved': "its provider credential couldn't be saved to its file, so a restart may not find the credential in use; an operator's Re-check writes it again",
-  'refusal-offpath': "a request couldn't be completed",
+  'refusal-offpath': "a request outside its own turns, such as for a summary, couldn't be completed",
   'refusal': "a request couldn't be completed",
   'context-maintenance-failed': "its context maintenance didn't finish",
   'compression-quarantine': 'part of its history is held back from summaries and stays whole, which in time fills its context budget; an operator can inspect what is held, then branch, pin or clear it',
@@ -171,7 +171,7 @@ function plainReason(kind: string): string {
 }
 
 function statusReason(kind: string): string {
-  return wordsFor(REPLY_WORDS, kind) ?? wordsFor(STATUS_WORDS, kind) ?? 'it needs an operator';
+  return wordsFor(REPLY_WORDS, kind) ?? wordsFor(STATUS_WORDS, kind) ?? 'the host raised an alert of this kind';
 }
 
 function untilText(ep: { kind: string; until?: number }): string {
