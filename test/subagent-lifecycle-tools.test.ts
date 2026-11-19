@@ -1295,6 +1295,7 @@ describe('a failed subagent\'s error stays with the operator', () => {
       const listed = await h.call('list', {});
       expect(JSON.stringify(listed)).toContain('"name":"scout"');
       const views = [listed, await h.call('peek', {}), await h.call('peek', { name: 'scout' })];
+      expect(views.map((view) => [view.success, view.error])).toEqual([[true, undefined], [true, undefined], [true, undefined]]);
       for (const view of views) expect(JSON.stringify(view)).not.toContain('sentinel-6e2a');
     } finally { await h.cleanup(); }
   }, 20_000);
