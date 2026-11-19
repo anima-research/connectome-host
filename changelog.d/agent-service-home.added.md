@@ -2,9 +2,11 @@
   the existing authenticated MCP connection, without model turns or locus/open
   changes. Includes explicit operator-attested/unverified realm and self-echo
   preflight declarations, bounded private delivery state and per-record no-retry
-  uncertainty. Independent observations queue during delivery; overload drops
-  only newly arriving work while at capacity. Status reports tracked incidents,
-  not routine turns. Shutdown drains accepted work within a shared send budget
+  uncertainty. New observations queue during delivery, including possible
+  connector echoes; overload drops only newly arriving work while at capacity.
+  Inference completion can close a matching hard-down. Status reports tracked
+  incidents, including after delayed incident delivery, not routine turns.
+  Shutdown drains accepted work within a shared send budget
   and journals unsent work locally when it expires. Incident tracking and delivery evidence
   use finite retention windows rather than lifetime failure latches. Host
   startup and session switch rename existing journal and staging entries aside

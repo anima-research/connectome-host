@@ -23,10 +23,9 @@ export function validHomeMessageIds(ids: unknown): ids is HomeMessageId[] {
 }
 
 export const SHUTDOWN_BUDGET_EXHAUSTED = 'shutdown-budget-exhausted';
-export const PUBLICATION_RELATED = 'publication-related-observation; no recursive delivery';
 
 const NOT_DISPATCHED = [
-  SHUTDOWN_BUDGET_EXHAUSTED, PUBLICATION_RELATED,
+  SHUTDOWN_BUDGET_EXHAUSTED, 'earlier-delivery-failed-for-this-observation',
   'topic-outside-binding', 'bound-server-missing-or-ambiguous', 'bound-server-unavailable',
   'server-prefix-drift', 'tool-not-owned-by-bound-server', 'observable-realm-mismatch',
   'missing-send-message-or-inline-attachment-capability', 'unsupported-explicit-stream-schema',

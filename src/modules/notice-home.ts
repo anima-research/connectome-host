@@ -1,12 +1,11 @@
 /** Private, bounded delivery state for NoticesModule. No checkpoint dependence,
  * no event bus, no timers polling health, no replay/retry worker. */
 import { constants } from 'node:fs';
-import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir, lstat, open, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { homeBindingKey, validateNoticeHome, type NoticeHomeConfig } from '../notice-home-config.js';
-import { PUBLICATION_RELATED, SHUTDOWN_BUDGET_EXHAUSTED, ZulipHomeDelivery,
+import { SHUTDOWN_BUDGET_EXHAUSTED, ZulipHomeDelivery,
   type HomeBackend, type HomeOutcome } from './notice-home-zulip.js';
 
 const MAX_RECORDS = 128;
@@ -30,9 +29,11 @@ const ALERT_KINDS = [
   'unknown-alert-kind',
 ] as const;
 type AlertKind = typeof ALERT_KINDS[number];
-// completed also precedes refusal reporting and has no stop reason in AF 0.33.
+// AF 0.33 emits completed before reporting refusal and without a stop reason.
+// It signals inference is reachable again, not that a refusal has ended.
+const COMPLETED_CLOSES = ['hard-down'] as const;
 const TURN_END_CLOSES = ['hard-down', 'context-refusal', 'refusal'] as const;
-const HOME_TRACES = ['ops:alert', 'inference:turn_ended', 'mcpl:server-reconnected', 'module:added'] as const;
+const HOME_TRACES = ['ops:alert', 'inference:completed', 'inference:turn_ended', 'mcpl:server-reconnected', 'module:added'] as const;
 const oneOf = <T extends string>(values: readonly T[], value: unknown): value is T => values.some(v => v === value);
 const digest = (s: string) => createHash('sha256').update(s).digest('hex');
 const incidentKey = (kind: string | null, subject: string | null) => digest(JSON.stringify([kind, subject]));
@@ -111,12 +112,9 @@ export class NoticeHome {
   private readonly instanceId: string;
   private bound = false;
   private delivery: ZulipHomeDelivery | null = null;
-  // Causal descendants (including callbacks after timeout) stay local without
-  // permanently latching unrelated observations or waiting for a hung call.
-  private readonly publicationContext = new AsyncLocalStorage<boolean>();
   private dropped = 0;
   private overflowReported = false;
-  private suppressDelivery = false;
+  private observationDeliveryFailed = false;
 
   constructor(private readonly binding: NoticeHomeConfig, private readonly runtime: HomeRuntime,
     private readonly now: () => number) {
@@ -149,7 +147,9 @@ export class NoticeHome {
     const type = event.type;
     if (!oneOf(HOME_TRACES, type)) return;
     const subject = typeof event.agentName === 'string' && event.agentName ? event.agentName : null;
-    if (type === 'inference:turn_ended' && subject === null) return;
+    const turnCloses = type === 'inference:completed' ? COMPLETED_CLOSES
+      : type === 'inference:turn_ended' ? TURN_END_CLOSES : null;
+    if (turnCloses && subject === null) return;
     const at = this.now();
     const source: SourceRef = { type, timestamp: typeof event.timestamp === 'number' && Number.isFinite(event.timestamp) ? event.timestamp : null };
     // Only fixed fields and digests enter the queue. The trace ID helps
@@ -163,28 +163,25 @@ export class NoticeHome {
     const kind = oneOf(ALERT_KINDS, base) ? base : 'unknown-alert-kind';
     const component = type === 'mcpl:server-reconnected' && typeof event.serverId === 'string' ? event.serverId
       : type === 'module:added' && typeof event.moduleName === 'string' && event.moduleName.startsWith('mcpl:') ? event.moduleName.slice(5) : null;
-    if (type !== 'ops:alert' && type !== 'inference:turn_ended' && !component) return;
+    if (type !== 'ops:alert' && !turnCloses && !component) return;
     const boundServerObserved = component === this.binding.serverId;
     const alertKey = type === 'ops:alert' ? incidentKey(base, subject) : null;
-    const recoveries = type === 'inference:turn_ended' ? TURN_END_CLOSES.map(k => incidentKey(k, subject))
+    const recoveries = turnCloses ? turnCloses.map(k => incidentKey(k, subject))
       : component ? [incidentKey('mcpl-down', component)] : [];
-    // AF emits some call failures while callTool is in flight. Retain their
-    // fixed evidence locally, never recursively send alerts or statuses.
-    const publicationRelated = this.publicationContext.getStore() === true;
     this.enqueue(async () => {
       if (!time(at)) throw new Error('invalid host clock');
-      this.suppressDelivery = publicationRelated;
-      let changed = false;
-      if (alertKey !== null) changed = await this.alert(kind, alertKey, clear, source, sourceId, at);
+      this.observationDeliveryFailed = false;
+      let reportStatus = false;
+      if (alertKey !== null) reportStatus = await this.alert(kind, alertKey, clear, source, sourceId, at);
       else {
         for (const incident of [...this.journal.active]) {
           if (recoveries.includes(incident.key) &&
-              await this.alert(incident.kind, incident.key, true, source, sourceId, at)) changed = true;
+              await this.alert(incident.kind, incident.key, true, source, sourceId, at)) reportStatus = true;
         }
       }
       // Ordinary inference traces are not a status feed. A reconnect or
       // registration of the destination can report a previously unsent view.
-      if (changed || boundServerObserved) await this.status(source, at);
+      if (reportStatus || boundServerObserved) await this.status(source, at);
     });
   }
 
@@ -287,7 +284,7 @@ export class NoticeHome {
     await syncDirectory(this.runtime.directory);
   }
 
-  /** Return whether the set of tracked incident identities changed. */
+  /** Report status when tracking changes or an earlier unsent incident first delivers. */
   private async alert(kind: AlertKind, key: string, clear: boolean, source: SourceRef, sourceId: string, at: number): Promise<boolean> {
     const eventKey = digest(JSON.stringify([sourceId, key, clear]));
     if (this.journal.records.some((r) => r.eventKey === eventKey || r.lastEventKey === eventKey)) return false;
@@ -321,9 +318,9 @@ export class NoticeHome {
         return false;
       }
     } else if (active) this.journal.active = this.journal.active.filter((a) => a !== active);
-    await this.publish({ phase: clear ? 'recovery-observed' : 'incident', incidentId: active?.id ?? null,
+    const sent = await this.publish({ phase: clear ? 'recovery-observed' : 'incident', incidentId: active?.id ?? null,
       incidentKey: key, kind, source, eventKey, at });
-    return changed;
+    return changed || (!clear && sent);
   }
 
   private async status(source: SourceRef, at: number): Promise<void> {
@@ -336,15 +333,15 @@ export class NoticeHome {
   }
 
   private async publish(input: Pick<HomeRecord, 'phase' | 'incidentId' | 'incidentKey' | 'kind' | 'source' | 'eventKey' | 'tracking'> &
-    { at: number; statusKey?: string }): Promise<void> {
+    { at: number; statusKey?: string }): Promise<boolean> {
     const { at, statusKey, ...observation } = input;
     const r: HomeRecord = { ...observation, id: randomUUID(), lastEventKey: input.eventKey, instanceId: this.instanceId,
       lastSource: input.source, observedAt: at, lastSeen: at, count: 1, outcome: { state: 'intent' } };
     this.journal.records.push(r);
     if (this.remainingShutdownMs() <= 0) {
       r.outcome = { state: 'not-dispatched', detail: SHUTDOWN_BUDGET_EXHAUSTED };
-    } else if (this.suppressDelivery) {
-      r.outcome = { state: 'not-dispatched', detail: PUBLICATION_RELATED };
+    } else if (this.observationDeliveryFailed) {
+      r.outcome = { state: 'not-dispatched', detail: 'earlier-delivery-failed-for-this-observation' };
     } else {
       await this.save();
       const attachment = JSON.stringify({ ...ATTESTATION, record: r });
@@ -354,17 +351,17 @@ export class NoticeHome {
         (r.tracking ? `Tracked incident IDs: ${r.tracking.activeIncidentIds.join(', ') || 'none'}\nForgotten: ${r.tracking.forgottenActive}\n` : '') +
         `Pre-dispatch record: ${r.id}.json. Repeats update the private journal, not this message.`;
       const topic = r.phase === 'status' ? this.binding.statusTopic : this.binding.incidentsTopic;
-      r.outcome = await this.publicationContext.run(true, () =>
-        this.delivery!.send(r.id, topic, text, attachment, this.remainingShutdownMs));
+      r.outcome = await this.delivery!.send(r.id, topic, text, attachment, this.remainingShutdownMs);
     }
     if (r.outcome.state !== 'sent') {
       // Suppress only the rest of this observation (e.g. its derived status).
       // Future independent observations may dispatch; old records NEVER replay.
-      this.suppressDelivery = true;
+      this.observationDeliveryFailed = true;
       console.error(`[notices:home] record ${r.id}: ${r.outcome.state}; detail=${r.outcome.detail}; serverId=${this.binding.serverId}; journal=${join(this.runtime.directory, 'journal.json')}; no replay. Agent core continues.`);
     }
     if (statusKey && r.outcome.state === 'sent') this.journal.lastStatus = statusKey;
     await this.save();
+    return r.outcome.state === 'sent';
   }
 
   /** Oldest records leave the explicit <=128-record dedupe window.

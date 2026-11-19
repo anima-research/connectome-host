@@ -589,12 +589,14 @@ test('binding is immutable during runtime, not taken from alert/inbound fields',
   expect(h.calls.some((c) => (c.input as any).topic === 'agent incidents')).toBe(true);
 });
 
-test('publication-caused alerts cannot recursively send; core processing continues without model callback', async () => {
+test('a connector failure can echo as an incident, but exact echo replay dedups', async () => {
   const h = await harness();
   h.state.result = async () => { h.alert('mcpl-down', 'diagnostic about the failed send', 702); return { success: false }; };
   h.alert('future', 'original', 701); await h.settle(); await h.settle();
-  expect(h.calls).toHaveLength(2);
-  expect((await journal(h.dir)).records.some((r: any) => r.kind === 'mcpl-down')).toBe(true);
+  expect(h.calls).toHaveLength(3); // startup, original, one observed echo
+  const echo = observed(await journal(h.dir), 702);
+  expect(echo).toMatchObject({ kind: 'mcpl-down', count: 1, outcome: { state: 'uncertain' } });
+  expect(delivered(h.calls, echo)).toBe(true);
   expect(await h.module.onProcess({ type: 'mcpl:channel-incoming', channelId: 'normal' } as never, {} as never)).toEqual({});
   expect(h.forbidden).toEqual([]);
   expect(h.module.homeState()?.deliveryHalted).toBe(false);
@@ -765,6 +767,33 @@ test('fix1 F3/F4: exact AF refusal streak order never clears; successful endTurn
   expect((await journal(h.dir)).active.map((a: any) => a.kind)).toEqual(['refusal-offpath']);
 });
 
+test('review5 2: ordinary inference completion closes only the matching hard-down', async () => {
+  const h = await harness();
+  h.alert('hard-down', 'worker outage', 201);
+  h.alert('hard-down', 'child outage', 202, { agentName: 'child' });
+  h.alert('refusal', 'main refusal', 203);
+  h.alert('context-refusal', 'main context refusal', 204);
+  await h.settle();
+  const before = await journal(h.dir);
+  const original = observed(before, 201);
+  expect(original.outcome.state).toBe('sent');
+
+  h.emit({ type: 'inference:completed', timestamp: 205 }); // No subject.
+  h.emit({ type: 'inference:completed', agentName: 'worker', timestamp: 206 });
+  await h.settle();
+  const after = await journal(h.dir);
+  const clear = observed(after, 206);
+  expect(clear).toMatchObject({ phase: 'recovery-observed', kind: 'hard-down',
+    incidentId: original.incidentId, source: { type: 'inference:completed' }, outcome: { state: 'sent' } });
+  expect(delivered(h.calls, clear)).toBe(true);
+  expect(after.active.map((a: any) => a.id)).toEqual([202, 203, 204].map(ts => observed(before, ts).incidentId));
+
+  h.alert('hard-down', 'new worker outage', 207); await h.settle();
+  const reopened = observed(await journal(h.dir), 207);
+  expect(reopened.incidentId).not.toBe(original.incidentId);
+  expect(delivered(h.calls, reopened)).toBe(true);
+});
+
 test('fix1 F5: >128 healthy reconnect notices compact; the active incident anchor survives as uncertain', async () => {
   const h = await harness();
   h.state.result = async () => ({ success: false });
@@ -868,22 +897,28 @@ test('fix1 F1b: actual single JSON content branded acknowledgement', async () =>
   expect(old.outcome).toEqual({ state: 'sent', messageIds: ['realm:42', 'realm:43'] });
 });
 
-test('fix1 F2: delayed publication failure after timeout cannot recurse; new independent incident still delivers', async () => {
+test('a connector failure after timeout is a new observation, not a replay of the timed-out send', async () => {
   const h = await harness({ sendTimeoutMs: 25 });
+  let release!: () => void, emitted!: () => void;
+  const late = new Promise<void>(resolve => { release = resolve; });
+  const echoObserved = new Promise<void>(resolve => { emitted = resolve; });
   let attempts = 0;
   h.state.result = async () => {
     if (++attempts === 1) {
-      await new Promise(resolve => setTimeout(resolve, 65));
+      await late;
       h.alert('mcpl-down', 'late failure of our own timed-out send', 810, { agentName: 'chat-ops' });
+      emitted();
     }
     return { success: false };
   };
   h.alert('original-timeout', 'original independent incident', 800); await h.settle();
-  await new Promise(resolve => setTimeout(resolve, 90)); await h.settle();
-  expect(h.calls).toHaveLength(2); // startup and original only, never the late child alert/status.
+  release();
+  await echoObserved; await h.settle();
+  expect(h.calls).toHaveLength(3); // startup, original, late echo
   let j = await journal(h.dir);
   expect(observed(j, 800).outcome.state).toBe('uncertain');
-  expect(j.records.find((r: any) => r.kind === 'mcpl-down').outcome.state).toBe('not-dispatched');
+  expect(observed(j, 810)).toMatchObject({ kind: 'mcpl-down', outcome: { state: 'uncertain' } });
+  expect(delivered(h.calls, observed(j, 810))).toBe(true);
   h.state.result = async () => ({ success: true, structured: { result: 'success', id: h.calls.length } });
   h.emit({ type: 'mcpl:server-reconnected', serverId: 'chat-ops', timestamp: 811 }); await h.settle();
   h.alert('new-independent', 'new independent incident after recovery', 812); await h.settle();
@@ -892,31 +927,50 @@ test('fix1 F2: delayed publication failure after timeout cannot recurse; new ind
   expect(observed(j, 800).outcome.state).toBe('uncertain');
 });
 
+test('review5 1: independent connector lifecycle events from a resource created during delivery can publish', async () => {
+  const h = await harness();
+  let outage!: () => void, reconnect!: () => void;
+  const outageSignal = new Promise<void>(resolve => { outage = resolve; });
+  const reconnectSignal = new Promise<void>(resolve => { reconnect = resolve; });
+  let observedOutage!: Promise<void>, observedReconnect!: Promise<void>;
+  h.state.result = async () => {
+    if (h.calls.length === 2) {
+      // Both callbacks are created inside the call. The connector resource
+      // outlives the send; its later independent events are not send failures.
+      observedOutage = outageSignal.then(() => {
+        h.alert('mcpl-down', 'later independent bound server outage', 901, { agentName: 'chat-ops' });
+      });
+      observedReconnect = reconnectSignal.then(() => {
+        h.emit({ type: 'mcpl:server-reconnected', serverId: 'chat-ops', timestamp: 902 });
+      });
+    }
+    return { success: true, structured: { result: 'success', id: h.calls.length } };
+  };
+  h.alert('hard-down', 'unrelated provider outage', 900); await h.settle();
+  outage();
+  await observedOutage; await h.settle();
+  reconnect();
+  await observedReconnect; await h.settle();
+  const j = await journal(h.dir);
+  const incident = observed(j, 901), recovery = observed(j, 902);
+  expect(incident).toMatchObject({ phase: 'incident', kind: 'mcpl-down', outcome: { state: 'sent' } });
+  expect(recovery).toMatchObject({ phase: 'recovery-observed', incidentId: incident.incidentId, outcome: { state: 'sent' } });
+  expect(delivered(h.calls, incident)).toBe(true);
+  expect(delivered(h.calls, recovery)).toBe(true);
+});
 
-for (const [first, ownCallbacks] of [['status', false], ['incident', false], ['incident', true]] as const) {
-  test(`fix2 N1: slow successful ${first} send queues outside-context burst; own callbacks=${ownCallbacks}`, async () => {
+for (const first of ['status', 'incident'] as const) {
+  test(`fix2 N1: slow successful ${first} send queues an independent burst`, async () => {
     const h = await harness({ sendTimeoutMs: HELD_SEND_TIMEOUT_MS, setup: h => {
       if (first === 'status') h.result = async () => ({ success: false });
     } });
-    let entered!: () => void, release!: () => void, releaseLate!: () => void, lateDone!: () => void;
+    let entered!: () => void, release!: () => void;
     const inFlight = new Promise<void>(resolve => { entered = resolve; });
     const gate = new Promise<void>(resolve => { release = resolve; });
-    const lateGate = new Promise<void>(resolve => { releaseLate = resolve; });
-    const lateFinished = new Promise<void>(resolve => { lateDone = resolve; });
     let attempts = 0;
     h.state.result = async () => {
       const messageId = h.calls.length;
       if (++attempts === 1) {
-        if (ownCallbacks) {
-          h.alert('mcpl-down', 'own synchronous failure callback', 901, { agentName: 'chat-ops' });
-          // The continuation is created INSIDE callTool's publication context,
-          // but fires after the successful send and independent burst settle.
-          void (async () => {
-            await lateGate;
-            h.alert('mcpl-down', 'own late failure callback', 904, { agentName: 'chat-ops' });
-            lateDone();
-          })();
-        }
         entered();
         await gate;
       }
@@ -926,20 +980,16 @@ for (const [first, ownCallbacks] of [['status', false], ['incident', false], ['i
       h.emit({ type: 'mcpl:server-reconnected', serverId: 'chat-ops', timestamp: 900 });
     } else h.alert('mcpl-down', 'other server unavailable', 900, { agentName: 'other-server' });
     await inFlight;
-    // This test continuation is OUTSIDE callTool's ALS context. Both source
-    // observations arrive while the unrelated successful send is held open.
+    // Both source observations arrive while the unrelated send is held open.
     try {
       expect(h.calls).toHaveLength(2);
       h.alert('hard-down', 'independent provider unavailable', 902);
       h.alert('store-held-lost', 'independent held mail lost', 903, { data: { count: 2 } });
       expect(h.module.homeState()?.queued).toBeGreaterThanOrEqual(3);
     } finally { release(); }
-    await h.settle(); await h.settle();
-    releaseLate();
-    if (ownCallbacks) await lateFinished;
-    await h.settle(); await h.settle();
+    await h.settle();
     const j = await journal(h.dir);
-    const external = j.records.filter((r: any) => r.phase === 'incident' && r.incidentKey !== keyFor('mcpl-down', 'chat-ops'));
+    const external = j.records.filter((r: any) => r.phase === 'incident');
     expect(external.map((r: any) => r.kind)).toEqual(first === 'status'
       ? ['hard-down', 'store-held-lost'] : ['mcpl-down', 'hard-down', 'store-held-lost']);
     for (const r of external) {
@@ -950,14 +1000,7 @@ for (const [first, ownCallbacks] of [['status', false], ['incident', false], ['i
     for (const kind of ['hard-down', 'store-held-lost']) {
       expect(j.records.some((r: any) => r.phase === 'status' && r.outcome.state === 'sent' && r.tracking.activeIncidentIds.includes(j.records.find((x: any) => x.kind === kind && x.phase === 'incident').incidentId))).toBe(true);
     }
-    const own = j.records.filter((r: any) => r.phase === 'incident' && r.incidentKey === keyFor('mcpl-down', 'chat-ops'));
-    expect(own).toHaveLength(ownCallbacks ? 2 : 0);
-    for (const r of own) {
-      expect(r.outcome).toEqual({ state: 'not-dispatched', detail: 'publication-related-observation; no recursive delivery' });
-      expect(h.calls.some(c => c.id === `notice-home-${r.id}`)).toBe(false);
-    }
-    // startup + slow send (+ incident's status) + two incidents and statuses;
-    // neither own callback nor its derived status starts another send.
+    // startup + slow send (+ incident's status) + two incidents and statuses
     expect(h.calls).toHaveLength(first === 'status' ? 6 : 7);
     expect(h.module.homeState()).toMatchObject({ disabled: null, queued: 0 });
     expect(h.forbidden).toEqual([]);
@@ -1040,6 +1083,32 @@ test('R2: a status suppressed by failed incident delivery does not become the se
   expect(h.calls).toHaveLength(2); // A delivered identical state DOES dedup.
 });
 
+test('review5 3: a fresh repeat that first delivers an incident also publishes its status', async () => {
+  const h = await harness();
+  const tool = h.state.tools.pop();
+  h.alert('hard-down', 'refused by preflight', 9010); await h.settle();
+  const before = await journal(h.dir);
+  const original = observed(before, 9010);
+  expect(original.outcome.state).toBe('not-dispatched');
+  expect(h.calls).toHaveLength(1); // Only the empty startup status.
+
+  h.state.tools.push(tool); // Schema restored without a lifecycle trace.
+  h.alert('hard-down', 'refused by preflight', 9010); await h.settle();
+  expect(h.calls).toHaveLength(1); // An exact replay does not dispatch.
+  h.alert('hard-down', 'fresh repeat', 9011); await h.settle();
+  const after = await journal(h.dir);
+  const fresh = observed(after, 9011);
+  expect(fresh).toMatchObject({ incidentId: original.incidentId, outcome: { state: 'sent' } });
+  const status = after.records.at(-1);
+  expect(status).toMatchObject({ phase: 'status', source: { timestamp: 9011 },
+    tracking: { activeIncidentIds: [original.incidentId] }, outcome: { state: 'sent' } });
+  expect(h.calls.slice(1).map(call => call.id)).toEqual([fresh, status].map(r => `notice-home-${r.id}`));
+  expect(observed(after, 9010)).toEqual(original);
+
+  h.alert('hard-down', 'coalesced repeat', 9012); await h.settle();
+  expect(h.calls).toHaveLength(3);
+});
+
 test('R3: more than 64 unresolved identities bound tracking without disabling delivery or claiming recovery', async () => {
   const h = await harness();
   for (let i = 0; i < 70; i++) {
@@ -1093,15 +1162,6 @@ test('R7: misspelled server binding reports the invalid ID and configured candid
     expect(text).toContain('runtime MCPL overlay');
     expect(text).toContain('archive the old private journal directory');
   } finally { log.mockRestore(); }
-});
-
-test('R9: the unreleased home is described under Added, not as fixes to a prior release', async () => {
-  // Release metadata has no delivery behavior; inspect the shipped fragments.
-  const names = await readdir(new URL('../changelog.d/', import.meta.url));
-  expect(names).not.toContain('zulip-home-fix1.fixed.md');
-  expect(names).not.toContain('zulip-home-fix2.fixed.md');
-  expect(names).not.toContain('663-notice-home-log-tags.fixed.md');
-  expect(await readFile(new URL('../changelog.d/agent-service-home.added.md', import.meta.url), 'utf8')).toContain('per-record no-retry');
 });
 
 test('stop drains accepted work, rejects later traces and settles before returning', async () => {

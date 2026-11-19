@@ -85,13 +85,14 @@ policy before a pilot. No live qualification/activation is part of this slice.
   of forgotten identities. It is a startup observation and a report on changes
   to local tracking, not a health snapshot. Routine turns do not post status;
   the sink does not read inference, refusal totals or provider admission state.
-  Reconnect or registration of the bound server can report a view that was
-  not previously acknowledged. Identical acknowledged snapshots dedup; local
+  Reconnect or registration of the bound server, or the first successful
+  delivery of a previously unsent incident on a fresh repeat, can report a
+  view that was not previously acknowledged. Identical acknowledged snapshots dedup; local
   refusal or uncertainty does not advance the baseline. The sink never polls.
 * Every accepted `ops:alert` observed by this framework sink is considered, including
   framework/component/child subjects, unknown kinds (generic presentation), and
   `refusal`; there is no category/tier censorship in home mode. Coalescing,
-  publication-local suppression, overload drops and storage disablement mean
+  same-observation delivery failure, overload drops and storage disablement mean
   not every alert gets a remote post. Stop unsubscribes, rejects new work and
   drains accepted observations. Sends share one five-second budget from stop;
   an in-flight send keeps its existing deadline and later sends use only the
@@ -108,11 +109,11 @@ policy before a pilot. No live qualification/activation is part of this slice.
   does not mean no refusal occurred. Categories are not used to hide observed
   alerts.
 * An explicit `*-clear` is a **source clear observation**, not a general healthy
-  claim; correlation can be unknown. Only successful `inference:turn_ended`
-  closes the matching subject's (including a child agent's) main-turn hard-down, context-refusal and refusal episodes.
-  In AF 0.33, `inference:completed` precedes refusal reporting and has no stop
-  reason: it clears **nothing** here. Natural completion without a later
-  authoritative clear may therefore leave an episode unresolved.
+  claim; correlation can be unknown. `inference:completed` and
+  `inference:turn_ended` both close a matching subject's hard-down episode,
+  including for a child agent. In AF 0.33, `inference:completed` precedes
+  refusal reporting and has no stop reason, so it does not clear refusal or
+  context-refusal; `inference:turn_ended` can close those as well.
   Main-turn success never clears auxiliary `refusal-offpath` or
   `context-maintenance-failed` (including agent-scoped background maintenance).
   These need their own source clear; this slice does not infer CM repair or
@@ -174,9 +175,9 @@ no cross-rollback deduplication guarantee.
   The journal's binding fingerprint scopes numeric and branded receipts to
   the configured server without storing the server name in the outcome.
   Old uncertain receipts are never silently upgraded to sent.
-* `not-dispatched`: definitive local preflight refusal, local-only publication-related
-  observation, or a send skipped because the shared shutdown budget expired
-  before dispatch.
+* `not-dispatched`: definitive local preflight refusal, an earlier failed
+  delivery for the same observation, or a send skipped because the shared
+  shutdown budget expired before dispatch.
 * `uncertain`: dispatch threw/timed out (5 seconds), returned failure/malformed
   acknowledgement. Timeout does not cancel a remote send; a late
   acknowledgement is not used to upgrade or replay it.
@@ -188,24 +189,19 @@ because the server is still connecting or has an incompatible schema is local
 to its record. New observations after connection/schema
 recovery can deliver normally, without a reset command or evidence deletion.
 
-Publication never emits a failure ops notice of its own. A private async context
-marks causal descendants of its delivery call local-only, including synchronous
-call-failure callbacks and late callbacks after timeout, and their derived
-statuses. Independent observations arriving outside that context during a slow
-successful send queue and deliver normally; being in flight is not itself a
-reason to suppress them. After a failed attempt, the remaining derived status
-of that same observation also stays local. There is no retry timer, no
-delivery-failure alert worker and no recursive publication loop.
+Publication never emits a failure ops notice of its own. An unsuccessful
+delivery keeps the remaining publications for that same observation (such as
+its derived status) local. The host does not use async ancestry to suppress
+new traces: observations from connector timers or transports created during
+a send can still publish, including later independent outages and reconnects.
+There is no retry timer or delivery-failure alert worker.
 
-**Bounded async-context risk (not live-qualified):** AsyncLocalStorage also
-propagates into long-lived timers/transports created inside delivery. Later
-bound-server lifecycle events from those resources may remain marked
-publication-related and local-only. Review probes demonstrated propagation in
-Bun 1.4.4 / Node 22.23.3 and the synthetic module effect, **not AF MCP end-to-end**. Review found inference
-queue events are not tainted by this mechanism; it is not a global inference
-suppression claim. Real-connector preflight must check bound-server lifecycle
-alerts/reconnects after delivery-triggered transport failure. No new AF API or
-lifecycle-fencing guarantee is provided here.
+**Possible connector echo:** If the connector or framework emits a trace
+because of a home send (including after timeout), that observation can publish
+an incident or status of its own. Matching repeats are subject to normal
+coalescing and dedup, but those rules do not prove or filter causation.
+Qualify transport-failure alerts and reconnect behavior in preflight. This
+is separate from inbound Zulip message self-echo.
 
 Console diagnostics and read-only `homeState()` expose
 storage disablement and overload drops (the cumulative runtime `dropped` count).
@@ -233,7 +229,7 @@ separately.
 Disablement logs include the cause and the journal path on stderr.
 Missing/ambiguous bound server IDs name registered candidates and
 point to recipe and runtime-overlay configuration, unlike a disconnected
-known server. No home delivery failure is recursively sent as an ops alert;
+known server. The home does not emit ops alerts for its own delivery failures;
 operators must monitor console logs or the inspection hook.
 
 Fresh repeats in an active episode coalesce into count, last-seen time and
@@ -289,7 +285,9 @@ channel-open and admission hooks/state stay unchanged. Tests cover binding,
 unknowns, source clear/recovery, a free-text canary in all three sinks, in-run
 dedup, preservation and reset on restart and session switch, durable ambiguity/no replay, known
 non-dispatch, drift, malformed answers,
-per-record uncertainty, non-recursive publication, bounded rolling compaction, overload and child recovery, quiet routine turns, and bounded stop. They do **not** prove a live connector's
+per-record uncertainty, connector echoes and independent lifecycle events,
+bounded rolling compaction, overload and child recovery, quiet routine turns,
+and bounded stop. They do **not** prove a live connector's
 authenticated realm, echo suppression, upload availability, destination access,
 shared-stream wake policy, or crash/power-loss behavior of a production disk.
 No other connector implementation is claimed.
