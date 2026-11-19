@@ -1,6 +1,8 @@
 import { captureBootConsole } from '../src/headless-boot-console.ts';
 import { runHeadless, endHeadlessLog } from '../src/headless.ts';
 import type { AppContext } from '../src/index.ts';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // A headless host that says console lines while it boots, as agent-framework
 // does when an MCPL server fails to connect, and more once it is up, as the
@@ -9,10 +11,14 @@ import type { AppContext } from '../src/index.ts';
 // the same before its boot lines. With BURST set, once up it says that many
 // lines in one go (crossing the log's cap when the test sized the log near
 // it) and then exits the way main().catch does: endHeadlessLog, process.exit.
+// With PULSE set, once up it says that many lines of about a KB every 20 ms
+// until it is shut down, and writes the count so far to pulses.txt, so a test
+// can move or delete the log under it and wait for a MiB of lines to pass.
 captureBootConsole();
 console.error('Failed to connect MCPL server "zz-boot": connection refused');
 console.error('[mcpl] server "zz-boot": tools/list failed: not connected');
 const burst = Number(process.env.BURST ?? 0);
+const pulse = Number(process.env.PULSE ?? 0);
 const running = runHeadless({
   recipe: { name: 'console-probe', agent: { name: 'agent' } },
   framework: {
@@ -32,6 +38,13 @@ setTimeout(async () => {
     for (let i = 1; i <= burst; i++) console.error(`[probe] burst ${i} ${'x'.repeat(80)}`);
     await endHeadlessLog();
     process.exit(1);
+  }
+  if (pulse > 0) {
+    let n = 0;
+    setInterval(() => {
+      for (let i = 0; i < pulse; i++) console.error(`[probe] pulse ${++n} ${'x'.repeat(1000)}`);
+      writeFileSync(join(process.env.DATA_DIR!, 'pulses.txt'), `${n}\n`);
+    }, 20);
   }
 }, burst > 0 ? 1500 : 100);
 await running;

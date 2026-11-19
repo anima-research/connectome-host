@@ -1,7 +1,7 @@
 import { SESSION_MARKER } from '../src/session-marker.js';
 import { test, expect } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, realpathSync, existsSync, readFileSync, rmSync, openSync, ftruncateSync, closeSync, statSync, readSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, realpathSync, existsSync, readFileSync, rmSync, openSync, ftruncateSync, closeSync, statSync, readSync, appendFileSync, renameSync, writeFileSync, mkdirSync, rmdirSync } from 'node:fs';
 import { HEADLESS_LOG_MAX_BYTES } from '../src/headless.js';
 import { type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -35,6 +35,22 @@ function tailText(path: string, bytes: number): string {
 
 /** The burst numbers a text holds, scanned once. */
 const burstNumbers = (text: string) => new Set([...text.matchAll(/\[probe\] burst (\d+) /g)].map((m) => Number(m[1])));
+
+/** The pulse numbers a text holds. */
+const pulseNumbers = (text: string) => [...text.matchAll(/\[probe\] pulse (\d+) /g)].map((m) => Number(m[1]));
+
+/** Wait until the PULSE child has said `n` lines (about a KB each), under 10 s. */
+async function pulsesPast(dir: string, n: number): Promise<number> {
+  const deadline = performance.now() + 10_000;
+  for (;;) {
+    const said = existsSync(join(dir, 'pulses.txt')) ? Number(readFileSync(join(dir, 'pulses.txt'), 'utf8')) : 0;
+    if (said >= n) return said;
+    if (performance.now() >= deadline) throw new Error(`only ${said} pulses after 10 s`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+const shutdown = (socket: Socket) => { socket.write('{"type":"shutdown"}\n'); };
 
 /** Run the mock child to a ready socket, then let `drive` end it; give back its exit code, stderr and the files. */
 async function runChild(dir: string, env: Record<string, string>, drive: (socket: Socket) => Promise<void> | void) {
@@ -194,3 +210,115 @@ test("a start whose own first lines cross the cap puts this run's marker in head
     rmSync(dir, { recursive: true, force: true });
   }
 }, 15000);
+
+test('a headless.log moved aside by something other than the host is left where it went, and the path is opened anew within a MiB — no rollover (R4-4)', async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'headless-console-')));
+  try {
+    const { code, log, rolled } = await runChild(dir, { PULSE: '100' }, async (socket) => {
+      // An external rotator's move: mv headless.log headless.log.1 && touch headless.log.
+      const moved = await pulsesPast(dir, 100);
+      renameSync(join(dir, 'headless.log'), join(dir, 'headless.log.1'));
+      writeFileSync(join(dir, 'headless.log'), '');
+      // Within a MiB of lines (about 1,050 of these) the host notices and opens the path.
+      await pulsesPast(dir, moved + 1500);
+      shutdown(socket);
+    });
+    expect(code).toBe(0);
+    // The rotator's file holds this run's boot and the lines up to the switch: the host didn't rename it back or over.
+    expect(rolled).toBeDefined();
+    expect(rolled!).toContain('headless start pid=');
+    expect(pulseNumbers(rolled!).length).toBeGreaterThan(100);
+    // The new file: one marker, the notice that the path was gone — not a rollover's — and the lines from the switch on, none lost or doubled.
+    expect(log.match(/^--- session .* ---$/gm)).toHaveLength(1);
+    expect(log).toContain('headless.log was gone (deleted, or moved by something other than the host) and was opened anew');
+    expect(log).not.toMatch(/rolled over at \d+ bytes/);
+    const inRolled = pulseNumbers(rolled!), inLog = pulseNumbers(log);
+    expect(inLog[0]).toBe(inRolled.at(-1)! + 1);
+    expect(inLog[0]).toBeLessThanOrEqual(pulseNumbers(rolled!).length + 1200);
+    expect(rolledOverLive(currentSession(log))).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 20000);
+
+test("at the cap, the host moves aside only the file it is writing: a rotator's headless.log put there meanwhile isn't renamed over the rotated one (R4-4)", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'headless-console-')));
+  try {
+    sparseLog(dir, HEADLESS_LOG_MAX_BYTES - 400_000);
+    const BURST = 4500;
+    const { code, log, rolled } = await runChild(dir, { BURST: String(BURST) }, () => {
+      // Before the burst crosses the cap, a rotator moves the log and leaves an empty one.
+      renameSync(join(dir, 'headless.log'), join(dir, 'headless.log.1'));
+      writeFileSync(join(dir, 'headless.log'), '');
+    });
+    expect(code).toBe(1);
+    // Before: at the cap the host renamed the rotator's empty headless.log over
+    // headless.log.1, and the 64 MiB it had been writing was gone.
+    expect(statSync(join(dir, 'headless.log.1')).size).toBeGreaterThan(HEADLESS_LOG_MAX_BYTES - 400_000);
+    expect(log).toContain('headless.log was gone (deleted, or moved by something other than the host) and was opened anew');
+    expect(log).not.toMatch(/rolled over at \d+ bytes/);
+    const inRolled = burstNumbers(rolled!), inLog = burstNumbers(log);
+    const all = new Set(Array.from({ length: BURST }, (_, i) => i + 1));
+    const lost = [...all].filter((n) => !inRolled.has(n) && !inLog.has(n));
+    const twice = [...inRolled].filter((n) => inLog.has(n));
+    expect({ lost: lost.length, twice: twice.length }).toEqual({ lost: 0, twice: 0 });
+    expect(inLog.size).toBeGreaterThan(0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 20000);
+
+test('a reopen that fails is tried again a MiB on, apart from any rollover, and the file is back within about a MiB of the fix (R4-3)', async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'headless-console-')));
+  try {
+    let fixedAt = 0;
+    const { code, log } = await runChild(dir, { PULSE: '100' }, async (socket) => {
+      // The log deleted and a directory put at its path: the host's open fails (EISDIR) until the directory goes.
+      const deleted = await pulsesPast(dir, 100);
+      rmSync(join(dir, 'headless.log'));
+      mkdirSync(join(dir, 'headless.log'));
+      // Past the first retry (a MiB after the delete was noticed), then the fix.
+      await pulsesPast(dir, deleted + 2400);
+      rmdirSync(join(dir, 'headless.log'));
+      fixedAt = Number(readFileSync(join(dir, 'pulses.txt'), 'utf8'));
+      await pulsesPast(dir, fixedAt + 1500);
+      shutdown(socket);
+    });
+    expect(code).toBe(0);
+    expect(existsSync(join(dir, 'headless.log.1'))).toBe(false);
+    expect(log.match(/^--- session .* ---$/gm)).toHaveLength(1);
+    expect(log).toContain('headless.log was gone (deleted, or moved by something other than the host) and was opened anew');
+    const inLog = pulseNumbers(log);
+    // Opened within about a MiB of lines after the directory went: not at the next cap crossing.
+    expect(inLog[0]).toBeGreaterThan(fixedAt - 1200);
+    expect(inLog[0]).toBeLessThanOrEqual(fixedAt + 1200);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 25000);
+
+test("a start whose headless.log can't be opened runs with its lines on stderr, says so there once, and opens the file within a MiB once it can (R4-2)", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'headless-console-')));
+  try {
+    mkdirSync(join(dir, 'headless.log'));
+    let fixedAt = 0;
+    const { code, stderr, log } = await runChild(dir, { PULSE: '100' }, async (socket) => {
+      // Up, ready and saying lines with no log file at all (before: the start threw).
+      const said = await pulsesPast(dir, 100);
+      rmdirSync(join(dir, 'headless.log'));
+      fixedAt = said;
+      await pulsesPast(dir, said + 1500);
+      shutdown(socket);
+    });
+    expect(code).toBe(0);
+    expect(stderr.match(/\[host\] headless\.log couldn't be opened \(/g)).toHaveLength(1);
+    expect(stderr).toContain('[probe] pulse 1 ');
+    expect(log).toMatch(/headless\.log is open from here; the \d+ bytes of lines before this went to stderr/);
+    expect(log.match(/^--- session .* ---$/gm)).toHaveLength(1);
+    const inLog = pulseNumbers(log);
+    expect(inLog[0]).toBeGreaterThan(fixedAt - 1200);
+    expect(inLog[0]).toBeLessThanOrEqual(fixedAt + 1200);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 25000);

@@ -143,7 +143,13 @@ under the working directory):
   are written to `headless.log` as well, from boot (for a host that reaches
   its headless runtime), since `/bug` reads a headless host's errors from it;
   `console.log` lines go to the supervisor alone. `headless.log` rolls over to
-  `headless.log.1` past 64 MiB.
+  `headless.log.1` past 64 MiB: the host rotates it itself, so leave it out of
+  `logrotate` and the like, or use `copytruncate` there — a file moved from
+  under the host is left where it went and the path is opened anew within a
+  MiB of lines, and the host never renames a file it isn't writing. A start
+  whose `headless.log` can't be opened (one another user owns, say) runs
+  with its lines on stderr and says so there once, trying the file again
+  every MiB.
 - Routing decisions go to stderr, as `[routeSpeech] …` and `[routing] …` lines.
   In readline mode they go to `data/readline-error.log` instead (below).
 - Raw model calls go to `data/llm-calls.<iso>.jsonl`, a new file at each start

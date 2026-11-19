@@ -16,8 +16,12 @@
   from then on,
   it is rolled over to `headless.log.1` (one generation kept) past 64 MiB, at
   a start and live; an exit right after a live rollover still waits for the
-  retired file's last lines, a log deleted while the host runs is opened anew
-  within a MiB of lines, and `/bug` reads `headless.log.1` back to its marker
+  retired file's last lines, a log deleted or moved from under the host is
+  opened anew within a MiB of lines (the host renames only the file it is
+  writing, so a rotator's file is never moved over the rotated one), a
+  reopen that fails is tried again a MiB on, a start whose `headless.log`
+  can't be opened runs with its lines on stderr and says so once rather
+  than failing, and `/bug` reads `headless.log.1` back to its marker
   after a live rollover, within the same 4 MiB, saying when that cut the run
   short. Nothing rotated
   the file before.
