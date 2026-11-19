@@ -877,6 +877,11 @@ export function gatherBugReportFacts(opts: GatherOptions): BugReportFacts {
         // its tail then holds no marker, and the report says so, as it does
         // for headless.log alone.
         if (earlier.truncated && !earlier.lines.some((line) => SESSION_MARKER.test(line))) truncated = true;
+      } else {
+        // The notice says the run's earlier lines are in headless.log.1, and
+        // that file can't be read (gone, or unreadable): the report holds the
+        // part after the rollover alone, and says it is cut (R4-5).
+        truncated = true;
       }
     }
     const parsed = parseErrorLog(session, frameScope(root));

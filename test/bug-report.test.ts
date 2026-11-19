@@ -547,6 +547,13 @@ describe('the mode', () => {
       expect(cut.hostErrors?.log).toBe('headless.log.1 + headless.log');
       expect(cut.hostErrors?.truncated).toBe(true);
       expect([...(cut.hostErrors?.tags ?? [])].sort()).toEqual([['gate', 1], ['mcpl', 1]]);
+      // The notice names headless.log.1, and it can't be read: the report has
+      // the part after the rollover alone, and says so (R4-5).
+      rmSync(join(dir, 'headless.log.1'));
+      const gone = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
+      expect(gone.hostErrors?.log).toBe('headless.log');
+      expect(gone.hostErrors?.truncated).toBe(true);
+      expect(gone.hostErrors?.tags).toEqual([['mcpl', 1]]);
       // Without the notice (a rollover at start, or none), headless.log.1 is left alone.
       writeFileSync(join(dir, 'headless.log'), '\n--- session 2026-10-11T23:31:00.000Z ---\n[mcpl] c\n');
       const plain = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });

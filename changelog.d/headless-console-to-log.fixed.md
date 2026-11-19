@@ -1,6 +1,6 @@
 - **A headless host's `console.error` and `console.warn` lines reach
   `data/headless.log`**, where `/bug` reads a headless host's error tags and
-  shapes from, from the moment the host boots: agent-framework's `Failed to
+  shapes from, from the moment the data directory is set up: agent-framework's `Failed to
   connect MCPL server …`, `[mcpl] … tools/list failed`, `[gate]` and
   `[inference-failed]` lines, the host's own `[mcpl]` warnings, and
   `[update]`'s warnings and errors among them, which Bun's console writes past
@@ -12,7 +12,8 @@
   and a `/bug` report from a headless host said `tags: none` whatever the host
   had been through. The lines still print to the supervisor, and to a fleet
   child's `startup.log`, as they did; `console.log`, `info` and `debug` go
-  there alone, as before. Since the file now takes every warning and error,
+  there alone, as before. Since the file now takes the warnings and errors said
+  from then on,
   it is rolled over to `headless.log.1` (one generation kept) past 64 MiB, at
   a start and live; an exit right after a live rollover still waits for the
   retired file's last lines, a log deleted while the host runs is opened anew

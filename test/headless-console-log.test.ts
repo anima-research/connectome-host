@@ -1,3 +1,4 @@
+import { SESSION_MARKER } from '../src/session-marker.js';
 import { test, expect } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, realpathSync, existsSync, readFileSync, rmSync, openSync, ftruncateSync, closeSync, statSync, readSync, appendFileSync } from 'node:fs';
@@ -154,7 +155,9 @@ test("a start whose own first lines cross the cap puts this run's marker in head
     // this start's marker and boot lines cross it before any await. The
     // stream must have its fd before the rename (R3-1), or the previous run's
     // lines are what /bug counts as this run's.
-    sparseLog(dir, HEADLESS_LOG_MAX_BYTES - 100, '\n--- session 2026-10-11T22:00:00.000Z ---\n[gate] earlier run\n[inference-failed] earlier run\n');
+    const EARLIER = '--- session 2026-10-11T22:00:00.000Z ---';
+    sparseLog(dir, HEADLESS_LOG_MAX_BYTES - 100, `\n${EARLIER}\n[gate] earlier run\n[inference-failed] earlier run\n`);
+    const since = Date.now();
     const { code, log, rolled } = await runChild(dir, {}, async (socket) => {
       await new Promise((resolve) => setTimeout(resolve, 300));
       socket.write('{"type":"shutdown"}\n');
@@ -167,7 +170,12 @@ test("a start whose own first lines cross the cap puts this run's marker in head
     // opened the new file, and the moved-aside file ended with the earlier
     // run's lines under no marker of ours.
     const rolledSession = currentSession(rolled!);
-    expect(rolled!.trimEnd().split('\n').at(-1)).toMatch(/^--- session 2026-11.* ---$/);
+    // This run's marker: the format, not today's date (R4-1), not the earlier
+    // run's, and stamped no earlier than this test started.
+    const last = rolled!.trimEnd().split('\n').at(-1)!;
+    expect(last).toMatch(SESSION_MARKER);
+    expect(last).not.toBe(EARLIER);
+    expect(Date.parse(last.slice('--- session '.length, -' ---'.length))).toBeGreaterThanOrEqual(since - 1000);
     expect(rolledSession.trim()).toBe('');
     expect(rolled!).toContain('[gate] earlier run');
     // The new file opens with one marker and the notice; the start, boot and live lines follow.
