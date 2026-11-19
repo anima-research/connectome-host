@@ -338,6 +338,32 @@ describe('what comes back', () => {
     expect(closedEarly).toBe(before + 1);
   });
 
+  test('a clearly binary type is read when the caller asks for binary too, up to the byte limit', async () => {
+    const before = closedEarly;
+    const got = await httpGet(new URL(`http://127.0.0.1:${port}/png`), { ...onlyLoopback, readBinary: true, maxBytes: 100 });
+    expect(got.body.length).toBe(100);
+    expect(got.cut).toBe(true);
+    expect(got.binary).toBe(false);
+    // The server has seen this connection close before the next test counts closings.
+    await until(() => closedEarly === before + 1);
+    expect(closedEarly).toBe(before + 1);
+  });
+
+  test('the Accept header is the caller\'s to set, and prefers text when it doesn\'t', async () => {
+    const seen: string[] = [];
+    const echo = http.createServer((request, response) => { seen.push(request.headers.accept ?? ''); response.end('ok'); });
+    await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = new URL(`http://127.0.0.1:${(echo.address() as AddressInfo).port}/`);
+      await httpGet(address, onlyLoopback);
+      await httpGet(address, { ...onlyLoopback, accept: 'image/png' });
+      expect(seen).toEqual(['text/markdown, text/html, */*', 'image/png']);
+    } finally {
+      echo.closeAllConnections();
+      echo.close();
+    }
+  });
+
   test('a clearly binary type is reported without being downloaded', async () => {
     const before = closedEarly;
     const got = await httpGet(new URL(`http://127.0.0.1:${port}/png`), onlyLoopback);
