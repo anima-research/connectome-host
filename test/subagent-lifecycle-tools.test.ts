@@ -1274,7 +1274,7 @@ describe('what a run that ends without a result says, and to whom', () => {
 });
 
 describe('a failed subagent\'s error stays with the operator', () => {
-  test('its status message keeps the error, and neither list nor peek shows it to a parent', async () => {
+  test('its run\'s cause keeps the error, and neither list nor peek shows it to a parent', async () => {
     const SENTINEL = 'sentinel-6e2a provider said: invalid x-api-key';
     const h = await harness({
       responseGenerator: (r) => {
@@ -1282,11 +1282,16 @@ describe('a failed subagent\'s error stays with the operator', () => {
         return 'ok';
       },
     });
+    const fw = h.framework as unknown as { runEphemeralToCompletion: (...args: unknown[]) => Promise<unknown> };
+    const run = fw.runEphemeralToCompletion.bind(fw);
+    const rejections: unknown[] = [];
+    fw.runEphemeralToCompletion = (...args) => run(...args).catch((err: unknown) => { rejections.push(err); throw err; });
     try {
       expect((await h.call('spawn', { name: 'scout', systemPrompt: 'p', task: 'answer', model: 'mock-refused', sync: true })).success).toBe(false);
-      const active = (h.subagent as unknown as { activeSubagents: Map<string, { status: string; statusMessage?: string }> }).activeSubagents;
+      const causes = rejections.map((err) => (err instanceof Error && err.cause instanceof Error ? err.cause.message : ''));
+      expect(causes.some((m) => m.includes(SENTINEL))).toBe(true);
+      const active = (h.subagent as unknown as { activeSubagents: Map<string, { status: string }> }).activeSubagents;
       expect(active.get('spawn-scout')?.status).toBe('failed');
-      expect(active.get('spawn-scout')?.statusMessage).toContain(SENTINEL);
       const listed = await h.call('list', {});
       expect(JSON.stringify(listed)).toContain('"name":"scout"');
       const views = [listed, await h.call('peek', {}), await h.call('peek', { name: 'scout' })];
