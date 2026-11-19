@@ -218,7 +218,7 @@ delivered by Agent Framework according to `agent.proseRouting`:
 
 | Mode | Behavior |
 |------|----------|
-| `"locus"` (default) | Text is auto-published to the turn's locus: the channel of the delivery that woke the turn, a conversation fork's home channel, or a channel the agent opened during the turn (`speech.locus: "delivery"`, the default). A turn with none of these keeps its text private, unless an open all-except tune-out names a channel (a heartbeat's turn takes no fallback). Text emitted in a tool-call round is delivered live, as narration, unless that round also calls `skip_reply` or an explicit send tool. |
+| `"locus"` (default) | Text is auto-published to the turn's locus: the channel of the delivery that woke the turn, a conversation fork's home channel, or a channel the agent opened during the turn (`speech.locus: "delivery"`, the default). A turn with none of these keeps its text private, unless an open all-except tune-out names a channel (a heartbeat's turn takes no fallback). Text emitted in a tool-call round is delivered live, as narration, unless that round also calls `skip_reply`, or, with `agent.sendSilencing` on (below), an explicit send tool. |
 | `"hybrid"` | Like `locus`, but a leading `>>>destination` envelope routes that segment elsewhere through the authorized channel resolver. |
 | `"explicit"` | Text must start with `>>#channel` / `>>@person` / `>>skip_reply`; unprefixed text is never delivered and bounces to a clipboard for a prefixed resend. |
 | `"disabled"` | Text is never auto-published. The only way anything reaches a channel is an explicit send tool (`send_message`, `channel_publish`, `reply_message`, `send_dm`, ...). Authored text stays in Chronicle and the turn-end `[delivered] nothing` receipt tells the agent how many segments were withheld. |
@@ -252,7 +252,10 @@ back, as drafts, the plain text the agent writes in the same round and in the
 turn's later rounds, where that text would land where the send may have
 posted. With `false`, text beside a send is posted like any other. The agent
 can switch it for itself through `agent_settings` (`send_silencing`), and its
-choice persists across restarts.
+choice persists across restarts. The setting needs an Agent Framework that
+has it (a release after 0.34.0): an earlier one, the 0.33 line this host
+installs by default included, ignores the key, always holds that text, and
+has no `send_silencing` in `agent_settings`.
 
 ```json
 {
