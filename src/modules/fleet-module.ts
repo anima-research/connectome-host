@@ -921,7 +921,8 @@ export class FleetModule implements Module {
       },
       {
         name: 'peek',
-        description: "Return the last N events from a child's rolling event buffer.",
+        description: "Return the last N events from a child's rolling event buffer, without a failure's own text: " +
+          "each event's error, stack and providerErrorCode, an alert's message and data, and an errorType of safety.",
         inputSchema: {
           type: 'object',
           properties: {
@@ -1588,7 +1589,7 @@ export class FleetModule implements Module {
     const requested = input.lines ?? 50;
     const n = Math.max(1, Math.min(requested, c.events.length || 1));
     const slice = c.events.length > 0 ? c.events.slice(-n) : [];
-    return { success: true, data: { name: c.name, count: slice.length, events: slice } };
+    return { success: true, data: { name: c.name, count: slice.length, events: slice.map(peekView) } };
   }
 
   private async handleKill(input: { name: string }): Promise<ToolResult> {
@@ -2599,6 +2600,21 @@ export class FleetModule implements Module {
       tick();
     });
   }
+}
+
+/** A child's event as fleet--peek shows it to a parent: as it arrived, less
+ *  the fields that carry a failure's own text, which can be a provider's. */
+function peekView(event: WireEvent): Record<string, unknown> {
+  const shown: Record<string, unknown> = { ...event };
+  delete shown.error;
+  delete shown.stack;
+  delete shown.providerErrorCode;
+  if (shown.errorType === 'safety') delete shown.errorType;
+  if (shown.type === 'ops:alert') {
+    delete shown.message;
+    delete shown.data;
+  }
+  return shown;
 }
 
 function isUrlOrAbsolute(p: string): boolean {
