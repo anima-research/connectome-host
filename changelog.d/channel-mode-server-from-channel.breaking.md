@@ -33,7 +33,16 @@
     refused as unknown. With one, they run there: for a channel only
     `discord-bot` registers, the open fails, but the rule and pin steps
     still run. Migration: give the MCPL server the id its channel ids
-    carry, then drop `serverId` from `modules.channelMode`.
+    carry, then drop `serverId` from `modules.channelMode`. If
+    `modules.subscriptionGc.serverId` named the old id, change it to the new
+    one too: subscription GC watches only that server, so otherwise it stops
+    counting and auto-closing the renamed server's channels.
+  - **Known limit:** a channel id's prefix must equal its MCPL server id;
+    nothing checks it against the server that registered the channel, and
+    there is no `serverId` parameter or other override. A server whose id
+    differs from its channels' prefix (such as `discord-bot` above), or whose
+    id contains `:` (for `chat:west` registering `chat:west:room`, the prefix
+    is `chat`), can't be used with channel mode until its id matches.
   - **Operators:** a rule an earlier release set for a prefixed id with
     `source: "discord"` stays until that channel's mode is set again. The next
     debounced call replaces it, and the next mentions call removes it.

@@ -218,7 +218,19 @@ action.
   agent-framework recorded an open or close it couldn't finish (as on a
   disconnected server), the result says it is recorded, not that nothing
   changed. Subscription
-  GC still watches only `modules.subscriptionGc.serverId` (default `discord`).
+  GC still watches only `modules.subscriptionGc.serverId` (default `discord`);
+  if you rename a server, change that field too.
+
+  **Known limit:** the contract is that a channel id's prefix *is* its MCPL
+  server id, and channel mode doesn't check it against the server that
+  registered the channel. A server whose id differs from its channels' prefix
+  (say `discord-bot` registering `discord:<guildId>:<channelId>`) can't be used
+  with channel mode: with no `discord` server the call is refused as an
+  unknown server, and with one the open, the rule's `source` and the close go
+  to `discord` (a failed open still lets the rule and pin steps run). A server
+  id containing `:` can't be used either: for `chat:west` registering
+  `chat:west:room`, the prefix is `chat`. There is no `serverId` parameter or
+  other override; the fix is to give the server the id its channel ids carry.
 - **Your shell** — edit the file on disk. The gate notices a changed file (by
   mtime) when it evaluates the next event, checking at most once a second. A
   file that fails to parse or validate is ignored: the previous rules stay in

@@ -108,7 +108,7 @@ export class ChannelModeModule implements Module {
         inputSchema: {
           type: 'object',
           properties: {
-            channelId: { type: 'string', description: 'The channel\'s registered id EXACTLY, as channel_list shows it and its channel messages carry it: <serverId>:<channel>, such as zulip:<stream>, slack:<conversationId> or discord:<guildId>:<channelId>. The prefix before the first colon must name an MCPL server this host knows; an id without one, such as a raw Discord snowflake, is refused, and so is an id containing *, which the gate would read as a wildcard.' },
+            channelId: { type: 'string', description: 'The channel\'s registered id EXACTLY, as channel_list shows it and its channel messages carry it, such as zulip:<stream>, slack:<conversationId> or discord:<guildId>:<channelId>. The text before the first colon is taken as the MCPL server, so this works only for ids of the form <serverId>:<channel> whose prefix is the id of a server this host knows; an id without one, such as a raw Discord snowflake, is refused, and so is an id containing *, which the gate would read as a wildcard. A server whose id differs from its channel ids\' prefix, or contains a colon, can\'t be reached by this tool; ask whoever runs this host.' },
             mode: { type: 'string', enum: ['debounced', 'mentions'], description: 'Target attention mode.' },
             debounceMs: { type: 'number', description: 'Quiet window in ms for debounced mode (100–300000). Checked whenever it is given, in either mode.' },
           },
