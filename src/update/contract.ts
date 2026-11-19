@@ -37,7 +37,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   closeSync, fchmodSync, fsyncSync, lstatSync, openSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync,
-  symlinkSync, truncateSync, unlinkSync, writeSync,
+  statSync, symlinkSync, truncateSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -56,6 +56,8 @@ export const ENTRY_POINT = 'start.js';
  *  that restarts a host exiting non-zero, as the units the deployment docs
  *  show do (systemd's Restart=on-failure, launchd's KeepAlive). */
 export const RESTART_EXIT_CODE = 75;
+
+export const SUPERVISED_ENV = 'CONNECTOME_SUPERVISED';
 
 /** The install's root, or null when the host wasn't started through the
  *  entry point, in which case it writes none of this contract's files. */
@@ -213,6 +215,14 @@ export function copyShows(those: string): string {
     'it led, and one inside another shown only as the outer one.';
 }
 
+export function missingDataDir(recordPath: string, dataDir: string, stops: string, then: string): string | null {
+  if (statSync(dataDir, { throwIfNoEntry: false })?.isDirectory() === true) return null;
+  return `${recordPath} names ${dataDir} as its data directory, and no directory is there, as after the install is ` +
+    `moved. A host started now would begin with an empty one, so ${stops}. Put that directory back, or write its ` +
+    `present absolute path into ${recordPath} as dataDir, or make an empty directory there to start the resident ` +
+    `with no memory. Then ${then}.`;
+}
+
 /** How to put an install record right, which setup's refusals of a lost record, or of one that isn't JSON, has no
  *  version or names no data directory, end with. It holds only words true wherever it's printed. */
 export const WRITE_RECORD_AGAIN = 'To put it right, write the record again as\n' +
@@ -253,6 +263,14 @@ export interface Mark {
    *  before this field wrote none; then every server the release on trial is
    *  configured with holds its commit, closed tabs aside. */
   connected?: string[];
+  /** The agent whose update tool armed this request, by name; none for a
+   *  person's, or for the launcher's Go back from a shell. A launcher copies
+   *  it onto each journal line it writes for the request (JournalLine.by). */
+  by?: string;
+}
+
+export function askedBy(by: unknown): { by?: string } {
+  return typeof by === 'string' && by !== '' ? { by } : {};
 }
 
 export function connectedWhenMarked(mark: Mark): string[] | null {
@@ -296,6 +314,9 @@ export interface JournalLine {
    *  that resumes the Go back reads it here, since it goes on whatever the
    *  mark file holds. */
   keptData?: boolean;
+  /** The agent that asked for the request this line acts on, as its mark
+   *  names it (Mark.by), on each line a launcher writes from that mark. */
+  by?: string;
 }
 
 /** lock.json, written by the launcher. Its holder is gone when its pid isn't
@@ -760,12 +781,13 @@ export function readMark(root: string): Mark | null {
  *  request, so the release that ran starts and ends the switch's quiesce, or
  *  the request this one replaced. */
 export function writeMark(
-  root: string, request: Pick<Mark, 'to' | 'why' | 'keepData' | 'connected'>, now: Date = new Date(), write = writeJsonAtomic,
+  root: string, request: Pick<Mark, 'to' | 'why' | 'keepData' | 'connected' | 'by'>, now: Date = new Date(), write = writeJsonAtomic,
 ): { mark: Mark; unsynced: Error | null } {
   const mark: Mark = {
     v: 1, id: randomUUID(), to: segment(request.to, 'release'), why: request.why, at: now.toISOString(),
     ...(request.keepData ? { keepData: true } : {}),
     ...(request.connected !== undefined ? { connected: [...request.connected] } : {}),
+    ...(request.by ? { by: request.by } : {}),
   };
   const path = installPaths(root).mark;
   try {

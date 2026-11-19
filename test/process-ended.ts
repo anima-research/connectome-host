@@ -24,9 +24,9 @@ export function processEnded(pid: number, read: (path: string) => string = (path
 }
 
 export async function waitForEnd(pid: number, ms: number): Promise<boolean> {
-  const deadline = Date.now() + ms;
+  const deadline = performance.now() + ms;
   let ended = processEnded(pid);
-  while (!ended && Date.now() < deadline) {
+  while (!ended && performance.now() < deadline) {
     await Bun.sleep(50);
     ended = processEnded(pid);
   }

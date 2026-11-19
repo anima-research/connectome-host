@@ -59,6 +59,7 @@ function makeStubWorld(agentStatus: string | null = 'idle') {
   const undone: string[] = [];
   const app = {
     framework: {
+      getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
       getAgent: () => undefined,
       getAllAgents: () => [agent],
       getAllModules: () => [],
@@ -202,6 +203,7 @@ describe('/budget honest display', () => {
   function makeBudgetApp(maxStreamTokens: number, last = 0) {
     return {
       framework: {
+        getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
         getAgent: () => undefined,
         getAllAgents: () => [{ name: 'a', maxStreamTokens, lastStreamInputTokens: last, getContextManager: () => null }],
         getAllModules: () => [],
@@ -223,12 +225,25 @@ describe('/budget honest display', () => {
     expect(r.lines.map(l => l.text).join('\n')).toContain('a: 50 (last: 12');
   });
 
+  test('a count that overflows to Infinity is refused, and every agent keeps its budget', () => {
+    const agents = [
+      { name: 'a', maxStreamTokens: 1000, lastStreamInputTokens: 0, getContextManager: () => null },
+      { name: 'b', maxStreamTokens: 2000, lastStreamInputTokens: 0, getContextManager: () => null },
+    ];
+    const app = { ...makeBudgetApp(1000), framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }), getAgent: () => undefined, getAllAgents: () => agents, getAllModules: () => [] } } as any;
+    for (const arg of ['1e309k', '1e306m']) {
+      expect(handleCommand(`/budget ${arg}`, app).lines[0]!.text).toBe(`Invalid token count: "${arg}". Examples: 150k, 1m, 200000`);
+    }
+    expect(agents.map((a) => a.maxStreamTokens)).toEqual([1000, 2000]);
+  });
+
   test("an agent whose thinking binds and whose window is set is told apart: the budget doesn't break its stream", () => {
     const agent = (name: string, model: string, physicalWindowTokens?: number) => ({
       name, model, physicalWindowTokens, maxStreamTokens: 150_000, lastStreamInputTokens: 400_000, getContextManager: () => null,
     });
     const app = {
       framework: {
+        getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
         getAgent: () => undefined,
         getAllAgents: () => [
           agent('bound', 'claude-opus-5-5', 1_000_000),
@@ -254,6 +269,7 @@ describe('/budget honest display', () => {
     try {
       const app = {
         framework: {
+          getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
           getAgent: () => undefined,
           getAllAgents: () => [{
             name: 'bound', model: 'claude-opus-5-5', physicalWindowTokens: 1_000_000, maxStreamTokens: 150_000, lastStreamInputTokens: 400_000, getContextManager: () => null,
@@ -280,7 +296,7 @@ describe('/mcp add preserves env on overwrite', () => {
   });
 
   test('overwriting the command keeps env vars and reports them', () => {
-    const app = { framework: { getAllAgents: () => [], getAllModules: () => [] }, branchState: createBranchState() } as any;
+    const app = { framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }), getAllAgents: () => [], getAllModules: () => [] }, branchState: createBranchState() } as any;
     handleCommand('/mcp add envtest echo hello', app);
     handleCommand('/mcp env envtest FOO=bar SECRET=hunter2', app);
     const r = handleCommand('/mcp add envtest echo goodbye', app);
@@ -293,7 +309,7 @@ describe('/mcp add preserves env on overwrite', () => {
   });
 
   test('old args are dropped when the new command line has none', () => {
-    const app = { framework: { getAllAgents: () => [], getAllModules: () => [] }, branchState: createBranchState() } as any;
+    const app = { framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }), getAllAgents: () => [], getAllModules: () => [] }, branchState: createBranchState() } as any;
     handleCommand('/mcp add argtest echo one two', app);
     handleCommand('/mcp add argtest ls', app);
     const saved = JSON.parse(readFileSync(DEFAULT_CONFIG_PATH, 'utf-8')).mcplServers;

@@ -55,7 +55,7 @@ const app: Record<string, unknown> & { framework: unknown; onFrameworkReplaced?:
 if (bootTurn === 'overflowed' || bootTurn === 'overflowed-subagent' || bootTurn === 'overflowed-speech') {
   const who = bootTurn === 'overflowed-subagent' ? 'fixture.reader-7' : 'fixture';
   const held = bootTurn === 'overflowed-speech'
-    ? [{ type: 'inference:started', agentName: who, timestamp: 1_700_000_000_004 }, { type: 'inference:tokens', agentName: who, content: 'OLD', timestamp: 1_700_000_000_005 }]
+    ? [{ type: 'inference:started', agentName: who, timestamp: 1_700_000_000_004 }, { type: 'inference:tokens', agentName: who, content: 'OLD', blockType: 'text', blockIndex: 0, timestamp: 1_700_000_000_005 }]
     : [];
   const replayed = [...boot, ...held, ...(bootTurn === 'overflowed-speech' ? [{ type: 'inference:completed', agentName: who, timestamp: 1_700_000_000_006 }] : []),
     { type: 'inference:started', agentName: who, timestamp: 1_700_000_000_007 },
@@ -72,7 +72,7 @@ if (bootTurn === 'overflowed' || bootTurn === 'overflowed-subagent' || bootTurn 
     const speaking = setInterval(() => {
       if (!existsSync(join(process.env.DATA_DIR!, 'live'))) return;
       clearInterval(speaking);
-      traced!({ type: 'inference:tokens', agentName: who, content: 'NEW', timestamp: 1_700_000_000_010 } as never);
+      traced!({ type: 'inference:tokens', agentName: who, content: 'NEW', blockType: 'text', blockIndex: 0, timestamp: 1_700_000_000_010 } as never);
       traced!({ type: 'inference:completed', agentName: who, timestamp: 1_700_000_000_011 } as never);
     }, 20);
   }

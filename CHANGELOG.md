@@ -6,6 +6,494 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.26.0 — 2026-11-19
+
+### Added
+
+- `connectome doctor` checks an install in five steps:
+  - **The service:** the units that `connectome service install` names, the shell daemon's included, and the state of each, as systemd or launchd gives it.
+  - **The host:** whether a host answers on the install's socket, with its pid and recipe. The host takes one client at a time. So doctor's connection to it closes another command's connection.
+  - **The recipe:** with a host, the recipe that the host loaded. With no host, whether the recipe that the service's unit names loads. Doctor loads it with `.env`'s values, its own environment over them, and the install's data directory as `DATA_DIR` over both, as the service's unit sets it.
+  - **The model calls:** the host's counts of each agent's failed model calls in a row, and of its refusals, with the command that lists the failures in the host's log. Doctor prints no failure's text, since that text can quote the model provider.
+  - **The Discord token:** whether Discord accepts the `DISCORD_TOKEN` in `.env`.
+
+  Each check prints a line. The service check prints one for each of its units. The model-calls check prints one for each agent that it names, and one plain line more for an agent's refusals. A check's line starts with ✓ where the check found no problem. It starts with ✗ where the check found one, and then a `Next:` line gives one next step. It starts with – where the check wasn't made, and then says why. Doctor ends with how many problems it found. With no problem on a systemd install, it then gives the command that runs `scripts/connectome-doctor`, which shows where an incoming message stops. Doctor exits 1 when it finds a problem. Run as root on an install that another user owns, it prints one refusal and exits 1.
+- `connectome doctor` hides, in every line it prints, each secret of 8 characters or more that setup stored. Setup tells the person when it stores a shorter secret. Where doctor can't read those secrets, it says why and runs no check.
+
+- `bunx @animalabs/connectome-host setup discord`, typed on a terminal, sets a resident up on Discord.
+  - **Where:** it works in the directory that it starts in, if that directory is empty or is already setup's. Otherwise it works in `~/resident`. It says which directory first. If `~/resident` holds other files and isn't setup's either, it stops and says so.
+  - **A user of its own:** on Linux with sudo and systemd, before it installs anything, it advises a user of the resident's own. Then it asks whether to go on as the user who ran it.
+  - **What it does:** it installs the host and `@animalabs/discord-mcpl`, and makes the install. It starts the install's host once, with a test setup that calls no model. It checks the Anthropic key with one call, and keeps the key in `.env`, which only the person can read. Then it starts the host's own setup agent, which talks with the person in the terminal.
+  - **Run again,** the agent picks up where it stopped.
+- `connectome shell install` is an install's own command. It installs the resident's shell, `term-sessions-mcp` 1.x, in the directory that holds the install, unless a 1.x is there already. It lists Bun's default trusted packages, and the shell's own, in `trustedDependencies` in that directory's `package.json`. Then it checks that node-pty opens a pty there. If it doesn't, and node-pty loads from inside that directory, the command installs node-pty once more.
+- A recipe's `modules.setup` gives its agent four tools. They work in any mode, and are made for readline mode on a terminal.
+  - `setup--run` runs one command in the install's directory. The stored secrets and the providers' keys aren't in the command's environment. Where the command prints one of their values exactly as stored, the value comes back as its name. Two kinds of value stay as they are: a value shorter than 8 characters, and a value that the cut of a long output runs through.
+  - `setup--ask_secret` asks the person for a secret, and shows nothing as they type. It checks a Discord token or a provider key once, and stores the secret in `.env`.
+  - `setup--discord` reads Discord with the stored bot token, so that the person copies no id by hand. It reads the application's id, and each server that the bot is in, with the server's owner and its text and announcement channels. For each channel, it says whether the bot can send there. It can also read one server, or those of a server's members whose username or nickname starts with the text it's given.
+  - `setup--finished`, in readline mode, ends the conversation when its turn ends.
+
+  In that conversation, a turn's wait has no time limit, and a refused turn says how to start a new conversation. `/help` lists the three commands that setup uses. The host's own diagnostics go to `readline-error.log`, from before its extensions load.
+
+- **`modules.fetch`: a fetch tool, off by default.** `fetch--fetch` reads a web
+  page as text, with HTML turned into markdown, either whole or through a small
+  model that answers a `prompt`, and every result says which part was read.
+  With `local: true` it reads workspace files too, with the workspace's own
+  `read`, so it shows what `workspace--read` shows and reaches nothing the
+  mounts don't allow. It reaches only public addresses unless
+  `allowPrivateNetwork` is set, checked by the address connected to on every
+  redirect, and untrusted HTML is converted in a separate process with time and
+  memory limits. A recipe on a provider other
+  than `anthropic` or `mock` sets `modules.fetch.model`.
+  Recipes that don't set `modules.fetch` are unchanged. New dependency: `turndown`.
+
+- **`agent.primaryWaitsForAuxiliary`** (default false) passes agent-framework's
+  setting of the same name: true holds a turn's start until the agent's
+  compression call already in flight ends. An agent-framework with the
+  setting no longer waits unless it is on, so a recipe for a Claude 3 Opus
+  resident, whose provider limits how fast input tokens per minute may grow,
+  sets it to true to keep the wait. An agent-framework that predates the
+  setting always waits.
+
+- `modules.selfUpdate` gives an agent `lifecycle--update`, its own `/update`. It is off by default. Its actions:
+  - `check`;
+  - `notes`: the notes of the releases after the running one, up to the one installed;
+  - `install`;
+  - `restart`: armed for the host's first quiet moment, once nothing is in flight here or on any fleet child that it asks;
+  - `cancel`.
+
+  `restart` arms only on a headless host that started with `CONNECTOME_SUPERVISED=1` in its environment. `connectome service install` sets that only for a service that restarts the host when it exits with 75 and when it exits with 1. A service written by hand needs that line and both restarts. Anywhere else, `restart` refuses and says why.
+  - **A busy host:** a host that is still busy at its quiet moment keeps the restart armed. It serves meanwhile, and tries again at least a minute later.
+  - **A busy fleet child:** a fleet child counts as busy while it holds turn work that its framework doesn't count. An example is a text that the framework refused, which the child keeps for the framework that a session switch installs next. A fleet child on a release that doesn't report its work in flight is counted by its turns and scripts alone.
+  - **Turns that the switch doesn't wait for:** a turn that a fleet child begins after the switch's last look asked its children, and a turn on a child that a resume reached after that look.
+  - **A child's socket:** while a restart stays armed, each try connects again to a fleet child whose socket another client took. A child's socket keeps one client. So a person connected to a child's socket loses that connection about once a minute.
+  - **An operator's Restart or Go back** takes an armed restart's place.
+
+  An armed restart lasts only while its host runs.
+  - **What shows it:** `/update` shows an armed restart, and what its last try waited on. It also shows a restart that didn't go ahead, and why. `/healthz` shows the same under the `ops` scope. Without that scope, `/healthz` empties the reasons.
+  - **A `cancel`:** any agent with the tool can cancel a restart, whoever armed it. A `cancel` leaves that record too, and the record names the agent that cancelled. A `cancel` also ends the switch's quiesce, and the record names any host that this end didn't reach.
+  - **Who asked:** a switch that an agent armed names that agent in its mark, and in each journal line that the launcher writes from it. `check`'s line for the last switch says which agent asked for it.
+
+- **`agent.sendSilencing`** (default false) passes agent-framework's setting
+  of the same name: true makes an explicit send (`send_message`,
+  `channel_publish`, a `drafts` resend and the like) silence the plain speech
+  its round and later rounds aim where the send may have posted, holding it
+  as drafts. An agent-framework with the setting no longer silences unless it
+  is on, so a recipe for a resident who writes a note beside each send sets
+  it to true to keep those notes unposted. The resident can change it for
+  itself with `agent_settings` (`send_silencing`). An agent-framework that
+  predates the setting always silences, and has no `send_silencing`: that
+  includes the 0.33 line this release asks for and installs, so the key does
+  nothing until the host runs with an agent-framework that has the setting
+  (a release after 0.34.0).
+
+- `connectome service install <recipe>` writes and starts this install's resident service. On Linux the service is a systemd user unit, and on macOS a launch agent. The command waits up to 60 s for the service's host to answer.
+  - **The service's name** comes from the name of the working directory that holds `.env`. The name is in lower case, and each run of characters other than `a` to `z` and `0` to `9` becomes one `-`, with none at either end. The unit is `~/.config/systemd/user/connectome-<name>.service` on Linux, and `~/Library/LaunchAgents/com.animalabs.connectome.<name>.plist` on macOS.
+  - **A shell daemon:** some recipes also get a localhost shell daemon where `term-sessions-mcp` is installed. These are a recipe whose text names `SESSION_SERVER_TOKEN` or `SESSION_SERVER_PORT`, and a recipe with a server whose command or arguments name the shell client. The daemon's port and token are kept in `.env`.
+  - **Restarts:** the host's unit restarts the host on any nonzero exit, by `Restart=on-failure` on Linux and by the agent's `KeepAlive` on macOS. So the unit sets `CONNECTOME_SUPERVISED=1`.
+  - **Bun:** the units run the `bun` on the PATH of `connectome service install` if that `bun` is the same Bun that the command runs on. Homebrew's link is such a `bun`, and it stays when `brew upgrade` removes the old version's file. Otherwise, the units run the path of the Bun that the command runs on.
+  - **Fleet children:** under the systemd unit, the host's fleet children end by SIGKILL when the host exits. This includes a child that the host detached.
+  - **Logs on macOS:** the logs in the working directory's `logs/` grow until someone cuts them. To cut one, stop the service, move the log, then start the service.
+
+### Changed
+
+- `docs/AGENT-ONBOARDING.md` is now the guide of the host's setup agent. It is for any agent that sets up a resident on the machine it runs on, after `connectome setup discord`. It covers:
+  - the person's decisions;
+  - whether the resident gets a shell, decided with the person, and on a yes installed by `connectome shell install`;
+  - secrets, by `setup--ask_secret`;
+  - the Discord bot and its scope, with its server, channel and person found by name with `setup--discord`;
+  - importing a claude.ai history;
+  - a recipe of the person's choices, with its servers defined in it, and discord-mcpl's state in the data directory;
+  - the update and code-execution grants;
+  - one read-back of all of it, with one yes, before the resident goes live;
+  - `connectome service install`, `connectome doctor` and the person's own hello;
+  - `SETUP.md`;
+  - restic backups, offered after the hello and run by the resident's user.
+
+  Each section is under 8 KiB. `setup--run`'s description says that it returns that much whole.
+- The old runbook's operator material is now in `docs/DEPLOYMENTS.md`, checked against this release:
+  - "A resident's memory: sizing, folding and repair". It covers the context budget against the model's window, the folding solver, the compression and token-count models, and a compile that can't fit. It also covers auditing and repairing a store with crossed summaries, refusals and signed thinking, and `/healthz`'s memory fields.
+  - Moving a resident off heartbeat-mcpl, under "Operating an agent".
+
+  Some of the runbook isn't carried over:
+  - its hand-written service units, its isolated-user phase, its budget numbers for a 200k-window model, and its backup cron and watchdog;
+  - its pre-compress step. `scripts/warmup-session.ts` gives the store no tool definitions, so it compresses none of a history's chunks that have tool calls in them;
+  - its warning about an image's `media_type`. membrane now checks that type against the image's own bytes;
+  - its advice to keep context-manager recent. The host's own dependency range sets the version that it gets;
+  - `flat-profile` as a fallback. The recipe's types call it a legacy planner, and a store can't switch to it without a change to its layout.
+
+  Its advice to keep a copy of the data off the machine is now the setup guide's offer of restic backups after the hello. The README describes Anthropic's `agent.thinking.effort`. It also describes code execution, as "Code execution (`codeExecution`)". That section is the old guide's "Code execution — turn it on for every resident", without that lead-in. `docs/DEPLOYMENTS.md` no longer suggests running `scripts/warmup-session.ts` on a stopped resident's store to make a restart's calls fewer. The script opens the store with a strategy of its own, not the one that the host builds from the recipe.
+- The store audit's line for a store refused for crossed summaries now names `docs/DEPLOYMENTS.md`'s "Crossed summaries: auditing and repairing a store", with the version of the release that wrote the line. Before, it named `AGENT-ONBOARDING.md` §11.8. So after a fallback to an older release, the line still says which release's docs have the section. A release's refusal before its commit carries such lines among its own. Its closing now says to do what each line says, and to correct each failure that it names. Before, it said to repair each refused store as §11.8 says.
+
+- A host quiesced for a release switch refuses what would change its session. A fleet child is quiesced in this way while its parent's switch runs. The host refuses:
+  - the pin and settings changes passed on to it, as the parent's Web UI passes one on for a child;
+  - its own Web UI's pin, settings, rollback and suppress;
+  - a command that changes the session, from its terminal, its Web UI, its socket or a fleet parent.
+
+  Before, it refused them only during a session switch. So a change started on such a host after the release switch's last check could be cut off by the switch's stop. The refusal says that nothing changed, and to try again once that quiesce has ended. It also says that `/update restart resume` ends a quiesce that a switch which has ended left behind. Resume, and what only reads, aren't refused.
+
+- `connectome update`: when a `restart` or a `back keep|restore` stops the host, it prints a line on stderr. The line names the install's own command, by its full path and with no words after it. Once the host is back, that command says which release runs and how the switch went.
+
+- Before a switch, these say what going back afterwards does: `/update`, `connectome update`, bare `connectome`, the Web UI's Health and its Restart dialog, and the host's `[update]` log line. Going back keeps the newer data only if the release that runs before the switch can still read it. Otherwise, going back restores the copy and sets aside what was lived since the switch. The update banner leaves this out. A host that isn't an install says nothing of it.
+
+- `/update back` and `connectome update back` say in plain words what each way brings back:
+  - Keeping the newer data brings the host back as it is now. It answers new turns, or holds them if its operator quiesced it. A switch's quiesce that was left behind ends at that start.
+  - Restoring the copy brings the host back answering new turns, whether or not it's quiesced now. The exception is a host that its operator quiesced before the Restart that took the copy, from the Web UI or through an MCPL server. That host comes back holding new turns until someone clicks "⏸ quiesced" in the Web UI's top bar.
+
+  Their last line says that either way, new turns are held first, and turns in progress get up to 2 min to end, as with Restart. Before, both said that the host "quiesces".
+- `/update restart` and `/update back`, and `connectome update restart` and `back`, open with "Asking the host to restart" or "to go back". Then they say that if it goes ahead, new turns are held and turns in progress get up to 2 min to end. Before, they said "unless refused". When a headless host that started with `CONNECTOME_SUPERVISED=1` then stops, they say that the service starts it again by itself, and that this start makes the switch.
+
+### Fixed
+
+- `scripts/connectome-doctor` reads a unit's output from its journal in one case: the unit file names no log file, and `logs/agent.log` is missing or was last written before the unit started. `connectome service install`'s units name no log file. From the journal, it reads the lines since the unit's latest start that hold a delivery or a failure, as journalctl's `-g` picks them out, with journal times to the fraction of a second. Where systemd gives no start time for the unit, it searches no journal, and says so. Before, it read the host's recent failures, last delivery and gate dump from a `logs/agent.log` that wasn't there, or was left from before.
+- `scripts/connectome-doctor` sends its gate dump's `SIGUSR2` only to a host whose `/proc/PID/status` shows that it catches the signal. So it no longer ends a host that is still starting. It waits up to 5 s for the host's `[diagnostics]` line.
+- `scripts/connectome-doctor` reads the chronicle ingest stage from the active session's `records.log`, as `sessions.json` names that session. Before, it read the `records.log` of whichever session the directory listed last.
+- `scripts/connectome-doctor` says "can't be seen here", with the reason, of a stage that it can't see. Before, it said "never". Such a stage is one of these:
+  - a Discord stage, when discord-mcpl's debug log isn't there. discord-mcpl writes that log only when `DISCORD_MCPL_DEBUG_LOG` names it;
+  - a stage whose file or store it can't read.
+- `scripts/connectome-doctor` counts every record in the last 400 KB of `logs/failures.log` as a failure, except the subscription GC's `subscription-gc-close`. It makes a finding of a reply that wasn't delivered, or whose delivery wasn't confirmed, after the last reply that was.
+- `scripts/connectome-doctor`'s inference stage is the newest turn's call in the call log, which is a streamed call. Before, it was the newest call of any kind. So the host's start-up thinking-binding probe, or a compression, read as the resident's inference. A subagent's turn is a streamed call too, and so is a streamed inference that an MCPL server asks for. So on a host with either, the stage's time and stop can be that call's, not the resident's. With no turn's call since the host last started, the stage says so, and counts the other calls and the keepalive pokes. A call whose `rawResponse`, or the response in it, isn't an object is read as a call with no stop reason. Before, the ladder stopped at such a call.
+- `scripts/connectome-doctor`'s inference-failure finding:
+  - When the call log's newest turn call came after the failure and succeeded, the finding says when that call was. It also says that the call log doesn't say whose call it was, so it isn't known whether the agent that failed has recovered.
+  - In some cases it isn't known whether a turn has succeeded since. Then the finding says so. This is the case when the call log can't be read, or when there is none while inference failures are on record. It is also the case when the part of the call log that it reads has no turn's call, and either starts after the failure or holds rows it can't read. It is also the case when the newest turn's call failed in a call log that started after the failure.
+- `scripts/connectome-doctor` takes `--data-dir` for a data directory other than `INSTALL_DIR/data`.
+
+- **Start (`start.js`):** sometimes start takes over a lock whose process has ended, and another process takes the lock in the same moment. Start now puts that process's lock back and tries once more. The second try refuses unless the lock is free by then. If start can't put the lock back, it refuses and names both lock files. Before, it went on and removed the other process's lock.
+
+- `/session new` and `/session switch` are refused while a host is quiesced for a release switch, as `/session rename` and `/session delete` are. Before, they went through, and a new session's framework served at once, outside the switch's quiesce. While a session switch is under way, they now give the refusal that the other commands give then.
+
+- When the install's host holds its lock for the whole wait, `bun start.js --go-back` names the install's own `connectome update back` as the host's way back. Before, it named `/update back`, which only the host's own terminal takes.
+- When no release newer than the running one is installed, `/update restart` and `connectome update restart` each name their own way to install one first. Before, each named the Web UI's Update.
+- The host logs an `[update]` notice when a newer release is offered. When the host couldn't read the installed releases, the notice now ends by saying so, and why. In that case, it also says that the release offered may be installed already. Before, it only said to install it and then restart.
+- When the launcher refuses a switch or a Go back, its report names each way that an install offers to ask again:
+  - Restart or Go back in the Web UI;
+  - `/update restart` or `/update back` in the host's terminal;
+  - the install's own `connectome update restart` or `connectome update back` in a shell;
+  - for a Go back, the whole `bun <root>/start.js --go-back` command, with `--keep-data` where it kept the newer data.
+
+  Before, it named only `/update restart`, `/update back` and a bare `--go-back`.
+- The answers to the Web UI's own Update controls name the page's own controls, such as Update, Restart and Go back. Before, they named the host terminal's `/update` commands.
+
+- When a host starts, it asks each fleet child that it adopted to end a switch's quiesce. A stop during a switch's try could leave that quiesce in place, holding the child's new turns. The host's log names each child that the request doesn't reach, or that refuses it. An operator's own quiesce of a child stays.
+
+- Once the release offered is installed, `/update` and bare `connectome` say to take it with the restart alone. Before, they said to install it and then restart, beside the line that said it was installed. The `[update]` line that the host logs when it first sees that release offered says the same, if the release is installed by then. `lifecycle--update check` gives the same line. For a headless host, that logged line names the install's own command by its full path. That is because its log is read in a shell, where `/update` isn't a command. `connectome update`'s own lines, and the update lines that bare `connectome` prints, name the install's own command by its full path.
+
+## 0.25.1 — 2026-11-16
+
+### Changed
+
+- **connectome-host takes agent-framework 0.33.3 or later in the 0.33 line**
+  (it took 0.33.0). With it, every host gets what 0.33.1, 0.33.2 and 0.33.3
+  changed:
+  - **0.33.2 and 0.33.3, a provider's words:** the rewind marker,
+    `/unstick`'s give-up report, a failed turn's `[inference-failed]` note,
+    `gate_status` after a failed reply judge, `health--snapshot`'s recent
+    errors and the reason given to a script that a failed turn stops no
+    longer put a provider's words where an agent reads them: no refusal
+    category and no failure message. `gate_status`, `health--snapshot` and
+    the script's reason give the framework's words instead, such as "the
+    model call failed (invalid_request, HTTP 400)". In `health--snapshot`,
+    a failure logged before the update shows `null`. Rows already stored
+    keep their text.
+  - **0.33.2 and 0.33.3, the note's reason:** the `[inference-failed]` note
+    names the error's type and HTTP status when it has them, as before, and
+    a safety failure's note names neither. It gives a reason, after
+    "Reason:", only where agent-framework, membrane's progress bounds or
+    context-manager wrote the failure's message: a progress bound's cut,
+    which names the bound that ran out and the host's setting for it; a
+    compile that context-manager refuses; and a stream's abort. On 0.33.0
+    the note gave every failure's message there.
+  - **0.33.1:** the first start of a store that has a `gate.json` and no
+    `wake-decisions.json` records the MCPL servers it is configured with as
+    predating wake onboarding, and settles each as `unasked` at its first
+    event, with no `[wake onboarding]` notice and no wake. On 0.33.0, a host
+    updated from agent-framework 0.32.0 or earlier got that notice, and for
+    an event that waits on the agent a wake, for every server whose events
+    one of its catch-all rules lets by. A store that already has a
+    `wake-decisions.json` is not affected. A Go back that keeps the newer
+    data, to a release on agent-framework 0.33.0, drops the `unasked`
+    records, and the servers recorded as predating onboarding are offered.
+- **Not changed: connectome-host's own code still puts a provider's words
+  where an agent reads them,** as on 0.25.0, in places that include these:
+  - A subagent whose model call fails: its parent gets the error's message.
+    agent-framework 0.33.3's rejection for a failed run still carries it.
+  - Where `modules.notices` has a status channel: the `[host-notice]` row
+    written for the agent quotes the notice posted there, such as a
+    hard-down's last reason or an off-path refusal's category.
+  - A fleet parent that calls `fleet--peek`: the child's `inference:failed`
+    and `inference:exhausted` events come back as they arrived, with the
+    failure's message.
+
+## 0.25.0 — 2026-11-10
+
+### Breaking
+
+- **Recipe authors and operators:** a recipe whose `modules.fleet`
+  `readyTimeoutMs`, `gracefulShutdownMs` or `sigtermEscalationMs` is a
+  fraction, or 2147483648 or more, loaded before, and now stops the load,
+  naming the field and the value: each must be a whole number of
+  milliseconds from 0 to 2147483647, the longest delay a timer keeps.
+  Before, Bun and Node set a longer delay to 1 ms, so such a wait ended at
+  once, and a fraction ran about as written. Set each to a whole number in
+  that range. A start without a recipe argument, in a data directory whose
+  saved recipe holds such a value, stops, naming it: start once with the
+  corrected recipe as its argument, which saves it in the saved one's
+  place. A whole number in that range loads as it did, and
+  `socketWaitTimeoutMs` has no upper bound.
+
+### Added
+
+- Claude Fable 5.2 and Claude Mythos 5.2 (`claude-fable-5-2`, `claude-mythos-5-2`):
+  the operator ledger and `priceCall` price them at $8 input, $40 output, $10
+  and $16 for 5-minute and 1-hour cache writes, and $0.20 for a cache read per
+  million tokens, where each was priced as Fable 5 or Mythos 5 ($10/$50, reads
+  at 0.1x), under pricing version `anthropic-public-2026-10-19-5-2`, and
+  kv-unified's standard block prices their cache reads at 0.025x of input,
+  where it took 0.1x; the start's fit check reads their 1,000,000-token window
+  and 128,000 tokens of output; Fable 5.2's thinking is
+  recorded as binding, taking the drop control, thinking with no config and
+  showing its window, and Mythos 5.2's as Mythos 5.1's; and through
+  Anthropic's API, on both an 'omitted' thinking display is sent as
+  'updates', so the notes they write between tool calls are kept as text.
+  That those notes come back as thinking blocks rests, on Fable 5.2, on
+  Anthropic's prompting guide for it and the API taking 'updates'; on Mythos
+  5.2, untried, on the same guide, which says its patterns are specific to
+  both models, and on the release notes, which say it offers the same
+  capabilities.
+  - **Cache:** `agent_settings`' `reasoning_display` description no longer
+    names models. It is part of the `agent_settings` tool, and tools come
+    first in a request, so where a request carries that tool in its tool
+    list, whatever its model, on any provider whose prompt cache covers the
+    tools, the first such request after upgrading writes its whole cached
+    prompt again, once. An agent already on Fable 5.2 or Mythos 5.2 with
+    kv-unified's standard block can pick another layout once after the
+    upgrade, which rewrites its prompt cache once.
+
+- **A recipe can set what a change of layout costs kv-unified**
+  (context-manager 0.25.3): `agent.strategy.kvUnified.policy.rewriteLambda`
+  prices the tokens a change rewrites, linearly, in place of the quadratic
+  `cacheLambda` term; `agent.strategy.kvUnified.thinkingLambda`, with
+  `thinkingHalfLifeTokens` (50,000 unless set), prices the thinking a change
+  would make a model that binds thinking drop, so a layout holds while
+  recent thinking is live and moves once it is gone anyway. All three are
+  optional and off unless set. Each must be a finite number of 0 or more
+  (above 0 for the half-life), and a recipe with another value is refused at
+  load. Until now the host reported `rewriteLambda` as a key it does not
+  read and passed it on unchecked.
+
+### Changed
+
+- **`modules.instructions` at `position: "beforeUser"` is deprecated.** It's
+  spliced in again before the newest user message at every compile, so it
+  moves: a request misses the cache from there on, and it can split a tool
+  call from its result (anima-research/agent-framework#171). Use
+  `"afterUser"` or `"system"`; both stay supported. The recipe type and the
+  README now say what each position costs: at `"system"`, the default, an edit
+  to the file misses the cache from the system prompt on; at `"afterUser"`, the
+  block is placed again at each start, so it moves, and on a model that binds a
+  reply's thinking to everything before it, later replies lose their thinking.
+  Neither calls `"afterUser"` cache-cheap any more.
+
+- **connectome-host takes context-manager 0.25.3 or later in the 0.25
+  line** (it took 0.25.0). With it, every host gets what 0.25.2 and 0.25.3
+  changed: no live image is stripped by default (`maxLiveImages`,
+  `imageStripDepthTokens` and `maxLiveImageBytes` default to 0, so an image
+  stays until its message is folded or leaves the window; set them to keep
+  the old limits); the head and recent windows keep their edges where the
+  chunks were cut when token estimates are recalibrated; and kv-unified can
+  price what a change of layout costs, which a recipe sets with the keys
+  above.
+
+### Fixed
+
+- **While an agent has a turn under way, the Web UI's alert for three or more consecutive inference failures says a
+  turn is under way, not that the agent is down,** and keeps the count. `/status` words each agent as its Health row
+  does (`retrying · overloaded · try 7 of 13 · in 2m`), where it printed `idle` through the wait. Both need an
+  agent-framework that reports `turnAlive` and `retrying` (agent-framework#992); with an earlier one, nothing changes.
+
+- **The Health panel no longer reads `idle` for an agent whose turn is retrying.** Between a failed call and its
+  retry, agent-framework's agent state reads `idle`, and the panel showed that word, in green, for as long as the
+  retries took: a resident whose provider answered `overloaded_error` for eight minutes read `idle` throughout, while
+  a newer message waited in the gate's buffer. With an agent-framework that reports `retrying` and `turnAlive` in
+  `healthSnapshot()` (agent-framework#992), the panel reads `retrying`, with what the error policy retries the
+  failure as, which try is next of how many, and when (`overloaded · try 7 of 13 · in 2m`); an idle state with a
+  turn alive reads `idle+turn-alive`. The agent's state is the word's tooltip. Health clients get the retry's class
+  name (`HEALTH_STRINGS`), never the failure's text. With an earlier agent-framework the row reads `status` as before.
+
+- A recipe number that must be positive or non-negative must also be finite:
+  `agent.maxStreamTokens`, `agent.thinking.budgetTokens`,
+  `agent.responses.compactThreshold`, `agent.cacheKeepalive.maxIdleHours`
+  and `modules.fleet`'s four timeouts. JSON `1e309` parses to `Infinity`,
+  which passed the sign check; `saveRecipe()` then wrote it back as `null`,
+  and the next start, resuming from the saved recipe, refused a field it had
+  accepted the day before. The first load refuses it now, naming the field
+  and the value.
+- `/budget` refuses a token count that overflows to `Infinity`, such as
+  `1e309k`, where it set every agent's stream budget to `Infinity`.
+
+## 0.24.1 — 2026-11-09
+
+### Added
+
+- Claude Fable 5.2 and Claude Mythos 5.2 (`claude-fable-5-2`, `claude-mythos-5-2`):
+  the operator ledger and `priceCall` price them at $8 input, $40 output, $10
+  and $16 for 5-minute and 1-hour cache writes, and $0.20 for a cache read per
+  million tokens, where each was priced as Fable 5 or Mythos 5 ($10/$50, reads
+  at 0.1x), under pricing version `anthropic-public-2026-10-19-5-2`, and
+  kv-unified's standard block prices their cache reads at 0.025x of input,
+  where it took 0.1x; the start's fit check reads their 1,000,000-token window
+  and 128,000 tokens of output; Fable 5.2's thinking is
+  recorded as binding, taking the drop control, thinking with no config and
+  showing its window, and Mythos 5.2's as Mythos 5.1's; and through
+  Anthropic's API, on both an 'omitted' thinking display is sent as
+  'updates', so the notes they write between tool calls are kept as text.
+  That those notes come back as thinking blocks rests, on Fable 5.2, on
+  Anthropic's prompting guide for it and the API taking 'updates'; on Mythos
+  5.2, untried, on the same guide, which says its patterns are specific to
+  both models, and on the release notes, which say it offers the same
+  capabilities.
+  - **Cache:** `agent_settings`' `reasoning_display` description no longer
+    names models. An agent that may call `toolsets--open` and
+    `toolsets--act` finds `agent_settings`, if it may call it, in the
+    built-in `settings` toolset, outside its tool list, so the new
+    description doesn't rewrite its prompt cache. An agent that may not call
+    both has no such toolset. Where such an agent has `agent_settings` in its
+    tool list, tools come first in a request, so its first request after
+    upgrading writes its whole cached prompt again, once, whatever its model,
+    on any provider whose prompt cache covers the tools. An agent already on
+    Fable 5.2 or Mythos 5.2 with kv-unified's standard block can pick another
+    layout once after the upgrade, which rewrites its prompt cache once.
+
+### Changed
+
+- **Dependencies:** `@animalabs/membrane` `^0.8.1` (was `^0.8.0`).
+  `package-lock.json` and `bun.lock` move membrane and nothing else.
+  `connectome update` keeps the running release's lockfile, so under
+  `^0.8.0` an updated host would keep membrane 0.8.0. membrane 0.8.0 names
+  neither Claude Fable 5.2 nor Claude Mythos 5.2, and 0.8.1 names both:
+  - Its Anthropic adapter leaves `temperature`, `top_p` and `top_k` out for
+    both, as it does for Fable 5.1 and Mythos 5.1, including values given in
+    a request's provider parameters. 0.8.0 already left a request config's
+    sampling out for both. Without a thinking config, sampling given in
+    provider parameters reached the API. With one, only a `top_p` of 0.95 or
+    more did. This host's provider parameters carry no sampling (it sets
+    them only for `openai-responses` and `openai-codex`), so it sends
+    neither model any sampling, on 0.8.0 or 0.8.1. membrane's source records
+    that Fable 5.2 refuses a `temperature` of 0.2, a `top_k` of 40 and a
+    `top_p` of 0.9 with a 400.
+  - Its own cost estimate for a response prices both at $8 input, $40
+    output, $10 for a cache write and $0.20 for a cache read per million
+    tokens. 0.8.0 priced them as Fable 5 or Mythos 5. A prefix in its pricing
+    table no longer names a model id that goes on from it with a digit.
+
+## 0.24.0 — 2026-11-09
+
+### Added
+
+- The Web UI's context panel names queued compression that waits on the host,
+  such as for the agent's tool definitions, under Queue, in context-manager's
+  words (`getWaitingWork()`), and the panel's snapshot carries it as
+  `queue.waiting`.
+
+- `OPENROUTER_BASE_URL` routes an `openrouter` recipe's calls through a
+  gateway, as `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL` and `BEDROCK_BASE_URL`
+  do for their providers. Unset, calls go to `https://openrouter.ai/api/v1` as
+  before. The hint after a network failure or timeout names it, and the recipe
+  refusal of `agent.baseUrl` beside another provider lists it, along with
+  `CODEX_BASE_URL`, which that refusal had left out.
+
+- `src/call-pricing.ts` exports `priceCall`, a call's list price on `anthropic` or `openai-responses`. Anthropic's is `priceAnthropicCall`'s, except that a Claude Sonnet 5.5 call that reads from the cache gets none, since that table reads Sonnet 5.5's cache at 0.1x where the page gives 0.05x. OpenAI's comes from its pricing page as of November 9, 2026, at the tier the call reports (`default`, or none, as Standard; `flex` as Flex; `fast` or `priority` as Fast; `ultrafast` as Ultrafast), and at the long-context rates for a request over 272,000 input tokens. It gives no price on `openai-codex`, `openrouter`, `openai-compatible` or `bedrock`, nor for a tier, model or part of a call the page gives no rate for. The operator ledger and kv-unified's cache prices are unchanged.
+
+- Recipes accept `toolResultInlineMaxChars` at the top level: the
+  residence's inline cap for tool results, in characters, passed to
+  agent-framework's `FrameworkConfig.toolResultInlineMaxChars`. Left out,
+  agent-framework's default stands, and a resident's own `agent_settings`
+  value `tool_result_inline_max_chars` wins over it for that agent. A value
+  that isn't a finite number of at least 1000, agent-framework's own
+  minimum, stops the load, naming it. The default, what becomes of a result
+  over the cap and how the cap in effect is reached are in that option's doc
+  in agent-framework's types.
+
+### Changed
+
+- A subagent's orientation now calls agent-framework's `presentedTools` directly to list the tools its first request carries, instead of feature-detecting it, since agent-framework ^0.33.0 is required and always has it.
+
+- **`agent.strategy.identityReminderSilent` is retired.** context-manager
+  #129 leaves the option out. A reminder the summarizer should follow
+  without quoting it ends with its own sentence asking for that, such as
+  #129's example: "Apply this guidance silently. Do not quote, restate, or
+  recite it in the memory. Begin with the substantive record." Where a
+  recipe set the key to true, its author ends each nonblank reminder it
+  sets, `identityReminder` and `witnessedIdentityReminder`, with such a
+  sentence instead. A blank reminder stays as it is, since a blank
+  `witnessedIdentityReminder` counts as unset and wholly inherited targets
+  then take `identityReminder`. The host no longer passes the key to the
+  built-in strategies, and a recipe for one of them that still sets it
+  loads with a warning naming what replaced it. An extension strategy still
+  gets the whole strategy config, the key included. No released
+  context-manager reads the key, so a recipe on a released version loses
+  nothing.
+
+### Fixed
+
+- A headless host no longer writes its agent's thinking into
+  `inference:speech`. With thinking on, the frame carried the thinking
+  glued to the front of the reply, so `connectome send` printed it, and
+  `fleet--relay` handed it to another child. The frame now carries the
+  round's text alone, and what `connectome send` prints and what
+  `fleet--relay` hands on change the same way.
+- A headless host now sends `inference:speech` for every inference round
+  that ends without tool calls outside a silent heartbeat (below), with `""`
+  for one that had no text, where it
+  sent nothing for such a round. So `fleet--relay` no longer hands on a
+  child's earlier reply as its latest when its latest round said nothing:
+  it relays nothing and says the latest round it saw had no text.
+  `connectome send` prints nothing for such a round, where with thinking
+  on it printed the thinking, and says on stderr that the agent's turn
+  ended without saying anything. A turn that ends on a tool, such as
+  `skip_reply`, still sends no frame.
+- With refusal retries on, a headless host's `inference:speech` no longer
+  carries a refused attempt's text. agent-framework discards a refused
+  attempt with an empty text token, which the host skipped, so a refused
+  "No" and its retried "Yes" went out as "NoYes". The frame now carries the
+  retried attempt's text alone, and so do what `connectome send` prints and
+  what `fleet--relay` hands on.
+- A headless host no longer sends `inference:speech` for a silent
+  heartbeat's turn, which agent-framework marks `silent` as a wake that
+  must not surface prose. `fleet--relay` handed that text to another
+  child as the child's latest reply; the child's latest reply now stays
+  its last one that wasn't silent, until this host connects to it again.
+- A child a fleet parent adopted from an earlier release keeps that
+  release's frame until it restarts, so `fleet--relay` hands on from it as
+  before.
+
+- An async subagent's result or failure that reaches its parent by its
+  message route no longer asks for a second wake. agent-framework's delivery
+  already wakes the parent, and the host's own wake, which named no message,
+  started a turn of its own after a turn that had already read the result,
+  such as at a tool boundary, or when another event was queued ahead of it:
+  one more model call, whose request brought nothing new. A failure whose
+  recipient is the live primary now takes its message route too, where it
+  was a line in the primary's context with that wake of the host's own. A
+  run that failed before its agent was created has no route, and is still
+  told to its launcher as a line in its context, with a wake.
+  `recipes/clerk.json`'s system prompt now says a fork's result or failure
+  arrives as a message from the fork that wakes the resident, and one that
+  couldn't be created, or whose message can't be delivered, as an
+  `inference-request` scope event. A resident started with that file as its
+  recipe argument sends the new prompt at its next request, which writes its
+  prompt cache in full once. One that resumes its saved recipe keeps the
+  prompt saved with it.
+
+- `scripts/warmup-session.ts` no longer prints "Converged." over work it
+  didn't do. It declares no tool definitions, so the first chunk whose
+  compression request carries a tool call or result waits for them, with
+  each later chunk whose request carries that one too, and on a Fable-
+  or Mythos-family compression model every chunk and merge waits: it printed
+  "Converged." with such work uncompressed, and its progress line counted it
+  done. It now says "Not converged:", names the waiting work as
+  context-manager describes it, and says why and when the host compresses
+  it. Its progress line counts that work as waiting, not done.
+
 ## 0.23.0 — 2026-11-07
 
 ### Breaking

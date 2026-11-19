@@ -2,6 +2,7 @@ import { For, Show } from 'solid-js';
 import type { CallLedgerRow } from '@conhost/web/protocol';
 import { callFailed, callOriginLabel, callOriginTone } from './call-origin';
 import { healthComposition, lastInferenceLine, latestInferenceError } from './composition-text';
+import { agentActivity, type AgentRetrying } from '@conhost/web/agent-activity';
 import { credentialNote, healthEntry, lastActionText, readFailureLine } from '@conhost/web/health-lookup';
 import { quarantineHeld } from '@conhost/web/quarantine-alert';
 import { loadRepairLines, type LoadRepairReport } from '@conhost/web/load-repair-alert';
@@ -69,6 +70,10 @@ export interface HealthSnapshot {
   agents?: Array<{
     name: string;
     status?: string;
+    /** A turn of the agent's is alive, whatever `status` says (agent-framework with it). */
+    turnAlive?: boolean;
+    /** The turn's wait for its next try, or null (agent-framework with it). */
+    retrying?: AgentRetrying | null;
     consecutiveInferenceFailures?: number;
     lastInference?: {
       startedAt?: number;
@@ -417,6 +422,8 @@ export function HealthPanel(props: {
   const statusTone = (status?: string): string => {
     switch (status) {
       case 'idle': return 'text-emerald-400';
+      case 'retrying': return 'text-orange-300';
+      case 'idle+turn-alive': return 'text-amber-300';
       case 'inferring':
       case 'streaming': return 'text-cyan-300';
       case 'waiting_for_tools':
@@ -475,7 +482,19 @@ export function HealthPanel(props: {
           <section class="border border-neutral-800 rounded px-2.5 py-2 space-y-1.5">
             <div class="flex items-center gap-2">
               <span class="text-neutral-100">{a.name}</span>
-              <span class={statusTone(a.status)}>{a.status ?? '?'}</span>
+              {(() => {
+                const activity = agentActivity(a, props.health?.at);
+                return (
+                  <>
+                    <span class={statusTone(activity.word)} title={a.status !== undefined && a.status !== activity.word ? `state: ${a.status}` : undefined}>
+                      {activity.word}
+                    </span>
+                    <Show when={activity.detail}>
+                      <span class="text-neutral-500">{activity.detail}</span>
+                    </Show>
+                  </>
+                );
+              })()}
               <Show when={(a.consecutiveInferenceFailures ?? 0) > 0}>
                 <span class="ml-auto text-rose-400">
                   {a.consecutiveInferenceFailures} consecutive failure{a.consecutiveInferenceFailures === 1 ? '' : 's'}

@@ -3,7 +3,7 @@ import type { AppContext } from '../src/index.ts';
 import { selfRestart } from '../src/self-restart.ts';
 import { CredentialMonitor } from '../src/credential-state.ts';
 import { hostUpdate } from '../src/update/update.ts';
-import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const MODES = ['self-restart', 'sigterm-first', 'exit-when-idle', 'held', 'cancel-in-wait', 'arm-after-idle', 'late-arm-gap', 'unseen-turn',
@@ -25,11 +25,15 @@ const hold = mode === 'cancel-in-wait' ? 'turn' : quiet && (process.argv[3] === 
   ? undefined : process.argv[3];
 if ((mode === 'held' || (quiet && hold !== undefined)) && !HOLDS.includes(hold!)) throw new Error('Unknown self-restart fixture hold');
 const dataDir = process.env.DATA_DIR!;
+const holdEntered = (): void => {
+  if (!existsSync(join(dataDir, 'hold-entered'))) writeFileSync(join(dataDir, 'hold-entered'), String(Date.now()));
+};
 const operatorWorkSettles = async (): Promise<void> => {
   if (!untilReleased) {
     await Bun.sleep(Math.max(0, heldUntil - Date.now()));
     return;
   }
+  holdEntered();
   while (!existsSync(join(dataDir, 'release-hold'))) await Bun.sleep(10);
   quietAt(Date.now());
 };
@@ -78,7 +82,11 @@ const holding = (kind: string): boolean => {
   if (hold === 'script-until-released') return kind === 'script' && heldFrom > 0 && !existsSync(join(dataDir, 'release-script'));
   if (untilReleased) {
     if (hold !== kind || heldFrom === 0) return false;
-    if (!existsSync(join(dataDir, 'release-hold'))) return true;
+    if (!existsSync(join(dataDir, 'release-hold'))) {
+      holdEntered();
+      writeFileSync(join(dataDir, 'hold-looked'), String(Date.now() - Number(readFileSync(join(dataDir, 'hold-entered'), 'utf8'))));
+      return true;
+    }
     // The host's first look after the release, so quiet-from is never later than the host's own reading.
     if (quietFrom === Infinity) {
       quietAt(Date.now());
@@ -278,7 +286,7 @@ const app: {
 if (mode === 'quiet-idle') {
   whenWritten('speak', () => {
     trace({ type: 'inference:started', agentName: app.agentName });
-    trace({ type: 'inference:tokens', agentName: app.agentName, content: 'Spoken.' });
+    trace({ type: 'inference:tokens', agentName: app.agentName, content: 'Spoken.', blockType: 'text', blockIndex: 0 });
     trace({ type: 'inference:completed', agentName: app.agentName });
   });
 }
