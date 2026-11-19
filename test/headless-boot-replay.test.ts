@@ -15,6 +15,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connectWhenAccepting } from './ipc-connect.js';
+import { SWEEPS } from '../src/sweeps.js';
 
 async function until(check: () => boolean, label: string): Promise<void> {
   const deadline = Date.now() + 5_000;
@@ -136,6 +137,14 @@ test('a session switch before any client connects leaves the first client the ne
     await until(() => client.events.some(event => event.type === 'lifecycle' && event.phase === 'replay-truncated'), 'truncation line');
     expect(client.events.filter(event => event.replay === true).map(event => event.agentName)).toEqual(['fixture.reader-9']);
     expect(client.events.find(event => event.phase === 'replay-truncated')).toMatchObject({ dropped: 250, kept: 1 });
+  });
+});
+
+test('the ready event names the sweeps the host knows', async () => {
+  await withChild(async (open) => {
+    const client = await open();
+    const ready = client.events.find(event => event.type === 'lifecycle' && event.phase === 'ready')!;
+    expect(ready.sweeps).toEqual(SWEEPS.map((sweep) => sweep.name));
   });
 });
 

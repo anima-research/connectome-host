@@ -989,12 +989,33 @@ headless socket.
 | `/session [list\|new\|switch\|rename\|delete]` | Session management; `delete` requires `--confirm` |
 | `/fleet [list\|status\|view\|peek\|stop\|restart]` | Fleet children (see [`docs/fleet-protocol.md`](docs/fleet-protocol.md)) |
 | `/update [check\|install\|restart [wait\|now\|resume\|<version>]\|back [(keep\|restore) [<version>]]]` | Whether a newer release is out and what it costs (`check`, or `/update` alone); on an install set up to update itself, install it, restart onto it, or go back. A version, as the Web UI sends it, makes Restart or Go back refuse unless that's still the release it would act on ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
+| `/sweep [name [--write]]` | List the sweeps this release knows. With a name, show each stored row that sweep would rewrite, with its new text and never its old text, and which agents' prompt caches a write would rewrite; `--write` rewrites them, and `connectome sweep` asks the running host the same |
 
 The commands that move the head (`/checkout`, `/restore`, `/branchto`) and
 those that change the agent's window (`/undo`, `/redo`, `/newtopic`) are
 refused while a turn is in flight: `/checkout`, `/restore` and `/branchto`
 while any agent sharing the store is mid-turn, the subconscious included, and
 `/undo`, `/redo` and `/newtopic` while the agent the command acts for is.
+`/sweep` isn't refused for a turn in flight. With `--write`, it leaves each
+row that the window of an agent with a turn alive holds, says so, and rewrites
+the rest; run it again once those turns end. While a command that changes the
+session, such as a bare `/newtopic` writing its summary, is still running,
+`/sweep` with `--write` writes nothing and says so. `/sweep` reaches the open
+session's rows alone, and on a host with more sessions its answer says so. It
+reaches this host's own agents alone: on a host with fleet children its answer
+says so, and an agent here sends a child `/sweep` with `fleet--command` and
+reads the child's answer with `fleet--peek`. A row stored in shards isn't
+rewritten: the answer names it with its count of shards, and a `--write` that
+meets one ends refused. A summary already built from a rewritten row keeps its
+old words, and where the strategy of an agent whose context holds the row
+renders summaries the answer says so. A later rollback to a row stored before
+the sweep (`/restore` to a message, `/branchto` or the Web UI's Rollback)
+brings that row's old text back, so run the sweep again after one. Each
+`--write` records in the operator log the rows it rewrote, left and failed,
+and those stored in shards, each with its agent and up to 50 of each kind, and
+the branch and the store's sequence before its first edit. A row's text before
+the sweep is its text at that sequence (context-manager's `getMessageAt`), and
+the rows the sweep matches at that sequence are the rows it listed.
 `/newtopic` stores its transition only while the agent has no turn alive, and
 is refused while a continuation or a retry of the agent's turn is on its way.
 A bare `/newtopic` writes its summary first. If the branch or the strategy

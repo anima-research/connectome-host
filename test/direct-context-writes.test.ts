@@ -152,6 +152,16 @@ const ALLOWED: Array<{ file: string; call: string; count: number; why: string }>
       'as the command is given, and for a bare /newtopic once the summary is written. Otherwise it stores nothing.',
   },
   {
+    file: 'src/commands.ts',
+    call: 'row.cm.editMessage',
+    count: 1,
+    why: "/sweep --write's edit of a row already stored, in place: it stores no row and keeps the row's metadata, its " +
+      'audience stamp included, so there is nothing to present. The command edits a row only where every agent whose ' +
+      'window holds it is idle with no turn alive (idleWithNoTurn), with no await between, and otherwise leaves the ' +
+      "row. A surgery's reservation of the store holds a turn token for every agent, so a sweep during one leaves " +
+      'every row a window holds.',
+  },
+  {
     file: 'src/modules/time-module.ts',
     call: 'ctx.addMessage (untargeted)',
     count: 1,
