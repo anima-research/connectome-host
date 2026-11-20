@@ -268,7 +268,7 @@ turn's later rounds, where that text would land where the send may have
 posted. With `false`, text beside a send is posted like any other. The agent
 can switch it for itself through `agent_settings` (`send_silencing`), and its
 choice persists across restarts. The setting came in Agent Framework
-0.35.0, which this host's dependency range starts at.
+0.35.0.
 
 ```json
 {

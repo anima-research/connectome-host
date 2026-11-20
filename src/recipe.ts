@@ -403,8 +403,8 @@ export interface RecipeAgent {
    * or bounced without the `skip_reply`, the turn's first such `skip_reply`
    * is refused once with a result that names the drafts and asks where they
    * should go. With the XML formatter, nothing is refused, and the text is
-   * held when the turn ends. The agent can change its own with
-   * `agent_settings`.
+   * held when the turn ends. Nothing is held while proseRouting is
+   * 'disabled'. The agent can change its own with `agent_settings`.
    */
   sameRoundSkipReplyTextPolicy?: 'private' | 'ask';
   /**

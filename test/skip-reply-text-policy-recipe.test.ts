@@ -28,11 +28,11 @@ describe('agent.sameRoundSkipReplyTextPolicy', () => {
     }
   });
 
-  test("loads 'ask' with every provider and formatter, the XML formatter included", () => {
+  test("loads 'ask' with every provider and formatter, the XML formatter and the mock provider included", () => {
     const providers: Array<Record<string, string>> = [
       {}, { provider: 'anthropic' }, { provider: 'openrouter' }, { provider: 'bedrock' },
       { provider: 'openai-compatible', baseUrl: 'https://llm.example/v1' },
-      { provider: 'openai-responses' }, { provider: 'openai-codex' },
+      { provider: 'openai-responses' }, { provider: 'openai-codex' }, { provider: 'mock' },
     ];
     for (const extra of providers) {
       for (const formatter of [undefined, 'native', 'anthropic-xml']) {
