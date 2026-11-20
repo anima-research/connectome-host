@@ -38,7 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { applyAgentOverlay, loadMcplServers, mergeRecipeServers } from './mcpl-config.js';
 import { CALL_LOG_READ_BUDGET, readLinesFromEnd } from './call-log-tail.js';
-import { SESSION_MARKER } from './session-marker.js';
+import { SESSION_MARKER, ROLLOVER_NOTICE, reopenedLive } from './session-marker.js';
 
 export const BUG_REPORT_REPO = 'anima-research/connectome-host';
 /** The issue form the link fills (.github/ISSUE_TEMPLATE/bug_report.yml). */
@@ -213,7 +213,7 @@ export interface HostErrorShape {
 }
 
 export interface HostErrorSummary {
-  log: 'tui-error.log' | 'headless.log' | 'readline-error.log';
+  log: 'tui-error.log' | 'headless.log' | 'headless.log.1 + headless.log' | 'readline-error.log';
   readable: boolean;
   truncated: boolean;
   tags: Array<[string, number]>;
@@ -532,6 +532,12 @@ export function ourFrame(path: string, line: string, scope: FrameScope): string 
   }
   if (!located || !/^[@A-Za-z0-9_./-]{1,200}$/.test(located)) return null;
   return `${located}:${line}`;
+}
+
+/** A headless.log session that opened at a live rollover: its first lines
+ *  after the marker carry the notice headless.ts writes there. */
+export function rolledOverLive(session: string): boolean {
+  return session.split('\n', 3).some((line) => ROLLOVER_NOTICE.test(line.trim()));
 }
 
 export function currentSession(text: string): string {
@@ -855,11 +861,39 @@ export function gatherBugReportFacts(opts: GatherOptions): BugReportFacts {
   let hostErrors: HostErrorSummary | null = null;
   if (errorLogName) {
     const read = tailLines(join(opts.dataDir, errorLogName), LOG_WINDOW);
-    const parsed = parseErrorLog(currentSession((read?.lines ?? []).join('\n')), frameScope(root));
+    let session = currentSession((read?.lines ?? []).join('\n'));
+    let log: HostErrorSummary['log'] = errorLogName;
+    let truncated = read ? read.truncated : false;
+    // A headless.log rolled over live opens its session with a notice: the
+    // run's earlier lines (its boot lines among them) are in headless.log.1,
+    // back to that file's own marker, so they are read too, within the same
+    // window, or the report would say little of a run that just rolled over.
+    if (errorLogName === 'headless.log' && read && rolledOverLive(session)) {
+      const earlier = tailLines(join(opts.dataDir, 'headless.log.1'), Math.max(0, LOG_WINDOW - Buffer.byteLength(session)));
+      if (earlier?.readable) {
+        session = `${currentSession(earlier.lines.join('\n'))}\n${session}`;
+        log = 'headless.log.1 + headless.log';
+        // Cut short where the run's part of headless.log.1 outran the window:
+        // its tail then holds no marker, and the report says so, as it does
+        // for headless.log alone.
+        if (earlier.truncated && !earlier.lines.some((line) => SESSION_MARKER.test(line))) truncated = true;
+      } else {
+        // The notice says the run's earlier lines are in headless.log.1, and
+        // that file can't be read (gone, or unreadable): the report holds the
+        // part after the rollover alone, and says it is cut (R4-5).
+        truncated = true;
+      }
+    } else if (errorLogName === 'headless.log' && read && reopenedLive(session)) {
+      // The session opened after a reopen with no rollover: the run's earlier
+      // lines were in a file something else moved, or went to stderr. This
+      // file holds the part after the reopen alone, and the report says so (R5-4).
+      truncated = true;
+    }
+    const parsed = parseErrorLog(session, frameScope(root));
     hostErrors = {
-      log: errorLogName,
+      log,
       readable: read ? read.readable : true,
-      truncated: read ? read.truncated : false,
+      truncated,
       tags: [...parsed.tags.entries()].sort((a, b) => b[1] - a[1]),
       otherTags: parsed.otherTags,
       errors: parsed.errors,

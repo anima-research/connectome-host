@@ -14,8 +14,12 @@
  * path (parent uses the socket, not pipes).  Bun's console.* writes to file
  * descriptors 1 and 2 directly, not through those methods, so console lines
  * go wherever those descriptors point: for a fleet child, the startup.log
- * its parent opened.  PID lives at {DATA_DIR}/headless.pid for parent-side
- * liveness.
+ * its parent opened.  console.error and console.warn lines are written to
+ * headless.log as well, from the moment the data directory is set up (main() buffers them until the log is
+ * open), since /bug reads a headless host's errors from that file; log,
+ * info and debug go to the descriptors only.  headless.log is rolled over
+ * to headless.log.1 past HEADLESS_LOG_MAX_BYTES, one generation kept.  PID
+ * lives at {DATA_DIR}/headless.pid for parent-side liveness.
  *
  * One client at a time.  Client disconnect does NOT exit the process —
  * children stay up across parent restarts and accept the next connection.
@@ -25,9 +29,11 @@
 
 // Keep this module's imports light: the headless tests start a host per test, many at once.
 import { createServer, type Socket, type Server } from 'node:net';
-import { createWriteStream, mkdirSync, existsSync, unlinkSync, writeFileSync, type WriteStream } from 'node:fs';
-import { sessionMarker } from './session-marker.js';
+import { createWriteStream, mkdirSync, existsSync, unlinkSync, writeFileSync, renameSync, statSync, fstatSync, openSync, type WriteStream } from 'node:fs';
+import { takeBootConsole } from './headless-boot-console.js';
+import { sessionMarker, rolloverNotice } from './session-marker.js';
 import { join, resolve } from 'node:path';
+import { format } from 'node:util';
 import type { AppContext } from './index.js';
 import type { TraceEvent } from '@animalabs/agent-framework';
 import { type IncomingCommand, matchesSubscription } from './modules/fleet-types.js';
@@ -67,21 +73,55 @@ const EXITING_FLUSH_MS = 50;
 
 let activeLog: WriteStream | null = null;
 
+/** headless.log is rolled over to headless.log.1 past this, at a start and
+ *  live: nothing else rotates it, and /bug reads the last 4 MiB of it and,
+ *  after a live rollover, of headless.log.1. */
+export const HEADLESS_LOG_MAX_BYTES = 64 * 1024 * 1024;
+
+/** Move a headless.log at or past the cap aside as headless.log.1 (replacing
+ *  the one before), so the file the stream opens starts near empty. ENOENT
+ *  means the file is already gone (an operator deleted it while the host
+ *  ran): nothing to move, and the caller opens a fresh one. Any other error
+ *  is returned for the caller to say once and back off from. */
+function rollOverIfLarge(logPath: string, size?: number): 'moved' | 'gone' | 'below' | Error {
+  try {
+    const bytes = size ?? statSync(logPath).size;
+    if (bytes < HEADLESS_LOG_MAX_BYTES) return 'below';
+    renameSync(logPath, `${logPath}.1`);
+    return 'moved';
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return size === undefined ? 'below' : 'gone';
+    return err instanceof Error ? err : new Error(String(err));
+  }
+}
+
+/** Streams a live rollover retired, each settled when closed or failed:
+ *  endHeadlessLog waits for them too, since process.exit would drop the
+ *  lines still queued for headless.log.1. */
+const retiring = new Set<Promise<void>>();
+
+/** Wait for a stream's lines to be written, under `limitMs`; false on the limit. */
+function settled(stream: WriteStream, limitMs: number): Promise<boolean> {
+  return new Promise((done) => {
+    const limit = setTimeout(() => done(false), limitMs);
+    stream.end(() => { clearTimeout(limit); done(true); });
+  });
+}
+
 /** process.exit drops a stream's pending writes, so the exits made while
  *  headless.log is open wait for this first. */
-export function endHeadlessLog(): Promise<void> {
+export async function endHeadlessLog(): Promise<void> {
   const stream = activeLog;
-  if (!stream) return Promise.resolve();
-  return new Promise((done) => {
-    const limit = setTimeout(() => {
-      // This reaches the process's own stderr: under Bun console.error
-      // writes there directly, and under Node through the redirect, which
-      // sends what's written once the log has ended there.
-      console.error(`[host] headless.log hadn't taken its last lines after ${LOG_FLUSH_LIMIT_MS / 1000} s, so this exit goes ahead without them`);
-      done();
-    }, LOG_FLUSH_LIMIT_MS);
-    stream.end(() => { clearTimeout(limit); done(); });
-  });
+  if (!stream && retiring.size === 0) return;
+  const limit = new Promise<false>((r) => setTimeout(() => r(false), LOG_FLUSH_LIMIT_MS));
+  // The active stream and any a live rollover retired, all under one limit.
+  const all = Promise.all([...retiring, ...(stream ? [settled(stream, LOG_FLUSH_LIMIT_MS)] : [])]).then(() => true as const);
+  if (!(await Promise.race([all, limit]))) {
+    // This reaches the process's own stderr: under Bun console.error
+    // writes there directly, and under Node through the redirect, which
+    // sends what's written once the log has ended there.
+    console.error(`[host] headless.log hadn't taken its last lines after ${LOG_FLUSH_LIMIT_MS / 1000} s, so this exit goes ahead without them`);
+  }
 }
 
 export async function runHeadless(app: AppContext, argv: string[] = [], testing: { stoppedReadingMs?: number } = {}): Promise<void> {
@@ -95,27 +135,197 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   selfRestart.attachHeadless();
 
   // Bun's console.* bypasses these methods and writes to descriptors 1 and 2,
-  // which for a fleet child are its startup.log, so console lines from
-  // framework code land there, not here.
+  // which for a fleet child are its startup.log; console.error and
+  // console.warn are routed here as well, below.
   //
   // Match the real process.stdout.write overload signature so libraries
   // passing (chunk, cb) or (chunk, encoding, cb) for backpressure /
   // flush confirmation don't have their callbacks silently swallowed.
-  const logStream: WriteStream = createWriteStream(logPath, { flags: 'a' });
-  activeLog = logStream;
-  logStream.write(`\n${sessionMarker(new Date())}\n`);
-  type StdWrite = typeof process.stdout.write;
-  // Once endHeadlessLog has ended the stream, such a line goes to the
-  // process's own stderr instead, whichever stream it was written to:
-  // writing it to the ended stream would make the stream error, drop the
-  // lines still pending and, with nothing listening, end the process.
+  const atStart = rollOverIfLarge(logPath);
+  // The file is opened here, synchronously, so the stream has its fd before
+  // anything can rename the path: a stream still opening when a start's own
+  // first lines crossed the cap would open the new headless.log instead and
+  // put this run's marker in the file the rollover moved aside.
+  type OpenLog = { stream: WriteStream; fd: number };
+  const openLog = (): OpenLog | Error => {
+    try {
+      const fd = openSync(logPath, 'a');
+      const stream = createWriteStream(logPath, { fd });
+      // Given an fd, Bun leaves the stream's path unset; set it, so what reads
+      // a stream's path (the shutdown fixtures among them) sees the log's.
+      if (stream.path === undefined) Object.defineProperty(stream, 'path', { value: logPath, configurable: true });
+      return { stream, fd };
+    } catch (err) {
+      return err instanceof Error ? err : new Error(String(err));
+    }
+  };
+  // Once endHeadlessLog has ended the stream, or while the file couldn't be
+  // opened, a line goes to the process's own stderr instead, whichever
+  // stream it was written to: writing it to the ended stream would make the
+  // stream error, drop the lines still pending and, with nothing listening,
+  // end the process.
   const toStderr = process.stderr.write.bind(process.stderr) as (...args: unknown[]) => boolean;
+  // Set while writeLog takes a line the console already printed (the wrapper
+  // below, and the boot replay): with no file open, such a line is counted
+  // toward the reopen and not mirrored to stderr a second time (R5-2).
+  let alreadyPrinted = false;
+  const writeLogPrinted = (text: string): void => {
+    alreadyPrinted = true;
+    try { writeLog(text); } finally { alreadyPrinted = false; }
+  };
+  const RETRY_STEP = 1024 * 1024;
+  // The file the lines go to, or null while there is none: a start whose
+  // open failed (R4-2: a headless.log another user owns, say) runs without
+  // it rather than not at all — fail-fast would make a restart-always
+  // supervisor loop on a file nobody is reading — and tries again a MiB on.
+  let logStream: WriteStream | null = null;
+  let logFd = -1;
+  let logBytes = 0;
+  // Lines the log takes, counted toward the cap: the marker and notices too.
+  const put = (text: string): void => {
+    logBytes += Buffer.byteLength(text);
+    if (logStream) logStream.write(text); else toStderr(text);
+  };
+  const openSession = (): void => { put(`\n${sessionMarker(new Date())}\n`); };
+  // A reopen the log owes (R4-3): the path was moved aside at the cap, or
+  // is no longer the open file (deleted, or moved by something else), or
+  // the start's open failed. Its own state, apart from the rename's
+  // backoff: while set, each RETRY_STEP tries openLog() alone — no rename —
+  // and the notice written on success is the cause's.
+  type Reopen = { cause: 'moved' | 'gone' | 'unopened'; crossedAt: number; said: boolean };
+  let reopen: Reopen | null = null;
+  let retryAt = 0;
+  // After a rename that failed for a reason other than the file being gone,
+  // said once, and tried again only another MiB on: not at every line.
+  let retryRolloverAt = HEADLESS_LOG_MAX_BYTES;
+  // Once a MiB, whether the path is still the open file (R4-4): one an
+  // operator deleted, or a rotator moved, while the host ran is opened anew,
+  // rather than written to under a name that is no longer headless.log.
+  let checkPathAt = RETRY_STEP;
+  /** Whether logPath is the file the stream writes: same device and inode.
+   *  false when the path is gone or another file; a stat that fails otherwise
+   *  counts as ours, rather than reopen on a passing error. */
+  const pathIsOurs = (): boolean => {
+    if (logFd < 0) return false;
+    try {
+      const atPath = statSync(logPath);
+      const open = fstatSync(logFd);
+      return atPath.dev === open.dev && atPath.ino === open.ino;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code !== 'ENOENT';
+    }
+  };
+  /** The bytes the open file holds plus what is queued for it: what the count
+   *  would be if nothing had been taken from the file under the host. */
+  const fileBytes = (fd: number, stream: WriteStream | null): number => {
+    try { return fstatSync(fd).size + (stream?.writableLength ?? 0); } catch { return logBytes; }
+  };
+  /** A file truncated under the host (copytruncate, say) is smaller than the
+   *  count says: take the file's word, so the cap and the notices describe the
+   *  file and not the bytes this run has written (R5-1). A truncation is a
+   *  drop of the file's whole size; a few bytes the stream has handed to the
+   *  OS but fstat doesn't show yet are not, so only a gap past a MiB counts. */
+  const resyncCount = (): void => {
+    const real = fileBytes(logFd, logStream);
+    if (logBytes - real > RETRY_STEP) logBytes = real;
+  };
+  /** Retire the open stream once its pending lines are written, which
+   *  endHeadlessLog waits for (retiring): after a live rollover the open
+   *  file keeps its name's new place, headless.log.1. */
+  const retire = (old: WriteStream): void => {
+    const done = new Promise<void>((r) => { old.once('close', r); old.once('error', () => r()); });
+    retiring.add(done); void done.then(() => retiring.delete(done));
+    old.end();
+  };
+  /** Try the open a reopen owes; on failure say so once and try again a MiB on. */
+  const tryReopen = (firstBytes: number): void => {
+    const owed = reopen!;
+    const next = openLog();
+    if (next instanceof Error) {
+      retryAt = logBytes + RETRY_STEP;
+      if (!owed.said) {
+        owed.said = true;
+        const after = owed.cause === 'moved' ? 'it was moved to headless.log.1' : owed.cause === 'gone' ? 'it was deleted or moved' : 'this start';
+        put(`[${new Date().toISOString()}] headless.log couldn't be opened after ${after} (${next.message}); ${logStream ? 'still writing to the old file' : 'writing to stderr'}, trying again every ${RETRY_STEP} bytes\n`);
+      }
+      return;
+    }
+    // What this run wrote while the reopen was owed: on stderr for a start
+    // that never opened the file, which the notice says (R5-3).
+    const before = logBytes - firstBytes;
+    if (logStream) retire(logStream);
+    logStream = next.stream;
+    logFd = next.fd;
+    activeLog = logStream;
+    // The count starts at what the file holds — 0 for a fresh one, the whole
+    // file for one that was unopenable and is back — plus this line.
+    logBytes = fileBytes(logFd, null) + firstBytes;
+    retryRolloverAt = HEADLESS_LOG_MAX_BYTES;
+    checkPathAt = logBytes + RETRY_STEP;
+    reopen = null;
+    openSession();
+    const notice = owed.cause === 'moved' ? rolloverNotice(owed.crossedAt)
+      : owed.cause === 'gone' ? 'headless.log was gone (deleted, or moved by something other than the host) and was opened anew'
+      : `headless.log is open from here; the ${before} bytes of lines before this went to stderr`;
+    put(`[${new Date().toISOString()}] ${notice}\n`);
+  };
+  const first = openLog();
+  if (first instanceof Error) {
+    toStderr(`[host] headless.log couldn't be opened (${first.message}); the host runs with its log lines on stderr and tries the file again every ${RETRY_STEP} bytes\n`);
+    reopen = { cause: 'unopened', crossedAt: 0, said: true };
+    retryAt = RETRY_STEP;
+  } else {
+    logStream = first.stream;
+    logFd = first.fd;
+    activeLog = logStream;
+    logBytes = (() => { try { return fstatSync(logFd).size; } catch { return 0; } })();
+    if (atStart instanceof Error) retryRolloverAt = logBytes + RETRY_STEP;
+    checkPathAt = logBytes + RETRY_STEP;
+  }
+  openSession();
+  type StdWrite = typeof process.stdout.write;
   const writeLog = (
     chunk: string | Uint8Array,
     encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
     cb?: (err?: Error | null) => void,
   ): boolean => {
-    if (logStream.writableEnded) return toStderr(chunk, encodingOrCb, cb);
+    if (logStream?.writableEnded) return toStderr(chunk, encodingOrCb, cb);
+    const length = typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.byteLength;
+    logBytes += length;
+    if (reopen) {
+      if (logBytes >= retryAt) tryReopen(length);
+    } else if (logBytes >= retryRolloverAt) {
+      // At the cap: the host moves the file aside only while the path is
+      // still its own file, so it never renames one a rotator put there;
+      // a path that isn't ours is reopened as a deleted one, no rollover.
+      if (!pathIsOurs()) {
+        reopen = { cause: 'gone', crossedAt: logBytes, said: false };
+        tryReopen(length);
+      } else if ((resyncCount(), logBytes < retryRolloverAt)) {
+        // Truncated under the host since the last check: not at the cap after all.
+      } else {
+        const rolled = rollOverIfLarge(logPath, logBytes);
+        if (rolled === 'moved' || rolled === 'gone') {
+          // A resident up for weeks reaches the cap live: a new file takes
+          // the lines from here, with a marker of its own and a notice /bug
+          // reads headless.log.1 on; the open file is retired at its new name.
+          reopen = { cause: rolled, crossedAt: logBytes, said: false };
+          tryReopen(length);
+        } else if (rolled instanceof Error) {
+          retryRolloverAt = logBytes + RETRY_STEP;
+          put(`[${new Date().toISOString()}] headless.log is past ${HEADLESS_LOG_MAX_BYTES} bytes and couldn't be moved to headless.log.1 (${rolled.message}); trying again in ${RETRY_STEP} bytes\n`);
+        }
+      }
+    } else if (logBytes >= checkPathAt) {
+      checkPathAt = logBytes + RETRY_STEP;
+      if (!pathIsOurs()) {
+        reopen = { cause: 'gone', crossedAt: logBytes, said: false };
+        tryReopen(length);
+      } else {
+        resyncCount();
+      }
+    }
+    if (!logStream) return alreadyPrinted ? true : toStderr(chunk, encodingOrCb, cb);
     return typeof encodingOrCb === 'function'
       ? logStream.write(chunk, encodingOrCb)
       : logStream.write(chunk, encodingOrCb as BufferEncoding, cb);
@@ -130,13 +340,37 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   } as StdWrite;
   process.stdout.write = makeRedirect();
   process.stderr.write = makeRedirect();
-
   const log = (msg: string): void => {
     writeLog(`[${new Date().toISOString()}] ${msg}\n`);
   };
 
   log(`headless start pid=${process.pid} dataDir=${dataDir} socket=${socketPath}`);
+  if (atStart === 'moved') log(`headless.log was over ${HEADLESS_LOG_MAX_BYTES} bytes and was moved to headless.log.1`);
+  else if (atStart instanceof Error) log(`headless.log is over ${HEADLESS_LOG_MAX_BYTES} bytes and couldn't be moved to headless.log.1: ${atStart.message}`);
   for (const warning of takeRecipeWarnings()) log(`warning: ${warning}`);
+
+  // Bun's console writes to the descriptors itself (above), so what the host
+  // and agent-framework say through console.error and console.warn never
+  // reached this log, and /bug, which reads this log in headless mode for
+  // its host-error tags and shapes, saw none of it. What was said while the
+  // host booted, which main() buffered (headless-boot-console.ts: an MCPL
+  // server that failed to connect, an update audit), is written first, after
+  // the session marker, so /bug counts it as this run's; from here each line
+  // is written as it is said. Each still prints where it went: the
+  // supervisor's stderr, or a fleet child's startup.log, which its parent
+  // quotes on a failed launch. Taking the buffer puts the console methods
+  // back as they were, so `print` here is what they were before the capture.
+  // Once the log has ended, the print alone: writeLog would print it again.
+  const boot = takeBootConsole();
+  for (const line of boot.lines) writeLogPrinted(`${line}\n`);
+  if (boot.dropped > 0) log(`${boot.dropped} more console lines were said while the host booted than the ${boot.lines.length} kept above`);
+  for (const level of ['error', 'warn'] as const) {
+    const print = console[level];
+    console[level] = (...args: unknown[]) => {
+      if (!logStream?.writableEnded) writeLogPrinted(`${format(...args)}\n`);
+      print(...args);
+    };
+  }
 
   // A previous instance that crashed without unlinking its socket would make
   // listen() fail with EADDRINUSE.

@@ -139,8 +139,19 @@ under the working directory):
   beside `headless.pid` and `ipc.sock`. But Bun's `console.*` bypasses those
   methods. So `console.error` and `console.log` lines, such as
   `[inference-failed]`, `[routeSpeech]` and `[webui] listening …`, still reach
-  the supervisor's stdout and stderr. `headless.log` holds mostly the headless
-  runtime's own lines.
+  the supervisor's stdout and stderr. `console.error` and `console.warn` lines
+  are written to `headless.log` as well, from the moment the data directory
+  is set up (for a host that reaches its headless runtime), since `/bug`
+  reads a headless host's errors from it; `console.log` lines go to the
+  supervisor alone. `headless.log` rolls over to `headless.log.1` past
+  64 MiB: the host rotates it itself, so leave it out of `logrotate` and the
+  like — a file moved from under the host is left where it went and the path
+  is opened anew within a MiB of lines, the host never renames a file it
+  isn't writing, and a file truncated under it is noticed within a MiB and
+  counted from its real size; but a rotator's `headless.log.1` and the host's
+  own are one name, so running both loses one of them. A start whose
+  `headless.log` can't be opened (one another user owns, say) runs with its
+  lines on stderr and says so there once, trying the file again every MiB.
 - Routing decisions go to stderr, as `[routeSpeech] …` and `[routing] …` lines.
   In readline mode they go to `data/readline-error.log` instead (below).
 - Raw model calls go to `data/llm-calls.<iso>.jsonl`, a new file at each start
