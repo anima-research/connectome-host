@@ -41,6 +41,8 @@ const incidentKey = (kind: string | null, subject: string | null) => digest(JSON
 /** The producer's fixed supersession message (credential monitor). A
  * superseding clear ends an incident because a successor began, not a recovery. */
 export const supersedingClear = (message: unknown): boolean => typeof message === 'string' && /^superseded by /.test(message);
+const successorKind = (message: unknown): string | null =>
+  supersedingClear(message) ? (message as string).slice('superseded by '.length).trim() || null : null;
 const time = (n: number) => Number.isFinite(n) && Math.abs(n) <= 8.64e15;
 export function noticeHomeDirectory(dataDir: string, logicalAgent: string): string {
   return join(dataDir, 'notice-home', digest(logicalAgent));
@@ -55,7 +57,11 @@ export interface HomeRuntime {
 
 interface SourceRef { type: 'startup' | typeof HOME_TRACES[number]; timestamp: number | null }
 interface Tracking { activeIncidentIds: string[]; forgottenActive: number }
-interface ActiveIncident { key: string; id: string; kind: AlertKind }
+interface ActiveIncident {
+  key: string; id: string; kind: AlertKind;
+  /** Successor's incident key from a superseding clear; that successor's alert closes this incident. */
+  supersededBy?: string;
+}
 interface HomeRecord {
   id: string;
   eventKey: string;
@@ -164,20 +170,21 @@ export class NoticeHome {
     const rawKind = typeof event.kind === 'string' && event.kind ? event.kind : null;
     const clear = rawKind?.endsWith('-clear') ?? false;
     const base = clear ? rawKind!.slice(0, -6) : rawKind;
-    const superseded = clear && supersedingClear(event.message);
+    const successor = clear ? successorKind(event.message) : null;
     const kind = oneOf(ALERT_KINDS, base) ? base : 'unknown-alert-kind';
     const component = type === 'mcpl:server-reconnected' && typeof event.serverId === 'string' ? event.serverId
       : type === 'module:added' && typeof event.moduleName === 'string' && event.moduleName.startsWith('mcpl:') ? event.moduleName.slice(5) : null;
     if (type !== 'ops:alert' && !turnCloses && !component) return;
     const boundServerObserved = component === this.binding.serverId;
     const alertKey = type === 'ops:alert' ? incidentKey(base, subject) : null;
+    const successorKey = type === 'ops:alert' && successor !== null ? incidentKey(successor, subject) : null;
     const recoveries = turnCloses ? turnCloses.map(k => incidentKey(k, subject))
       : component ? [incidentKey('mcpl-down', component)] : [];
     this.enqueue(async () => {
       if (!time(at)) throw new Error('invalid host clock');
       this.observationDeliveryFailed = false;
       let reportStatus = false;
-      if (alertKey !== null) reportStatus = await this.alert(kind, alertKey, clear, source, sourceId, at, superseded);
+      if (alertKey !== null) reportStatus = await this.alert(kind, alertKey, clear, source, sourceId, at, successorKey);
       else {
         for (const incident of [...this.journal.active]) {
           if (recoveries.includes(incident.key) &&
@@ -291,11 +298,29 @@ export class NoticeHome {
 
   /** Report status when tracking changes or an earlier unsent incident first delivers. */
   private async alert(kind: AlertKind, key: string, clear: boolean, source: SourceRef, sourceId: string, at: number,
-    superseded = false): Promise<boolean> {
+    successorKey: string | null = null): Promise<boolean> {
     const eventKey = digest(JSON.stringify([sourceId, key, clear]));
     if (this.journal.records.some((r) => r.eventKey === eventKey || r.lastEventKey === eventKey)) return false;
     let active = this.journal.active.find((a) => a.key === key);
-    const changed = clear ? !!active : !active;
+    if (successorKey !== null) {
+      // A superseding clear changes nothing visible: the incident stays tracked
+      // until its successor's alert is processed, which closes it (one status).
+      // If the successor is never admitted, the incident stays open.
+      if (active) active.supersededBy = successorKey;
+      this.journal.records.push({ id: randomUUID(), eventKey, lastEventKey: eventKey, phase: 'superseded',
+        incidentId: active?.id ?? null, incidentKey: key, instanceId: this.instanceId, kind, source, lastSource: source,
+        observedAt: at, lastSeen: at, count: 1, outcome: { state: 'not-dispatched', detail: 'superseded-not-posted' } });
+      await this.save();
+      return false;
+    }
+    let changed = clear ? !!active : !active;
+    if (!clear) {
+      const predecessors = this.journal.active.filter((a) => a.supersededBy === key);
+      if (predecessors.length) {
+        this.journal.active = this.journal.active.filter((a) => !predecessors.includes(a));
+        changed = true;
+      }
+    }
     if (!clear && !active) {
       if (this.journal.active.length >= MAX_ACTIVE) {
         const forgotten = this.journal.active.shift()!;
@@ -321,17 +346,9 @@ export class NoticeHome {
         prior.lastSeen = at; prior.lastSource = source; prior.lastEventKey = eventKey;
         this.journal.records.push(prior);
         await this.save();
-        return false;
+        return changed;
       }
     } else if (active) this.journal.active = this.journal.active.filter((a) => a !== active);
-    if (superseded) {
-      // Journal the close, never post it: the successor's incident post follows.
-      this.journal.records.push({ id: randomUUID(), eventKey, lastEventKey: eventKey, phase: 'superseded',
-        incidentId: active?.id ?? null, incidentKey: key, instanceId: this.instanceId, kind, source, lastSource: source,
-        observedAt: at, lastSeen: at, count: 1, outcome: { state: 'not-dispatched', detail: 'superseded-not-posted' } });
-      await this.save();
-      return changed;
-    }
     const sent = await this.publish({ phase: clear ? 'recovery-observed' : 'incident', incidentId: active?.id ?? null,
       incidentKey: key, kind, source, eventKey, at });
     return changed || (!clear && sent);

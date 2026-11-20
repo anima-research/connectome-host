@@ -114,8 +114,11 @@ policy before a pilot. No live qualification/activation is part of this slice.
   alerts.
 * An explicit `*-clear` is a **source clear observation**, not a general healthy
   claim; correlation can be unknown. A clear whose message starts
-  `superseded by ` (as when `auth-expiring` becomes `auth-expired`) closes the
-  incident with a journal-only `superseded` record, not a recovery post.
+  `superseded by ` (as when `auth-expiring` becomes `auth-expired`) is only
+  journaled as a `superseded` record: no post, no status, and the incident
+  stays tracked. The named successor's alert, when processed, closes it and
+  opens its own incident with one status; no recovery is posted. If the
+  successor is dropped (full queue), the old incident stays tracked.
   `inference:completed` and `inference:turn_ended` both close a matching
   subject's `hard-down`, `refusal-offpath` and `context-maintenance-failed`
   incidents, including for a child agent, as a successful turn closes those
@@ -185,7 +188,7 @@ no cross-rollback deduplication guarantee.
   Old uncertain receipts are never silently upgraded to sent.
 * `not-dispatched`: definitive local preflight refusal, an earlier failed
   delivery for the same observation, a send skipped because the shared
-  shutdown budget expired before dispatch, or a `superseded` close, which is
+  shutdown budget expired before dispatch, or a `superseded` record, which is
   never posted (`superseded-not-posted`).
 * `uncertain`: dispatch threw/timed out (5 seconds), returned failure/malformed
   acknowledgement. Timeout does not cancel a remote send; a late

@@ -223,7 +223,9 @@ test('all observed alert kinds including refusal/unknown get generic incidents; 
   expect((await journal(h.dir)).active.map((a: any) => a.kind)).toEqual(['unknown-alert-kind']);
 });
 
-test('superseding clear closes the old incident with a journal-only record, no recovery post', async () => {
+const statusPosts = (calls: ToolCall[]) => calls.map(c => JSON.stringify(c)).filter(c => c.includes('Tracked incident IDs:'));
+
+test('superseding clear is journal-only; the successor closes the old incident with one status, no recovery post', async () => {
   const h = await harness();
   h.alert('auth-expiring', 'expires soon', 161); await h.settle();
   const posted = h.calls.length;
@@ -239,6 +241,61 @@ test('superseding clear closes the old incident with a journal-only record, no r
   expect(expired).toMatchObject({ phase: 'incident', kind: 'auth-expired' });
   expect(delivered(h.calls, expired)).toBe(true);
   expect(j.active.map((a: any) => a.kind)).toEqual(['auth-expired']);
+  // No intermediate "none" view: exactly one status, naming only the successor.
+  const statuses = statusPosts(h.calls.slice(posted));
+  expect(statuses).toHaveLength(1);
+  expect(statuses[0]).toContain(`Tracked incident IDs: ${expired.incidentId}`);
+  expect(statuses[0]).not.toContain(expiring.incidentId);
+});
+
+test('superseding clear alone changes nothing visible: no post, no status, incident stays tracked', async () => {
+  const h = await harness();
+  h.alert('auth-expiring', 'expires soon', 166); await h.settle();
+  const posted = h.calls.length;
+  h.alert('auth-expiring-clear', 'superseded by auth-expired', 167); await h.settle();
+  const j = await journal(h.dir);
+  expect(h.calls.length).toBe(posted);
+  expect(observed(j, 167)).toMatchObject({ phase: 'superseded', incidentId: observed(j, 166).incidentId });
+  expect(j.active.map((a: any) => a.kind)).toEqual(['auth-expiring']);
+});
+
+test('full queue: superseding clear admitted, successor dropped -> auth-expiring stays tracked, no none status', async () => {
+  const h = await harness({ sendTimeoutMs: HELD_SEND_TIMEOUT_MS });
+  h.alert('auth-expiring', 'expires soon', 168); await h.settle();
+  const expiring = observed(await journal(h.dir), 168);
+  const posted = h.calls.length;
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>(r => { entered = r; });
+  const stalled = new Promise<void>(r => { release = r; });
+  h.state.result = async () => { entered(); await stalled; return { success: true, structured: { result: 'success', id: 1 } }; };
+  h.alert('future', 'first stalled', 3000);
+  await started;
+  for (let i = 1; i < 63; i++) h.alert(`burst-kind-${i}`, 'burst', 3000 + i);
+  h.alert('auth-expiring-clear', 'superseded by auth-expired', 3100);
+  expect(h.module.homeState()?.queued).toBe(64);
+  h.alert('auth-expired', 'expired', 3101);
+  expect(h.module.homeState()?.dropped).toBe(1);
+  release(); await h.settle();
+  const j = await journal(h.dir);
+  expect(observed(j, 3100)).toMatchObject({ phase: 'superseded', incidentId: expiring.incidentId });
+  expect(observed(j, 3101)).toBeUndefined();
+  expect(j.active.some((a: any) => a.id === expiring.incidentId && a.kind === 'auth-expiring')).toBe(true);
+  const after = h.calls.slice(posted).map(c => JSON.stringify(c));
+  expect(after.some(c => c.includes('recovery-observed'))).toBe(false);
+  for (const status of statusPosts(h.calls.slice(posted))) expect(status).toContain(expiring.incidentId);
+  expect(statusPosts(h.calls).at(-1)).toContain(expiring.incidentId);
+}, 60000);
+
+test('unmatched superseding clear is journal-only: no post, no status', async () => {
+  const h = await harness();
+  const posted = h.calls.length;
+  h.alert('auth-expiring-clear', 'superseded by auth-expired', 169); await h.settle();
+  const j = await journal(h.dir);
+  expect(h.calls.length).toBe(posted);
+  expect(observed(j, 169)).toMatchObject({ phase: 'superseded', incidentId: null,
+    outcome: { state: 'not-dispatched', detail: 'superseded-not-posted' } });
+  expect(j.active).toEqual([]);
 });
 
 test('ordinary clear still closes with a posted recovery', async () => {
