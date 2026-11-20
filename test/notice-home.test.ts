@@ -287,6 +287,76 @@ test('full queue: superseding clear admitted, successor dropped -> auth-expiring
   expect(statusPosts(h.calls).at(-1)).toContain(expiring.incidentId);
 }, 60000);
 
+/** Track auth-expiring, then admit its superseding clear while the queue is full so the auth-expired alert is dropped. */
+async function droppedSuccessor() {
+  const h = await harness({ sendTimeoutMs: HELD_SEND_TIMEOUT_MS });
+  h.alert('auth-expiring', 'expires soon', 168); await h.settle();
+  const expiring = observed(await journal(h.dir), 168);
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>(r => { entered = r; });
+  const stalled = new Promise<void>(r => { release = r; });
+  h.state.result = async () => { entered(); await stalled; return { success: true, structured: { result: 'success', id: 1 } }; };
+  h.alert('future', 'first stalled', 3000);
+  await started;
+  // Repeats of one kind fill the queue without filling the active list, so eviction cannot mask the result.
+  for (let i = 1; i < 63; i++) h.alert('future', 'burst', 3000 + i);
+  h.alert('auth-expiring-clear', 'superseded by auth-expired', 3100);
+  h.alert('auth-expired', 'expired', 3101);
+  expect(h.module.homeState()?.dropped).toBe(1);
+  release(); await h.settle();
+  expect(observed(await journal(h.dir), 3101)).toBeUndefined();
+  return { h, expiring };
+}
+
+test('dropped successor: its ordinary clear closes the predecessor with a recovery post and status', async () => {
+  const { h, expiring } = await droppedSuccessor();
+  const posted = h.calls.length;
+  h.alert('auth-expired-clear', 'credential ok', 3200); await h.settle();
+  const j = await journal(h.dir);
+  const recovery = observed(j, 3200);
+  expect(recovery).toMatchObject({ phase: 'recovery-observed', kind: 'auth-expiring', incidentId: expiring.incidentId });
+  expect(delivered(h.calls, recovery)).toBe(true);
+  expect(j.active.some((a: any) => a.kind === 'auth-expiring')).toBe(false);
+  const statuses = statusPosts(h.calls.slice(posted));
+  expect(statuses).toHaveLength(1);
+  expect(statuses[0]).not.toContain(expiring.incidentId);
+}, 60000);
+
+test('dropped successor: a third failure superseding it closes the predecessor when it arrives', async () => {
+  const { h, expiring } = await droppedSuccessor();
+  const posted = h.calls.length;
+  h.alert('auth-expired-clear', 'superseded by auth-rejected', 3200); await h.settle();
+  expect(h.calls.length).toBe(posted);
+  expect((await journal(h.dir)).active.some((a: any) => a.id === expiring.incidentId)).toBe(true);
+  h.alert('auth-rejected', 'gone', 3201); await h.settle();
+  const j = await journal(h.dir);
+  const third = observed(j, 3201);
+  expect(third).toMatchObject({ phase: 'incident', kind: 'auth-rejected' });
+  expect(j.active.some((a: any) => a.kind === 'auth-expiring' || a.kind === 'auth-expired')).toBe(false);
+  expect(j.active.find((a: any) => a.kind === 'auth-rejected')?.id).toBe(third.incidentId);
+  expect(j.records.some((r: any) => r.phase === 'recovery-observed')).toBe(false);
+  const statuses = statusPosts(h.calls.slice(posted));
+  expect(statuses).toHaveLength(1);
+  expect(statuses[0]).toContain(third.incidentId);
+  expect(statuses[0]).not.toContain(expiring.incidentId);
+}, 60000);
+
+test('dropped successor: a superseding clear back to the predecessor keeps it open through its next alert', async () => {
+  const { h, expiring } = await droppedSuccessor();
+  const posted = h.calls.length;
+  h.alert('auth-expired-clear', 'superseded by auth-expiring', 3200); await h.settle();
+  expect(h.calls.length).toBe(posted);
+  const marked = (await journal(h.dir)).active.find((a: any) => a.id === expiring.incidentId);
+  expect(marked?.supersededBy).toBeUndefined();
+  h.alert('auth-expiring', 'expires soon again', 3201); await h.settle();
+  const j = await journal(h.dir);
+  expect(j.active.filter((a: any) => a.kind === 'auth-expiring').map((a: any) => a.id)).toEqual([expiring.incidentId]);
+  expect(j.records.some((r: any) => r.phase === 'recovery-observed')).toBe(false);
+  expect(statusPosts(h.calls.slice(posted))).toHaveLength(0);
+  expect(statusPosts(h.calls).at(-1)).toContain(expiring.incidentId);
+}, 60000);
+
 test('unmatched superseding clear is journal-only: no post, no status', async () => {
   const h = await harness();
   const posted = h.calls.length;

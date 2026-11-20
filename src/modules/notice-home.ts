@@ -39,7 +39,7 @@ const oneOf = <T extends string>(values: readonly T[], value: unknown): value is
 const digest = (s: string) => createHash('sha256').update(s).digest('hex');
 const incidentKey = (kind: string | null, subject: string | null) => digest(JSON.stringify([kind, subject]));
 /** The producer's fixed supersession message (credential monitor). A
- * superseding clear ends an incident because a successor began, not a recovery. */
+ * superseding clear marks the incident; the successor's alert ends it, not a recovery. */
 export const supersedingClear = (message: unknown): boolean => typeof message === 'string' && /^superseded by /.test(message);
 const successorKind = (message: unknown): string | null =>
   supersedingClear(message) ? (message as string).slice('superseded by '.length).trim() || null : null;
@@ -305,13 +305,30 @@ export class NoticeHome {
     if (successorKey !== null) {
       // A superseding clear changes nothing visible: the incident stays tracked
       // until its successor's alert is processed, which closes it (one status).
-      // If the successor is never admitted, the incident stays open.
-      if (active) active.supersededBy = successorKey;
+      // If the successor is never admitted, the incident stays open; a further
+      // superseding clear of that successor moves the mark to the next one.
+      // A chain that returns to an incident itself (A -> B dropped -> A) clears
+      // its mark: an incident never supersedes itself, so it stays open as is.
+      for (const a of this.journal.active) {
+        if (a.supersededBy !== key && a !== active) continue;
+        if (a.key === successorKey) delete a.supersededBy; else a.supersededBy = successorKey;
+      }
       this.journal.records.push({ id: randomUUID(), eventKey, lastEventKey: eventKey, phase: 'superseded',
         incidentId: active?.id ?? null, incidentKey: key, instanceId: this.instanceId, kind, source, lastSource: source,
         observedAt: at, lastSeen: at, count: 1, outcome: { state: 'not-dispatched', detail: 'superseded-not-posted' } });
       await this.save();
       return false;
+    }
+    if (clear && !active) {
+      // An untracked successor (its alert was dropped) recovered: close what it superseded.
+      const predecessors = this.journal.active.filter((a) => a.supersededBy === key);
+      if (predecessors.length) {
+        this.journal.active = this.journal.active.filter((a) => !predecessors.includes(a));
+        for (const p of predecessors) {
+          await this.publish({ phase: 'recovery-observed', incidentId: p.id, incidentKey: p.key, kind: p.kind, source, eventKey, at });
+        }
+        return true;
+      }
     }
     let changed = clear ? !!active : !active;
     if (!clear) {
