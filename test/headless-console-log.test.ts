@@ -1,7 +1,7 @@
 import { SESSION_MARKER } from '../src/session-marker.js';
 import { test, expect } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, realpathSync, existsSync, readFileSync, rmSync, openSync, ftruncateSync, closeSync, statSync, readSync, appendFileSync, renameSync, writeFileSync, mkdirSync, rmdirSync } from 'node:fs';
+import { mkdtempSync, realpathSync, existsSync, readFileSync, rmSync, openSync, ftruncateSync, closeSync, statSync, readSync, appendFileSync, renameSync, writeFileSync, mkdirSync, rmdirSync, copyFileSync, truncateSync } from 'node:fs';
 import { HEADLESS_LOG_MAX_BYTES } from '../src/headless.js';
 import { type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -268,6 +268,33 @@ test("at the cap, the host moves aside only the file it is writing: a rotator's 
   }
 }, 20000);
 
+test("a headless.log truncated under the host (copytruncate) is counted from its real size within a MiB: no rollover until the file itself reaches the cap, so a rotator's copy at headless.log.1 is kept (R5-1)", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'headless-console-')));
+  try {
+    // 2 MB short of the cap. Before: the host's count ran on from here and
+    // renamed its small file over the rotator's copy once 2 MB were written.
+    sparseLog(dir, HEADLESS_LOG_MAX_BYTES - 2_000_000);
+    const { code, log, rolled } = await runChild(dir, { PULSE: '100' }, async (socket) => {
+      await pulsesPast(dir, 100);
+      copyFileSync(join(dir, 'headless.log'), join(dir, 'headless.log.1'));
+      truncateSync(join(dir, 'headless.log'), 0);
+      // Well past the old count's cap, and past at least two MiB checks.
+      await pulsesPast(dir, 100 + 4500);
+      shutdown(socket);
+    });
+    expect(code).toBe(0);
+    // The rotator's copy is untouched, and the host's file is the small one.
+    expect(statSync(join(dir, 'headless.log.1')).size).toBeGreaterThan(HEADLESS_LOG_MAX_BYTES - 2_000_000);
+    expect(rolled).toContain('headless start pid=');
+    expect(statSync(join(dir, 'headless.log')).size).toBeLessThan(10 * 1024 * 1024);
+    expect(log).not.toMatch(/rolled over at \d+ bytes/);
+    expect(log).not.toContain('was gone');
+    expect(pulseNumbers(log).at(-1)).toBeGreaterThanOrEqual(4600);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 25000);
+
 test('a reopen that fails is tried again a MiB on, apart from any rollover, and the file is back within about a MiB of the fix (R4-3)', async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'headless-console-')));
   try {
@@ -297,6 +324,34 @@ test('a reopen that fails is tried again a MiB on, apart from any rollover, and 
   }
 }, 25000);
 
+test('after an unopenable file comes back, the count starts at its size: a file near the cap rolls over at the cap, not a cap later (R5-3)', async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'headless-console-')));
+  try {
+    // A near-cap file the host can't open at start (a directory stands at its
+    // path, the file waits beside it), then can.
+    sparseLog(dir, HEADLESS_LOG_MAX_BYTES - 1_500_000);
+    renameSync(join(dir, 'headless.log'), join(dir, 'headless.log.aside'));
+    mkdirSync(join(dir, 'headless.log'));
+    const { code, log, rolled } = await runChild(dir, { PULSE: '100' }, async (socket) => {
+      await pulsesPast(dir, 100);
+      rmdirSync(join(dir, 'headless.log'));
+      renameSync(join(dir, 'headless.log.aside'), join(dir, 'headless.log'));
+      // Opened within a MiB; then 1.5 MB more crosses the cap by the file's size.
+      await pulsesPast(dir, 100 + 1200 + 2500);
+      shutdown(socket);
+    });
+    expect(code).toBe(0);
+    // Rolled over once the file reached 64 MiB: the retired file is the big one.
+    expect(rolled).toBeDefined();
+    expect(statSync(join(dir, 'headless.log.1')).size).toBeGreaterThan(HEADLESS_LOG_MAX_BYTES - 1_500_000);
+    expect(rolled!).toMatch(/headless\.log is open from here; the \d+ bytes of lines before this went to stderr/);
+    expect(log).toMatch(/rolled over at \d+ bytes/);
+    expect(statSync(join(dir, 'headless.log')).size).toBeLessThan(5 * 1024 * 1024);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30000);
+
 test("a start whose headless.log can't be opened runs with its lines on stderr, says so there once, and opens the file within a MiB once it can (R4-2)", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'headless-console-')));
   try {
@@ -312,8 +367,13 @@ test("a start whose headless.log can't be opened runs with its lines on stderr, 
     });
     expect(code).toBe(0);
     expect(stderr.match(/\[host\] headless\.log couldn't be opened \(/g)).toHaveLength(1);
-    expect(stderr).toContain('[probe] pulse 1 ');
-    expect(log).toMatch(/headless\.log is open from here; the \d+ bytes of lines before this went to stderr/);
+    // Each console line once on stderr while the file is unopenable, not twice (R5-2).
+    expect(stderr.split('[probe] pulse 1 ').length - 1).toBe(1);
+    expect(stderr.split('[probe] pulse 50 ').length - 1).toBe(1);
+    // The notice counts what went to stderr (R5-3).
+    const opened = log.match(/headless\.log is open from here; the (\d+) bytes of lines before this went to stderr/);
+    expect(opened).not.toBeNull();
+    expect(Number(opened![1])).toBeGreaterThan(100 * 1000);
     expect(log.match(/^--- session .* ---$/gm)).toHaveLength(1);
     const inLog = pulseNumbers(log);
     expect(inLog[0]).toBeGreaterThan(fixedAt - 1200);

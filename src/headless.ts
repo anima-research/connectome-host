@@ -15,7 +15,7 @@
  * descriptors 1 and 2 directly, not through those methods, so console lines
  * go wherever those descriptors point: for a fleet child, the startup.log
  * its parent opened.  console.error and console.warn lines are written to
- * headless.log as well, from boot (main() buffers them until the log is
+ * headless.log as well, from the moment the data directory is set up (main() buffers them until the log is
  * open), since /bug reads a headless host's errors from that file; log,
  * info and debug go to the descriptors only.  headless.log is rolled over
  * to headless.log.1 past HEADLESS_LOG_MAX_BYTES, one generation kept.  PID
@@ -165,6 +165,14 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   // stream error, drop the lines still pending and, with nothing listening,
   // end the process.
   const toStderr = process.stderr.write.bind(process.stderr) as (...args: unknown[]) => boolean;
+  // Set while writeLog takes a line the console already printed (the wrapper
+  // below, and the boot replay): with no file open, such a line is counted
+  // toward the reopen and not mirrored to stderr a second time (R5-2).
+  let alreadyPrinted = false;
+  const writeLogPrinted = (text: string): void => {
+    alreadyPrinted = true;
+    try { writeLog(text); } finally { alreadyPrinted = false; }
+  };
   const RETRY_STEP = 1024 * 1024;
   // The file the lines go to, or null while there is none: a start whose
   // open failed (R4-2: a headless.log another user owns, say) runs without
@@ -207,6 +215,20 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       return (err as NodeJS.ErrnoException).code !== 'ENOENT';
     }
   };
+  /** The bytes the open file holds plus what is queued for it: what the count
+   *  would be if nothing had been taken from the file under the host. */
+  const fileBytes = (fd: number, stream: WriteStream | null): number => {
+    try { return fstatSync(fd).size + (stream?.writableLength ?? 0); } catch { return logBytes; }
+  };
+  /** A file truncated under the host (copytruncate, say) is smaller than the
+   *  count says: take the file's word, so the cap and the notices describe the
+   *  file and not the bytes this run has written (R5-1). A truncation is a
+   *  drop of the file's whole size; a few bytes the stream has handed to the
+   *  OS but fstat doesn't show yet are not, so only a gap past a MiB counts. */
+  const resyncCount = (): void => {
+    const real = fileBytes(logFd, logStream);
+    if (logBytes - real > RETRY_STEP) logBytes = real;
+  };
   /** Retire the open stream once its pending lines are written, which
    *  endHeadlessLog waits for (retiring): after a live rollover the open
    *  file keeps its name's new place, headless.log.1. */
@@ -228,18 +250,23 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       }
       return;
     }
+    // What this run wrote while the reopen was owed: on stderr for a start
+    // that never opened the file, which the notice says (R5-3).
+    const before = logBytes - firstBytes;
     if (logStream) retire(logStream);
     logStream = next.stream;
     logFd = next.fd;
     activeLog = logStream;
-    logBytes = firstBytes;
+    // The count starts at what the file holds — 0 for a fresh one, the whole
+    // file for one that was unopenable and is back — plus this line.
+    logBytes = fileBytes(logFd, null) + firstBytes;
     retryRolloverAt = HEADLESS_LOG_MAX_BYTES;
     checkPathAt = logBytes + RETRY_STEP;
     reopen = null;
     openSession();
     const notice = owed.cause === 'moved' ? rolloverNotice(owed.crossedAt)
       : owed.cause === 'gone' ? 'headless.log was gone (deleted, or moved by something other than the host) and was opened anew'
-      : `headless.log is open from here; the ${owed.crossedAt} bytes of lines before this went to stderr`;
+      : `headless.log is open from here; the ${before} bytes of lines before this went to stderr`;
     put(`[${new Date().toISOString()}] ${notice}\n`);
   };
   const first = openLog();
@@ -274,6 +301,8 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       if (!pathIsOurs()) {
         reopen = { cause: 'gone', crossedAt: logBytes, said: false };
         tryReopen(length);
+      } else if ((resyncCount(), logBytes < retryRolloverAt)) {
+        // Truncated under the host since the last check: not at the cap after all.
       } else {
         const rolled = rollOverIfLarge(logPath, logBytes);
         if (rolled === 'moved' || rolled === 'gone') {
@@ -292,9 +321,11 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       if (!pathIsOurs()) {
         reopen = { cause: 'gone', crossedAt: logBytes, said: false };
         tryReopen(length);
+      } else {
+        resyncCount();
       }
     }
-    if (!logStream) return toStderr(chunk, encodingOrCb, cb);
+    if (!logStream) return alreadyPrinted ? true : toStderr(chunk, encodingOrCb, cb);
     return typeof encodingOrCb === 'function'
       ? logStream.write(chunk, encodingOrCb)
       : logStream.write(chunk, encodingOrCb as BufferEncoding, cb);
@@ -331,12 +362,12 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   // back as they were, so `print` here is what they were before the capture.
   // Once the log has ended, the print alone: writeLog would print it again.
   const boot = takeBootConsole();
-  for (const line of boot.lines) writeLog(`${line}\n`);
+  for (const line of boot.lines) writeLogPrinted(`${line}\n`);
   if (boot.dropped > 0) log(`${boot.dropped} more console lines were said while the host booted than the ${boot.lines.length} kept above`);
   for (const level of ['error', 'warn'] as const) {
     const print = console[level];
     console[level] = (...args: unknown[]) => {
-      if (!logStream?.writableEnded) writeLog(`${format(...args)}\n`);
+      if (!logStream?.writableEnded) writeLogPrinted(`${format(...args)}\n`);
       print(...args);
     };
   }

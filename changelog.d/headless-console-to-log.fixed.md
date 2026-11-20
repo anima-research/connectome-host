@@ -19,9 +19,13 @@
   retired file's last lines, a log deleted or moved from under the host is
   opened anew within a MiB of lines (the host renames only the file it is
   writing, so a rotator's file is never moved over the rotated one), a
-  reopen that fails is tried again a MiB on, a start whose `headless.log`
-  can't be opened runs with its lines on stderr and says so once rather
-  than failing, and `/bug` reads `headless.log.1` back to its marker
-  after a live rollover, within the same 4 MiB, saying when that cut the run
-  short. Nothing rotated
+  reopen that fails is tried again a MiB on, a file truncated under the host
+  is counted from its real size within a MiB (so a `copytruncate` rotation
+  doesn't make the host roll over a small file onto the rotated copy), a
+  start whose `headless.log` can't be opened runs with its lines on stderr
+  (each line once) and says so once rather than failing, and `/bug` reads
+  `headless.log.1` back to its marker after a live rollover, within the
+  same 4 MiB, saying when that cut the run short — and says so too when the
+  session opened after a reopen with no rollover, since the run's earlier
+  lines are then elsewhere. Nothing rotated
   the file before.

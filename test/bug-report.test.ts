@@ -559,6 +559,20 @@ describe('the mode', () => {
       const plain = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
       expect(plain.hostErrors?.log).toBe('headless.log');
       expect(plain.hostErrors?.tags).toEqual([['mcpl', 1]]);
+      expect(plain.hostErrors?.truncated).toBe(false);
+      // A session that opened after a reopen with no rollover — the path was
+      // gone, or the start ran on stderr — holds the part after it alone, and
+      // the report says the run is cut, as it does for a lost headless.log.1 (R5-4).
+      for (const notice of [
+        'headless.log was gone (deleted, or moved by something other than the host) and was opened anew',
+        'headless.log is open from here; the 1048576 bytes of lines before this went to stderr',
+      ]) {
+        writeFileSync(join(dir, 'headless.log'), `\n--- session 2026-10-11T23:32:00.000Z ---\n[2026-10-11T23:32:00.000Z] ${notice}\n[mcpl] d\n`);
+        const reopened = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
+        expect(reopened.hostErrors?.log, notice).toBe('headless.log');
+        expect(reopened.hostErrors?.truncated, notice).toBe(true);
+        expect(reopened.hostErrors?.tags, notice).toEqual([['mcpl', 1]]);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

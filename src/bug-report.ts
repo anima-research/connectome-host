@@ -38,7 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { applyAgentOverlay, loadMcplServers, mergeRecipeServers } from './mcpl-config.js';
 import { CALL_LOG_READ_BUDGET, readLinesFromEnd } from './call-log-tail.js';
-import { SESSION_MARKER, ROLLOVER_NOTICE } from './session-marker.js';
+import { SESSION_MARKER, ROLLOVER_NOTICE, reopenedLive } from './session-marker.js';
 
 export const BUG_REPORT_REPO = 'anima-research/connectome-host';
 /** The issue form the link fills (.github/ISSUE_TEMPLATE/bug_report.yml). */
@@ -883,6 +883,11 @@ export function gatherBugReportFacts(opts: GatherOptions): BugReportFacts {
         // part after the rollover alone, and says it is cut (R4-5).
         truncated = true;
       }
+    } else if (errorLogName === 'headless.log' && read && reopenedLive(session)) {
+      // The session opened after a reopen with no rollover: the run's earlier
+      // lines were in a file something else moved, or went to stderr. This
+      // file holds the part after the reopen alone, and the report says so (R5-4).
+      truncated = true;
     }
     const parsed = parseErrorLog(session, frameScope(root));
     hostErrors = {
