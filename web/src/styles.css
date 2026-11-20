@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* The page is dark throughout, so the browser should draw its own parts dark
+   too: scrollbars, and the native parts of inputs and selects. Without this
+   they use the light scheme, and every scrollbar is a white bar. */
+:root {
+  color-scheme: dark;
+  scrollbar-color: var(--color-neutral-700) var(--color-neutral-950);
+}
+
 pre, code, kbd, samp { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 .msg-enter { animation: msg-enter 120ms ease-out; }
