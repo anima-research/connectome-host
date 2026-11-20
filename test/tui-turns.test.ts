@@ -104,6 +104,19 @@ describe("the TUI's Escape, through runTui", () => {
 });
 
 describe("the TUI's status line, through runTui", () => {
+  test('compression hold events appear in chat and in a fleet child’s peek log', async () => {
+    const steps = await play('compression-hold');
+    expect(steps.get('local hold')!.frame).toContain('agent: turn waiting for compression');
+    expect(steps.get('local hold')!.frame).toContain('agent: turn queued again');
+    const peek = steps.get('fleet hold')!.frame;
+    expect(peek).toContain('Peek proc: kid');
+    expect(peek).toContain('child-agent: turn waiting for compression');
+    const ended = steps.get('fleet hold ended')!.frame;
+    expect(ended).toContain('child-agent: turn queued again');
+    expect(ended).toContain('child-agent: waiting turn stopped');
+    expect(ended).toContain('child-agent: waiting turn removed');
+  }, 40000);
+
   test("a turn whose start the TUI didn't follow shows its own end, and its failure", async () => {
     const steps = await play('missed-start');
     const at = (name: string): Step => {

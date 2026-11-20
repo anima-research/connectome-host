@@ -180,13 +180,11 @@ export interface WelcomeMessageEntry {
   text: string;
   /** Epoch-millis timestamp if available. */
   timestamp?: number;
-  /** The row is out of the conversation agent's window as an undone
-   *  turn's (agent-framework #291): an undo (which /redo can reverse until
-   *  the agent's next turn, a branch move or a restart, as agent-framework
-   *  keeps the redo in memory only) or a shed after a refusal or failed
-   *  inference (which it can't). Its next request is built without it,
-   *  and the record, which the transcript shows, keeps it. Absent
-   *  otherwise. */
+  /** An undo, a shed after a refusal or failed inference, or the retraction
+   *  of an unsent injection during a compression hold took the row out of
+   *  the conversation agent's window. /redo can reverse an undo until the
+   *  agent's next turn, a branch move or a restart. The next request omits
+   *  the row, and the transcript keeps it. Absent otherwise. */
   undone?: true;
 }
 
@@ -369,8 +367,8 @@ export interface BranchChangedMessage {
 }
 
 /** After an undo or a redo on the conversation agent's window
- *  (agent-framework #291, the `window:undone` trace), or a shed from it
- *  (`presentation:retracted`, reason `shed`), and right after each welcome:
+ *  (`window:undone`), a retraction that marks rows undone (`shed` or
+ *  `unsent-injection`), and right after each welcome:
  *  which of the transcript's rows from `fromIndex` on are out of that window
  *  as undone (`WelcomeMessageEntry.undone`), by store id. A row from there
  *  that isn't named isn't undone. This host sends `fromIndex` 0, every row
@@ -892,6 +890,8 @@ export interface CommandMessage {
   type: 'command';
   command: string;
   corrId?: string;
+  /** Sent by the page's own Update controls, so /update answers in the page's words. */
+  page?: true;
 }
 
 /** @childname routing for fleet children; bypasses the conductor agent. */
@@ -1349,7 +1349,8 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
     }
     case 'command':
       return typeof v.command === 'string'
-        && (v.corrId === undefined || typeof v.corrId === 'string');
+        && (v.corrId === undefined || typeof v.corrId === 'string')
+        && (v.page === undefined || v.page === true);
     case 'route-to-child':
       return isNonEmptyString(v.childName) && typeof v.content === 'string';
     case 'cancel-subagent':

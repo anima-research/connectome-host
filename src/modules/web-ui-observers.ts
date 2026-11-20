@@ -514,6 +514,8 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'host:resume': HEALTH,
   'host:quiesced_boot': HEALTH,
   'inference:waiting': HEALTH,
+  'inference:held': HEALTH,
+  'inference:hold_ended': HEALTH,
   // Alerts: failures and refusals, the gate's decisions, modules coming and
   // going, MCPL servers and conversations, and what operators did.
   'ops:alert': OPS,
@@ -582,7 +584,6 @@ export const TRACE_SCOPES: Readonly<Record<string, FrameScopes>> = {
   'presentation:failed': OPS,
   'presentation:hand-off-mismatch': OPS,
   'presentation:retracted': OPS,
-  'gate:wake-line-omitted': OPS,
   'gate:policy-added': OPS,
   'gate:policy-removed': OPS,
   'gate:config-reconciled': OPS,
@@ -788,7 +789,9 @@ export const UPDATE_STRINGS = {
   installed: true,
   goBack: { to: true, since: true },
   restart: { to: true, why: true, phase: true, hosts: { host: true, activeTurnAgents: true } },
-  lastSwitch: { outcome: true, step: true, from: true, to: true, at: true },
+  armed: { to: true, since: true, by: true, lastTry: { at: true, hosts: { host: true, activeTurnAgents: true, inFlight: true } } },
+  armedDropped: { to: true, since: true, at: true },
+  lastSwitch: { outcome: true, step: true, from: true, to: true, at: true, by: true },
 } satisfies KeptStrings;
 
 export const HEALTH_STRINGS: KeptStrings = {
@@ -807,6 +810,7 @@ export const HEALTH_STRINGS: KeptStrings = {
     // A turn's wait for its next try: what the error policy retries it as
     // (`overloaded`, `rate_limited`), a class name, never the failure's text.
     retrying: { retryClass: true },
+    budgetHold: { errorType: true },
   },
   agentPhases: { '*': { phase: true } },
   credential: CREDENTIAL_STRINGS,
@@ -842,6 +846,12 @@ export const QUOTA_STRINGS: KeptStrings = {
 
 export function frameWithoutFailureText(frame: WebUiServerMessage): WebUiServerMessage {
   switch (frame.type) {
+    case 'trace':
+    case 'child-event': {
+      if (frame.event.type !== 'inference:held') return frame;
+      const { error: _error, ...event } = frame.event;
+      return { ...frame, event };
+    }
     case 'call-ledger':
       return { ...frame, ledger: keepNamedStrings(frame.ledger, LEDGER_STRINGS) as CallLedgerSnapshot };
     case 'credential-state':

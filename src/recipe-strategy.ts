@@ -6,6 +6,7 @@ import { isBuiltinStrategyType } from './extensions.js';
 export const PASSTHROUGH_KEYS = [
   'enforceBudget',
   'maxSpeculativeL1s',
+  'carryStrandedSummaries',
   'compressionRefusalCurveFallbacks',
   'compressionContextBudgetTokens',
   'compressionSourceOnly',
@@ -17,6 +18,7 @@ export const PASSTHROUGH_KEYS = [
   'compressionSplitPlaceholder',
   'compressionSplitMaxCallsPerChunk',
   'compressionSplitMaxCallsPer10Min',
+  'compressionFallbackModel',
   'compressionRecallBudgetTokens',
   'recoverLiteralThinkingWrappedCompression',
   'positionedRecallPairs',
