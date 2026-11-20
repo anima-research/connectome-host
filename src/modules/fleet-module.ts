@@ -1569,6 +1569,14 @@ export class FleetModule implements Module {
           'words, never a session\'s, so calling it again won\'t change that. Ask the user to run /bug themselves.',
       };
     }
+    if (typeof input.command === 'string' && parseCommand(input.command).name === 'auth') {
+      return {
+        success: false,
+        isError: true,
+        error: "Nothing was sent: /auth is for a person to run in the child's own console, since it reads or changes the " +
+          "child's provider credential, and its output can carry the provider's own words. Ask whoever runs the child to run it.",
+      };
+    }
     const ok = await this.requireReachable(input.name, 'nothing was sent');
     if (!('child' in ok)) return ok;
     if (typeof input.command !== 'string') {
@@ -1586,8 +1594,9 @@ export class FleetModule implements Module {
     const c = this.children.get(input.name);
     if (!c) return this.unknownChild(input.name, 'there are no events to show');
     const requested = input.lines ?? 50;
-    const n = Math.max(1, Math.min(requested, c.events.length || 1));
-    const slice = c.events.length > 0 ? c.events.slice(-n) : [];
+    const shown = c.events.filter((event) => event.type !== 'inference:tokens');
+    const n = Math.max(1, Math.min(requested, shown.length || 1));
+    const slice = shown.length > 0 ? shown.slice(-n) : [];
     return { success: true, data: { name: c.name, count: slice.length, events: slice.map(peekView), note: PEEK_NOTE } };
   }
 
@@ -2603,7 +2612,8 @@ export class FleetModule implements Module {
 
 const LEFT_OUT = 'left out';
 const PEEK_NOTE = `Each event's error and attemptError read "${LEFT_OUT}" in place of their text, and its stack and ` +
-  "providerErrorCode, an alert's message and data, and an errorType of safety are left out.";
+  "providerErrorCode, an alert's message and data, and an errorType of safety are left out. Streamed chunks " +
+  "(inference:tokens) are left out too: a child's finished reply is in its inference:speech.";
 
 function peekView(event: WireEvent): Record<string, unknown> {
   const shown = withoutErrorText(event);
