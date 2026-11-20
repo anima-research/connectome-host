@@ -7,7 +7,8 @@ import { AgentTreeReducer } from '../src/state/agent-tree-reducer.js';
 
 const SENTINEL = 'sentinel-5d8b provider said: invalid x-api-key';
 const NOTE = "Each event's error and attemptError read \"left out\" in place of their text, and its stack and providerErrorCode, " +
-  "an alert's message and data, and an errorType of safety are left out.";
+  "an alert's message and data, and an errorType of safety are left out. Streamed chunks (inference:tokens) are left out too: " +
+  "a child's finished reply is in its inference:speech.";
 
 const dirs: string[] = [];
 const fleets: FleetModule[] = [];
@@ -32,7 +33,7 @@ function childWith(events: Event[]) {
   } as unknown as { events: Event[] });
   const record = (fleet as unknown as { recordEvent(child: object, event: object): void }).recordEvent.bind(fleet);
   for (const event of events) record(children.get('leaf')!, structuredClone(event));
-  const peek = async () => fleet.handleToolCall({ id: 'peek', name: 'peek', input: { name: 'leaf' } });
+  const peek = async (lines?: number) => fleet.handleToolCall({ id: 'peek', name: 'peek', input: { name: 'leaf', ...(lines === undefined ? {} : { lines }) } });
   return { peek, buffer: () => children.get('leaf')!.events };
 }
 
@@ -47,6 +48,7 @@ const ARRIVED: Event[] = [
   { type: 'tool:failed', agentName: 'leaf', tool: 'fetch', callId: 'c1', error: SENTINEL, ts: 5 },
   { type: 'workspace-file-snapshot', corrId: 'w1', path: 'notes.md', totalLines: 0, fromLine: 1, toLine: 0, content: '', truncated: false, error: 'no such file', ts: 6 },
   { type: 'inference:speech', agentName: 'leaf', content: 'Looking into it.', ts: 7 },
+  { type: 'inference:tokens', agentName: 'leaf', content: SENTINEL, ts: 8 },
 ];
 
 const SHOWN: Event[] = [
@@ -70,6 +72,7 @@ test("fleet--peek shows a child's events without a failure's own text, says so, 
 test("no text of a child's failed turn reaches a parent through fleet--peek, its tree's snapshot included", async () => {
   const failure = [
     { type: 'inference:started', agentName: 'leaf', ts: 10 },
+    { type: 'inference:tokens', agentName: 'leaf', content: SENTINEL, ts: 10 },
     { type: 'inference:failed', agentName: 'leaf', error: SENTINEL, stack: `Error: ${SENTINEL}`, ts: 11 },
     { type: 'inference:exhausted', agentName: 'leaf', error: SENTINEL, errorType: 'auth', httpStatus: 401, providerErrorCode: 'sentinel-5d8b-code', ts: 12 },
   ];
@@ -88,7 +91,26 @@ test("no text of a child's failed turn reaches a parent through fleet--peek, its
   const peek = await child.peek();
   expect(peek.success).toBe(true);
   expect((peek.data as { count: number }).count).toBe(5);
+  expect((peek.data as { events: Event[] }).events.map((e) => e.type)).toEqual(['inference:started', 'inference:failed', 'inference:exhausted', 'snapshot', 'ops:alert']);
   expect(JSON.stringify(peek.data)).not.toContain('sentinel-5d8b');
   const node = (peek.data as { events: Array<{ tree?: { nodes: Array<{ attemptError?: unknown }> } }> }).events[3]!.tree!.nodes[0]!;
   expect(node.attemptError).toBe('left out');
+});
+
+test("fleet--peek's lines counts the events it shows, with streamed chunks left out before the count", async () => {
+  const child = childWith([
+    { type: 'inference:speech', agentName: 'leaf', content: 'First reply.', ts: 1 },
+    { type: 'inference:tokens', agentName: 'leaf', content: 'Sec', ts: 2 },
+    { type: 'inference:tokens', agentName: 'leaf', content: 'ond', ts: 3 },
+    { type: 'inference:speech', agentName: 'leaf', content: 'Second reply.', ts: 4 },
+  ]);
+  const peek = await child.peek(2);
+  expect(peek.data).toEqual({
+    name: 'leaf', count: 2, note: NOTE,
+    events: [
+      { type: 'inference:speech', agentName: 'leaf', content: 'First reply.', ts: 1 },
+      { type: 'inference:speech', agentName: 'leaf', content: 'Second reply.', ts: 4 },
+    ],
+  });
+  expect(child.buffer()).toHaveLength(4);
 });
