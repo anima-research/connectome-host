@@ -444,8 +444,10 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
     case 'tools':
       return handleTools(framework, args.join(' ') || undefined);
 
+    // The whole rest of the line: a count split on whitespace (200 000, 150 k)
+    // would otherwise be read from its first word alone (#668).
     case 'budget':
-      return handleBudget(framework, args[0]);
+      return handleBudget(framework, args.join(' ') || undefined);
 
     case 'fast':
       return handleFast(app, args[0]);
@@ -951,6 +953,43 @@ function windowInsteadOfBudget(agent: { model: string; physicalWindowTokens?: nu
   return agent.physicalWindowTokens !== undefined && leavesOutChangedThinking(agent.model) ? agent.physicalWindowTokens : undefined;
 }
 
+/**
+ * A token count as an operator types it: digits, an optional decimal part, an
+ * optional leading `+`, and an optional `k` or `m` suffix (`200000`, `150k`,
+ * `1.5m`, `.5k`, `5.k`, `200000.0`), that comes to a whole number above 0 and
+ * at most Number.MAX_SAFE_INTEGER (the value is applied exactly, so a larger
+ * one is refused). Exponents (`1e5`), signs other than `+`, separators
+ * (`200,000`, `200 000`, `200_000`) and trailing words are refused, the whole
+ * argument with them: `parseInt` read `1e5` as 1, `200,000` as 200 and
+ * `150abc` as 150, and `/budget` set that for every agent, confirming it as
+ * a success. `/history` reads the same grammar short of the suffix with a
+ * check of its own, since past its cap every count means the cap and a count
+ * over 2^53 is read as that rather than refused.
+ */
+export function parseTokenCount(arg: string): number | undefined {
+  const match = /^\+?(\d*)(?:\.(\d*))?([km])?$/i.exec(arg.trim());
+  if (!match) return undefined;
+  const [, whole, rawFraction = '', suffix] = match;
+  if (whole === '' && rawFraction === '') return undefined;
+  // Trailing zeros are not precision: 1.5000k is 1500 as 1.5k is.
+  const fraction = rawFraction.replace(/0+$/, '');
+  // Scale by digits, not by float arithmetic: 1.001 * 1000 is 1000.9999999999999.
+  const exponent = (suffix?.toLowerCase() === 'm' ? 6 : suffix ? 3 : 0) - fraction.length;
+  if (exponent < 0) return undefined;
+  const tokens = Number((whole || '0') + fraction) * 10 ** exponent;
+  return Number.isSafeInteger(tokens) && tokens > 0 ? tokens : undefined;
+}
+
+/** A token count as fmtTokens rounds it, with the exact count beside it where
+ *  rounding hid it: 1,001 reads as "1.0k (1,001)", 200,000 as "200.0k". A
+ *  fractional budget a recipe wrote is shown whole, not to three decimals. */
+export function exactTokens(n: number): string {
+  const rounded = fmtTokens(n);
+  // Under 1,000 fmtTokens prints the number itself, fraction and all.
+  const exact = rounded === String(n) || parseTokenCount(rounded) === n;
+  return exact ? rounded : `${rounded} (${n.toLocaleString('en-US', { maximumFractionDigits: 20 })})`;
+}
+
 function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
   const agents = framework.getAllAgents();
   if (agents.length === 0) {
@@ -965,7 +1004,7 @@ function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
       const pct = budget > 0 ? ((last / budget) * 100).toFixed(0) : '—';
       const window = windowInsteadOfBudget(agent);
       lines.push({
-        text: `  ${agent.name}: ${fmtTokens(budget)} (last: ${fmtTokens(last)}, ${pct}%)` +
+        text: `  ${agent.name}: ${exactTokens(budget)} (last: ${fmtTokens(last)}, ${pct}%)` +
           (window !== undefined
             ? `; its stream doesn't break at this budget mid-turn: for its size, only before a request its ${fmtTokens(window)} window can't hold`
             : ''),
@@ -975,17 +1014,8 @@ function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
     return { lines };
   }
 
-  let tokens: number;
-  const lower = arg.toLowerCase();
-  if (lower.endsWith('m')) {
-    tokens = parseFloat(lower.slice(0, -1)) * 1_000_000;
-  } else if (lower.endsWith('k')) {
-    tokens = parseFloat(lower.slice(0, -1)) * 1_000;
-  } else {
-    tokens = parseInt(arg, 10);
-  }
-
-  if (!Number.isFinite(tokens) || tokens <= 0) {
+  const tokens = parseTokenCount(arg);
+  if (tokens === undefined) {
     return { lines: [{ text: `Invalid token count: "${arg}". Examples: 150k, 1m, 200000`, style: 'system' }] };
   }
 
@@ -996,7 +1026,9 @@ function handleBudget(framework: AgentFramework, arg?: string): CommandResult {
   const windowed = agents.filter((agent) => windowInsteadOfBudget(agent) !== undefined).map((agent) => agent.name);
   return {
     lines: [
-      { text: `Stream budget set to ${fmtTokens(tokens)} tokens for all agents.`, style: 'system' },
+      // The exact count beside the rounded one where rounding hid it: 1,001 reads
+      // as "1.0k", while "200.0k" is 200,000 and says so on its own.
+      { text: `Stream budget set to ${exactTokens(tokens)} tokens for all agents.`, style: 'system' },
       ...(windowed.length > 0
         ? [{
           text: `It's kept, but doesn't break the stream mid-turn for ${windowed.join(', ')}, whose thinking binds and ` +
