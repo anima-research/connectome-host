@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { LoggingAnthropicAdapter } from '../src/logging-adapter.js';
+import { LoggingAnthropicAdapter, claudeVersion, modelKnownToAcceptEffort, modelAcceptsEffort, effortModelKey } from '../src/logging-adapter.js';
 import { cacheLineageKey, Membrane, NativeFormatter } from '@animalabs/membrane';
 import type { ProviderCallRecord } from '../src/call-ledger.js';
 import type { ProviderRequest, ProviderResponse } from '@animalabs/membrane';
@@ -112,12 +112,68 @@ describe('LoggingAnthropicAdapter.withEffort', () => {
     expect(extra.keep).toBe(1);
   });
 
-  test('drops levels the model rejects rather than bricking its turns', () => {
+  test('drops levels the model is known to reject rather than bricking its turns, by generation, not by a row per model', () => {
     expect(withEffort('high', { ...baseRequest, model: 'claude-haiku-4-5' }).extra).toBeUndefined();
+    expect(withEffort('low', { ...baseRequest, model: 'claude-haiku-4-5-20251001' }).extra).toBeUndefined();
+    expect(withEffort('low', { ...baseRequest, model: 'claude-sonnet-4-5-20250929' }).extra).toBeUndefined();
+    expect(withEffort('low', { ...baseRequest, model: 'claude-sonnet-4-20250514' }).extra).toBeUndefined();
+    expect(withEffort('low', { ...baseRequest, model: 'claude-opus-4-1-20250805' }).extra).toBeUndefined();
+    expect(withEffort('low', { ...baseRequest, model: 'claude-3-5-sonnet-20241022' }).extra).toBeUndefined();
     expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeUndefined();
+    expect(withEffort('xhigh', { ...baseRequest, model: 'claude-sonnet-4-6' }).extra).toBeUndefined();
     expect(withEffort('max', { ...baseRequest, model: 'claude-opus-4-5' }).extra).toBeUndefined();
+    expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-4-5-20251101' }).extra).toBeUndefined();
+    expect(withEffort('high', { ...baseRequest, model: 'claude-opus-4-5-20251101' }).extra).toBeDefined();
     expect(withEffort('max', { ...baseRequest, model: 'claude-opus-4-6' }).extra).toBeDefined();
+    expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-4-7' }).extra).toBeDefined();
+    expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-4-8' }).extra).toBeDefined();
     expect(withEffort('xhigh', { ...baseRequest, model: 'claude-opus-5-5' }).extra).toBeDefined();
+    // Haiku 5.5 takes all five (Anthropic's effort page), and needed no row to.
+    for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      expect(withEffort(level, { ...baseRequest, model: 'claude-haiku-5-5' }).extra).toEqual({ output_config: { effort: level } });
+    }
+    expect(withEffort('max', { ...baseRequest, model: 'us.anthropic.claude-haiku-5-5-v1:0' }).extra).toBeDefined();
+    expect(withEffort('low', { ...baseRequest, model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0' }).extra).toBeUndefined();
+  });
+
+  test('claudeVersion reads the version off the id as a pair, in any of the spellings the host meets', () => {
+    const cases: Array<[string, [number, number] | undefined]> = [
+      ['claude-haiku-4-5-20251001', [4, 5]], ['claude-sonnet-4-5-20250929', [4, 5]], ['claude-opus-4-5-20251101', [4, 5]],
+      ['claude-opus-4-20250514', [4, 0]], ['claude-sonnet-4-20250514', [4, 0]], ['claude-opus-4-1-20250805', [4, 1]],
+      ['claude-3-5-sonnet-20241022', [3, 5]], ['claude-3-haiku-20240307', [3, 0]], ['claude-v2', [2, 0]], ['claude-instant-1.2', [2, 0]],
+      ['claude-opus-4-6', [4, 6]], ['claude-sonnet-4-6', [4, 6]], ['claude-opus-4-7', [4, 7]], ['claude-opus-4-8', [4, 8]],
+      ['claude-sonnet-5', [5, 0]], ['claude-haiku-5-5', [5, 5]], ['claude-opus-5-5', [5, 5]], ['claude-opus-4-10', [4, 10]],
+      ['Claude-Opus-5-5', [5, 5]], ['anthropic/claude-opus-4.7', [4, 7]], ['us.anthropic.claude-haiku-4-5-20251001-v1:0', [4, 5]],
+      ['claude-opus-5-5[1m]', [5, 5]],
+      // A family the rule has never heard of: how Fable and Mythos arrived.
+      ['claude-fable-5-1', undefined], ['claude-mythos-preview', undefined], ['claude-newfamily-6', undefined],
+      ['gpt-5.6-sol', undefined], ['', undefined],
+    ];
+    for (const [model, version] of cases) expect([model, claudeVersion(model)]).toEqual([model, version]);
+  });
+
+  test('a Claude id the rule cannot place gets the effort (stream() recovers from a refusal); a non-Claude id does not', () => {
+    // New family names, mixed case, a dotted version, a two-digit minor: all sent (R1-1).
+    for (const model of ['claude-newfamily-6', 'claude-fable-5-1', 'claude-mythos-preview', 'Claude-Opus-5-5', 'anthropic/claude-opus-4.7', 'claude-opus-4-10', 'claude-opus-5-5[1m]']) {
+      expect([model, withEffort('xhigh', { ...baseRequest, model }).extra]).toEqual([model, { output_config: { effort: 'xhigh' } }]);
+    }
+    // The refusals hold in every spelling.
+    expect(withEffort('low', { ...baseRequest, model: 'Claude-Haiku-4-5' }).extra).toBeUndefined();
+    expect(withEffort('xhigh', { ...baseRequest, model: 'anthropic/claude-opus-4.6' }).extra).toBeUndefined();
+    // A third-party model behind the Anthropic route: its 400 may never name the effort, so fail closed, as on main.
+    expect(withEffort('low', { ...baseRequest, model: 'gpt-5.6-sol' }).extra).toBeUndefined();
+    expect(withEffort('low', { ...baseRequest, model: 'llama-4' }).extra).toBeUndefined();
+    // Off stream(), where nothing recovers, only a model the rule places and accepts counts as known.
+    expect(modelKnownToAcceptEffort('claude-haiku-5-5', 'max')).toBe(true);
+    expect(modelKnownToAcceptEffort('claude-opus-4-6', 'max')).toBe(true);
+    expect(modelKnownToAcceptEffort('claude-opus-4-6', 'xhigh')).toBe(false);
+    expect(modelKnownToAcceptEffort('claude-newfamily-6', 'low')).toBe(false);
+    expect(modelAcceptsEffort('claude-newfamily-6', 'low')).toBe(true);
+    expect(modelKnownToAcceptEffort('claude-haiku-4-5', 'low')).toBe(false);
+    // One key per model across its spellings.
+    for (const spelling of ['Claude-Opus-4-7', 'anthropic/claude-opus-4.7', 'claude-opus-4-7-20260301', 'claude-opus-4-7@20260301', 'us.anthropic.claude-opus-4-7-20260301-v1:0', 'claude-opus-4-7[1m]']) {
+      expect([spelling, effortModelKey(spelling)]).toEqual([spelling, 'claude-opus-4-7']);
+    }
   });
 
   test('never sends a level outside the known set, whatever the model', () => {
