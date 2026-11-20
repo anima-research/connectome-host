@@ -38,6 +38,7 @@ describe('channel-mode', () => {
     const steps: string[] = [];
     const debounces: unknown[] = [];
     m.setFramework({
+      listMcplServers: () => [{ id: 'discord', connected: true }],
       addGatePolicy: (p: { behavior: { debounce: unknown } }) => {
         steps.push('addGatePolicy');
         if (opts.gateFails) throw new Error('debounce rule refused');
@@ -144,10 +145,11 @@ describe('channel-mode', () => {
     expect(none.error).toContain("it had no debounce rule to remove and it isn't pinned");
   });
 
-  test('when no step works, it says nothing changed', async () => {
+  test('when no step reports success, it says so, not that nothing changed', async () => {
     const { m } = wired({ failing: ['channel_open', 'subscription-gc--pin_channel_idle_limit'], gateFails: true });
     const r = await m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'debounced' }));
-    expect(r.error).toStartWith('Nothing changed for channel discord:1:2: opening the channel failed');
+    expect(r.error).toStartWith('No step for channel discord:1:2 reported success: opening the channel failed');
+    expect(r.error).not.toContain('Nothing changed');
     expect(r.error).toContain("the channel's debounce gate rule failed (debounce rule refused)");
     expect(r.error).toContain('Each step is safe to repeat');
     expect(r.error).not.toContain('only partly');
@@ -155,7 +157,7 @@ describe('channel-mode', () => {
 
   test('a step whose call threw may have taken effect, and the result says so', async () => {
     const m = new ChannelModeModule();
-    m.setFramework({ addGatePolicy: () => { throw new Error('debounce rule refused'); }, removeGatePolicy: () => true } as never);
+    m.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => { throw new Error('debounce rule refused'); }, removeGatePolicy: () => true } as never);
     await m.start({
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') throw new Error('timed out');
@@ -169,7 +171,7 @@ describe('channel-mode', () => {
     expect(none.error).not.toContain('Nothing changed');
 
     const m2 = new ChannelModeModule();
-    m2.setFramework({ addGatePolicy: () => {}, removeGatePolicy: () => true } as never);
+    m2.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => {}, removeGatePolicy: () => true } as never);
     await m2.start({
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') throw new Error('timed out');
@@ -183,7 +185,7 @@ describe('channel-mode', () => {
   test('a module that stops between steps says so for the steps it didn\'t take', async () => {
     const m = new ChannelModeModule();
     const gate: string[] = [];
-    m.setFramework({ addGatePolicy: () => { gate.push('add'); }, removeGatePolicy: () => true } as never);
+    m.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => { gate.push('add'); }, removeGatePolicy: () => true } as never);
     await m.start({
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') await m.stop();
@@ -198,7 +200,7 @@ describe('channel-mode', () => {
 
   test('a module that isn\'t running says so, and that nothing changed', async () => {
     const m = new ChannelModeModule();
-    m.setFramework({ addGatePolicy: () => {}, removeGatePolicy: () => true } as never);
+    m.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => {}, removeGatePolicy: () => true } as never);
     const r = await m.handleToolCall(call('set_channel_mode', { channelId: 'discord:1:2', mode: 'mentions' }));
     expect(r.error).toStartWith("Nothing changed: the channel-mode module isn't running right now");
     expect(r.error).toContain('whoever runs this host');

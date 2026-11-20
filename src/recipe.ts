@@ -1378,8 +1378,12 @@ export interface RecipeModules {
    * bundles subscribe + a per-channel ambient debounce gate rule + pinning
    * subscription-gc off; mentions mode reverses all three. On by default when
    * the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
-   * `false` disables. `serverId` names the MCPL server that owns subscriptions
-   * (default `discord`); `toolPrefix` is deprecated and read by nothing.
+   * `false` disables. Each call's MCPL server is the prefix of its channel
+   * id (`zulip:backend` → `zulip`), which must name a server this host knows;
+   * an id without one, or with a `*` in it, is refused. `serverId` is
+   * deprecated and ignored (a startup line says so); it used to name the one
+   * server for every call.
+   * `toolPrefix` is deprecated and read by nothing.
    * `defaultDebounceMs` sets the debounced-mode quiet window (180000 if
    * omitted).
    */
