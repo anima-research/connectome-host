@@ -1,8 +1,6 @@
 import { delimiter, join, resolve } from 'node:path';
 import { realOrResolved, writeTextAtomic } from '../update/contract.js';
-import { shellWord } from '../update/launcher.js';
-
-export const INSTALL_COMMAND = 'connectome';
+import { INSTALL_COMMAND, shellWord } from '../update/install-command-name.js';
 
 export const CLI_IN_RELEASE = ['node_modules', '@animalabs', 'connectome-host', 'src', 'cli', 'connectome.ts'];
 

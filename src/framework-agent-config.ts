@@ -24,6 +24,8 @@ export type FrameworkAgentConfig = AgentConfig & {
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
   autoContinue?: Recipe['agent']['autoContinue'];
+  primaryWaitsForAuxiliary?: boolean;
+  sendSilencing?: boolean;
   thinkingBinding?: { binds?: boolean; dropBlock?: boolean };
 };
 
@@ -163,6 +165,9 @@ export function buildFrameworkAgentConfig(
     ...(recipe.agent.sameRoundThinkTextPolicy !== undefined
       ? { sameRoundThinkTextPolicy: recipe.agent.sameRoundThinkTextPolicy }
       : {}),
+    ...(recipe.agent.sameRoundSkipReplyTextPolicy !== undefined
+      ? { sameRoundSkipReplyTextPolicy: recipe.agent.sameRoundSkipReplyTextPolicy }
+      : {}),
     ...(recipe.agent.proseRouting !== undefined
       ? { proseRouting: recipe.agent.proseRouting }
       : {}),
@@ -171,6 +176,12 @@ export function buildFrameworkAgentConfig(
       : {}),
     ...(recipe.agent.toolWrapperProseGuard !== undefined
       ? { toolWrapperProseGuard: recipe.agent.toolWrapperProseGuard }
+      : {}),
+    ...(recipe.agent.primaryWaitsForAuxiliary !== undefined
+      ? { primaryWaitsForAuxiliary: recipe.agent.primaryWaitsForAuxiliary }
+      : {}),
+    ...(recipe.agent.sendSilencing !== undefined
+      ? { sendSilencing: recipe.agent.sendSilencing }
       : {}),
     ...(recipe.agent.autoContinue !== undefined
       ? { autoContinue: recipe.agent.autoContinue }

@@ -22,6 +22,7 @@ import { audienceOf, storedInjectionMarkOf } from '@animalabs/agent-framework';
 import { continuesBody } from '@animalabs/context-manager';
 import { storedInjectionLabel } from '../stored-injection.js';
 import { speakerOf } from '../speaker.js';
+import { retractionMarksRows } from '../state/turn-trace.js';
 import type { ServerWebSocket } from 'bun';
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
@@ -38,6 +39,7 @@ import { handleCommand } from '../commands.js';
 import {
   PANEL_OPS_THAT_CHANGE_THE_SESSION,
   refusedForAnotherSession,
+  refusedWhileSwitchQuiesced,
   refusedWhileSwitching,
   switchLeftForStop,
   trackOperatorWork,
@@ -107,6 +109,9 @@ import {
   type McplLiveServer,
 } from '../web/panel-data.js';
 import { loadRecipeDetailed } from '../recipe.js';
+import { isSwitchQuiesce } from '../update/contract.js';
+import { hostUpdate } from '../update/update.js';
+import { PAGE_WAYS } from '../web/update-text.js';
 import {
   ObserverRegistry,
   ObserverSessions,
@@ -232,6 +237,41 @@ export function switchRefusalFor(
 ): WebUiServerMessage | null {
   if (message.type === 'cancel-subagent') return null;
   return refusalReply(message, (what) => refusedWhileSwitching(app, what));
+}
+
+export function switchQuiesceRefusalFor(
+  app: { framework: { getHostModeStatus(): { quiesced: boolean; reason?: string } } },
+  message: WebUiClientMessage,
+  underWay: boolean | null = hostUpdate.switchUnderWay(),
+): WebUiServerMessage | null {
+  if (message.type !== 'host-quiesce') return null;
+  const status = app.framework.getHostModeStatus();
+  if (!status.quiesced || !isSwitchQuiesce(status.reason)) return null;
+  if (underWay === false) {
+    return refusalReply(message, (what) => `${what} refused: this host is still quiesced for a switch that isn't ` +
+      'going ahead. A quiesce asked for now would be taken as that switch\'s quiesce, which the host\'s next start ' +
+      `ends. Nothing changed; ${PAGE_WAYS.resume} ends the switch's quiesce, and then quiesce again.`);
+  }
+  if (underWay === null) {
+    return refusalReply(message, (what) => `${what} refused: this host is quiesced for an update's switch. The switch ` +
+      'may still be under way, or it may have ended and left this quiesce behind. A quiesce asked for now would be ' +
+      'taken as the switch\'s quiesce and end with it. Nothing changed. Quiesce again once the switch has gone ahead. ' +
+      'If it has ended and left this quiesce behind, clicking "⏸ quiesced" in the top bar ends that quiesce, and then ' +
+      'quiesce again.');
+  }
+  return refusalReply(message, (what) => `${what} refused: this host is quiesced for an update's switch right now. A ` +
+    'quiesce asked for now would be taken as the switch\'s quiesce and end with it. Nothing changed; quiesce again once ' +
+    'the switch has gone ahead or ended.');
+}
+
+export function releaseQuiesceRefusalFor(
+  app: { framework: { getHostModeStatus(): { quiesced: boolean; reason?: string } } },
+  message: WebUiClientMessage,
+): WebUiServerMessage | null {
+  const changes = message.type === 'rollback' || message.type === 'suppress' || message.type === 'fleet-stop' ||
+    message.type === 'fleet-restart' || PANEL_OPS_THAT_CHANGE_THE_SESSION.has(message.type);
+  if (!changes) return null;
+  return refusalReply(message, (what) => refusedWhileSwitchQuiesced(app, what));
 }
 
 const CHANGES_STAMPED_WITH_THEIR_SESSION: ReadonlySet<string> = new Set([
@@ -816,23 +856,21 @@ export class WebUiModule implements Module {
       });
     }
     // An undo or a redo on the window of the agent whose record the
-    // transcript shows, or a shed from it, which takes rows out as an undone
-    // turn's: the transcript's rows are marked again.
-    if (event.type === 'window:undone' || (event.type === 'presentation:retracted' && (event as { reason?: unknown }).reason === 'shed')) {
-      this.broadcastUndoneMarks((event as { agentName?: unknown }).agentName);
+    // transcript shows, or a retraction that takes rows out as undone.
+    if (event.type === 'window:undone' || (event.type === 'presentation:retracted' && retractionMarksRows(event.reason))) {
+      this.broadcastUndoneMarks(event.agentName);
     }
   }
 
   /** After an undo or a redo on `agentName`'s window (agent-framework #291,
-   *  the `window:undone` trace), or a refusal rewind's or a failed
-   *  inference's shed from it (`presentation:retracted`, reason `shed`),
+   *  the `window:undone` trace), or a retraction that takes rows out as undone,
    *  when that agent's record is the transcript's: every row of the record
    *  now out of its window as undone (UndoneMarksMessage), from index 0. A
    *  page marks each row it holds that the frame names and clears the mark
    *  of each it doesn't, however far back its history reaches: the reply an
    *  undo took out with 200 rows stored after it, which no welcome's tail
    *  holds, and a row a redo put back after it left the tail. It reads the
-   *  record's listing (undoneRowIds) at each undo, redo or shed while a
+   *  record's listing (undoneRowIds) at each such change while a
    *  client the frame goes to (one that holds messages) is connected, and
    *  reads nothing while none is; and once at each welcome of such a
    *  client (welcomeAndJoinStream). */
@@ -1772,7 +1810,8 @@ export class WebUiModule implements Module {
       return;
     }
     const app = sharedServer.app;
-    const refused = switchRefusalFor(app, parsed) ?? sessionRefusalFor(app, parsed);
+    const refused = switchRefusalFor(app, parsed) ?? sessionRefusalFor(app, parsed) ?? switchQuiesceRefusalFor(app, parsed) ??
+      releaseQuiesceRefusalFor(app, parsed);
     if (refused) {
       this.send(client, refused);
       if (parsed.type === 'host-quiesce' || parsed.type === 'host-resume') this.broadcastHostMode();
@@ -1794,7 +1833,7 @@ export class WebUiModule implements Module {
         return;
 
       case 'command': {
-        void this.dispatchCommand(client, parsed.command, parsed.corrId);
+        void this.dispatchCommand(client, parsed.command, parsed.corrId, parsed.page === true);
         return;
       }
 
@@ -2642,13 +2681,13 @@ export class WebUiModule implements Module {
     sharedServer?.clients.delete(id);
   }
 
-  private async dispatchCommand(client: ClientState, command: string, corrId?: string): Promise<void> {
+  private async dispatchCommand(client: ClientState, command: string, corrId?: string, page = false): Promise<void> {
     if (!sharedServer?.app) return;
     const app = sharedServer.app;
     let result;
     try {
       // The operator log names who typed it, as the surgery dialog's does.
-      result = handleCommand(command, app, { requester: this.requesterFor(client) });
+      result = handleCommand(command, app, { requester: this.requesterFor(client), page });
     } catch (err) {
       this.send(client, {
         type: 'error',

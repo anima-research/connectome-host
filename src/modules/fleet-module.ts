@@ -35,8 +35,8 @@ import { FLEET_BEGIN_ENV } from '../fleet-begin.js';
 import { socketRefusesConnection } from './fleet-socket-probe.js';
 
 /** Events every child sends whatever its subscription asks for, for the
- *  host's own readers: its usage, and an undo, a redo or a shed on one of
- *  its agents' windows, at which the Web UI reads the child's panels again
+ *  host's own readers: its usage and the window traces at which the Web UI
+ *  reads the child's panels again
  *  (agent-streams.ts WindowFrames). */
 const HOST_FORCED_TELEMETRY_EVENTS: readonly string[] = ['usage:updated', 'window:undone', 'presentation:retracted'];
 export const CLOCK_SLACK_MS = 60_000;
@@ -2325,8 +2325,6 @@ export class FleetModule implements Module {
 
   async requestSwitch(childName: string, request: SwitchRequest, timeoutMs: number): Promise<{ ok: boolean; data?: unknown; error?: string }> {
     const child = this.children.get(childName);
-    // Keep the switch's requests outside the bound: a switch sends a child three at most, so they make no loop,
-    // and a child whose resume can't be sent stays quiesced until a later resume or its next start.
     if (child) await this.tryReopen(child, { withinBound: true });
     return this.requestAnswer(childName, `update-${request.op}`, 'update-response', `the switch's ${request.op}`, timeoutMs,
       (corrId) => ({ type: 'update-request', request, corrId }));

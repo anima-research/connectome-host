@@ -59,7 +59,8 @@ export const DEFAULT_TIERS: Readonly<Record<string, NoticeTier>> = Object.freeze
   'refusal': 'silent',
 });
 
-/** agent-framework raises these kinds with no `-clear` alert. */
+/** Kinds whose episode closes on success, including a context refusal whose
+ *  held turn ran after release. A stopped or removed hold can clear earlier. */
 const CLOSES_ON_SUCCESS: ReadonlySet<string> = new Set([
   'hard-down', 'context-refusal', 'refusal', 'refusal-offpath', 'context-maintenance-failed',
 ]);

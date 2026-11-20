@@ -34,6 +34,18 @@ const subagents = {
   cancelAll() { aborts.push('cancelAll'); return 1; },
 };
 
+const fleetListeners = new Set<(childName: string, event: Trace) => void>();
+const fleetChild = { name: 'kid', status: 'ready', startedAt: Date.now(), recipePath: 'kid.toml', events: [] as Trace[] };
+const fleet = {
+  name: 'fleet',
+  getChildren: () => new Map([[fleetChild.name, fleetChild]]),
+  requestDescribe() {},
+  onChildEvent(_name: string, listener: (childName: string, event: Trace) => void) {
+    fleetListeners.add(listener);
+    return () => { fleetListeners.delete(listener); };
+  },
+};
+
 /** The agent's record in the `undone` scenarios, and which of its rows an undo took out of its window. */
 const history: Array<{
   id: string; participant: string; content: Array<Record<string, unknown>>; metadata?: Record<string, unknown>;
@@ -78,7 +90,8 @@ function fakeFramework(name: string) {
     send(type: string, extra: Trace = {}) {
       for (const listener of [...listeners]) listener({ type, agentName: 'agent', ...extra });
     },
-    getAllModules: () => (['subagents', 'subagent-exhausted', 'numbered-fork-failed', 'numbered-fork-exhausted', 'numbered-fork-failed-then-exhausted', 'numbered-fork-failed-then-started', 'fork-figures', 'fork-figures-reversed', 'fleet-parents'].includes(scenario) ? [subagents] : []),
+    getAllModules: () => (scenario === 'compression-hold' ? [fleet]
+      : ['subagents', 'subagent-exhausted', 'numbered-fork-failed', 'numbered-fork-exhausted', 'numbered-fork-failed-then-exhausted', 'numbered-fork-failed-then-started', 'fork-figures', 'fork-figures-reversed', 'fleet-parents'].includes(scenario) ? [subagents] : []),
     getAllAgents: () => (scenario === 'subagents' ? [{ name: 'agent' }, { name: 'spawn-1' }]
       : scenario.startsWith('async-branch') ? [{ name: 'agent', state: { status: 'idle' }, getContextManager: contextManager }]
       : [{ name: 'agent' }]),
@@ -104,6 +117,7 @@ function fakeFramework(name: string) {
     },
     stop: async () => {},
     getStore: () => ({ currentBranch: () => ({ name: storeBranch }) }),
+    getHostModeStatus: () => ({ quiesced: false, drained: true, activeTurnAgents: [] }),
     async switchBranch(branch: string) {
       storeBranch = branch;
       history.splice(1, history.length, { id: 's1', participant: 'agent', content: [{ type: 'text', text: 'the side branch reply' }] });
@@ -356,6 +370,23 @@ async function play(): Promise<void> {
     second.send('inference:tokens', { content: 'new session words' });
     second.send('inference:completed');
     await step('new session answered');
+  } else if (scenario === 'compression-hold') {
+    const held = { errorType: 'over_budget', error: 'context exceeded its budget', budget: 100, actual: 120, since: 1, heldRequests: 1 };
+    first.send('inference:held', held);
+    first.send('inference:hold_ended', { outcome: 'released', waitedMs: 20 });
+    await step('local hold');
+
+    fleetChild.events.push({ type: 'inference:held', agentName: 'child-agent', ...held });
+    await pressed(() => mockInput.pressTab(), 'Tab');
+    await pressed(() => mockInput.pressArrow('down'), 'Down');
+    await pressed(() => mockInput.pressKey('p'), 'p');
+    await step('fleet hold');
+    for (const outcome of ['released', 'stopped', 'removed']) {
+      const event = { type: 'inference:hold_ended', agentName: 'child-agent', outcome, waitedMs: 20 };
+      fleetChild.events.push(event);
+      for (const listener of fleetListeners) listener(fleetChild.name, event);
+    }
+    await step('fleet hold ended');
   } else if (scenario === 'missed-start') {
     first.send('inference:tool_calls_yielded', { calls: [{ name: 'search' }] });
     await step('no start, then tools');
