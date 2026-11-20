@@ -118,6 +118,7 @@ import {
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption } from './framework-agent-config.js';
 import { probeAccountBinding } from './thinking-binding-probe.js';
+import { loadModelFacts, modelFacts, refreshModelFacts } from './model-facts.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
@@ -920,6 +921,7 @@ async function main() {
   await waitToBeListed();
   installHere = releaseHere();
   if (installHere !== null) armTrialLog(installHere);
+  const modelFactsFile = join(config.dataDir, 'model-facts.json');
   try {
     // mkdirSync's mode applies only to the directories it creates.
     mkdirSync(config.dataDir, { recursive: true, mode: PRIVATE_DIR_MODE });
@@ -928,9 +930,37 @@ async function main() {
     console.error('Set DATA_DIR to a path where this user has or can make a directory, or fix what the error names.');
     process.exit(1);
   }
+  // The recipe loads against the host's own tables alone. The facts come
+  // after: what the last start kept, then what this start's read replaces,
+  // and the fit is decided once on those, below, so a kept file can't refuse
+  // a start that a read would have passed (and the read names what it did).
   const recipe = await resolveRecipe();
   const provider = resolveProvider(recipe);
+  let factsRead: string[] = [];
+  if (provider === 'anthropic') {
+    loadModelFacts(modelFactsFile);
+    ({ read: factsRead } = await refreshModelFacts({
+      models: [resolveModel(recipe), typeof recipe.modules?.subagents === 'object' ? recipe.modules.subagents.defaultModel : undefined,
+        typeof recipe.modules?.retrieval === 'object' ? recipe.modules.retrieval.model : undefined],
+      stateFile: modelFactsFile,
+      baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+      apiKey: config.apiKey || undefined,
+      authToken: config.authToken || undefined,
+    }));
+  }
   const fit = runningFit(recipe, config.model);
+  if (fit.checked && !fit.fits) {
+    // Decided once, here, with the facts: a load-time refusal saw the tables
+    // alone. Where the facts the refusal rests on are the kept file's and not
+    // this start's read, say so, with the way out.
+    const model = resolveModel(recipe);
+    const kept = modelFacts(model);
+    const onKept = kept !== undefined && !factsRead.includes(model);
+    console.error(fit.refusal + (onKept
+      ? ` This rests on what ${modelFactsFile} kept from a read at ${kept.readAt}, which this start's read didn't replace; MODEL_FACTS=off starts without that file.`
+      : ''));
+    process.exit(1);
+  }
   if (!fit.checked) console.log(fit.line);
 
   if (provider === 'openrouter' && !config.openrouterApiKey) {

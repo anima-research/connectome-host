@@ -412,6 +412,7 @@ Under `$DATA_DIR` (default `./data`):
 | `sessions/<id>.import-source.json` | Provenance sidecar written by the importers. |
 | `llm-calls.<iso>.jsonl` | Provider call log, one per process. |
 | `lessons.json` | Lesson store (shared by every session in the data dir). |
+| `model-facts.json`, `thinking-binding.json` | What Anthropic's Models API said of the recipe's models (window, output, effort levels, thinking types, lifecycle), and what the start-up probe found this account does with a signed thinking block; both read at start, kept for the next. |
 | `observers.json`, `identity-key.pem` | WebUI observer grants; identity keypair. |
 | `ipc.sock`, `headless.log`, `headless.pid` | Headless mode. |
 | `mcpl-servers.agent.child.json` | A fleet child's own agent overlay, named to it by `MCPL_AGENT_OVERLAY_FILE`. |

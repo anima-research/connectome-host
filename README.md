@@ -1011,6 +1011,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `ANTHROPIC_OAUTH_CREDENTIALS_FILE` | — | JSON credentials file (`accessToken` + `refreshToken` + `expiresAt`, Claude Code's shape or flat); a refresh token makes the credential host-rotatable. Use a COPY, never `~/.claude/.credentials.json` itself |
 | `ANTHROPIC_OAUTH_AUTO_REFRESH` | off | `1`/`true`: rotate on a 401 without an operator action |
 | `ANTHROPIC_BASE_URL` | Anthropic API | Route Anthropic calls through a gateway |
+| `MODEL_FACTS` | on; off behind `ANTHROPIC_BASE_URL` | `off`: neither read the Models API for the recipe's models nor load `data/model-facts.json`; `on`: read it behind a gateway too, if the gateway serves `/v1/models` |
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | — | `openai-responses` recipes |
 | `OPENAI_COMPATIBLE_API_KEY` | — | Key for `openai-compatible` recipes (no `OPENAI_API_KEY` fallback by design); omit for local servers |
 | `OPENROUTER_API_KEY` | — | `openrouter` recipes |
