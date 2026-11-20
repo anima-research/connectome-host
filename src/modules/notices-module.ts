@@ -19,7 +19,7 @@ import type {
 import { unknownToolResult } from './unknown-tool.js';
 import { addressedPush } from './addressed-push.js';
 import { validateNoticeHome, type NoticeHomeConfig } from '../notice-home-config.js';
-import { NoticeHome, type HomeRuntime } from './notice-home.js';
+import { NoticeHome, supersedingClear, type HomeRuntime } from './notice-home.js';
 
 export type NoticeTier = 'silent' | 'status' | 'reply';
 
@@ -413,7 +413,7 @@ export class NoticesModule implements Module {
     if (base !== null) {
       const ep = this.episodes.get(key);
       if (!ep || !ep.kinds.has(base)) return;
-      this.removeKind(ep, base, { message, superseded: /^superseded by /.test(message) });
+      this.removeKind(ep, base, { message, superseded: supersedingClear(message) });
       return;
     }
 

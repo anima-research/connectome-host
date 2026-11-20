@@ -113,11 +113,13 @@ policy before a pilot. No live qualification/activation is part of this slice.
   does not mean no refusal occurred. Categories are not used to hide observed
   alerts.
 * An explicit `*-clear` is a **source clear observation**, not a general healthy
-  claim; correlation can be unknown. `inference:completed` and
-  `inference:turn_ended` both close a matching subject's `hard-down`,
-  `refusal-offpath` and `context-maintenance-failed` incidents, including for
-  a child agent, as a successful turn closes those legacy episodes; AF emits
-  no source clear for them. A framework-scoped maintenance failure has no
+  claim; correlation can be unknown. A clear whose message starts
+  `superseded by ` (as when `auth-expiring` becomes `auth-expired`) closes the
+  incident with a journal-only `superseded` record, not a recovery post.
+  `inference:completed` and `inference:turn_ended` both close a matching
+  subject's `hard-down`, `refusal-offpath` and `context-maintenance-failed`
+  incidents, including for a child agent, as a successful turn closes those
+  legacy episodes; AF emits no source clear for them. A framework-scoped maintenance failure has no
   matching turn and waits for a restart or session switch. In AF 0.33.0
   (observed there; not rechecked on the 0.35.1 this branch installs),
   `inference:completed` precedes refusal reporting and has no stop reason, so
@@ -182,8 +184,9 @@ no cross-rollback deduplication guarantee.
   the configured server without storing the server name in the outcome.
   Old uncertain receipts are never silently upgraded to sent.
 * `not-dispatched`: definitive local preflight refusal, an earlier failed
-  delivery for the same observation, or a send skipped because the shared
-  shutdown budget expired before dispatch.
+  delivery for the same observation, a send skipped because the shared
+  shutdown budget expired before dispatch, or a `superseded` close, which is
+  never posted (`superseded-not-posted`).
 * `uncertain`: dispatch threw/timed out (5 seconds), returned failure/malformed
   acknowledgement. Timeout does not cancel a remote send; a late
   acknowledgement is not used to upgrade or replay it.

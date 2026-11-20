@@ -38,6 +38,9 @@ const HOME_TRACES = ['ops:alert', 'inference:completed', 'inference:turn_ended',
 const oneOf = <T extends string>(values: readonly T[], value: unknown): value is T => values.some(v => v === value);
 const digest = (s: string) => createHash('sha256').update(s).digest('hex');
 const incidentKey = (kind: string | null, subject: string | null) => digest(JSON.stringify([kind, subject]));
+/** The producer's fixed supersession message (credential monitor). A
+ * superseding clear ends an incident because a successor began, not a recovery. */
+export const supersedingClear = (message: unknown): boolean => typeof message === 'string' && /^superseded by /.test(message);
 const time = (n: number) => Number.isFinite(n) && Math.abs(n) <= 8.64e15;
 export function noticeHomeDirectory(dataDir: string, logicalAgent: string): string {
   return join(dataDir, 'notice-home', digest(logicalAgent));
@@ -57,7 +60,7 @@ interface HomeRecord {
   id: string;
   eventKey: string;
   lastEventKey: string;
-  phase: 'incident' | 'recovery-observed' | 'status';
+  phase: 'incident' | 'recovery-observed' | 'superseded' | 'status';
   incidentId: string | null;
   incidentKey: string | null;
   instanceId: string;
@@ -161,6 +164,7 @@ export class NoticeHome {
     const rawKind = typeof event.kind === 'string' && event.kind ? event.kind : null;
     const clear = rawKind?.endsWith('-clear') ?? false;
     const base = clear ? rawKind!.slice(0, -6) : rawKind;
+    const superseded = clear && supersedingClear(event.message);
     const kind = oneOf(ALERT_KINDS, base) ? base : 'unknown-alert-kind';
     const component = type === 'mcpl:server-reconnected' && typeof event.serverId === 'string' ? event.serverId
       : type === 'module:added' && typeof event.moduleName === 'string' && event.moduleName.startsWith('mcpl:') ? event.moduleName.slice(5) : null;
@@ -173,7 +177,7 @@ export class NoticeHome {
       if (!time(at)) throw new Error('invalid host clock');
       this.observationDeliveryFailed = false;
       let reportStatus = false;
-      if (alertKey !== null) reportStatus = await this.alert(kind, alertKey, clear, source, sourceId, at);
+      if (alertKey !== null) reportStatus = await this.alert(kind, alertKey, clear, source, sourceId, at, superseded);
       else {
         for (const incident of [...this.journal.active]) {
           if (recoveries.includes(incident.key) &&
@@ -286,7 +290,8 @@ export class NoticeHome {
   }
 
   /** Report status when tracking changes or an earlier unsent incident first delivers. */
-  private async alert(kind: AlertKind, key: string, clear: boolean, source: SourceRef, sourceId: string, at: number): Promise<boolean> {
+  private async alert(kind: AlertKind, key: string, clear: boolean, source: SourceRef, sourceId: string, at: number,
+    superseded = false): Promise<boolean> {
     const eventKey = digest(JSON.stringify([sourceId, key, clear]));
     if (this.journal.records.some((r) => r.eventKey === eventKey || r.lastEventKey === eventKey)) return false;
     let active = this.journal.active.find((a) => a.key === key);
@@ -319,6 +324,14 @@ export class NoticeHome {
         return false;
       }
     } else if (active) this.journal.active = this.journal.active.filter((a) => a !== active);
+    if (superseded) {
+      // Journal the close, never post it: the successor's incident post follows.
+      this.journal.records.push({ id: randomUUID(), eventKey, lastEventKey: eventKey, phase: 'superseded',
+        incidentId: active?.id ?? null, incidentKey: key, instanceId: this.instanceId, kind, source, lastSource: source,
+        observedAt: at, lastSeen: at, count: 1, outcome: { state: 'not-dispatched', detail: 'superseded-not-posted' } });
+      await this.save();
+      return changed;
+    }
     const sent = await this.publish({ phase: clear ? 'recovery-observed' : 'incident', incidentId: active?.id ?? null,
       incidentKey: key, kind, source, eventKey, at });
     return changed || (!clear && sent);

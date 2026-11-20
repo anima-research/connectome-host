@@ -223,6 +223,35 @@ test('all observed alert kinds including refusal/unknown get generic incidents; 
   expect((await journal(h.dir)).active.map((a: any) => a.kind)).toEqual(['unknown-alert-kind']);
 });
 
+test('superseding clear closes the old incident with a journal-only record, no recovery post', async () => {
+  const h = await harness();
+  h.alert('auth-expiring', 'expires soon', 161); await h.settle();
+  const posted = h.calls.length;
+  h.alert('auth-expiring-clear', 'superseded by auth-expired', 162);
+  h.alert('auth-expired', 'expired', 163); await h.settle();
+  const j = await journal(h.dir);
+  const expiring = observed(j, 161), closed = observed(j, 162), expired = observed(j, 163);
+  expect(closed).toMatchObject({ phase: 'superseded', kind: 'auth-expiring', incidentId: expiring.incidentId,
+    outcome: { state: 'not-dispatched', detail: 'superseded-not-posted' } });
+  expect(delivered(h.calls, closed)).toBe(false);
+  expect(j.records.some((r: any) => r.phase === 'recovery-observed')).toBe(false);
+  expect(h.calls.slice(posted).some(c => JSON.stringify(c).includes('recovery-observed'))).toBe(false);
+  expect(expired).toMatchObject({ phase: 'incident', kind: 'auth-expired' });
+  expect(delivered(h.calls, expired)).toBe(true);
+  expect(j.active.map((a: any) => a.kind)).toEqual(['auth-expired']);
+});
+
+test('ordinary clear still closes with a posted recovery', async () => {
+  const h = await harness();
+  h.alert('auth-expiring', 'expires soon', 164); await h.settle();
+  h.alert('auth-expiring-clear', 'anthropic credential ok', 165); await h.settle();
+  const j = await journal(h.dir);
+  const recovery = observed(j, 165);
+  expect(recovery).toMatchObject({ phase: 'recovery-observed', kind: 'auth-expiring', incidentId: observed(j, 164).incidentId });
+  expect(delivered(h.calls, recovery)).toBe(true);
+  expect(j.active).toEqual([]);
+});
+
 test('matching component reconnect or mcpl module-added clears mcpl-down, not unrelated events', async () => {
   const h = await harness();
   h.alert('mcpl-down', 'component unavailable', 150, { agentName: 'component-A' }); await h.settle();

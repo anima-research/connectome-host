@@ -29,7 +29,7 @@ const NOT_DISPATCHED = [
   'topic-outside-binding', 'bound-server-missing-or-ambiguous', 'bound-server-unavailable',
   'server-prefix-drift', 'tool-not-owned-by-bound-server', 'observable-realm-mismatch',
   'missing-send-message-or-inline-attachment-capability', 'unsupported-explicit-stream-schema',
-  'missing-inline-attachment-schema',
+  'missing-inline-attachment-schema', 'superseded-not-posted',
   'backend-inspection-failed: server-list; inspect host MCPL configuration/logs',
   'backend-inspection-failed: tool-list/schema; inspect host MCPL configuration/logs',
 ] as const;
