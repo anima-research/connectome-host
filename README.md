@@ -520,9 +520,12 @@ missing or API-key account before starting device-code login. This check runs
 on the first model call, not at boot; the credential monitor can show
 `credential ok` until that call. Host login actions are disabled, so they cannot
 log out the existing session. Existing-session refresh still runs, including
-after a 401. The monitor offers Refresh token only after the app-server has
-read a refresh token from the credential file; a missing account removes that
-action. After an external CLI login, retry a model call to acquire the session.
+after a 401. Refresh remains available until the app-server establishes that
+there is no usable account or refresh token. A missing account or unusable
+credential file then offers Re-check with external-login recovery guidance.
+After an external CLI login, restart the host process (or its service), then
+retry a model call. The running app-server caches its login state; this recovery
+also applies when an existing session becomes unusable.
 
 The host forces `cli_auth_credentials_store="file"` and reads
 `CODEX_HOME/auth.json` (default `~/.codex/auth.json`). A keyring-only login is

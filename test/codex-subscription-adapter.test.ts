@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
@@ -396,10 +396,147 @@ describe('Codex existing-login-only authentication', () => {
     } finally { monitor.dispose(); }
   });
 
-  test('refresh is offered only after the app-server reads a refresh token, and disappears when the account is missing', async () => {
+  test('missing-login recovery tells the operator to restart the host after an external login', async () => {
+    const { adapter } = fixture([null], { requireExistingLogin: true });
+    await expect(adapter.login()).rejects.toThrow(/login, then restart the host process \(or its service\) and retry/);
+  });
+
+  test('external file login is acquired after restarting the app-server without a device-code prompt', async () => {
+    const codexHome = mkdtempSync(join(tmpdir(), 'codex-restart-contract-'));
+    dirs.push(codexHome);
+    const codexBinary = join(codexHome, 'synthetic-app-server'), rpcLog = join(codexHome, 'calls.jsonl');
+    // Independent compatibility case from the reviewed Codex behavior: the child
+    // caches an absent account until restart, even if another CLI writes the file.
+    writeFileSync(codexBinary, String.raw`#!/usr/bin/env node
+const fs = require('node:fs');
+const readline = require('node:readline');
+const home = process.env.CODEX_HOME;
+let hasAccount = false;
+try { hasAccount = !!JSON.parse(fs.readFileSync(home + '/auth.json', 'utf8')).tokens?.access_token; } catch {}
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const request = JSON.parse(line);
+  fs.appendFileSync(home + '/calls.jsonl', JSON.stringify(request.method) + '\n');
+  if (request.id === undefined) return;
+  const result = request.method === 'account/read' ? { account: hasAccount ? { type: 'chatgpt' } : null } : {};
+  process.stdout.write(JSON.stringify({ id: request.id, result }) + '\n');
+});
+`, { mode: 0o700 });
+    const first = new CodexSubscriptionAdapter({ codexBinary, codexHome, requireExistingLogin: true });
+    adapters.push(first);
+    const firstAuth = (first as any).auth as CodexAppServerAuth;
+    await expect(firstAuth.getAccessToken()).rejects.toMatchObject({ type: 'auth', retryable: false });
+    writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({ tokens: {
+      access_token: 'synthetic-session', refresh_token: 'synthetic-refresh', account_id: 'synthetic-account',
+    } }));
+    await expect(firstAuth.getAccessToken()).rejects.toMatchObject({ type: 'auth', retryable: false });
+    const child = (firstAuth as any).child;
+    const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+    first.dispose();
+    await exited;
+    const restarted = new CodexSubscriptionAdapter({ codexBinary, codexHome, requireExistingLogin: true });
+    adapters.push(restarted);
+    const restartedAuth = (restarted as any).auth as CodexAppServerAuth;
+    expect(await restartedAuth.getAccessToken()).toBe('synthetic-session');
+    expect(restartedAuth.getAccountId()).toBe('synthetic-account');
+    expect(restarted.credentialSource().canRefresh()).toBe(true);
+    const methods = readFileSync(rpcLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(methods.filter(method => method === 'account/read')).toHaveLength(3);
+    expect(methods).not.toContain('account/login/start');
+    expect(methods).not.toContain('account/logout');
+  });
+
+  test('default refresh is available before the first model call, and an unavailable refresh gives Codex recovery', async () => {
+    const { CredentialMonitor } = await import('../src/credential-state.js');
+    const { adapter, auth, writeToken, codexHome } = fixture([{ type: 'chatgpt' }]);
+    const source = adapter.credentialSource();
+    expect(source.canRefresh()).toBe(true);
+    const monitor = new CredentialMonitor({ source, alert: () => {} });
+    try {
+      expect(monitor.snapshot().rotatable).toBe(true);
+      writeToken('access-only', 'fixture-account', null);
+      await auth.getAccessToken();
+      const state = await monitor.runAction('refresh');
+      expect(state.lastAction?.ok).toBe(false);
+      expect(state.lastAction?.message).toContain('OpenAI Codex');
+      expect(state.lastAction?.message).toContain(codexHome);
+      expect(state.lastAction?.message).toContain('restart the host process');
+      expect(state.lastAction?.message).not.toContain('paste a new token');
+      expect(state.lastAction?.message).not.toContain('Host login actions are disabled');
+    } finally { monitor.dispose(); }
+  });
+
+  test('a pending file read preserves refresh availability until its result is known', async () => {
+    const { auth } = fixture([{ type: 'chatgpt' }]);
+    const pending = auth.readAccessToken();
+    expect(auth.canRefresh()).toBe(true);
+    await pending;
+    expect(auth.canRefresh()).toBe(true);
+  });
+
+  test('successful logout clears the learned account and refresh availability', async () => {
+    const { auth } = fixture([{ type: 'chatgpt' }]);
+    await auth.getAccessToken();
+    expect(auth.getAccountId()).toBe('fixture-account');
+    expect(auth.canRefresh()).toBe(true);
+    auth.request = async () => ({});
+    await auth.logout();
+    expect(auth.getAccountId()).toBeUndefined();
+    expect(auth.canRefresh()).toBe(false);
+  });
+
+  for (const defect of ['missing', 'unreadable', 'malformed', 'token-less'] as const) {
+    for (const phase of ['acquisition', '401 refresh'] as const) {
+      for (const lane of ['complete', 'stream'] as const) {
+        test(`file credential refusal stays local and nonretryable (${defect}/${phase}/${lane})`, async () => {
+          const { CredentialMonitor } = await import('../src/credential-state.js');
+          const { LoggingProviderAdapter } = await import('../src/logging-provider-wrapper.js');
+          const { adapter, auth, calls, loginEvents, codexHome } = fixture(
+            [{ type: 'chatgpt' }, ...(phase === '401 refresh' ? [{ type: 'chatgpt' }] : [])],
+            { requireExistingLogin: true },
+          );
+          const path = join(codexHome, 'auth.json'), privateValue = 'synthetic-private-file-marker';
+          const breakFile = () => {
+            if (defect === 'missing' || defect === 'unreadable') rmSync(path);
+            if (defect === 'unreadable') mkdirSync(path);
+            if (defect === 'malformed') writeFileSync(path, '{"tokens":' + privateValue);
+            if (defect === 'token-less') writeFileSync(path, JSON.stringify({ tokens: { refresh_token: privateValue } }));
+          };
+          if (phase === 'acquisition') breakFile();
+          let fetches = 0;
+          globalThis.fetch = Object.assign(async () => {
+            fetches++; breakFile(); return new Response('expired', { status: 401 });
+          }, { preconnect: originalFetch.preconnect });
+          const alerts: string[] = [];
+          const monitor = new CredentialMonitor({ source: adapter.credentialSource(), alert: kind => alerts.push(kind) });
+          const wrapped = new LoggingProviderAdapter(adapter, '/dev/null');
+          wrapped.onProviderError = error => monitor.observeError(error);
+          let failure: unknown;
+          try {
+            if (lane === 'complete') await wrapped.complete(request);
+            else for await (const _chunk of await wrapped.stream(request)) { /* drain */ }
+          } catch (error) { failure = error; }
+          finally { monitor.dispose(); }
+          expect(failure).toBeInstanceOf(MembraneError);
+          expect(failure).toMatchObject({ type: 'auth', retryable: false });
+          expect((failure as MembraneError).rawError).toBeUndefined();
+          expect(inspect(failure)).not.toContain(privateValue);
+          expect(alerts).toEqual(['auth-rejected']);
+          expect(monitor.snapshot().message).toContain('authentication unavailable');
+          expect(monitor.snapshot().actions.map(action => action.id)).toEqual(['recheck']);
+          expect(auth.canRefresh()).toBe(false);
+          expect(auth.getAccountId()).toBeUndefined();
+          expect(fetches).toBe(phase === 'acquisition' ? 0 : 1);
+          expect(calls.map(call => call.method)).toEqual(phase === 'acquisition' ? ['account/read'] : ['account/read', 'account/read']);
+          expect(loginEvents).toEqual([]);
+        });
+      }
+    }
+  }
+
+  test('refresh stays available until the app-server establishes that it cannot refresh', async () => {
     const { adapter, auth, writeToken } = fixture([{ type: 'chatgpt' }, { type: 'chatgpt' }, { type: 'chatgpt' }, null], { requireExistingLogin: true });
     const source = adapter.credentialSource();
-    expect(source.canRefresh()).toBe(false);
+    expect(source.canRefresh()).toBe(true);
     await auth.getAccessToken();
     expect(source.canRefresh()).toBe(true);
     writeToken('access-only', 'fixture-account', null);

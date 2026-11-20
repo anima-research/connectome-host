@@ -53,6 +53,8 @@ export interface CredentialSource {
   readonly provider: string;
   canRefresh(): boolean;
   refresh?(): Promise<void>;
+  /** Recovery guidance when this source cannot refresh its credential. */
+  refreshDisabledReason?: string;
   login?(): Promise<void>;
   /** Recovery guidance for an intentionally unavailable host login action. */
   loginDisabledReason?: string;
@@ -385,7 +387,7 @@ export class CredentialMonitor {
       switch (id) {
         case 'refresh': {
           if (!this.source.refresh || !this.source.canRefresh()) {
-            return done(false, `${this.source.provider} credential cannot be refreshed by the host — paste a new token instead`);
+            return done(false, this.source.refreshDisabledReason ?? `${this.source.provider} credential cannot be refreshed by the host — paste a new token instead`);
           }
           await this.source.refresh();
           return done(...(await this.settle('refreshed', id)));

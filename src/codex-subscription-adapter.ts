@@ -65,7 +65,7 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   private readonly codexHome: string;
   private readonly loginTimeoutMs: number;
   private requireExistingLogin: boolean;
-  private refreshAvailable = false;
+  private refreshAvailable: boolean | undefined;
   private activeAuthChanges = 0;
   private readonly onLoginRequired: (details: { verificationUrl: string; userCode: string }) => void;
   private child: ChildProcessWithoutNullStreams | null = null;
@@ -121,13 +121,22 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   }
 
   canRefresh(): boolean {
-    return this.refreshAvailable;
+    return this.refreshAvailable !== false;
   }
 
   existingLoginMessage(): string {
     return 'OpenAI Codex requires an existing ChatGPT login. Host login actions are disabled. ' +
-      `Sign in with ChatGPT using CODEX_HOME=${shellQuote(this.codexHome)} ` +
-      `${shellQuote(this.codexBinary)} -c 'cli_auth_credentials_store="file"' login, then retry. ` +
+      this.externalLoginMessage();
+  }
+
+  refreshDisabledReason(): string {
+    return 'OpenAI Codex has no usable refresh token. ' + this.externalLoginMessage();
+  }
+
+  private externalLoginMessage(): string {
+    return `Sign in with ChatGPT using CODEX_HOME=${shellQuote(this.codexHome)} ` +
+      `${shellQuote(this.codexBinary)} -c 'cli_auth_credentials_store="file"' login, ` +
+      'then restart the host process (or its service) and retry. ' +
       `The host reads ${join(this.codexHome, 'auth.json')}; a keyring-only login is insufficient.`;
   }
 
@@ -141,6 +150,8 @@ export class CodexAppServerAuth implements CodexAuthProvider {
     try {
       await this.ensureStarted();
       await this.request('account/logout', {});
+      this.refreshAvailable = false;
+      this.accountId = undefined;
     } finally {
       this.activeAuthChanges--;
     }
@@ -246,16 +257,15 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   }
 
   private async readAccessToken(): Promise<string> {
-    this.refreshAvailable = false;
     const path = join(this.codexHome, 'auth.json');
     let text: string;
     try {
       text = await readFile(path, 'utf8');
     } catch (error) {
-      throw new Error(
+      throw this.credentialFileError(
         `Codex login succeeded but ${path} could not be read. ` +
         `Ensure cli_auth_credentials_store is set to \"file\".`,
-        { cause: error },
+        error,
       );
     }
     let parsed: unknown;
@@ -264,18 +274,29 @@ export class CodexAppServerAuth implements CodexAuthProvider {
     } catch {
       // The parser's message can quote the file's text, so it isn't passed
       // on, as a cause either: a cause is printed with its error.
-      throw new Error(`Codex login succeeded but ${path} isn't valid JSON.`);
+      throw this.credentialFileError(`Codex login succeeded but ${path} isn't valid JSON.`);
     }
     const root = parsed as { tokens?: { access_token?: unknown; account_id?: unknown; refresh_token?: unknown } };
     const token = root?.tokens?.access_token;
     if (typeof token !== 'string' || token.length === 0) {
-      throw new Error(`Codex credential file ${path} does not contain tokens.access_token`);
+      throw this.credentialFileError(`Codex credential file ${path} does not contain tokens.access_token`);
     }
     this.accountId = typeof root.tokens?.account_id === 'string'
       ? root.tokens.account_id
       : undefined;
     this.refreshAvailable = typeof root.tokens?.refresh_token === 'string' && root.tokens.refresh_token.length > 0;
     return token;
+  }
+
+  private credentialFileError(message: string, cause?: unknown): Error {
+    this.refreshAvailable = false;
+    this.accountId = undefined;
+    if (this.requireExistingLogin) {
+      return new MembraneError({
+        type: 'auth', retryable: false, message: this.existingLoginMessage(), rawError: undefined,
+      });
+    }
+    return new Error(message, cause === undefined ? undefined : { cause });
   }
 
   private async ensureStarted(): Promise<void> {
@@ -520,6 +541,9 @@ export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
       provider: this.name,
       canRefresh: () => this.auth instanceof CodexAppServerAuth ? this.auth.canRefresh() : true,
       refresh: () => this.refreshCredentials(),
+      get refreshDisabledReason() {
+        return adapter.auth instanceof CodexAppServerAuth ? adapter.auth.refreshDisabledReason() : undefined;
+      },
       get login() { return adapter.requireExistingLogin ? undefined : () => adapter.login(); },
       get loginDisabledReason() { return adapter.requireExistingLogin ? adapter.loginDisabledReason() : undefined; },
       ...(this.auth.cancelLogin ? { cancelLogin: () => this.auth.cancelLogin!() } : {}),
