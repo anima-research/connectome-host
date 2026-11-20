@@ -49,6 +49,9 @@ import type { AgentPhase } from '../state/agent-tree-reducer.js';
 
 export const WEB_PROTOCOL_VERSION = 4;
 
+/** The most messages one history request, and one /history result, returns. */
+export const HISTORY_PAGE_MAX = 500;
+
 /** What an observer needs to be sent the agent trees, and so what a page
  *  needs to build and show them: every scope but 'debug'. A tree's nodes
  *  carry a subagent's task, each run's phase and how it ended, failures
@@ -1442,7 +1445,7 @@ export function isClientMessage(value: unknown): value is WebUiClientMessage {
       return isNonEmptyString(v.corrId)
         && Number.isInteger(v.beforeIndex) && (v.beforeIndex as number) >= 0
         && (v.limit === undefined
-          || (Number.isInteger(v.limit) && (v.limit as number) >= 1 && (v.limit as number) <= 500));
+          || (Number.isInteger(v.limit) && (v.limit as number) >= 1 && (v.limit as number) <= HISTORY_PAGE_MAX));
     default:
       return false;
   }

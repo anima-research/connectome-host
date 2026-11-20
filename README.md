@@ -1137,7 +1137,7 @@ headless socket.
 | `/branches` | List Chronicle branches and checkpoints |
 | `/checkout <name>` | Switch to branch |
 | `/branchto <msgId>` | Roll the record back to a message, on a new branch; the old branch keeps the rest |
-| `/history [n]` | Show the last n messages (20 by default) |
+| `/history [n]` | Show the last n messages (20 by default, at most 500; `/find` for older) |
 | `/find <text>` | Search messages for text |
 | `/mcp list` | List servers in `mcpl-servers.json` |
 | `/mcp add <id> <cmd> [args...]` | Add or overwrite a registry server (keeps its env) |
