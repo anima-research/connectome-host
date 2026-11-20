@@ -1,8 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { AnthropicXmlFormatter } from '@animalabs/membrane';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
-import { recipeFormatter } from '../src/recipe-formatter.js';
-import { unknownRecipeKeys, validateRecipe, type Recipe } from '../src/recipe.js';
+import { unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
 
 const recipe = (agent: Record<string, unknown> = {}) => ({
   name: 'skip-reply-text-policy',
@@ -30,19 +28,7 @@ describe('agent.sameRoundSkipReplyTextPolicy', () => {
     }
   });
 
-  test("refuses 'ask' where the recipe runs the XML formatter, naming the formatter and the provider", () => {
-    for (const provider of [undefined, 'anthropic', 'openrouter', 'bedrock']) {
-      const agent = { sameRoundSkipReplyTextPolicy: 'ask', formatter: 'anthropic-xml', ...(provider ? { provider } : {}) };
-      let message = '';
-      try { validateRecipe(recipe(agent)); } catch (err) { message = (err as Error).message; }
-      expect(message).toContain('sameRoundSkipReplyTextPolicy');
-      expect(message).toContain("formatter 'anthropic-xml'");
-      expect(message).toContain(`provider '${provider ?? 'anthropic'}'`);
-      expect(message).toContain("thinking");
-    }
-  });
-
-  test("refuses 'ask' exactly where the host builds the XML formatter, for each provider and formatter", () => {
+  test("loads 'ask' with every provider and formatter, the XML formatter included", () => {
     const providers: Array<Record<string, string>> = [
       {}, { provider: 'anthropic' }, { provider: 'openrouter' }, { provider: 'bedrock' },
       { provider: 'openai-compatible', baseUrl: 'https://llm.example/v1' },
@@ -51,23 +37,8 @@ describe('agent.sameRoundSkipReplyTextPolicy', () => {
     for (const extra of providers) {
       for (const formatter of [undefined, 'native', 'anthropic-xml']) {
         const agent = { model: 'm-1', sameRoundSkipReplyTextPolicy: 'ask', ...extra, ...(formatter ? { formatter } : {}) };
-        let refused = false;
-        try {
-          validateRecipe(recipe(agent));
-        } catch (err) {
-          if (!(err as Error).message.includes('sameRoundSkipReplyTextPolicy')) throw err;
-          refused = true;
-        }
-        const xml = recipeFormatter(recipe(agent) as unknown as Recipe, extra.provider ?? 'anthropic', 'm-1') instanceof AnthropicXmlFormatter;
-        expect({ ...extra, formatter, refused }).toEqual({ ...extra, formatter, refused: xml });
+        expect({ ...extra, formatter, policy: policyOf(agent) }).toEqual({ ...extra, formatter, policy: 'ask' });
       }
     }
-  });
-
-  test("loads 'ask' where the XML formatter doesn't run, and 'private' where it does", () => {
-    expect(policyOf({ sameRoundSkipReplyTextPolicy: 'ask', formatter: 'anthropic-xml', provider: 'openai-responses', model: 'gpt-5.4' })).toBe('ask');
-    expect(policyOf({ sameRoundSkipReplyTextPolicy: 'ask', formatter: 'anthropic-xml', provider: 'openai-codex', model: 'gpt-5.4' })).toBe('ask');
-    expect(policyOf({ sameRoundSkipReplyTextPolicy: 'ask', formatter: 'native' })).toBe('ask');
-    expect(policyOf({ sameRoundSkipReplyTextPolicy: 'private', formatter: 'anthropic-xml' })).toBe('private');
   });
 });
