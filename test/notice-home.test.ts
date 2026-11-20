@@ -783,7 +783,7 @@ test('review6 1: a later successful turn closes the subject\'s auxiliary refusal
     tracking: { activeIncidentIds: [observed(before, 122).incidentId] }, outcome: { state: 'sent' } });
 });
 
-test('review5 2: ordinary inference completion closes only the matching hard-down', async () => {
+test('review5 2: ordinary inference completion closes the matching subject\'s hard-down (and, per review6 1, its refusal-offpath and context-maintenance-failed), not other subjects\' or refusal incidents', async () => {
   const h = await harness();
   h.alert('hard-down', 'worker outage', 201);
   h.alert('hard-down', 'child outage', 202, { agentName: 'child' });

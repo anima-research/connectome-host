@@ -38,7 +38,8 @@ export function validateNoticeHome(value: unknown): asserts value is NoticeHomeC
   if (v.statusTopic === v.incidentsTopic) throw new Error(`${path} requires distinct explicit statusTopic and incidentsTopic`);
 }
 
-/** Canonical equality also catches destination/attestation drift on restart. */
+/** Canonical binding fingerprint, digested into the journal's bindingId. Startup archives
+ * any prior journal and starts fresh; it does not compare bindings across restarts. */
 export function homeBindingKey(c: NoticeHomeConfig): string {
   return JSON.stringify([c.connector, c.logicalAgent, c.serverId, c.toolPrefix, c.declaredRealm,
     c.stream, c.statusTopic, c.incidentsTopic, c.trustMode, c.selfEchoPreflight]);

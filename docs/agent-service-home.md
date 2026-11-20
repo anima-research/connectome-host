@@ -56,7 +56,8 @@ It validates supplied values against enum/const/length constraints and refuses
 unsupported schema constraints rather than guessing a default or reply target.
 
 **This trust mode does NOT independently verify the authenticated realm.**
-AF 0.33.0's public server listing does not expose that realm. The display and
+AF 0.33.0's public server listing does not expose that realm (observed on
+0.33.0; not rechecked on the 0.35.1 this branch installs). The display and
 attachment label it `verification=operator-attested/unverified`. The operator
 attests the registered-server/declaredRealm association. An optional backend
 `realm` value, if exposed, must match or the adapter refuses. Unchanged server
@@ -106,7 +107,8 @@ policy before a pilot. No live qualification/activation is part of this slice.
   `replay: true`; events not emitted, before the cache, or beyond its bounded
   early-trace retention are not reconstructed. There is no failures.log tailer.
 * AF 0.33.0 logs **each individual refusal** to its existing failures.log, but
-  emits a refusal `ops:alert` only at consecutive streak **>= 2**. This path does
+  emits a refusal `ops:alert` only at consecutive streak **>= 2** (observed on
+  0.33.0; not rechecked on the 0.35.1 this branch installs). This path does
   not publish an individual incident for a first refusal; absence of an alert
   does not mean no refusal occurred. Categories are not used to hide observed
   alerts.
@@ -116,7 +118,8 @@ policy before a pilot. No live qualification/activation is part of this slice.
   `refusal-offpath` and `context-maintenance-failed` incidents, including for
   a child agent, as a successful turn closes those legacy episodes; AF emits
   no source clear for them. A framework-scoped maintenance failure has no
-  matching turn and waits for a restart or session switch. In AF 0.33,
+  matching turn and waits for a restart or session switch. In AF 0.33.0
+  (observed there; not rechecked on the 0.35.1 this branch installs),
   `inference:completed` precedes refusal reporting and has no stop reason, so
   it does not clear refusal or context-refusal; `inference:turn_ended` can
   close those as well. A closing turn is not evidence of maintenance repair
@@ -206,8 +209,9 @@ coalescing and dedup, but those rules do not prove or filter causation.
 Qualify transport-failure alerts and reconnect behavior in preflight. This
 is separate from inbound Zulip message self-echo.
 
-Console diagnostics and read-only `homeState()` expose
-storage disablement and overload drops (the cumulative runtime `dropped` count).
+Console diagnostics report storage disablement and overload drops. The
+cumulative runtime `dropped` count is only held by `NoticesModule.homeState()`,
+a module method; this host has no CLI, UI or API route to it (see Known limits).
 Shutdown non-dispatch is journaled, not counted as an overload drop. None of
 these block core processing.
 
@@ -233,7 +237,7 @@ Disablement logs include the cause and the journal path on stderr.
 Missing/ambiguous bound server IDs name registered candidates and
 point to recipe and runtime-overlay configuration, unlike a disconnected
 known server. The home does not emit ops alerts for its own delivery failures;
-operators must monitor console logs or the inspection hook.
+operators must monitor console logs.
 
 Fresh repeats in an active episode coalesce into count, last-seen time and
 first/last event identity. Prose changes do not start a new record. A prior
@@ -250,7 +254,7 @@ snapshots: later repeat counts live in the journal, not in the remote post.
 Hard bounds: 128 retained records, 64 tracked active incidents, 64 queued work
 items, 2 MiB per active or staging file (at most 4 MiB excluding archives). Queue
 saturation drops **only newly arriving excess observations**, logs once per
-saturation burst and increments `homeState().dropped`. While running, work
+saturation burst and increments the module's `dropped` count. While running, work
 continues and acceptance resumes as soon as a slot opens. This also applies
 to startup replay; there is no unbounded replay buffer or backpressure on the
 framework/core.
@@ -310,6 +314,10 @@ No other connector implementation is claimed.
   128-record window. The loop ends when a status is acknowledged (the next
   identical view is then deduplicated), when the connector stops
   reconnecting, or when the host stops. Stop the host or fix the connector.
+* **No operator route to `homeState()`.** The cumulative overload `dropped`
+  count and disablement state are only readable through the module method
+  `NoticesModule.homeState()`; the host exposes it through no CLI, UI or API.
+  Operators see overload and disablement through console logs only.
 * **Refusal and context-refusal are not closed by `inference:completed`
   alone.** After a subject's `refusal` or `context-refusal` incident, a later
   successful turn that emits `inference:completed` but no

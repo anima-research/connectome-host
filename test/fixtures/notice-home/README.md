@@ -13,8 +13,10 @@ Source-only inspection, no connector execution or network calls:
   routing fields. The fixture does not invoke these handlers or import connector
   code; no private files, sessions, grants, APIs or source worktree dependency.
 
-AF event regressions use installed stock `@animalabs/agent-framework` 0.33.0:
-`src/framework.ts` completeTurn before noteRefusal (29347-29365), successful
+AF event regressions encode orderings read from stock `@animalabs/agent-framework`
+0.33.0, when it was the installed version. They were not re-read or rerun against
+the 0.35.1 this branch now installs. Line numbers are that 0.33.0 build's
+`src/framework.ts`: completeTurn before noteRefusal (29347-29365), successful
 endTurn-only `inference:turn_ended` (19082-19100), background maintenance failure
 (7920-7947) and store-held-lost alerts (16447-16449). These are synthetic module events,
 not provider turns or claims of live connector/realm/self-echo qualification.
