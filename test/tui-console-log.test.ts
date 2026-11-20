@@ -39,3 +39,19 @@ test('with no restoreTo, restore puts back what was found', () => {
   restore();
   expect(console.warn).toBe(found);
 });
+
+test('a method something else has already put back is left alone by restore', () => {
+  // OpenTUI's destroy() restores the console methods it reassigned; the TUI's
+  // restore runs after it, and must not cover what it put back with the
+  // methods from before the renderer — in a test child the renderer is made
+  // before the TUI, so those are the overlay's, and a Fatal error: line printed
+  // after the TUI would go to a destroyed renderer's cache (tui-shutdown.test).
+  const restoredByDestroy = () => {};
+  const overlay = () => {};
+  console.error = overlay;
+  const restore = routeConsoleToLog({ write: () => {} }, { error: overlay, warn: overlay });
+  console.error = restoredByDestroy;
+  restore();
+  expect(console.error).toBe(restoredByDestroy);
+  expect(console.warn).toBe(overlay);
+});

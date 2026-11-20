@@ -14,21 +14,30 @@ export interface ConsoleLogSink {
  * to an in-memory cache shown only under SHOW_CONSOLE. So this runs after
  * the renderer is up, writes each line to the log, and still hands it to
  * the method it found, so the overlay keeps its copy for whoever opens it.
- * The function returned puts back `restoreTo`: the methods from before the
- * renderer, so the TUI's last lines after `destroy()` reach the terminal.
+ *
+ * The function returned takes this routing off again. A method that still
+ * carries it is put back to `restoreTo`, the methods from before the
+ * renderer; a method something else has already put back — OpenTUI's
+ * `destroy()` restores the methods it reassigned — is left as it is, so
+ * the TUI's last lines after `destroy()` reach the terminal whichever of
+ * the two ran first.
  */
 export function routeConsoleToLog(log: ConsoleLogSink, restoreTo: ConsoleMethods = consoleMethods()): () => void {
   const found = consoleMethods();
+  const routed: Partial<ConsoleMethods> = {};
   for (const level of ['error', 'warn'] as const) {
     const previous = found[level];
-    console[level] = (...args: unknown[]) => {
+    const route = (...args: unknown[]) => {
       log.write(`${format(...args)}\n`);
       try { previous(...args); } catch { /* the overlay's own failure is not the log's */ }
     };
+    routed[level] = route;
+    console[level] = route;
   }
   return () => {
-    console.error = restoreTo.error;
-    console.warn = restoreTo.warn;
+    for (const level of ['error', 'warn'] as const) {
+      if (console[level] === routed[level]) console[level] = restoreTo[level];
+    }
   };
 }
 
@@ -37,9 +46,8 @@ export interface ConsoleMethods {
   warn: typeof console.warn;
 }
 
-/** The console methods as they are now: taken before the renderer, they are
- *  Bun's own, which the TUI's end puts back; OpenTUI's `destroy()` restores
- *  the console object, not the methods it reassigned on it. */
+/** The console methods as they are now. Taken before the renderer, they are
+ *  Bun's own: what the TUI's end puts back if the routing is still in place. */
 export function consoleMethods(): ConsoleMethods {
   return { error: console.error, warn: console.warn };
 }
