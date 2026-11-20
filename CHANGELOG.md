@@ -6,6 +6,114 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.27.1 — 2026-11-20
+
+### Added
+
+- **`agent.sameRoundSkipReplyTextPolicy`** is passed to Agent Framework's
+  policy of the same name. Its values are `"private"`, the default, and
+  `"ask"`. Any other value is refused.
+  - Under `"ask"`, plain text beside a `skip_reply` becomes a draft. With
+    native tools, the framework may refuse the turn's first such
+    `skip_reply` once. It refuses only if the text would otherwise have been
+    posted or bounced. The refusal names the drafts and asks where they
+    should go.
+  - With the XML formatter, nothing is refused, and all of the turn's unsent
+    text is held when the turn ends.
+  - Nothing is held while `proseRouting` is `"disabled"`.
+  - The agent can see and change its own value through `agent_settings`.
+    Agent Framework's range now starts at 0.35.1, the first release with
+    both features.
+  - At the upgrade, the text of Agent Framework's `agent_settings` tool
+    changes, so every resident that has that tool misses its prompt cache
+    once.
+
+## 0.27.0 — 2026-11-19
+
+### Breaking
+
+- **With agent-framework 0.35.0, three things an agent did without being
+  asked now need a recipe key, and one notice changes its tag.** Nothing in
+  a recipe has to change for it to load.
+  - **An explicit send no longer holds back the agent's plain text.** Until
+    now a `send_message`, `channel_publish`, `reply_message`, `send_dm`,
+    `say`, `whisper` or `drafts` resend held, as drafts, the plain text the
+    agent wrote in the same round and in the turn's later rounds, where
+    that text would have landed where the send may have posted. Now that
+    text is posted. **Who needs to act:** a host whose agent writes a note
+    beside its sends ("sent", a summary of the message). **Migration:** set
+    `agent.sendSilencing: true`, or let the agent set `send_silencing`
+    through `agent_settings`.
+  - **A turn no longer waits for the agent's compression call in flight.**
+    It starts beside it, so its request can be larger by what that call's
+    summary would have folded. **Who needs to act:** a host with an agent
+    whose provider refuses a large call for how fast its input tokens per
+    minute grow (Claude 3 Opus), or whose budget leaves its model's window
+    no room for a chunk not yet summarized. **Migration:** set
+    `agent.primaryWaitsForAuxiliary: true`.
+  - **A turn whose context doesn't fit its budget while compression is
+    pending waits for it** and tries again, where it ended with a failure.
+    The wait has no time limit and is not kept across a restart. The agent
+    is told once it has waited, in a `[budget-hold]` note.
+  - **The note that marks turns set aside after a refusal opens
+    `[turns-set-aside]`**, where it opened `[refusal-rewind]`. A host or
+    tool that finds the note by its tag needs the new one.
+
+### Added
+
+- **`agent.strategy.carryStrandedSummaries`** (off by default) passes
+  context-manager's option of the same name: a summary no merge can take,
+  alone between summaries of other levels or too wide for its level, is
+  carried up a level unchanged and with no model call until it stands beside
+  summaries of its level, where the ordinary merge takes it. A carried entry
+  is never rendered, so a compile does not change at a carry. The recipe
+  refuses a value that isn't a boolean. It takes context-manager 0.28.0, which
+  this release's dependency range starts at.
+
+- **`agent.strategy.compressionFallbackModel`** (unset by default) passes
+  context-manager's option of the same name: once `compressionModel` has
+  refused a compression or a merge on every rung that keeps it writing the
+  memory in full, the canonical request goes once more to the named model,
+  before the split rung and before quarantine. The recipe refuses a value
+  that isn't a non-empty string. It takes context-manager 0.28.0, which this
+  release's dependency range starts at.
+
+- **`modules.fetch.images`: the model that answers a fetch `prompt` can look at
+  a page's images.** Off by default. On, a page keeps the address of each image
+  worth looking at, one with no alt text too, and the answering model gets a
+  `view_image` tool for them: up to four a call, PNG, JPEG, GIF or WebP, only
+  addresses the page itself names, under the same address guard as the page.
+  The result says which images it looked at. The model is told to look only
+  where a request needs what an image shows. With or without the option, a
+  prompted reply that reaches its length limit with nothing written is now
+  reported as that, not as an empty reply.
+
+### Changed
+
+- The host takes agent-framework `^0.35.0` (was `^0.33.3`), context-manager
+  `^0.28.0` (was `^0.25.3`), membrane `^0.10.4` (was `^0.8.1`) and chronicle
+  `^0.7.0` (was `^0.6.0`), with both lockfiles at those releases and one
+  copy of each. Each package's changelog lists its changes: agent-framework's
+  for 0.34.0 and 0.35.0, context-manager's for 0.26.0 to 0.28.0 (what its
+  0.25.2 and 0.25.3 added is in 0.28.0 too), membrane's for 0.9.0 to 0.10.4,
+  and chronicle's for 0.7.0. chronicle 0.7.0 opens and reads a store 0.6.0
+  wrote, and nothing in the stack stores a chunked blob, so a store this
+  release writes still opens on the release before it.
+- When a turn's context cannot fit while compression is pending, the
+  framework can hold the turn until it can try the compile again. The Web
+  UI's Health panel and `/status` say that the agent is waiting for
+  compression, health observers receive the hold's start and end without
+  the refusal text unless they also hold `ops`, and the TUI names the wait
+  and how it ended. If the hold takes unsent injections out of the agent's
+  window, the Web UI and TUI update their window marks. Before, the host
+  installed the 0.33 line, where a refused compile went to the error
+  policy without this wait.
+- When a subagent's model call fails, its caller reads the framework's
+  reason in the result or failure mail. Before, the caller could read the
+  provider's error message there. The host still reads the original error
+  for retry and rate-limit decisions, and a stated wait that the framework
+  declines to sleep still ends the run without a restart or a throttle.
+
 ## 0.26.0 — 2026-11-19
 
 ### Added

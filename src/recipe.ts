@@ -98,10 +98,25 @@ export interface RecipeStrategy {
   compressionSplitFallback?: boolean;
   /** Allow a single-message placeholder inside a split-stitched L1 (default off). */
   compressionSplitPlaceholder?: boolean;
+  /**
+   * Context Manager: carry a summary no merge can take up a level, unchanged
+   * and with no model call, until it stands beside summaries of its level and
+   * the ordinary merge takes it (default off). A carried entry is never
+   * rendered, so a compile does not change at a carry.
+   */
+  carryStrandedSummaries?: boolean;
   /** Split-stitch: max sub-calls per chunk (default 40). */
   compressionSplitMaxCallsPerChunk?: number;
   /** Split-stitch: max sub-calls per strategy instance per 10-minute in-memory window (default 80). */
   compressionSplitMaxCallsPer10Min?: number;
+  /**
+   * Context Manager fallback-model rung (default unset). Once
+   * `compressionModel` has refused a compression or a merge on every rung
+   * that keeps it writing the memory in full, the canonical request goes once
+   * more to this model, before the split rung and before quarantine. The
+   * model is reached through the agent's own provider.
+   */
+  compressionFallbackModel?: string;
   /** Token budget for prior recall-pair context in compression/merge
    * requests (Context Manager `compressionRecallBudgetTokens`). */
   compressionRecallBudgetTokens?: number;
@@ -381,6 +396,17 @@ export interface RecipeAgent {
    * Omitted preserves the compatibility carry-forward in Agent Framework.
    */
   sameRoundThinkTextPolicy?: 'public' | 'private';
+  /**
+   * What becomes of ordinary text that a `skip_reply` would leave unsent.
+   * Omitted or 'private': it stays private and isn't held. 'ask': it is held
+   * as a draft. With native tools, where some of it would have been posted
+   * or bounced without the `skip_reply`, the turn's first such `skip_reply`
+   * is refused once with a result that names the drafts and asks where they
+   * should go. With the XML formatter, nothing is refused, and the text is
+   * held when the turn ends. Nothing is held while proseRouting is
+   * 'disabled'. The agent can change its own with `agent_settings`.
+   */
+  sameRoundSkipReplyTextPolicy?: 'private' | 'ask';
   /**
    * Prose delivery mode (agent-framework docs/explicit-prose-routing.md).
    * 'explicit' = model prefixes plain text with `>>destination`; unprefixed
@@ -1055,6 +1081,14 @@ export interface RecipeModules {
     allowPrivateNetwork?: boolean;
     /** Most bytes of one document to read. Defaults to 5 MiB, at most 64 MiB. */
     maxBytes?: number;
+    /**
+     * Let the model that answers `prompt` look at a page's images: it is given
+     * a tool that fetches one the page names, under the same address guard as
+     * the page, a few to a call. Off by default, since it makes requests the
+     * page chooses and costs image tokens, and the model must be one that
+     * takes images.
+     */
+    images?: boolean;
   };
   /**
    * The gate (wake rules). `true` or left out: on, with the rules the agent
@@ -1344,8 +1378,12 @@ export interface RecipeModules {
    * bundles subscribe + a per-channel ambient debounce gate rule + pinning
    * subscription-gc off; mentions mode reverses all three. On by default when
    * the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
-   * `false` disables. `serverId` names the MCPL server that owns subscriptions
-   * (default `discord`); `toolPrefix` is deprecated and read by nothing.
+   * `false` disables. Each call's MCPL server is the prefix of its channel
+   * id (`zulip:backend` → `zulip`), which must name a server this host knows;
+   * an id without one, or with a `*` in it, is refused. `serverId` is
+   * deprecated and ignored (a startup line says so); it used to name the one
+   * server for every call.
+   * `toolPrefix` is deprecated and read by nothing.
    * `defaultDebounceMs` sets the debounced-mode quiet window (180000 if
    * omitted).
    */
@@ -2037,7 +2075,7 @@ const RECIPE_AGENT_KEYS = [
   'allowedTools', 'toolPresentation',
   'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
   'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
-  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting', 'proseLock',
+  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'sameRoundSkipReplyTextPolicy', 'proseRouting', 'proseLock',
   'toolWrapperProseGuard', 'primaryWaitsForAuxiliary', 'sendSilencing', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
   'refusalHandling', 'clock',
 ] as const;
@@ -2091,7 +2129,7 @@ const RECIPE_MODULE_KEYS = [
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
   'channelMode', 'selfRestart', 'heartbeat', 'setup', 'fetch', 'selfUpdate',
 ] as const;
-const RECIPE_FETCH_KEYS = ['model', 'local', 'allowPrivateNetwork', 'maxBytes'] as const;
+const RECIPE_FETCH_KEYS = ['model', 'local', 'allowPrivateNetwork', 'maxBytes', 'images'] as const;
 /** The most a recipe can ask for: past this, little HTML would convert within its memory limit anyway. */
 const MAX_FETCH_MAX_BYTES = 64 * 1024 * 1024;
 const RECIPE_KV_UNIFIED_KEYS = [
@@ -2272,7 +2310,10 @@ function validateRecipeFetch(fetch: unknown, workspace: unknown, provider: unkno
   if (fetch !== true && (fetch === null || typeof fetch !== 'object' || Array.isArray(fetch))) {
     throw new Error(`Recipe modules.fetch is ${JSON.stringify(fetch)}; it must be a boolean or object.`);
   }
-  const { model, local, allowPrivateNetwork, maxBytes } = (fetch === true ? {} : fetch) as Record<string, unknown>;
+  const { model, local, allowPrivateNetwork, maxBytes, images } = (fetch === true ? {} : fetch) as Record<string, unknown>;
+  if (images !== undefined && typeof images !== 'boolean') {
+    throw new Error(`Recipe modules.fetch.images is ${JSON.stringify(images)}; it must be a boolean.`);
+  }
   if (model !== undefined && (typeof model !== 'string' || !model.trim())) {
     throw new Error(`Recipe modules.fetch.model is ${JSON.stringify(model)}; it must be a non-empty string.`);
   }
@@ -2690,6 +2731,16 @@ export function validateRecipe(raw: unknown): Recipe {
     );
   }
 
+  if (
+    agent.sameRoundSkipReplyTextPolicy !== undefined &&
+    agent.sameRoundSkipReplyTextPolicy !== 'private' &&
+    agent.sameRoundSkipReplyTextPolicy !== 'ask'
+  ) {
+    throw new Error(
+      `Recipe agent.sameRoundSkipReplyTextPolicy must be 'private' or 'ask', got ${JSON.stringify(agent.sameRoundSkipReplyTextPolicy)}.`,
+    );
+  }
+
   // Anthropic refuses, with a 400, a thinking budget that isn't below max_tokens.
   if (agent.thinking !== undefined) {
     if (!agent.thinking || typeof agent.thinking !== 'object' || Array.isArray(agent.thinking)) {
@@ -2830,6 +2881,7 @@ export function validateRecipe(raw: unknown): Recipe {
       'compressionMergeSourceOnlyFallback',
       'compressionSplitFallback',
       'compressionSplitPlaceholder',
+      'carryStrandedSummaries',
       'recoverLiteralThinkingWrappedCompression',
     ] as const) {
       if (strategy[key] !== undefined && typeof strategy[key] !== 'boolean') {
@@ -2868,6 +2920,12 @@ export function validateRecipe(raw: unknown): Recipe {
       }
       const unknown = Object.keys(hoist).filter((key) => !['intoTool', 'fromTools', 'field', 'result', 'minChars'].includes(key));
       if (unknown.length > 0) throw new Error(`${where} has unknown key(s): ${unknown.join(', ')}.`);
+    }
+    if (
+      strategy.compressionFallbackModel !== undefined
+      && (typeof strategy.compressionFallbackModel !== 'string' || !strategy.compressionFallbackModel)
+    ) {
+      throw new Error('Recipe agent.strategy.compressionFallbackModel must be a non-empty string.');
     }
     for (const key of ['compressionSplitMaxCallsPerChunk', 'compressionSplitMaxCallsPer10Min'] as const) {
       const value = strategy[key];

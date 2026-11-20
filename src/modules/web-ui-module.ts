@@ -22,6 +22,7 @@ import { audienceOf, storedInjectionMarkOf } from '@animalabs/agent-framework';
 import { continuesBody } from '@animalabs/context-manager';
 import { storedInjectionLabel } from '../stored-injection.js';
 import { speakerOf } from '../speaker.js';
+import { retractionMarksRows } from '../state/turn-trace.js';
 import type { ServerWebSocket } from 'bun';
 import { existsSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
@@ -855,23 +856,21 @@ export class WebUiModule implements Module {
       });
     }
     // An undo or a redo on the window of the agent whose record the
-    // transcript shows, or a shed from it, which takes rows out as an undone
-    // turn's: the transcript's rows are marked again.
-    if (event.type === 'window:undone' || (event.type === 'presentation:retracted' && (event as { reason?: unknown }).reason === 'shed')) {
-      this.broadcastUndoneMarks((event as { agentName?: unknown }).agentName);
+    // transcript shows, or a retraction that takes rows out as undone.
+    if (event.type === 'window:undone' || (event.type === 'presentation:retracted' && retractionMarksRows(event.reason))) {
+      this.broadcastUndoneMarks(event.agentName);
     }
   }
 
   /** After an undo or a redo on `agentName`'s window (agent-framework #291,
-   *  the `window:undone` trace), or a refusal rewind's or a failed
-   *  inference's shed from it (`presentation:retracted`, reason `shed`),
+   *  the `window:undone` trace), or a retraction that takes rows out as undone,
    *  when that agent's record is the transcript's: every row of the record
    *  now out of its window as undone (UndoneMarksMessage), from index 0. A
    *  page marks each row it holds that the frame names and clears the mark
    *  of each it doesn't, however far back its history reaches: the reply an
    *  undo took out with 200 rows stored after it, which no welcome's tail
    *  holds, and a row a redo put back after it left the tail. It reads the
-   *  record's listing (undoneRowIds) at each undo, redo or shed while a
+   *  record's listing (undoneRowIds) at each such change while a
    *  client the frame goes to (one that holds messages) is connected, and
    *  reads nothing while none is; and once at each welcome of such a
    *  client (welcomeAndJoinStream). */

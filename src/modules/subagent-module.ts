@@ -1812,44 +1812,39 @@ export class SubagentModule implements Module {
     return { summary, findings: [], issues: [], toolCallsCount: 0, ...(run?.agentName !== undefined ? { frameworkAgentName: run.agentName } : {}) };
   }
 
-  /** agent-framework quotes the ephemeral agent's name in its own messages
-   *  ("Ephemeral agent \"spawn-migrate-…\" failed to start inference …"), and
-   *  the name is the agent's choice, so it's taken out before the classifiers
-   *  read the words. */
-  private classifiedText(err: Error, agentName?: string): string {
-    const text = agentName ? err.message.split(agentName).join('') : err.message;
-    return text.toLowerCase();
-  }
+  private classifyRetry(err: Error, agentName?: string): 'rate-limit' | 'transient' | undefined {
+    // agent-framework ended the run because it won't sleep the stated wait.
+    // The name also identifies the error from another copy of the package.
+    if (err.name === 'ProviderWaitNotSleptError') return undefined;
 
-  private isRateLimitError(err: unknown, agentName?: string): boolean {
-    if (!(err instanceof Error)) return false;
-    const msg = this.classifiedText(err, agentName);
-    return /(?<![a-z])rate[\s_-]?(limit|exceeded)/.test(msg)
-      || /\b429\b/.test(msg)
-      || /too many (\w+ )?requests/.test(msg);
-  }
+    const classify = (message: string) => {
+      // Framework errors can quote the ephemeral name the caller chose.
+      const msg = (agentName ? message.split(agentName).join('') : message).toLowerCase();
+      if (/(?<![a-z])rate[\s_-]?(limit|exceeded)/.test(msg) || /\b429\b/.test(msg) || /too many (\w+ )?requests/.test(msg)) {
+        return 'rate-limit';
+      }
+      if (
+        msg.includes('timeout') ||
+        msg.includes('idle') ||
+        msg.includes('econnreset') ||
+        msg.includes('socket hang up') ||
+        msg.includes('network') ||
+        msg.includes('stream aborted') ||
+        msg.includes('overloaded') ||
+        /\b(500|502|503|529)\b/.test(msg)
+      ) return 'transient';
+    };
 
-  /** agent-framework rejects a run whose provider asked for a wait it won't
-   *  sleep with its ProviderWaitNotSleptError, read here by its name, which a
-   *  second copy of the package gives its own class too. */
-  private isUnsleptProviderWait(err: Error): boolean {
-    return err.name === 'ProviderWaitNotSleptError';
-  }
-
-  private isTransientError(err: Error, agentName?: string): boolean {
-    if (this.isUnsleptProviderWait(err)) return false;
-    const msg = this.classifiedText(err, agentName);
-    return (
-      msg.includes('timeout') ||
-      msg.includes('idle') ||
-      msg.includes('econnreset') ||
-      msg.includes('socket hang up') ||
-      msg.includes('network') ||
-      msg.includes('stream aborted') ||
-      msg.includes('overloaded') ||
-      /\b(500|502|503|529)\b/.test(msg) ||
-      this.isRateLimitError(err, agentName)
-    );
+    const outer = classify(err.message);
+    if (outer) return outer;
+    // agent-framework 0.34's settleAgent attaches a bounded cause to its
+    // failureWords message. Read it for retries while relaying the outer text.
+    if (err.name === 'Error' && err.cause instanceof Error && (
+      err.message === 'the turn failed' ||
+      err.message === "the request couldn't be completed" ||
+      /^the model call failed(?: \((?:[a-z_]+(?:, HTTP \d{3})?|HTTP \d{3})\))?$/.test(err.message) ||
+      /^the model call timed out(?: \(HTTP \d{3}\))?$/.test(err.message)
+    )) return classify(err.cause.message);
   }
 
   setConcurrency(n: number): void {
@@ -3384,12 +3379,12 @@ export class SubagentModule implements Module {
           }
 
           if (lastError instanceof SubagentFailure) break;
-          if (this.isUnsleptProviderWait(lastError)) break;
-          if (this.isRateLimitError(lastError, agentName)) {
+          const retry = this.classifyRetry(lastError, agentName);
+          if (retry === 'rate-limit') {
             const stopped = await this.waitOrStop(this.onRateLimitHit(deadline), cancel.promise);
             if (stopped) return this.endTerminated(input.name, entry, stopped, waitedMs, run);
           }
-          if (!this.isTransientError(lastError, agentName) || attempt === this.maxRetries) break;
+          if (!retry || attempt === this.maxRetries) break;
 
           const delay = this.retryBackoff(attempt);
           if (deadline !== undefined && Date.now() + delay >= deadline) break;
@@ -3669,12 +3664,12 @@ export class SubagentModule implements Module {
           }
 
           if (lastError instanceof SubagentFailure) break;
-          if (this.isUnsleptProviderWait(lastError)) break;
-          if (this.isRateLimitError(lastError, agentName)) {
+          const retry = this.classifyRetry(lastError, agentName);
+          if (retry === 'rate-limit') {
             const stopped = await this.waitOrStop(this.onRateLimitHit(deadline), cancel.promise);
             if (stopped) return this.endTerminated(input.name, entry, stopped, waitedMs, run);
           }
-          if (!this.isTransientError(lastError, agentName) || attempt === this.maxRetries) break;
+          if (!retry || attempt === this.maxRetries) break;
 
           const delay = this.retryBackoff(attempt);
           if (deadline !== undefined && Date.now() + delay >= deadline) break;

@@ -18,7 +18,7 @@
 import { Worker } from 'node:worker_threads';
 import TurndownService from 'turndown';
 
-const { memoryLimitBytes, deadlineMs } = JSON.parse(process.argv[2]!) as { memoryLimitBytes: number; deadlineMs: number };
+const { memoryLimitBytes, deadlineMs, images: keepImages } = JSON.parse(process.argv[2]!) as { memoryLimitBytes: number; deadlineMs: number; images?: boolean };
 
 // It looks every 50 ms, so memory can pass the limit by what's taken in between,
 // and it times itself by performance.now(), which a change to the wall clock doesn't move.
@@ -181,6 +181,31 @@ function followable(raw: string | null): string | null {
 /** An address as it goes between markdown's round brackets: its own are percent-encoded, so one of them can't end it early. encodeURIComponent leaves them be. */
 const inBrackets = (address: string): string => address.replace(/[()]/g, (bracket) => (bracket === '(' ? '%28' : '%29'));
 
+/**
+ * The web images written into the markdown, for a reader that can look: each
+ * as it is written between the round brackets, which is what that reader gives
+ * back, and as its address is, which is what gets fetched. The two differ
+ * where a bracket or a bar in the address was encoded. The parent is told
+ * these rather than left to find them in the markdown again, where a
+ * description can hold anything. Each once, and no more than a page that is
+ * about its images has: the list is the page's to lengthen.
+ */
+const imagesWritten = new Map<string, string>();
+const MOST_IMAGES = 64;
+
+/**
+ * Whether what holds an image is left out of the markdown, so the image is
+ * never written though its rule runs: something hidden, a kind of element that
+ * isn't text, or a fenced code block, which is written from its text alone.
+ */
+function insideDropped(node: DomNode): boolean {
+  for (let parent = node.parentNode; parent; parent = parent.parentNode) {
+    if (isHidden(parent) || NOT_TEXT.has(parent.nodeName.toLowerCase())) return true;
+    if (parent.nodeName === 'PRE' && parent.childNodes[0]?.nodeName === 'CODE') return true;
+  }
+  return false;
+}
+
 const service = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', emDelimiter: '*', bulletListMarker: '-' });
 
 // Turndown escapes markdown punctuation for a renderer, but a model reads this,
@@ -199,15 +224,40 @@ service.addRule('followable-link', {
   },
 });
 
+/** Whether an image's own size says it is an icon, a spacer or a tracking pixel: under 50 pixels either way. One that states no size isn't judged. */
+function isSmall(image: DomNode): boolean {
+  return ['width', 'height'].some((side) => {
+    // A number of pixels and nothing else: 10% is a share of the page, not ten pixels.
+    const written = (image.getAttribute?.(side) ?? '').trim();
+    return /^\d+$/.test(written) && Number(written) < 50;
+  });
+}
+
 service.addRule('followable-image', {
   filter: 'img',
   replacement: (_content, node) => {
     const element = asDom(node);
     const alt = (element.getAttribute?.('alt') ?? '').replace(/\s+/g, ' ').trim();
     // A data: address is the image itself, and can run to megabytes of base64.
-    const src = followable(element.getAttribute?.('src') ?? null);
-    // HTML's empty alt marks an image as decoration, and a text reader gets nothing from its address.
-    if (src === null || alt === '') return alt;
+    // For a reader that can look, a page that loads its images late names the
+    // real one in data-src, with a placeholder in src, so data-src comes first.
+    const web = (address: string | null): string | null => (address !== null && /^https?:\/\//i.test(address) ? address : null);
+    const src = (keepImages ? web(followable(element.getAttribute?.('data-src') ?? null)) : null)
+      ?? followable(element.getAttribute?.('src') ?? null);
+    if (src === null) return alt;
+    // HTML's empty alt marks an image as decoration, and a text reader gets
+    // nothing from its address. A reader that can look gets it all the same,
+    // unless the image is too small to be more than decoration: a chart often
+    // has no alt text either.
+    if (alt === '' && !(keepImages && !isSmall(element) && web(src) !== null)) return '';
+    if (keepImages && /^https?:\/\//i.test(src)) {
+      // A bar is encoded as well, for a reader that will give the address
+      // back: a table cell would escape it, and the address written would no
+      // longer be the one listed.
+      const written = inBrackets(src).replace(/\|/g, '%7C');
+      if (!insideDropped(element) && !imagesWritten.has(written) && imagesWritten.size < MOST_IMAGES) imagesWritten.set(written, src);
+      return `![${alt}](${written})`;
+    }
     return `![${alt}](${inBrackets(src)})`;
   },
 });
@@ -262,9 +312,9 @@ function shownText(node: DomNode): string {
   return Array.from(node.childNodes, shownText).join('');
 }
 
-// Turndown's rule for a fenced block takes the code element's whole text
-// without visiting what's inside it, hidden elements and all, so this one
-// stands in for it, the same but for the text it takes.
+// Turndown's rule for a fenced block is written from the code element's whole
+// text, hidden elements and all, and not from what its children were converted
+// to, so this one stands in for it, the same but for the text it takes.
 service.addRule('fenced-code-shown', {
   filter: (node) => node.nodeName === 'PRE' && asDom(node).childNodes[0]?.nodeName === 'CODE',
   replacement: (_content, node) => {
@@ -283,9 +333,10 @@ service.addRule('not-for-a-reader', {
   replacement: () => '',
 });
 
-let answer: { markdown: string } | { error: string };
+let answer: { markdown: string; images: Array<{ written: string; address: string }> } | { error: string };
 try {
-  answer = { markdown: service.turndown(html) };
+  const markdown = service.turndown(html);
+  answer = { markdown, images: Array.from(imagesWritten, ([written, address]) => ({ written, address })) };
 } catch (error) {
   answer = { error: error instanceof Error ? error.message : String(error) };
 }
