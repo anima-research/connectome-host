@@ -1302,6 +1302,17 @@ describe("an alert's message stays with the operator", () => {
     expect(line?.text).toContain(SENTINEL);
   });
 
+  test("an off-path refusal and a failed context maintenance are told to the agent as status, not as a time it couldn't respond", async () => {
+    for (const kind of ['refusal-offpath', 'context-maintenance-failed']) {
+      const h = await started({ statusChannels: ['zulip:ops'] });
+      h.alert(kind, SENTINEL);
+      await h.settle();
+      expect([kind, h.markers]).toEqual([kind, [
+        `[host-notice] The host posted this status notice in zulip:ops about ${kind}, for whoever runs it; nothing in it needs you to act: "${statusNoticeText('clerk', { kind })}"`,
+      ]]);
+    }
+  });
+
   test('a reply notice, and the marker it writes, carry no alert message', async () => {
     const h = await started();
     h.alert('hard-down', `inference failed 3 times in a row. Last reason: ${SENTINEL}`);
