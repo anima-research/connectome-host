@@ -11,6 +11,7 @@ import type {
   McplServerConfig,
 } from '@animalabs/agent-framework';
 import { resolveTimeZone } from '@animalabs/agent-framework';
+import type { McplEndpointAnswer } from './identity-module.js';
 import {
   DEFAULT_CONFIG_PATH,
   DEFAULT_AGENT_OVERLAY_PATH,
@@ -124,6 +125,34 @@ interface CallProgress {
   changed: boolean;
 }
 
+export interface DeployIdentity {
+  accessFor(audience?: string): Promise<string>;
+  mcplEndpointFor?(audience: string): Promise<McplEndpointAnswer>;
+}
+
+async function endpointFor(identity: DeployIdentity | null, access: string): Promise<McplEndpointAnswer | null> {
+  if (!identity?.mcplEndpointFor) return null;
+  try {
+    return await identity.mcplEndpointFor(access);
+  } catch (error) {
+    console.error(`[mcpl] the home node's directory lookup for the access grant "${access}" failed: ${reasonText(error)}`);
+    return { unreadable: reasonText(error) };
+  }
+}
+
+function noEndpointText(access: string, answer: McplEndpointAnswer): string {
+  const name = JSON.stringify(access);
+  const giveUrl = 'give `url`, a wss:// address (or ws:// to this machine)';
+  if (answer.unreadable !== undefined) {
+    return `The home node's directory of MCPL endpoints couldn't be read, so no endpoint was found for the access grant ` +
+      `${name}: call ${DEPLOY} again shortly, or ${giveUrl}.`;
+  }
+  const others = answer.published ?? [];
+  return `The home node's directory publishes no wss:// MCPL endpoint for the access grant ${name}` +
+    (others.length > 0 ? ` (it publishes one for ${others.map((n) => JSON.stringify(n)).join(', ')})` : '') +
+    `: ${giveUrl}, or ask the service's operator to publish its endpoint there.`;
+}
+
 export class McplAdminModule implements Module {
   readonly name = MODULE_NAME;
 
@@ -142,8 +171,8 @@ export class McplAdminModule implements Module {
     this.framework = framework;
   }
 
-  private identity: { accessFor(audience?: string): Promise<string> } | null = null;
-  setIdentity(identity: { accessFor(audience?: string): Promise<string> } | null): void {
+  private identity: DeployIdentity | null = null;
+  setIdentity(identity: DeployIdentity | null): void {
     this.identity = identity;
   }
 
@@ -251,7 +280,8 @@ export class McplAdminModule implements Module {
           'config. A deploy replaces the server\'s entry whole, so give each of its fields ' +
           'every time, not only the one you change. Provide either `command` (stdio, ' +
           'spawned as the host user) or `url` ' +
-          '(WebSocket). Relative ./ args resolve against the host working directory. ' +
+          '(WebSocket), or, with `access`, neither, to dial the endpoint the home node\'s ' +
+          'directory publishes for that grant. Relative ./ args resolve against the host working directory. ' +
           'Sensible defaults: omit (or pass empty) the list fields and every feature ' +
           'set and tool the server offers is available; an empty array means ' +
           '"unspecified", never deny-all. Deny-all for tools is disabledTools: ["*"]; ' +
@@ -268,9 +298,9 @@ export class McplAdminModule implements Module {
             command: { type: 'string', description: 'Executable to spawn (stdio transport). Mutually exclusive with url.' },
             args: { type: 'array', items: { type: 'string' }, description: 'Arguments for the command.' },
             env: { type: 'object', description: 'Environment variables for the spawned process.' },
-            url: { type: 'string', description: 'WebSocket URL (websocket transport). Mutually exclusive with command. A user, password or `token` parameter in it is a credential, which mcpl_deploy takes only over wss://, or ws:// to this machine (for example, localhost or a loopback address).' },
+            url: { type: 'string', description: 'WebSocket URL (websocket transport). Mutually exclusive with command. A user, password or `token` parameter in it is a credential, which mcpl_deploy takes only over wss://, or ws:// to this machine (for example, localhost or a loopback address). With `access`, leave it out to dial the endpoint the home node publishes for that access, if it publishes one.' },
             token: { type: 'string', description: 'Token for WebSocket auth, sent as the url\'s `token` parameter (only when the operator hands you one — prefer `access`). mcpl_deploy takes it only with a wss:// url, or ws:// to this machine (for example, localhost or a loopback address).' },
-            access: { type: 'string', description: 'Name of a host-managed access grant (e.g. "eidoverse"): the host attaches your standing credentials to the connection automatically. Nothing for you to obtain or handle. mcpl_deploy takes it only with a wss:// url, or ws:// to this machine (for example, localhost or a loopback address).' },
+            access: { type: 'string', description: 'Name of a host-managed access grant (e.g. "eidoverse"): the host attaches your standing credentials to the connection automatically. Nothing for you to obtain or handle. With a `url`, mcpl_deploy takes it only over wss://, or ws:// to this machine (for example, localhost or a loopback address). Given alone, with no `url` or `command`, the host dials the endpoint the home node publishes for that access, so a service in the home node\'s directory needs no address from you.' },
             toolPrefix: { type: 'string', description: 'Tool namespace prefix. Default: mcpl--<id>.' },
             reconnect: { type: 'boolean', description: 'Auto-reconnect on transport failure. Default: true for websocket URLs (a bounced server comes back on its own), false for stdio. Note: does NOT respawn a crashed child — use mcpl_restart for that.' },
             enabledFeatureSets: { type: 'array', items: { type: 'string' }, description: 'Feature-set allowlist (* wildcard). Omit or pass [] for all offered.' },
@@ -537,12 +567,28 @@ export class McplAdminModule implements Module {
       Array.isArray(v) ? v.map((x) => (typeof x === 'number' || typeof x === 'boolean' ? String(x) : x)) : v;
 
     const command = givenText(input.command) ? input.command : undefined;
-    const url = givenText(input.url) ? input.url : undefined;
+    let url: unknown = givenText(input.url) ? input.url : undefined;
+    const accessName = typeof input.access === 'string' ? input.access.trim() : '';
+    const directory = command === undefined && url === undefined && accessName !== ''
+      ? await endpointFor(this.identity, accessName)
+      : null;
+    if (directory?.url !== undefined) url = directory.url;
+    const foundUrl = directory?.url !== undefined
+      ? ` Its url, ${directory.url}, is the endpoint the home node's directory publishes for the access grant ` +
+        `${JSON.stringify(accessName)}, saved with the entry: if the service moves, deploy it again with its other ` +
+        'fields as now, `access`, and no `url`, which dials what the directory publishes then.'
+      : '';
+    let directoryAnswer: string | undefined;
     if (command === undefined && url === undefined) {
-      problems.push(
-        'Neither `command` nor `url` was given, or both were empty: give `command`, the executable to spawn for a ' +
-        'stdio server, or `url`, the ws:// or wss:// address of a WebSocket server.',
-      );
+      if (directory) {
+        directoryAnswer = noEndpointText(accessName, directory);
+        problems.push(directoryAnswer);
+      } else {
+        problems.push(
+          'Neither `command` nor `url` was given, or both were empty: give `command`, the executable to spawn for a ' +
+          'stdio server, or `url`, the ws:// or wss:// address of a WebSocket server.',
+        );
+      }
     } else if (command !== undefined && url !== undefined) {
       problems.push(
         'Both `command` and `url` were given: give one, since a server is either spawned from a command (stdio) or ' +
@@ -616,8 +662,14 @@ export class McplAdminModule implements Module {
       }
     }
     if (problems.length > 0) {
+      if (problems.length === 1 && problems[0] === directoryAnswer) return fail(`Nothing was deployed or saved: ${directoryAnswer}`);
+      const outage = directory?.unreadable !== undefined;
+      const toCorrect = outage ? problems.length - 1 : problems.length;
+      const correct = outage
+        ? (toCorrect === 1 ? 'the other problem' : 'the others')
+        : (toCorrect === 1 ? 'it' : 'each');
       return fail(
-        `Nothing was deployed or saved: ${problems.join(' ')} Correct ${problems.length === 1 ? 'it' : 'each'}` +
+        `Nothing was deployed or saved: ${problems.join(' ')} Correct ${correct}` +
         `${malformed ? ' (or leave out a field the server can do without)' : ''} and call ${DEPLOY} again.`,
       );
     }
@@ -626,11 +678,18 @@ export class McplAdminModule implements Module {
     const cleartext = cleartextCredential(entry);
     if (cleartext) {
       const configured = framework.listMcplServers().some(s => s.id === id);
+      const forGrant = typeof entry.access === 'string'
+        ? await endpointFor(this.identity, entry.access)
+        : null;
       return fail(
         `Nothing was deployed: ${cleartextCarrierText(cleartext.carrier, entry.access)} would go to ${cleartext.host} ` +
         'over unencrypted ws://, where anyone on the network between can read it, so nothing was saved.' +
         (configured ? ` The server already configured as "${id}" is unchanged.` : '') +
-        ' Use a wss:// url, or, if that network is private, ask your operator to add the server to the recipe.',
+        ' Use a wss:// url, or, if that network is private, ask your operator to add the server to the recipe.' +
+        (forGrant?.url !== undefined
+          ? ` The home node's directory publishes ${forGrant.url} for the access grant ${JSON.stringify(entry.access)}: ` +
+            'leave `url` out, and the deploy dials that.'
+          : ''),
       );
     }
 
@@ -672,7 +731,7 @@ export class McplAdminModule implements Module {
     } catch (error) {
       return fail(
         `Server "${id}" was saved to your overlay, but ${alreadyLoaded ? 'restarting it with that entry' : 'connecting it'} ` +
-        `failed: ${sentence(reasonText(error))} ${this.afterFailure(framework, id, false)}${note}`,
+        `failed: ${sentence(reasonText(error))} ${this.afterFailure(framework, id, false)}${foundUrl}${note}`,
       );
     }
 
@@ -681,7 +740,7 @@ export class McplAdminModule implements Module {
       return fail(
         `Server "${id}" was saved to your overlay, but it isn't connected` +
         `${status?.retrying ? `; it keeps retrying on its own, so it may still connect, which ${LIST} shows` : ''}. ` +
-        `${CONNECT_REMEDY}${note}`,
+        `${CONNECT_REMEDY}${foundUrl}${note}`,
       );
     }
     const tab = fields.presentation === 'tab' || fields.presentation === 'closed-tab'
@@ -691,7 +750,7 @@ export class McplAdminModule implements Module {
     return ok(
       `${alreadyLoaded ? 'Redeployed' : 'Deployed'} server "${id}" — connected, ` +
       `${status.toolCount} tools under prefix ${status.toolPrefix}.${tab} ` +
-      `Persisted to your agent overlay (survives host restarts).${note}`,
+      `Persisted to your agent overlay (survives host restarts).${foundUrl}${note}`,
     );
   }
 
