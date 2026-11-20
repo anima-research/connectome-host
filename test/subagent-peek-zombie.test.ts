@@ -7,6 +7,7 @@ interface FakeLiveState {
   systemPrompt: string;
   contextManager: { compile: () => Promise<{ messages: unknown[] }> };
   currentStream: string;
+  streaming: boolean;
   pendingToolCalls: Array<{ name: string; input?: unknown }>;
   activeCallIds: Set<string>;
 }
@@ -16,6 +17,7 @@ function makeModuleWithSubagent(opts: {
   startedAt: number;
   lastActivityAt: number;
   currentStream?: string;
+  streaming?: boolean;
   pendingToolCalls?: Array<{ name: string; input?: unknown }>;
   status?: 'running' | 'completed' | 'failed';
 }): SubagentModule {
@@ -26,6 +28,7 @@ function makeModuleWithSubagent(opts: {
     systemPrompt: 'test',
     contextManager: { compile: async () => ({ messages: [] }) },
     currentStream: opts.currentStream ?? '',
+    streaming: opts.streaming ?? false,
     pendingToolCalls: opts.pendingToolCalls ?? [],
     activeCallIds: new Set(),
   };
@@ -80,6 +83,7 @@ describe('SubagentModule.peek — F2 dual-clock zombie predicate', () => {
       startedAt: now - 10 * 60_000,
       lastActivityAt: now - 5 * 60_000,
       currentStream: 'tokens flowing',
+      streaming: true,
     });
     const [snap] = await mod.peek('streaming');
     expect(snap!.isZombie).toBe(false);
