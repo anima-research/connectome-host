@@ -78,7 +78,7 @@ type EffortLevel = (typeof EFFORT_LEVELS)[number];
 /** A Claude id as the effort rule keys it: lower case, a dotted version
  *  hyphenated, and without what names the same model another way: a routing
  *  prefix (`anthropic/`, Bedrock's `us.anthropic.`), a dated snapshot
- *  (`-20260301`, `@20260301`), Bedrock's `-v1:0`, a `[1m]` suffix. So
+ *  (`-20260301`, `@20260301`), Bedrock's `-v1:0`, a context suffix (`model[1m]`). So
  *  `anthropic/claude-opus-4.7`, `claude-opus-4-7-20260301` and
  *  `claude-opus-4-7[1m]` are one key, `claude-opus-4-7`. */
 export function effortModelKey(model: string): string {
