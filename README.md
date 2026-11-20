@@ -288,8 +288,11 @@ with a result that names the drafts and asks where they should go; calling
 `skip_reply` again ends the turn and keeps them. A recipe that runs the
 XML formatter (`formatter: "anthropic-xml"` with a provider other than
 `openai-responses` or `openai-codex`) can't set `"ask"`: on that path the
-framework neither refuses nor holds. It's the recipe's alone; `agent_settings`
-neither shows nor switches it.
+framework neither refuses nor holds. The recipe sets where the policy starts.
+In Agent Framework 0.35.0, `agent_settings` neither shows nor switches it; a
+release that carries anima-research/agent-framework#1034 lets the agent see
+and change its own through `agent_settings`
+(`same_round_skip_reply_text_policy`), and that choice persists.
 
 See Agent Framework's `docs/disabled-prose-routing.md`,
 `docs/explicit-prose-routing.md`, `docs/hybrid-prose-routing.md`, and
