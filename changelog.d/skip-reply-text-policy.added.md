@@ -1,10 +1,12 @@
-- **`agent.sameRoundSkipReplyTextPolicy`: `"private"`, the behaviour when
-  it's omitted, or `"ask"`,** passed to Agent Framework's policy of the same
-  name. Under `"ask"`, ordinary text that only a `skip_reply` in its round
-  keeps back is held as a draft. Where some of it would have been posted or
-  bounced without the `skip_reply`, the turn's first such `skip_reply` is
-  refused once with a result that names the drafts and asks where they
-  should go. Any other value is refused. `"ask"` is refused where the recipe runs the
-  XML formatter, `formatter: "anthropic-xml"` with a provider other than
-  `openai-responses` or `openai-codex`, since on that path the framework
-  neither refuses nor holds.
+- **`agent.sameRoundSkipReplyTextPolicy`** is passed to Agent Framework's
+  policy of the same name. Its values are `"private"`, the default, and
+  `"ask"`. Any other value is refused.
+  - Under `"ask"`, plain text beside a `skip_reply` becomes a draft. With
+    native tools, the framework may refuse the turn's first such
+    `skip_reply` once. It refuses only if the text would otherwise have been
+    posted. The refusal names the drafts and asks where they should go.
+  - With the XML formatter, nothing is refused, and all of the turn's unsent
+    text is held when the turn ends.
+  - The agent can see and change its own value through `agent_settings`.
+    Agent Framework's range now starts at 0.35.1, the first release with
+    both features.

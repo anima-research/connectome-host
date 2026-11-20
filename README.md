@@ -279,20 +279,23 @@ choice persists across restarts. The setting came in Agent Framework
 }
 ```
 
-`agent.sameRoundSkipReplyTextPolicy` (`"private"` default, or `"ask"`) governs
-ordinary text in a round that calls `skip_reply`. Under `"private"` it stays
-private and isn't held. Under `"ask"`, text that only the `skip_reply` keeps
-back is held as a draft. Where some of it would have been posted or bounced
-without the `skip_reply`, the turn's first such `skip_reply` is refused once
-with a result that names the drafts and asks where they should go; calling
-`skip_reply` again ends the turn and keeps them. A recipe that runs the
-XML formatter (`formatter: "anthropic-xml"` with a provider other than
-`openai-responses` or `openai-codex`) can't set `"ask"`: on that path the
-framework neither refuses nor holds. The recipe sets where the policy starts.
-In Agent Framework 0.35.0, `agent_settings` neither shows nor switches it; a
-release that carries anima-research/agent-framework#1034 lets the agent see
-and change its own through `agent_settings`
-(`same_round_skip_reply_text_policy`), and that choice persists.
+`agent.sameRoundSkipReplyTextPolicy` is `"private"` by default, or `"ask"`. It
+covers plain text that the agent writes beside a `skip_reply` call. Under
+`"private"`, that text stays private and isn't held. Under `"ask"`, it is held
+as a draft. With native tools, the framework may refuse the turn's first such
+`skip_reply` once. It refuses only if some of that text would otherwise have
+been posted or bounced. The refusal names the drafts and asks where they
+should go. Calling `skip_reply` again ends the turn and keeps the drafts. With
+the XML formatter, the framework refuses nothing, and it holds all of the
+turn's unsent text when the turn ends. That formatter runs when `formatter` is
+`"anthropic-xml"` and the provider is neither `openai-responses` nor
+`openai-codex`. `"ask"` holds nothing while `proseRouting` is `"disabled"`.
+With native tools and `sameRoundThinkTextPolicy: "private"`, text beside a
+`think` call stays private. The recipe sets the policy's starting value. The
+agent can see and change its own value through `agent_settings`
+(`same_round_skip_reply_text_policy`), and its choice persists across
+restarts. Both features came in Agent Framework 0.35.1, and this host's
+dependency range starts there.
 
 See Agent Framework's `docs/disabled-prose-routing.md`,
 `docs/explicit-prose-routing.md`, `docs/hybrid-prose-routing.md`, and
