@@ -60,6 +60,10 @@ const CLOSES_ON_SUCCESS: ReadonlySet<string> = new Set([
   'hard-down', 'context-refusal', 'refusal', 'refusal-offpath', 'context-maintenance-failed',
 ]);
 
+/** Kinds beside the reply tier that mean the agent's own turns failed, so
+ *  the marker tells the agent it couldn't respond. */
+const OWN_TURN_KINDS: ReadonlySet<string> = new Set(['hard-down', 'context-refusal', 'refusal']);
+
 /** Alert kinds whose `agentName` is a component id (an MCPL server), not an
  *  agent. */
 const COMPONENT_KINDS: ReadonlySet<string> = new Set(['mcpl-down']);
@@ -686,7 +690,7 @@ export class NoticesModule implements Module {
   }
 
   private markerForm(kind: string): MarkerForm {
-    return this.tierFor(kind) === 'reply' || CLOSES_ON_SUCCESS.has(kind) ? 'unanswered' : 'status';
+    return this.tierFor(kind) === 'reply' || OWN_TURN_KINDS.has(kind) ? 'unanswered' : 'status';
   }
 
   /** The marker is written through this module's context for the agent
