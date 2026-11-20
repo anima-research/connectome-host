@@ -28,6 +28,15 @@ import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone, quotaUnreadable }
 import { planHealthAlerts } from './health-alerts';
 import { applyUndoneMarksTo } from './undone-marks';
 import { withLoadedText } from './pin-candidates';
+import {
+  browserSidebarStore,
+  initialCollapsed,
+  readSidebarPrefs,
+  saveSidebarCollapsed,
+  saveSidebarWidth,
+  sidebarWidthFor,
+  SIDEBAR_KEY_STEP_PX,
+} from './sidebar-layout';
 import { HealthReads, passedGrant } from './health-reads';
 import { healthReadError } from '@conhost/web/health-lookup';
 import {
@@ -518,6 +527,30 @@ export function App() {
 
   type SidebarTab = 'tree' | 'lessons' | 'mcp' | 'files' | 'context' | 'settings' | 'pins' | 'health';
   const [sidebarTab, setSidebarTab] = createSignal<SidebarTab>('tree');
+
+  // The sidebar's width and collapse, as this browser last left them. The
+  // saved width is the one dragged to; what's drawn is clamped to the window,
+  // so a narrower window shrinks it and a wider one gives it back.
+  const sidebarStore = browserSidebarStore();
+  const sidebarPrefs = readSidebarPrefs(sidebarStore);
+  const [viewportWidth, setViewportWidth] = createSignal(window.innerWidth);
+  const [sidebarSavedWidth, setSidebarSavedWidth] = createSignal<number | null>(sidebarPrefs.width);
+  const [sidebarCollapsed, setSidebarCollapsed] = createSignal(initialCollapsed(sidebarPrefs, window.innerWidth));
+  const sidebarWidth = createMemo(() => sidebarWidthFor(sidebarSavedWidth(), viewportWidth()));
+  {
+    const onResize = (): void => { setViewportWidth(window.innerWidth); };
+    window.addEventListener('resize', onResize);
+    onCleanup(() => window.removeEventListener('resize', onResize));
+  }
+  const setSidebarCollapsedSaved = (collapsed: boolean): void => {
+    setSidebarCollapsed(collapsed);
+    saveSidebarCollapsed(sidebarStore, collapsed);
+  };
+  const setSidebarWidthSaved = (width: number | null): void => {
+    const next = width === null ? null : sidebarWidthFor(width, viewportWidth());
+    setSidebarSavedWidth(next);
+    saveSidebarWidth(sidebarStore, next);
+  };
   const [mainView, setMainView] = createSignal<'chat' | 'context' | 'dry'>('chat');
   const [dryContext, setDryContext] = createSignal<DryContextData | null>(null);
 
@@ -1562,8 +1595,34 @@ export function App() {
             onRefreshLog={refreshOpLog}
           />
         </Show>
-        <aside class="w-96 xl:w-[30rem] border-l border-neutral-800 bg-neutral-950 shrink-0 flex flex-col">
+        <Show when={sidebarCollapsed()}>
+          <aside class="w-8 border-l border-neutral-800 bg-neutral-950 shrink-0 flex flex-col items-center">
+            <button
+              type="button"
+              data-testid="sidebar-toggle"
+              class="w-full py-1.5 font-mono text-[11px] text-neutral-500 hover:text-neutral-200 hover:bg-neutral-900/60 border-b border-neutral-800"
+              title="Show the sidebar"
+              aria-label="Show the sidebar"
+              aria-expanded="false"
+              onClick={() => setSidebarCollapsedSaved(false)}
+            >
+              «
+            </button>
+          </aside>
+        </Show>
+        <aside
+          class="relative border-l border-neutral-800 bg-neutral-950 shrink-0 flex flex-col"
+          classList={{ hidden: sidebarCollapsed() }}
+          style={{ width: `${sidebarWidth()}px` }}
+        >
+          <SidebarResizeHandle
+            width={sidebarWidth()}
+            onResize={(px) => setSidebarSavedWidth(sidebarWidthFor(px, viewportWidth()))}
+            onCommit={() => setSidebarWidthSaved(sidebarSavedWidth() ?? sidebarWidth())}
+            onReset={() => setSidebarWidthSaved(null)}
+          />
           <SidebarTabs
+            onCollapse={() => setSidebarCollapsedSaved(true)}
             current={sidebarTab()}
             onSelect={(tab) => {
               setSidebarTab(tab);
@@ -2466,9 +2525,68 @@ function CommandSuggestions(props: { draft: string; onPick: (cmd: string) => voi
 
 type SidebarTabId = 'tree' | 'lessons' | 'mcp' | 'files' | 'context' | 'settings' | 'pins' | 'health';
 
+// The sidebar's left edge: drag it to resize, use the arrow keys when it has
+// focus, double-click it to go back to the default width.
+function SidebarResizeHandle(props: {
+  width: number;
+  /** A width while dragging or stepping; the parent clamps it. */
+  onResize: (px: number) => void;
+  /** The drag or key step ended: save the width. */
+  onCommit: () => void;
+  onReset: () => void;
+}) {
+  let drag: { pointerId: number; startX: number; startWidth: number; moved: boolean } | null = null;
+  const end = (e: PointerEvent): void => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    const moved = drag.moved;
+    drag = null;
+    document.body.style.removeProperty('user-select');
+    document.body.style.removeProperty('cursor');
+    // A click that didn't move saves nothing, so the default width still follows the window.
+    if (moved) props.onCommit();
+  };
+  return (
+    <div
+      data-testid="sidebar-resize"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize the sidebar"
+      aria-valuenow={props.width}
+      tabIndex={0}
+      title="Drag to resize; double-click for the default width"
+      class="absolute left-0 top-0 bottom-0 w-1.5 z-10 cursor-col-resize touch-none hover:bg-cyan-700/40 focus-visible:bg-cyan-700/60 focus:outline-none"
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        drag = { pointerId: e.pointerId, startX: e.clientX, startWidth: props.width, moved: false };
+        // Keep the drag from selecting the transcript's text.
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'col-resize';
+      }}
+      onPointerMove={(e) => {
+        if (!drag || e.pointerId !== drag.pointerId || (e.clientX === drag.startX && !drag.moved)) return;
+        drag.moved = true;
+        // The handle is on the sidebar's left edge: moving left widens it.
+        props.onResize(drag.startWidth + (drag.startX - e.clientX));
+      }}
+      onPointerUp={end}
+      onPointerCancel={end}
+      onDblClick={() => props.onReset()}
+      onKeyDown={(e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        props.onResize(props.width + (e.key === 'ArrowLeft' ? SIDEBAR_KEY_STEP_PX : -SIDEBAR_KEY_STEP_PX));
+        props.onCommit();
+      }}
+    />
+  );
+}
+
 function SidebarTabs(props: {
   current: SidebarTabId;
   onSelect: (tab: SidebarTabId) => void;
+  onCollapse: () => void;
 }) {
   const tabs: Array<{ id: SidebarTabId; label: string; title: string }> = [
     { id: 'tree', label: 'Tree', title: 'Agent + fleet tree' },
@@ -2482,20 +2600,36 @@ function SidebarTabs(props: {
   ];
   return (
     <div class="flex border-b border-neutral-800 bg-neutral-900/40 text-[11px]">
-      <For each={tabs}>{(t) => (
-        <button
-          type="button"
-          class={`flex-1 px-2 py-1.5 font-mono ${
-            props.current === t.id
-              ? 'text-neutral-100 bg-neutral-900 border-b border-cyan-700'
-              : 'text-neutral-500 hover:text-neutral-300 hover:bg-neutral-900/60'
-          }`}
-          title={t.title}
-          onClick={() => props.onSelect(t.id)}
-        >
-          {t.label}
-        </button>
-      )}</For>
+      {/* A narrow sidebar scrolls its tabs rather than clipping the last ones;
+          with no scrollbar, which would be taller than the tabs (swipe, or
+          shift and the wheel, or widen the sidebar). */}
+      <div class="flex flex-1 min-w-0 overflow-x-auto [scrollbar-width:none]">
+        <For each={tabs}>{(t) => (
+          <button
+            type="button"
+            class={`flex-1 px-2 py-1.5 font-mono ${
+              props.current === t.id
+                ? 'text-neutral-100 bg-neutral-900 border-b border-cyan-700'
+                : 'text-neutral-500 hover:text-neutral-300 hover:bg-neutral-900/60'
+            }`}
+            title={t.title}
+            onClick={() => props.onSelect(t.id)}
+          >
+            {t.label}
+          </button>
+        )}</For>
+      </div>
+      <button
+        type="button"
+        data-testid="sidebar-toggle"
+        class="shrink-0 px-2 py-1.5 font-mono text-neutral-500 hover:text-neutral-200 hover:bg-neutral-900/60 border-l border-neutral-800"
+        title="Hide the sidebar"
+        aria-label="Hide the sidebar"
+        aria-expanded="true"
+        onClick={() => props.onCollapse()}
+      >
+        »
+      </button>
     </div>
   );
 }
