@@ -397,6 +397,17 @@ export interface RecipeAgent {
    */
   sameRoundThinkTextPolicy?: 'public' | 'private';
   /**
+   * What becomes of ordinary text that a `skip_reply` would leave unsent.
+   * Omitted or 'private': it stays private and isn't held. 'ask': it is held
+   * as a draft. With native tools, where some of it would have been posted
+   * or bounced without the `skip_reply`, the turn's first such `skip_reply`
+   * is refused once with a result that names the drafts and asks where they
+   * should go. With the XML formatter, nothing is refused, and the text is
+   * held when the turn ends. Nothing is held while proseRouting is
+   * 'disabled'. The agent can change its own with `agent_settings`.
+   */
+  sameRoundSkipReplyTextPolicy?: 'private' | 'ask';
+  /**
    * Prose delivery mode (agent-framework docs/explicit-prose-routing.md).
    * 'explicit' = model prefixes plain text with `>>destination`; unprefixed
    * prose bounces to a clipboard instead of auto-routing.
@@ -2060,7 +2071,7 @@ const RECIPE_AGENT_KEYS = [
   'allowedTools', 'toolPresentation',
   'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
   'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
-  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting', 'proseLock',
+  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'sameRoundSkipReplyTextPolicy', 'proseRouting', 'proseLock',
   'toolWrapperProseGuard', 'primaryWaitsForAuxiliary', 'sendSilencing', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
   'refusalHandling', 'clock',
 ] as const;
@@ -2713,6 +2724,16 @@ export function validateRecipe(raw: unknown): Recipe {
   ) {
     throw new Error(
       `Recipe agent.sameRoundThinkTextPolicy must be 'public' or 'private', got ${JSON.stringify(agent.sameRoundThinkTextPolicy)}.`,
+    );
+  }
+
+  if (
+    agent.sameRoundSkipReplyTextPolicy !== undefined &&
+    agent.sameRoundSkipReplyTextPolicy !== 'private' &&
+    agent.sameRoundSkipReplyTextPolicy !== 'ask'
+  ) {
+    throw new Error(
+      `Recipe agent.sameRoundSkipReplyTextPolicy must be 'private' or 'ask', got ${JSON.stringify(agent.sameRoundSkipReplyTextPolicy)}.`,
     );
   }
 

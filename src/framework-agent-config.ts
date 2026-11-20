@@ -165,6 +165,9 @@ export function buildFrameworkAgentConfig(
     ...(recipe.agent.sameRoundThinkTextPolicy !== undefined
       ? { sameRoundThinkTextPolicy: recipe.agent.sameRoundThinkTextPolicy }
       : {}),
+    ...(recipe.agent.sameRoundSkipReplyTextPolicy !== undefined
+      ? { sameRoundSkipReplyTextPolicy: recipe.agent.sameRoundSkipReplyTextPolicy }
+      : {}),
     ...(recipe.agent.proseRouting !== undefined
       ? { proseRouting: recipe.agent.proseRouting }
       : {}),

@@ -28,7 +28,7 @@
  * the exports the host imports fails the host's load, and membrane's range
  * starts at 0.10.4, the release the stack's lockfiles and suites run on,
  * within what agent-framework and context-manager admit. Each range is also
- * asked to admit the release the host needs first (agent-framework 0.35.0;
+ * asked to admit the release the host needs first (agent-framework 0.35.1;
  * chronicle 0.7.0; context-manager 0.28.0), which no install layout
  * changes. context-manager's floor is above its presentation release,
  * 0.25.0: 0.28.0 is the release agent-framework 0.35.0 takes, so a lower one
@@ -95,11 +95,11 @@ const within = (inner: string, outer: string): boolean =>
   Bun.semver.satisfies(floorOf(inner), outer) && Bun.semver.satisfies(topOf(inner), outer);
 
 describe("the host's dependency ranges (#291's release set)", () => {
-  test("takes agent-framework from 0.35.0, the first with sendSilencing and primaryWaitsForAuxiliary and without the gate:wake-line-omitted trace: not 0.34.0, which has the compression hold traces but none of those", () => {
+  test("takes agent-framework from 0.35.1, the first whose sameRoundSkipReplyTextPolicy 'ask' holds text on the XML tool path and which agent_settings switches: not 0.35.0, the first with sendSilencing and primaryWaitsForAuxiliary, nor 0.34.0, which has none of those", () => {
     const range = ours.dependencies?.['@animalabs/agent-framework'];
-    for (const published of ['0.29.0', '0.30.0', '0.31.0', '0.32.0', '0.33.0', '0.33.1', '0.33.2', '0.33.3', '0.34.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
-    expect(floorOf(range!)).toBe('0.35.0');
-    admitsRelease('@animalabs/agent-framework', range!, '0.35.0');
+    for (const published of ['0.29.0', '0.30.0', '0.31.0', '0.32.0', '0.33.0', '0.33.1', '0.33.2', '0.33.3', '0.34.0', '0.35.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    expect(floorOf(range!)).toBe('0.35.1');
+    admitsRelease('@animalabs/agent-framework', range!, '0.35.1');
     admitsInstalled('@animalabs/agent-framework', range!);
   });
 
