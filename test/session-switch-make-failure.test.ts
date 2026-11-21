@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { connectWhenAccepting } from './ipc-connect.js';
+import { waitForEnd } from './process-ended.js';
 
 const INDEX = fileURLToPath(new URL('../src/index.ts', import.meta.url));
 const MCP_CHILD = fileURLToPath(new URL('./fixtures/placed-reaction-child.cjs', import.meta.url));
@@ -14,7 +15,7 @@ const STOP_ERROR = 'injected replacement stop failure';
 const EXTENSION = `
 import { writeFileSync } from 'node:fs';
 let generation = 0;
-export function register(api, { stopped, stopFails }) {
+export function register(api, { stopped, stopFails, shutdown }) {
   api.registerModule(() => {
     const replacement = ++generation === 2;
     return {
@@ -28,6 +29,8 @@ export function register(api, { stopped, stopFails }) {
         if (!framework.listMcplServers().some((server) => server.id === 'probe' && server.connected)) {
           throw new Error('test MCP server did not connect');
         }
+        // Run the host's SIGTERM handler now, before make() can settle.
+        if (shutdown) process.emit('SIGTERM');
         throw new Error(${JSON.stringify(SETUP_ERROR)});
       },
       async stop() {
@@ -58,18 +61,12 @@ async function failedSwitch(socketPath: string): Promise<Record<string, unknown>
   }
 }
 
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    throw error;
-  }
-}
-
-for (const stopFails of [false, true]) {
-  test(`a failed switch stops the created framework and reports the setup error${stopFails ? ' even when stop fails' : ''}`, async () => {
+for (const [label, stopFails, shutdown] of [
+  ['a failed switch stops the created framework and reports the setup error', false, false],
+  ['a failed switch reports the setup error even when stop fails', true, false],
+  ['shutdown during a failed switch exits 1 if stopping the created framework fails', true, true],
+] as const) {
+  test(label, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'switch-make-'));
     const pidsPath = join(dir, 'mcp-pids');
     const stopped = join(dir, 'replacement-stopped');
@@ -82,7 +79,7 @@ for (const stopFails of [false, true]) {
       agent: { name: 'agent', provider: 'mock', systemPrompt: 'This test does not infer.' },
       modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
       mcpServers: { probe: { command: process.execPath, args: [MCP_CHILD, pidsPath] } },
-      extensions: { probe: { kind: 'module', path: extension, config: { stopped, stopFails } } },
+      extensions: { probe: { kind: 'module', path: extension, config: { stopped, stopFails, shutdown } } },
     }));
     const host = Bun.spawn([process.execPath, INDEX, recipe, '--headless'], {
       cwd: dir, env: { ...process.env, DATA_DIR: dir }, stdout: 'ignore', stderr: 'pipe',
@@ -93,9 +90,14 @@ for (const stopFails of [false, true]) {
       expect(readFileSync(stopped, 'utf8')).toBe('replacement stopped');
       const pids = readFileSync(pidsPath, 'utf8').trim().split('\n').map(Number);
       expect(pids).toHaveLength(2);
-      // Check before killing the host: otherwise EOF alone can stop the MCP child.
-      expect(isAlive(pids[1]!)).toBe(false);
-      expect(host.exitCode).toBeNull();
+      if (shutdown) {
+        expect(await waitForEnd(host.pid, 5_000)).toBe(true);
+        expect(await host.exited).toBe(1);
+      } else {
+        // Check before killing the host: otherwise EOF alone can stop the MCP child.
+        expect(await waitForEnd(pids[1]!, 5_000)).toBe(true);
+        expect(host.exitCode).toBeNull();
+      }
     } finally {
       if (host.exitCode === null && host.signalCode === null) host.kill('SIGKILL');
       await host.exited;

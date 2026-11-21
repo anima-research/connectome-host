@@ -269,6 +269,7 @@ async function createFramework(
   credentials: CredentialMonitor | null,
   subscriptionUnmetered = false,
   extensions?: ExtensionRegistry,
+  onCleanupStopFailed?: () => void,
 ): Promise<AgentFramework> {
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
@@ -640,6 +641,7 @@ agents: [agentConfig],
     try {
       await framework.stop();
     } catch (stopError) {
+      onCleanupStopFailed?.();
       console.error('[framework] stopping the framework after setup failed:', stopError);
     }
     throw error;
@@ -1249,9 +1251,10 @@ async function main() {
           handleExport(this);
           await stopForSessionSwitch(this.framework, id);
         },
-        make: () => {
+        make: (onCleanupStopFailed) => {
           sessionManager.setActiveSession(id);
-          return createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate);
+          return createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter,
+            credentials, !!codexGate, undefined, onCleanupStopFailed);
         },
         install: async (next) => {
           this.framework = next;
