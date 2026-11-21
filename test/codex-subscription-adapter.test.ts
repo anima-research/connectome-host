@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
-import { OpenAIResponsesAPIAdapter, type ProviderRequest } from '@animalabs/membrane';
-import { CodexSubscriptionAdapter, codexGateAuth } from '../src/codex-subscription-adapter.js';
+import { MembraneError, OpenAIResponsesAPIAdapter, type ProviderRequest } from '@animalabs/membrane';
+import { CodexAppServerAuth, CodexSubscriptionAdapter, codexGateAuth, type CodexAppServerAuthConfig } from '../src/codex-subscription-adapter.js';
+import * as codexSubscription from '../src/codex-subscription-adapter.js';
 
 const originalFetch = globalThis.fetch;
 const originalBaseURL = process.env.CODEX_BASE_URL;
@@ -25,7 +26,7 @@ describe('Codex host integration', () => {
       headers.push(new Headers(init?.headers));
       return headers.length === 1 ? new Response('expired', { status: 401 }) : completed();
     };
-    const adapter = new CodexSubscriptionAdapter({ authProvider: {
+    const adapter = new CodexSubscriptionAdapter({ requireExistingLogin: true, authProvider: {
       getAccessToken: async (forceRefresh = false) => {
         flags.push(forceRefresh);
         if (forceRefresh) account = 'new-account';
@@ -74,7 +75,7 @@ describe('Codex host integration', () => {
       seen.push({ url: String(url), headers: new Headers(init?.headers) });
       return seen.length === 1 ? new Response('expired', { status: 401 }) : completed();
     };
-    const adapter = new CodexSubscriptionAdapter({ codexBinary: '/nonexistent/codex', authProvider: auth });
+    const adapter = new CodexSubscriptionAdapter({ codexBinary: '/nonexistent/codex', requireExistingLogin: true, authProvider: auth });
     await adapter.complete(request);
     expect(seen.map((c) => c.url)).toEqual(['https://gate.test/codex/responses', 'https://gate.test/codex/responses']);
     expect(seen.every((c) => c.headers.get('authorization') === 'Bearer gt_devops')).toBe(true);
@@ -165,6 +166,612 @@ test('a forced refresh waits behind an ordinary acquisition rather than joining 
   expect(await forced).toBe('fresh');
   expect(await secondForced).toBe('fresh');
   expect(flags).toEqual([false, true]);
+});
+
+describe('Codex existing-login-only authentication', () => {
+  const adapters: CodexSubscriptionAdapter[] = [];
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const adapter of adapters.splice(0)) adapter.dispose();
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Exercise authentication and adapter wiring with only the app-server transport replaced.
+  const fixture = (
+    accounts: unknown[],
+    config: Pick<CodexAppServerAuthConfig, 'requireExistingLogin' | 'codexBinary'> = {},
+    suppliedAuth = false,
+  ) => {
+    const codexHome = mkdtempSync(join(tmpdir(), 'codex-existing-login-'));
+    dirs.push(codexHome);
+    const credentialPath = join(codexHome, 'auth.json');
+    const writeToken = (token: string, accountId = 'fixture-account', refreshToken: string | null = 'fixture-refresh') =>
+      writeFileSync(credentialPath, JSON.stringify({ tokens: { access_token: token, account_id: accountId, refresh_token: refreshToken ?? undefined } }));
+    writeToken('fixture-token');
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const loginEvents: Array<{ verificationUrl: string; userCode: string }> = [];
+    const authConfig: CodexAppServerAuthConfig = {
+      ...config,
+      codexHome,
+      loginTimeoutMs: 1000,
+      onLoginRequired: details => {
+        loginEvents.push(details);
+        queueMicrotask(() => auth.handleLine(JSON.stringify({
+          method: 'account/login/completed', params: { loginId: 'fixture-login', success: true },
+        })));
+      },
+    };
+    const adapter = new CodexSubscriptionAdapter({
+      ...authConfig,
+      ...(suppliedAuth ? { authProvider: new CodexAppServerAuth({ ...authConfig, requireExistingLogin: false }) } : {}),
+    });
+    adapters.push(adapter);
+    const auth = (adapter as any).auth;
+    auth.ensureStarted = async () => {};
+    auth.request = async (method: string, params: Record<string, unknown>) => {
+      calls.push({ method, params });
+      if (method === 'account/read') {
+        if (accounts.length === 0) throw new Error('Unexpected account/read');
+        const account = accounts.shift();
+        return account === undefined ? {} : { account };
+      }
+      if (method === 'account/login/start') {
+        return { loginId: 'fixture-login', verificationUrl: 'https://example.test/login', userCode: 'fixture-code' };
+      }
+      throw new Error(`Unexpected RPC: ${method}`);
+    };
+    return { adapter, auth, calls, loginEvents, writeToken, codexHome };
+  };
+
+  test('public flag parser preserves opt-in values and warns when an unknown value leaves login enabled', () => {
+    const warnings: string[] = [];
+    const parse = (value: string | undefined) => codexSubscription.parseCodexRequireExistingLogin(value, message => warnings.push(message));
+    for (const value of ['1', 'true', ' TRUE ', ' 1 ']) expect(parse(value)).toBe(true);
+    for (const value of [undefined, '', ' ', '0', 'false', ' FALSE ']) expect(parse(value)).toBe(false);
+    expect(warnings).toEqual([]);
+    for (const value of ['yes', 'treu', 'synthetic-private-value']) expect(parse(value)).toBe(false);
+    expect(warnings).toHaveLength(3);
+    expect(warnings.every(message => message.includes('CODEX_REQUIRE_EXISTING_LOGIN') && message.includes('restriction is off'))).toBe(true);
+    expect(warnings.join()).not.toContain('synthetic-private-value');
+  });
+
+  test('the public parser enables refusal at the adapter boundary', async () => {
+    const { adapter, calls, loginEvents } = fixture([null], {
+      requireExistingLogin: codexSubscription.parseCodexRequireExistingLogin('1'),
+    });
+    let fetches = 0;
+    globalThis.fetch = Object.assign(async () => { fetches++; return completed(); }, { preconnect: originalFetch.preconnect });
+    await expect(adapter.complete(request)).rejects.toMatchObject({ type: 'auth', retryable: false });
+    expect(calls).toEqual([{ method: 'account/read', params: { refreshToken: false } }]);
+    expect(fetches).toBe(0);
+    expect(loginEvents).toEqual([]);
+  });
+
+  for (const forceRefresh of [false, true]) {
+    test(`adapter policy restricts a supplied app-server on token acquisition (refresh=${forceRefresh})`, async () => {
+      const { adapter, calls, loginEvents } = fixture([null], { requireExistingLogin: true }, true);
+      let fetches = 0;
+      globalThis.fetch = Object.assign(async () => { fetches++; return completed(); }, { preconnect: originalFetch.preconnect });
+      await expect(forceRefresh ? adapter.refreshCredentials() : adapter.complete(request))
+        .rejects.toMatchObject({ type: 'auth', retryable: false });
+      expect(calls).toEqual([{ method: 'account/read', params: { refreshToken: forceRefresh } }]);
+      expect(loginEvents).toEqual([]);
+      expect(fetches).toBe(0);
+      expect(adapter.credentialSource().login).toBeUndefined();
+      await expect(adapter.login()).rejects.toThrow(/host login actions are disabled/i);
+      expect(calls).toHaveLength(1);
+    });
+  }
+
+  test('an adapter cannot weaken the supplied app-server existing-login policy', async () => {
+    const { auth, calls } = fixture([null], { requireExistingLogin: true });
+    const adapter = new CodexSubscriptionAdapter({ authProvider: auth, requireExistingLogin: false });
+    adapters.push(adapter);
+    expect(adapter.credentialSource().login).toBeUndefined();
+    await expect(adapter.login()).rejects.toThrow(/host login actions are disabled/i);
+    expect(calls).toEqual([]);
+  });
+
+  test('tightening a shared provider blocks an earlier saved login callback before logout and hides its action', async () => {
+    const { adapter, auth, calls } = fixture([{ type: 'chatgpt' }]);
+    const source = adapter.credentialSource(), savedLogin = source.login!;
+    let logouts = 0;
+    auth.logout = async () => { logouts++; };
+    const restricted = new CodexSubscriptionAdapter({ authProvider: auth, requireExistingLogin: true });
+    adapters.push(restricted);
+    await expect(savedLogin()).rejects.toThrow(/existing ChatGPT login/i);
+    expect(logouts).toBe(0);
+    expect(calls).toEqual([]);
+    expect(source.login).toBeUndefined();
+    expect(source.loginDisabledReason).toContain('CODEX_HOME=');
+  });
+
+  test('tightening refuses an in-flight permissive login without cancelling or adopting it', async () => {
+    const { auth, calls, loginEvents } = fixture([null, { type: 'chatgpt' }]);
+    const request = auth.request.bind(auth);
+    let started!: () => void, release!: () => void;
+    const loginStarted = new Promise<void>((resolve) => { started = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    auth.request = async (method: string, params: Record<string, unknown>) => {
+      if (method === 'account/login/start') { started(); await held; }
+      return request(method, params);
+    };
+    const original = auth.getAccessToken();
+    await loginStarted;
+    let unexpected: CodexSubscriptionAdapter | undefined;
+    try {
+      expect(() => {
+        unexpected = new CodexSubscriptionAdapter({ authProvider: auth, requireExistingLogin: true });
+      }).toThrow(/authentication.*in progress/i);
+      expect(auth.existingLoginRequired).toBe(false);
+      expect(loginEvents).toEqual([]);
+    } finally {
+      if (unexpected) adapters.push(unexpected);
+      release();
+      expect(await original).toBe('fixture-token');
+    }
+    expect(calls.map((call) => call.method)).toEqual(['account/read', 'account/login/start', 'account/read']);
+    expect(loginEvents).toHaveLength(1);
+    const restricted = new CodexSubscriptionAdapter({ authProvider: auth, requireExistingLogin: true });
+    adapters.push(restricted);
+    expect(auth.existingLoginRequired).toBe(true);
+    expect(restricted.credentialSource().login).toBeUndefined();
+  });
+
+  test('tightening waits for an owned logout without interrupting the original login action', async () => {
+    const { adapter, auth, calls, loginEvents } = fixture([null, { type: 'chatgpt' }]);
+    const request = auth.request.bind(auth);
+    let started!: () => void, release!: () => void;
+    const logoutStarted = new Promise<void>((resolve) => { started = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    auth.request = async (method: string, params: Record<string, unknown>) => {
+      if (method === 'account/logout') { started(); await held; return {}; }
+      return request(method, params);
+    };
+    const original = adapter.login();
+    await logoutStarted;
+    let unexpected: CodexSubscriptionAdapter | undefined;
+    try {
+      expect(() => {
+        unexpected = new CodexSubscriptionAdapter({ authProvider: auth, requireExistingLogin: true });
+      }).toThrow(/authentication.*in progress/i);
+      expect(auth.existingLoginRequired).toBe(false);
+    } finally {
+      if (unexpected) adapters.push(unexpected);
+      release();
+      await original;
+    }
+    expect(calls.map((call) => call.method)).toEqual(['account/read', 'account/login/start', 'account/read']);
+    expect(loginEvents).toHaveLength(1);
+    const restricted = new CodexSubscriptionAdapter({ authProvider: auth, requireExistingLogin: true });
+    adapters.push(restricted);
+    expect(auth.existingLoginRequired).toBe(true);
+  });
+
+  test('the owned re-login keeps its policy boundary between logout completion and token acquisition', async () => {
+    const { adapter, auth, calls, loginEvents } = fixture([null, { type: 'chatgpt' }]);
+    const request = auth.request.bind(auth), logout = auth.logout.bind(auth);
+    auth.request = async (method: string, params: Record<string, unknown>) =>
+      method === 'account/logout' ? {} : request(method, params);
+    let observedBoundary = false;
+    auth.logout = async () => {
+      await logout();
+      let unexpected: CodexSubscriptionAdapter | undefined;
+      try {
+        expect(() => {
+          unexpected = new CodexSubscriptionAdapter({ authProvider: auth, requireExistingLogin: true });
+        }).toThrow(/authentication.*in progress/i);
+        observedBoundary = true;
+      } finally { if (unexpected) adapters.push(unexpected); }
+    };
+    await adapter.login();
+    expect(observedBoundary).toBe(true);
+    expect(calls.map((call) => call.method)).toEqual(['account/read', 'account/login/start', 'account/read']);
+    expect(loginEvents).toHaveLength(1);
+    const restricted = new CodexSubscriptionAdapter({ authProvider: auth, requireExistingLogin: true });
+    adapters.push(restricted);
+    expect(auth.existingLoginRequired).toBe(true);
+  });
+
+  test('missing-login and disabled-login guidance name the configured executable, home and file storage', async () => {
+    const { CredentialMonitor } = await import('../src/credential-state.js');
+    const codexBinary = "/synthetic/tool dir/operator's-codex";
+    const { adapter, codexHome, calls } = fixture([null], { requireExistingLogin: true, codexBinary });
+    globalThis.fetch = Object.assign(async () => completed(), { preconnect: originalFetch.preconnect });
+    let failure: Error | undefined;
+    try { await adapter.complete(request); } catch (error) { failure = error as Error; }
+    expect(failure?.message).toContain(`CODEX_HOME='${codexHome}'`);
+    expect(failure?.message).toContain("'/synthetic/tool dir/operator'\\''s-codex'");
+    expect(failure?.message).toContain('cli_auth_credentials_store="file"');
+    expect(failure?.message).toContain(join(codexHome, 'auth.json'));
+    expect(failure?.message).toContain('keyring-only');
+    await expect(adapter.login()).rejects.toThrow(failure!.message);
+    const monitor = new CredentialMonitor({ source: adapter.credentialSource(), alert: () => {} });
+    try {
+      monitor.observeError(failure);
+      expect(monitor.snapshot().actions.map(action => action.id)).toEqual(['recheck']);
+      const refused = await monitor.runAction('login');
+      expect(refused.lastAction).toMatchObject({ ok: false, message: failure!.message });
+      expect(calls).toHaveLength(1);
+    } finally { monitor.dispose(); }
+  });
+
+  test('missing-login recovery tells the operator to restart the host after an external login', async () => {
+    const { adapter } = fixture([null], { requireExistingLogin: true });
+    await expect(adapter.login()).rejects.toThrow(/login, then restart the host process \(or its service\) and retry/);
+  });
+
+  test('external file login is acquired after restarting the app-server without a device-code prompt', async () => {
+    const codexHome = mkdtempSync(join(tmpdir(), 'codex-restart-contract-'));
+    dirs.push(codexHome);
+    const codexBinary = join(codexHome, 'synthetic-app-server'), rpcLog = join(codexHome, 'calls.jsonl');
+    // Independent compatibility case from the reviewed Codex behavior: the child
+    // caches an absent account until restart, even if another CLI writes the file.
+    writeFileSync(codexBinary, String.raw`#!/usr/bin/env node
+const fs = require('node:fs');
+const readline = require('node:readline');
+const home = process.env.CODEX_HOME;
+let hasAccount = false;
+try { hasAccount = !!JSON.parse(fs.readFileSync(home + '/auth.json', 'utf8')).tokens?.access_token; } catch {}
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const request = JSON.parse(line);
+  fs.appendFileSync(home + '/calls.jsonl', JSON.stringify(request.method) + '\n');
+  if (request.id === undefined) return;
+  const result = request.method === 'account/read' ? { account: hasAccount ? { type: 'chatgpt' } : null } : {};
+  process.stdout.write(JSON.stringify({ id: request.id, result }) + '\n');
+});
+`, { mode: 0o700 });
+    const first = new CodexSubscriptionAdapter({ codexBinary, codexHome, requireExistingLogin: true });
+    adapters.push(first);
+    const firstAuth = (first as any).auth as CodexAppServerAuth;
+    await expect(firstAuth.getAccessToken()).rejects.toMatchObject({ type: 'auth', retryable: false });
+    writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({ tokens: {
+      access_token: 'synthetic-session', refresh_token: 'synthetic-refresh', account_id: 'synthetic-account',
+    } }));
+    await expect(firstAuth.getAccessToken()).rejects.toMatchObject({ type: 'auth', retryable: false });
+    const child = (firstAuth as any).child;
+    const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+    first.dispose();
+    await exited;
+    const restarted = new CodexSubscriptionAdapter({ codexBinary, codexHome, requireExistingLogin: true });
+    adapters.push(restarted);
+    const restartedAuth = (restarted as any).auth as CodexAppServerAuth;
+    expect(await restartedAuth.getAccessToken()).toBe('synthetic-session');
+    expect(restartedAuth.getAccountId()).toBe('synthetic-account');
+    expect(restarted.credentialSource().canRefresh()).toBe(true);
+    const methods = readFileSync(rpcLog, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(methods.filter(method => method === 'account/read')).toHaveLength(3);
+    expect(methods).not.toContain('account/login/start');
+    expect(methods).not.toContain('account/logout');
+  });
+
+  test('default refresh is available before the first model call, and an unavailable refresh gives Codex recovery', async () => {
+    const { CredentialMonitor } = await import('../src/credential-state.js');
+    const { adapter, auth, writeToken, codexHome } = fixture([{ type: 'chatgpt' }]);
+    const source = adapter.credentialSource();
+    expect(source.canRefresh()).toBe(true);
+    const monitor = new CredentialMonitor({ source, alert: () => {} });
+    try {
+      expect(monitor.snapshot().rotatable).toBe(true);
+      writeToken('access-only', 'fixture-account', null);
+      await auth.getAccessToken();
+      const state = await monitor.runAction('refresh');
+      expect(state.lastAction?.ok).toBe(false);
+      expect(state.lastAction?.message).toContain('OpenAI Codex');
+      expect(state.lastAction?.message).toContain(codexHome);
+      expect(state.lastAction?.message).toContain('restart the host process');
+      expect(state.lastAction?.message).not.toContain('paste a new token');
+      expect(state.lastAction?.message).not.toContain('Host login actions are disabled');
+    } finally { monitor.dispose(); }
+  });
+
+  test('a pending file read preserves refresh availability until its result is known', async () => {
+    const { auth } = fixture([{ type: 'chatgpt' }]);
+    const pending = auth.readAccessToken();
+    expect(auth.canRefresh()).toBe(true);
+    await pending;
+    expect(auth.canRefresh()).toBe(true);
+  });
+
+  test('successful logout clears the learned account and refresh availability', async () => {
+    const { auth } = fixture([{ type: 'chatgpt' }]);
+    await auth.getAccessToken();
+    expect(auth.getAccountId()).toBe('fixture-account');
+    expect(auth.canRefresh()).toBe(true);
+    auth.request = async () => ({});
+    await auth.logout();
+    expect(auth.getAccountId()).toBeUndefined();
+    expect(auth.canRefresh()).toBe(false);
+  });
+
+  for (const defect of ['missing', 'unreadable', 'malformed', 'token-less'] as const) {
+    for (const phase of ['acquisition', '401 refresh'] as const) {
+      for (const lane of ['complete', 'stream'] as const) {
+        test(`file credential refusal stays local and nonretryable (${defect}/${phase}/${lane})`, async () => {
+          const { CredentialMonitor } = await import('../src/credential-state.js');
+          const { LoggingProviderAdapter } = await import('../src/logging-provider-wrapper.js');
+          const { adapter, auth, calls, loginEvents, codexHome } = fixture(
+            [{ type: 'chatgpt' }, ...(phase === '401 refresh' ? [{ type: 'chatgpt' }] : [])],
+            { requireExistingLogin: true },
+          );
+          const path = join(codexHome, 'auth.json'), privateValue = 'synthetic-private-file-marker';
+          const breakFile = () => {
+            if (defect === 'missing' || defect === 'unreadable') rmSync(path);
+            if (defect === 'unreadable') mkdirSync(path);
+            if (defect === 'malformed') writeFileSync(path, '{"tokens":' + privateValue);
+            if (defect === 'token-less') writeFileSync(path, JSON.stringify({ tokens: { refresh_token: privateValue } }));
+          };
+          if (phase === 'acquisition') breakFile();
+          let fetches = 0;
+          globalThis.fetch = Object.assign(async () => {
+            fetches++; breakFile(); return new Response('expired', { status: 401 });
+          }, { preconnect: originalFetch.preconnect });
+          const alerts: string[] = [];
+          const monitor = new CredentialMonitor({ source: adapter.credentialSource(), alert: kind => alerts.push(kind) });
+          const wrapped = new LoggingProviderAdapter(adapter, '/dev/null');
+          wrapped.onProviderError = error => monitor.observeError(error);
+          let failure: unknown;
+          try {
+            if (lane === 'complete') await wrapped.complete(request);
+            else for await (const _chunk of await wrapped.stream(request)) { /* drain */ }
+          } catch (error) { failure = error; }
+          finally { monitor.dispose(); }
+          expect(failure).toBeInstanceOf(MembraneError);
+          expect(failure).toMatchObject({ type: 'auth', retryable: false });
+          expect((failure as MembraneError).rawError).toBeUndefined();
+          expect(inspect(failure)).not.toContain(privateValue);
+          expect(alerts).toEqual(['auth-rejected']);
+          expect(monitor.snapshot().message).toContain('authentication unavailable');
+          expect(monitor.snapshot().actions.map(action => action.id)).toEqual(['recheck']);
+          expect(auth.canRefresh()).toBe(false);
+          expect(auth.getAccountId()).toBeUndefined();
+          expect(fetches).toBe(phase === 'acquisition' ? 0 : 1);
+          expect(calls.map(call => call.method)).toEqual(phase === 'acquisition' ? ['account/read'] : ['account/read', 'account/read']);
+          expect(loginEvents).toEqual([]);
+        });
+      }
+    }
+  }
+
+  test('refresh stays available until the app-server establishes that it cannot refresh', async () => {
+    const { adapter, auth, writeToken } = fixture([{ type: 'chatgpt' }, { type: 'chatgpt' }, { type: 'chatgpt' }, null], { requireExistingLogin: true });
+    const source = adapter.credentialSource();
+    expect(source.canRefresh()).toBe(true);
+    await auth.getAccessToken();
+    expect(source.canRefresh()).toBe(true);
+    writeToken('access-only', 'fixture-account', null);
+    await auth.getAccessToken();
+    expect(source.canRefresh()).toBe(false);
+    writeToken('restored');
+    await auth.getAccessToken();
+    expect(source.canRefresh()).toBe(true);
+    await expect(auth.getAccessToken(true)).rejects.toMatchObject({ type: 'auth', retryable: false });
+    expect(source.canRefresh()).toBe(false);
+  });
+
+  for (const [name, account] of [['absent', undefined], ['null', null], ['API-key', { type: 'apiKey' }]] as const) {
+    for (const forceRefresh of [false, true]) {
+      test(`refuses the ${name} account before login (refresh=${forceRefresh})`, async () => {
+        const { auth, calls, loginEvents } = fixture([account], { requireExistingLogin: true });
+        await expect(auth.getAccessToken(forceRefresh)).rejects.toThrow(/existing ChatGPT login/i);
+        expect(calls).toEqual([{ method: 'account/read', params: { refreshToken: forceRefresh } }]);
+        expect(loginEvents).toEqual([]);
+        expect(auth.waiterCount).toBe(0);
+        expect(await auth.cancelLogin()).toBe(false);
+      });
+    }
+  }
+
+  for (const requireExistingLogin of [undefined, false]) {
+    test(`keeps device-code login when requireExistingLogin=${requireExistingLogin}`, async () => {
+      const { auth, calls, loginEvents } = fixture([null, { type: 'chatgpt' }], { requireExistingLogin });
+      expect(await auth.getAccessToken()).toBe('fixture-token');
+      expect(calls).toEqual([
+        { method: 'account/read', params: { refreshToken: false } },
+        { method: 'account/login/start', params: { type: 'chatgptDeviceCode' } },
+        { method: 'account/read', params: { refreshToken: true } },
+      ]);
+      expect(loginEvents).toEqual([{ verificationUrl: 'https://example.test/login', userCode: 'fixture-code' }]);
+    });
+  }
+
+  test('uses an existing session and refreshes its token and account ID after a 401', async () => {
+    const { adapter, auth, calls, loginEvents, writeToken } = fixture(
+      [{ type: 'chatgpt' }, { type: 'chatgpt' }], { requireExistingLogin: true },
+    );
+    const headers: Headers[] = [];
+    globalThis.fetch = Object.assign(async (_url: URL | RequestInfo, init?: RequestInit) => {
+      headers.push(new Headers(init?.headers));
+      if (headers.length === 1) {
+        writeToken('refreshed-token', 'refreshed-account');
+        return new Response('expired', { status: 401 });
+      }
+      return completed();
+    }, { preconnect: originalFetch.preconnect });
+    await adapter.complete(request);
+    expect(calls).toEqual([
+      { method: 'account/read', params: { refreshToken: false } },
+      { method: 'account/read', params: { refreshToken: true } },
+    ]);
+    expect(headers.map(h => h.get('authorization'))).toEqual(['Bearer fixture-token', 'Bearer refreshed-token']);
+    expect(headers.map(h => h.get('chatgpt-account-id'))).toEqual(['fixture-account', 'refreshed-account']);
+    expect(auth.getAccountId()).toBe('refreshed-account');
+    expect(adapter.credentialSource().canRefresh()).toBe(true);
+    expect(loginEvents).toEqual([]);
+  });
+
+  test('forwards the opt-in through the adapter before any inference request', async () => {
+    const { adapter, calls, loginEvents } = fixture([null], { requireExistingLogin: true });
+    let fetched = false;
+    globalThis.fetch = Object.assign(async () => { fetched = true; return completed(); }, { preconnect: originalFetch.preconnect });
+    await expect(adapter.complete(request)).rejects.toThrow(/existing ChatGPT login/i);
+    expect(calls).toEqual([{ method: 'account/read', params: { refreshToken: false } }]);
+    expect(fetched).toBe(false);
+    expect(loginEvents).toEqual([]);
+  });
+
+  test('first refresh before inference preserves existing-login recovery and raises one auth alert', async () => {
+    const { CredentialMonitor } = await import('../src/credential-state.js');
+    const { adapter, calls, loginEvents } = fixture([null], { requireExistingLogin: true });
+    const alerts: Array<{ kind: string; message: string }> = [];
+    const source = adapter.credentialSource();
+    const monitor = new CredentialMonitor({ source, alert: (kind, message) => alerts.push({ kind, message }) });
+    try {
+      expect(monitor.snapshot().kind).toBe('ok');
+      const state = await monitor.runAction('refresh');
+      expect(state.kind).toBe('auth-rejected');
+      expect(state.lastAction).toMatchObject({ id: 'refresh', ok: false });
+      expect(state.lastAction!.message).toBe(`refresh failed: ${source.loginDisabledReason}`);
+      expect(state.lastAction!.message).toContain('restart the host process');
+      expect(state.message).toContain('authentication unavailable:');
+      expect(state.actions.map(action => action.id)).toEqual(['recheck']);
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]!.kind).toBe('auth-rejected');
+      expect(alerts[0]!.message).toContain('restart the host process');
+      const again = await monitor.runAction('refresh');
+      expect(again.lastAction!.message).toContain('restart the host process');
+      expect(alerts).toHaveLength(1);
+      expect(calls).toEqual([{ method: 'account/read', params: { refreshToken: true } }]);
+      expect(loginEvents).toEqual([]);
+    } finally { monitor.dispose(); }
+  });
+
+  test('reports a missing existing login through the provider wrapper as an auth alert', async () => {
+    const { CredentialMonitor } = await import('../src/credential-state.js');
+    const { LoggingProviderAdapter } = await import('../src/logging-provider-wrapper.js');
+    const { adapter, calls, loginEvents, writeToken } = fixture([null], { requireExistingLogin: true });
+    const privateToken = 'fixture-private-credential';
+    writeToken(privateToken);
+    const alerts: Array<{ kind: string; message: string; data: Record<string, unknown> }> = [];
+    const monitor = new CredentialMonitor({
+      source: adapter.credentialSource(),
+      alert: (kind, message, data) => { alerts.push({ kind, message, data }); },
+    });
+    const wrapped = new LoggingProviderAdapter(adapter, '/dev/null');
+    let observedError: unknown;
+    wrapped.onProviderError = error => { observedError = error; monitor.observeError(error); };
+    let fetches = 0;
+    globalThis.fetch = Object.assign(async () => { fetches++; return completed(); }, { preconnect: originalFetch.preconnect });
+    let failure: unknown;
+    try {
+      await wrapped.complete(request);
+    } catch (error) {
+      failure = error;
+    } finally {
+      monitor.dispose();
+    }
+    expect(monitor.snapshot().kind).toBe('auth-rejected');
+    expect(alerts.map(alert => alert.kind)).toEqual(['auth-rejected']);
+    expect(alerts[0]!.message).toContain('existing ChatGPT login');
+    expect(alerts[0]!.message).toContain('authentication unavailable');
+    expect(alerts[0]!.message).not.toContain('rejected the credential');
+    expect(monitor.snapshot().actions.map(action => action.id)).toEqual(['recheck']);
+    expect(failure).toBe(observedError);
+    expect(failure).toBeInstanceOf(MembraneError);
+    expect(failure).toMatchObject({ type: 'auth', retryable: false });
+    expect((failure as MembraneError).httpStatus).toBeUndefined();
+    expect((failure as MembraneError).rawError).toBeUndefined();
+    expect(inspect({ failure, state: monitor.snapshot(), alerts })).not.toContain(privateToken);
+    expect(fetches).toBe(0);
+    expect(calls).toEqual([{ method: 'account/read', params: { refreshToken: false } }]);
+    expect(loginEvents).toEqual([]);
+  });
+
+  test('refuses a missing account on the supplied app-server 401 refresh as a nonretryable auth failure', async () => {
+    const { adapter, calls, loginEvents } = fixture([{ type: 'chatgpt' }, null], { requireExistingLogin: true }, true);
+    let fetches = 0;
+    globalThis.fetch = Object.assign(async () => { fetches++; return new Response('expired', { status: 401 }); }, { preconnect: originalFetch.preconnect });
+    await expect(adapter.complete(request)).rejects.toMatchObject({ type: 'auth', retryable: false });
+    expect(calls).toEqual([
+      { method: 'account/read', params: { refreshToken: false } },
+      { method: 'account/read', params: { refreshToken: true } },
+    ]);
+    expect(fetches).toBe(1);
+    expect(loginEvents).toEqual([]);
+  });
+
+  for (const phase of ['acquisition', '401 refresh'] as const) {
+    for (const lane of ['complete', 'stream'] as const) {
+      test(`host Membrane does not retry a wrapped existing-login refusal (${phase}/${lane})`, async () => {
+        const { Membrane, OpenAIResponsesFormatter } = await import('@animalabs/membrane');
+        const { LoggingProviderAdapter } = await import('../src/logging-provider-wrapper.js');
+        const { CredentialMonitor } = await import('../src/credential-state.js');
+        const { hostMembraneRetry } = await import('../src/membrane-retry.js');
+        const { adapter, calls, loginEvents } = fixture(
+          phase === 'acquisition' ? [null] : [{ type: 'chatgpt' }, null],
+          { requireExistingLogin: true }, true,
+        );
+        const alerts: string[] = [];
+        const monitor = new CredentialMonitor({ source: adapter.credentialSource(), alert: kind => alerts.push(kind) });
+        const wrapped = new LoggingProviderAdapter(adapter, '/dev/null');
+        const failures: unknown[] = [];
+        wrapped.onProviderError = error => { failures.push(error); monitor.observeError(error); };
+        const membrane = new Membrane(wrapped, {
+          formatter: new OpenAIResponsesFormatter(),
+          retry: hostMembraneRetry({ maxRetries: 3, retryDelayMs: 0 }),
+        });
+        let fetches = 0;
+        globalThis.fetch = Object.assign(async () => { fetches++; return new Response('expired', { status: 401 }); }, { preconnect: originalFetch.preconnect });
+        const normalized = { messages: [{ participant: 'user', content: [{ type: 'text' as const, text: 'hello' }] }], config: { model: 'gpt-5.4', maxTokens: 100 } };
+        try {
+          await expect(lane === 'complete'
+            ? membrane.complete(normalized)
+            : membrane.stream(normalized, { onChunk: () => {} }))
+            .rejects.toMatchObject({ type: 'auth', retryable: false });
+          expect(failures).toHaveLength(1);
+          expect(failures[0]).toMatchObject({ type: 'auth', retryable: false });
+          expect(calls).toEqual(phase === 'acquisition'
+            ? [{ method: 'account/read', params: { refreshToken: false } }]
+            : [
+                { method: 'account/read', params: { refreshToken: false } },
+                { method: 'account/read', params: { refreshToken: true } },
+              ]);
+          expect(fetches).toBe(phase === 'acquisition' ? 0 : 1);
+          expect(loginEvents).toEqual([]);
+          expect(alerts).toEqual(['auth-rejected']);
+          expect(monitor.snapshot().message).toContain('authentication unavailable');
+          expect(monitor.snapshot().actions.map(action => action.id)).toEqual(['recheck']);
+        } finally { monitor.dispose(); }
+      });
+    }
+  }
+
+  for (const requireExistingLogin of [undefined, false]) {
+    test(`keeps explicit login when requireExistingLogin=${requireExistingLogin}`, async () => {
+      const calls: string[] = [];
+      const adapter = new CodexSubscriptionAdapter({
+        requireExistingLogin,
+        authProvider: {
+          getAccessToken: async forceRefresh => { calls.push(`token:${forceRefresh}`); return 'token'; },
+          logout: async () => { calls.push('logout'); },
+        },
+      });
+      adapters.push(adapter);
+      await adapter.credentialSource().login!();
+      expect(calls).toEqual(['logout', 'token:true']);
+    });
+  }
+
+  test('refuses explicit login before logout and keeps refresh available', async () => {
+    let logouts = 0;
+    const refreshes: boolean[] = [];
+    const adapter = new CodexSubscriptionAdapter({
+      requireExistingLogin: true,
+      authProvider: {
+        getAccessToken: async (forceRefresh = false) => { refreshes.push(forceRefresh); return 'existing-token'; },
+        logout: async () => { logouts++; },
+      },
+    });
+    adapters.push(adapter);
+    await expect(adapter.login()).rejects.toThrow(/existing ChatGPT login/i);
+    expect(logouts).toBe(0);
+    expect(refreshes).toEqual([]);
+    const source = adapter.credentialSource();
+    expect(source.login).toBeUndefined();
+    expect(source.canRefresh()).toBe(true);
+    await source.refresh!();
+    expect(refreshes).toEqual([true]);
+  });
 });
 
 describe("reading Codex's auth.json", () => {
