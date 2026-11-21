@@ -1,4 +1,5 @@
 const { createInterface } = require('node:readline');
+if (process.argv[2]) require('node:fs').appendFileSync(process.argv[2], process.pid + '\n');
 const reply = (id, result) => console.log(JSON.stringify({ jsonrpc: '2.0', id, result }));
 const rl = createInterface({ input: process.stdin });
 rl.on('close', () => process.exit(0));

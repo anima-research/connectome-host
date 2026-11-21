@@ -559,81 +559,91 @@ agents: [agentConfig],
     toolResultInlineMaxChars: recipe.toolResultInlineMaxChars,
   });
 
-  // An agent-framework without the heartbeat ignores modules.heartbeat: the
-  // agent then has no heartbeat or reminders at all, which is said here.
-  if (heartbeatOptions && !framework.getAllTools().some((tool) => tool.name.startsWith('heartbeat--'))) {
-    console.warn('[heartbeat] modules.heartbeat is on, but this agent-framework has no heartbeat (it came after 0.27.0), so the '
-      + 'agent has no heartbeat or reminders. Update agent-framework, or turn modules.heartbeat off and run heartbeat-mcpl '
-      + 'under mcpServers.heartbeat.');
-  }
-
-  if (historyModule) {
-    const cm = framework.getAgent(agentName)?.getContextManager();
-    if (cm) {
-      historyModule.bind(cm, framework.channels ?? undefined);
-    }
-  }
-
-  const autoContinueWarning = autoContinueSupportWarning(recipe, framework.getAgent(agentName) ?? undefined);
-  if (autoContinueWarning) console.warn(autoContinueWarning);
-
-  {
-    const alarmCapable = strategy as unknown as {
-      setQuarantineAlarmHandler?: (fn: (status: QuarantineStatus) => void) => void;
-    };
-    const notify = (framework as unknown as {
-      notifyOps?: (kind: string, agent: string, message: string, data?: Record<string, unknown>) => void;
-    }).notifyOps?.bind(framework);
-    if (alarmCapable.setQuarantineAlarmHandler && notify) {
-      alarmCapable.setQuarantineAlarmHandler((status) => {
-        const alert = quarantineAlarm(status);
-        notify(alert.kind, agentName, alert.message, alert.data);
-      });
+  try {
+    // An agent-framework without the heartbeat ignores modules.heartbeat: the
+    // agent then has no heartbeat or reminders at all, which is said here.
+    if (heartbeatOptions && !framework.getAllTools().some((tool) => tool.name.startsWith('heartbeat--'))) {
+      console.warn('[heartbeat] modules.heartbeat is on, but this agent-framework has no heartbeat (it came after 0.27.0), so the '
+        + 'agent has no heartbeat or reminders. Update agent-framework, or turn modules.heartbeat off and run heartbeat-mcpl '
+        + 'under mcpServers.heartbeat.');
     }
 
-    wireLoadRepairAlert(strategy, framework, agentName, storePath);
-  }
+    if (historyModule) {
+      const cm = framework.getAgent(agentName)?.getContextManager();
+      if (cm) {
+        historyModule.bind(cm, framework.channels ?? undefined);
+      }
+    }
 
-  if (subagentModule) {
-    subagentModule.setFramework(framework);
-  }
+    const autoContinueWarning = autoContinueSupportWarning(recipe, framework.getAgent(agentName) ?? undefined);
+    if (autoContinueWarning) console.warn(autoContinueWarning);
 
-  if (noticesModule) {
-    noticesModule.setKnownServers(finalServers.map((server) => server.id));
-    noticesModule.setFramework(framework);
-  }
-  if (activityModule) {
-    activityModule.setFramework(framework);
-  }
+    {
+      const alarmCapable = strategy as unknown as {
+        setQuarantineAlarmHandler?: (fn: (status: QuarantineStatus) => void) => void;
+      };
+      const notify = (framework as unknown as {
+        notifyOps?: (kind: string, agent: string, message: string, data?: Record<string, unknown>) => void;
+      }).notifyOps?.bind(framework);
+      if (alarmCapable.setQuarantineAlarmHandler && notify) {
+        alarmCapable.setQuarantineAlarmHandler((status) => {
+          const alert = quarantineAlarm(status);
+          notify(alert.kind, agentName, alert.message, alert.data);
+        });
+      }
 
-  if (channelModeModule) {
-    channelModeModule.setFramework(framework);
-  }
+      wireLoadRepairAlert(strategy, framework, agentName, storePath);
+    }
 
-  for (const instance of extensionModules) {
-    const hooked = instance as unknown as { setFramework?: (f: AgentFramework) => void };
-    hooked.setFramework?.(framework);
-  }
+    if (subagentModule) {
+      subagentModule.setFramework(framework);
+    }
 
-  if (mcplAdminModule) {
-    mcplAdminModule.setFramework(framework);
-    mcplAdminModule.setOperatorServers(allServers);
-    if (identityModule) mcplAdminModule.setIdentity(identityModule);
-  }
+    if (noticesModule) {
+      noticesModule.setKnownServers(finalServers.map((server) => server.id));
+      noticesModule.setFramework(framework);
+    }
+    if (activityModule) {
+      activityModule.setFramework(framework);
+    }
 
-  if (workspaceModule) {
-    workspaceModule.initStore(framework.getStore());
-  }
+    if (channelModeModule) {
+      channelModeModule.setFramework(framework);
+    }
 
-  if (fleetModule) {
-    fleetModule.setStoreSync(() => framework.getStore().sync());
-  }
+    for (const instance of extensionModules) {
+      const hooked = instance as unknown as { setFramework?: (f: AgentFramework) => void };
+      hooked.setFramework?.(framework);
+    }
 
-  if (webUiModule) {
-    (framework as unknown as Record<symbol, WebUiModule>)[webUiModuleSymbol] = webUiModule;
-  }
+    if (mcplAdminModule) {
+      mcplAdminModule.setFramework(framework);
+      mcplAdminModule.setOperatorServers(allServers);
+      if (identityModule) mcplAdminModule.setIdentity(identityModule);
+    }
 
-  return framework;
+    if (workspaceModule) {
+      workspaceModule.initStore(framework.getStore());
+    }
+
+    if (fleetModule) {
+      fleetModule.setStoreSync(() => framework.getStore().sync());
+    }
+
+    if (webUiModule) {
+      (framework as unknown as Record<symbol, WebUiModule>)[webUiModuleSymbol] = webUiModule;
+    }
+
+    return framework;
+  } catch (error) {
+    // The caller hasn't received the framework yet, so it can't stop it.
+    try {
+      await framework.stop();
+    } catch (stopError) {
+      console.error('[framework] stopping the framework after setup failed:', stopError);
+    }
+    throw error;
+  }
 }
 
 const webUiModuleSymbol = Symbol.for('connectome-host:web-ui-module');
