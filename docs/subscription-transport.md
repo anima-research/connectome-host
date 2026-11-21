@@ -128,8 +128,31 @@ stream, and decides where and how loudly each alert kind is told.
 - `silent` kinds (`refusal`, and anything unknown) only reach failures.log
   and the webhook as before.
 
-Episodes close on the kind's `-clear` alert, or, for framework kinds with no
-clear (`hard-down`, refusals), on the agent's next completed inference; an
+Off-path refusals with subject `host` are process notices about individual calls.
+They include the model, category, message count, and input-token count. A burst
+shares one `quietMs` window and posts its latest diagnostics. Each configured
+status channel also has a `renotifyMs` floor (30 minutes by default) between
+successfully acknowledged process posts, including across consumed notices and
+reconnects. The same setting controls when a reply channel can be notified again
+after its previously announced end. Diagnostics coalesce to the latest message during that cooldown;
+scheduled delivery to a channel proceeds independently of delayed or broken
+channels. A reconnect retry can wait for lines already queued for other channels,
+until those publishes return or reach their deadlines. A later refusal,
+such as Monday followed by Friday, starts fresh delivery after the floor.
+
+Delivery follows an at-least-once retry policy: failed delivery stays pending
+for a later refusal, reconnect, framework replacement, or another status
+channel's delayed delivery becoming due. There is no automatic retry loop. An unknown outcome or exception can mean the post succeeded but its
+response was lost. Retrying can therefore duplicate a post; the acknowledged
+rate bound does not bound these ambiguous-delivery duplicates. The notice is
+consumed after every configured status channel acknowledges it (immediately if
+there are none). These notices produce no recovery line, agent reply, or context
+marker, and a reply-tier override is capped at status. The displayed subject
+remains `host`, with an internal identity separate from an agent named `host`.
+Agent inference success does not establish recovery of an auxiliary call.
+
+Other episodes close on the kind's `-clear` alert, or, for framework kinds with no
+clear (`hard-down`, agent refusals), on the agent's next completed inference; an
 `mcpl-down` episode closes when that server reconnects. Channel ids are opaque
 and resolved at post time: a notice whose chat server is itself down is parked
 on the episode and delivered if the server comes back while the outage is
