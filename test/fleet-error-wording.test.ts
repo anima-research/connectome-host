@@ -761,5 +761,5 @@ test('fleet--command refuses /auth in each of its forms, since it is a person\'s
       "Nothing was sent: /auth is for a person to run in the child's own console, since it reads or changes the child's " +
       "provider credential, and its output can carry the provider's own words. Ask whoever runs the child to run it."]);
   }
-  expect((await call('command', { name: 'any', command: '/status' })).error).not.toContain('/auth');
+  expect((await call('command', { name: 'any', command: '/status' })).error).toMatch(/^There's no child named 'any', so nothing was sent\. /);
 });
