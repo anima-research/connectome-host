@@ -11,13 +11,14 @@ const INDEX = fileURLToPath(new URL('../src/index.ts', import.meta.url));
 const MCP_CHILD = fileURLToPath(new URL('./fixtures/placed-reaction-child.cjs', import.meta.url));
 const SETUP_ERROR = 'injected post-create setup failure';
 const STOP_ERROR = 'injected replacement stop failure';
+const STOP_TIMEOUT = 'stop() did not finish within 5000 ms';
 
 const EXTENSION = `
 import { writeFileSync } from 'node:fs';
 let generation = 0;
-export function register(api, { stopped, stopFails, shutdown }) {
+export function register(api, { stopped, stop, shutdown, boot }) {
   api.registerModule(() => {
-    const replacement = ++generation === 2;
+    const failsSetup = ++generation === (boot ? 1 : 2);
     return {
       name: 'switch-failure-probe',
       getTools() { return []; },
@@ -25,7 +26,7 @@ export function register(api, { stopped, stopFails, shutdown }) {
       async handleToolCall() { return { success: false, error: 'no tools' }; },
       async onProcess() { return {}; },
       setFramework(framework) {
-        if (!replacement) return;
+        if (!failsSetup) return;
         if (!framework.listMcplServers().some((server) => server.id === 'probe' && server.connected)) {
           throw new Error('test MCP server did not connect');
         }
@@ -34,9 +35,14 @@ export function register(api, { stopped, stopFails, shutdown }) {
         throw new Error(${JSON.stringify(SETUP_ERROR)});
       },
       async stop() {
-        if (!replacement) return;
-        writeFileSync(stopped, 'replacement stopped');
-        if (stopFails) throw new Error(${JSON.stringify(STOP_ERROR)});
+        if (!failsSetup) return;
+        writeFileSync(stopped, 'cleanup attempted');
+        if (stop === 'reject') throw new Error(${JSON.stringify(STOP_ERROR)});
+        if (stop === 'hang') {
+          // Keep the boot process alive even if no handles survive teardown.
+          setInterval(() => {}, 1_000);
+          await new Promise(() => {});
+        }
       },
     };
   });
@@ -61,10 +67,12 @@ async function failedSwitch(socketPath: string): Promise<Record<string, unknown>
   }
 }
 
-for (const [label, stopFails, shutdown] of [
-  ['a failed switch stops the created framework and reports the setup error', false, false],
-  ['a failed switch reports the setup error even when stop fails', true, false],
-  ['shutdown during a failed switch exits 1 if stopping the created framework fails', true, true],
+for (const [label, stop, shutdown, boot = false] of [
+  ['a failed switch stops the created framework and reports the setup error', 'resolve', false],
+  ['a failed switch reports the setup error even when stop fails', 'reject', false],
+  ['shutdown during a failed switch exits 1 if stopping the created framework fails', 'reject', true],
+  ['shutdown during a failed switch reports the setup error and exits 1 if cleanup hangs', 'hang', true],
+  ['boot exits 1 with the setup error if cleanup hangs', 'hang', false, true],
 ] as const) {
   test(label, async () => {
     const dir = mkdtempSync(join(tmpdir(), 'switch-make-'));
@@ -79,21 +87,27 @@ for (const [label, stopFails, shutdown] of [
       agent: { name: 'agent', provider: 'mock', systemPrompt: 'This test does not infer.' },
       modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
       mcpServers: { probe: { command: process.execPath, args: [MCP_CHILD, pidsPath] } },
-      extensions: { probe: { kind: 'module', path: extension, config: { stopped, stopFails, shutdown } } },
+      extensions: { probe: { kind: 'module', path: extension, config: { stopped, stop, shutdown, boot } } },
     }));
     const host = Bun.spawn([process.execPath, INDEX, recipe, '--headless'], {
       cwd: dir, env: { ...process.env, DATA_DIR: dir }, stdout: 'ignore', stderr: 'pipe',
     });
     const stderr = host.stderr.text();
     try {
-      expect(await failedSwitch(socketPath)).toHaveProperty('error', SETUP_ERROR);
-      expect(readFileSync(stopped, 'utf8')).toBe('replacement stopped');
+      if (boot) {
+        expect(await waitForEnd(host.pid, 10_000)).toBe(true);
+        expect(await host.exited).toBe(1);
+        expect(await stderr).toMatch(new RegExp(`Fatal error:[\\s\\S]*[Ee]rror: ${SETUP_ERROR}`));
+      } else {
+        expect(await failedSwitch(socketPath)).toHaveProperty('error', SETUP_ERROR);
+      }
+      expect(readFileSync(stopped, 'utf8')).toBe('cleanup attempted');
       const pids = readFileSync(pidsPath, 'utf8').trim().split('\n').map(Number);
-      expect(pids).toHaveLength(2);
+      expect(pids).toHaveLength(boot ? 1 : 2);
       if (shutdown) {
         expect(await waitForEnd(host.pid, 5_000)).toBe(true);
         expect(await host.exited).toBe(1);
-      } else {
+      } else if (!boot) {
         // Check before killing the host: otherwise EOF alone can stop the MCP child.
         expect(await waitForEnd(pids[1]!, 5_000)).toBe(true);
         expect(host.exitCode).toBeNull();
@@ -103,10 +117,10 @@ for (const [label, stopFails, shutdown] of [
       await host.exited;
       rmSync(dir, { recursive: true, force: true });
     }
-    if (stopFails) {
+    if (stop !== 'resolve') {
       const log = await stderr;
       expect(log).toContain('stopping the framework after setup failed:');
-      expect(log).toContain(STOP_ERROR);
+      expect(log).toContain(stop === 'hang' ? STOP_TIMEOUT : STOP_ERROR);
     }
   }, 30_000);
 }

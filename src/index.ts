@@ -638,11 +638,20 @@ agents: [agentConfig],
     return framework;
   } catch (error) {
     // The caller hasn't received the framework yet, so it can't stop it.
+    const cleanupStopTimeoutMs = 5_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await framework.stop();
+      await Promise.race([
+        framework.stop(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`stop() did not finish within ${cleanupStopTimeoutMs} ms`)), cleanupStopTimeoutMs);
+        }),
+      ]);
     } catch (stopError) {
       onCleanupStopFailed?.();
       console.error('[framework] stopping the framework after setup failed:', stopError);
+    } finally {
+      clearTimeout(timer);
     }
     throw error;
   }
