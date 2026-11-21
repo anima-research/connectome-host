@@ -133,13 +133,16 @@ They include the model, category, message count, and input-token count. A burst
 shares one `quietMs` window and posts its latest diagnostics. Each configured
 status channel also has a `renotifyMs` floor (30 minutes by default) between
 successfully acknowledged process posts, including across consumed notices and
-reconnects. Diagnostics coalesce to the latest message during that cooldown;
-a delayed or broken channel does not postpone another channel. A later refusal,
+reconnects. The same setting controls when a reply channel can be notified again
+after its previously announced end. Diagnostics coalesce to the latest message during that cooldown;
+scheduled delivery to a channel proceeds independently of delayed or broken
+channels. A reconnect retry can wait for lines already queued for other channels,
+until those publishes return or reach their deadlines. A later refusal,
 such as Monday followed by Friday, starts fresh delivery after the floor.
 
 Delivery follows an at-least-once retry policy: failed delivery stays pending
-for a later refusal, reconnect, or framework replacement, without an automatic
-retry loop. An unknown outcome or exception can mean the post succeeded but its
+for a later refusal, reconnect, framework replacement, or another status
+channel's delayed delivery becoming due. There is no automatic retry loop. An unknown outcome or exception can mean the post succeeded but its
 response was lost. Retrying can therefore duplicate a post; the acknowledged
 rate bound does not bound these ambiguous-delivery duplicates. The notice is
 consumed after every configured status channel acknowledges it (immediately if

@@ -1147,6 +1147,8 @@ export interface RecipeModules {
    *   wildcard allowed (`'auth-*': 'reply'`), merged over the built-in table;
    *   unknown kinds are silent.
    * - `quietMs` (default 60000), `renotifyMs` (default 1800000).
+   *   `renotifyMs` controls reply re-notification after an announced end and
+   *   the per-status-channel floor between acknowledged process notices.
    *
    * `true` = reply anywhere the agent is subscribed, no status channels.
    */

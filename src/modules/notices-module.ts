@@ -628,8 +628,8 @@ export class NoticesModule implements Module {
           const now = this.now();
           for (const [kind, k] of [...ep.kinds]) {
             if (k.at + this.quietMs > now) continue;
-            // Per-channel in-flight guards serialize process sends. Do not hold
-            // the reconnect flush chain behind another channel's receipt.
+            // Per-channel guards serialize process sends. Sends here do not
+            // block this loop, but reaching them can wait for earlier owed lines.
             if (ep.id === PROCESS_REFUSAL) void this.postStatus(ep, channelId, kind);
             else await this.postStatus(ep, channelId, kind);
           }
