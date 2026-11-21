@@ -292,6 +292,23 @@ describe('CredentialMonitor — actions', () => {
     expect(s.kind).toBe('auth-rejected');
   });
 
+  test('unrelated refresh errors keep their existing bounded message and do not raise auth alerts', async () => {
+    for (const error of [new Error('transport failure '.repeat(30)), authErr('unrelated provider rejection '.repeat(20))]) {
+      const { monitor, alerts } = harness({ source: {
+        loginDisabledReason: 'Known disabled-login guidance.',
+        canRefresh: () => true,
+        refresh: async () => { throw error; },
+      } });
+      try {
+        const state = await monitor.runAction('refresh');
+        expect(state.kind).toBe('ok');
+        expect(state.lastAction!.ok).toBe(false);
+        expect(state.lastAction!.message.length).toBeLessThanOrEqual('refresh failed: '.length + 200);
+        expect(alerts).toEqual([]);
+      } finally { monitor.dispose(); }
+    }
+  });
+
   test('actions serialize: a paste queued behind a slow refresh still runs with its own token', async () => {
     const order: string[] = [];
     const { monitor } = harness({

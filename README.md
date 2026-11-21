@@ -517,8 +517,8 @@ Connectome asks the Codex app-server to refresh the ChatGPT login. By default,
 it starts a device-code flow if needed on the first model call. With
 `CODEX_REQUIRE_EXISTING_LOGIN=1` (or `true`), local app-server auth refuses a
 missing or API-key account before starting device-code login. This check runs
-on the first model call, not at boot; the credential monitor can show
-`credential ok` until that call. Host login actions are disabled, so they cannot
+on the first token acquisition (the first model call or an earlier `/auth refresh`),
+not at boot; the credential monitor can show `credential ok` until then. Host login actions are disabled, so they cannot
 log out the existing session. Existing-session refresh still runs, including
 after a 401. Refresh remains available until the app-server establishes that
 there is no usable account or refresh token. A missing account or unusable

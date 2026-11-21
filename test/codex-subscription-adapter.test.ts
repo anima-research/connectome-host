@@ -610,6 +610,32 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     expect(loginEvents).toEqual([]);
   });
 
+  test('first refresh before inference preserves existing-login recovery and raises one auth alert', async () => {
+    const { CredentialMonitor } = await import('../src/credential-state.js');
+    const { adapter, calls, loginEvents } = fixture([null], { requireExistingLogin: true });
+    const alerts: Array<{ kind: string; message: string }> = [];
+    const source = adapter.credentialSource();
+    const monitor = new CredentialMonitor({ source, alert: (kind, message) => alerts.push({ kind, message }) });
+    try {
+      expect(monitor.snapshot().kind).toBe('ok');
+      const state = await monitor.runAction('refresh');
+      expect(state.kind).toBe('auth-rejected');
+      expect(state.lastAction).toMatchObject({ id: 'refresh', ok: false });
+      expect(state.lastAction!.message).toBe(`refresh failed: ${source.loginDisabledReason}`);
+      expect(state.lastAction!.message).toContain('restart the host process');
+      expect(state.message).toContain('authentication unavailable:');
+      expect(state.actions.map(action => action.id)).toEqual(['recheck']);
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]!.kind).toBe('auth-rejected');
+      expect(alerts[0]!.message).toContain('restart the host process');
+      const again = await monitor.runAction('refresh');
+      expect(again.lastAction!.message).toContain('restart the host process');
+      expect(alerts).toHaveLength(1);
+      expect(calls).toEqual([{ method: 'account/read', params: { refreshToken: true } }]);
+      expect(loginEvents).toEqual([]);
+    } finally { monitor.dispose(); }
+  });
+
   test('reports a missing existing login through the provider wrapper as an auth alert', async () => {
     const { CredentialMonitor } = await import('../src/credential-state.js');
     const { LoggingProviderAdapter } = await import('../src/logging-provider-wrapper.js');

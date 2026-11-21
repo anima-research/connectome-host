@@ -420,7 +420,9 @@ export class CredentialMonitor {
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      return done(false, `${id} failed: ${trim(reason)}`);
+      const disabledLogin = isAuthFailure(err) && reason === this.source.loginDisabledReason;
+      if (disabledLogin) this.observeError(err);
+      return done(false, `${id} failed: ${disabledLogin ? reason : trim(reason)}`);
     }
   }
 
