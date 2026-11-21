@@ -1790,7 +1790,6 @@ describe('the fleet status a parent reads', () => {
     try {
       expect((await h.subagent.handleToolCall({ id: 't-hud', name: 'hud', input: { enabled: true }, callerAgentName: 'parent' })).success).toBe(true);
       expect((await h.subagent.handleToolCall(spawn('scout'))).success).toBe(true);
-      // Inside the retry's wait: the backoff is held open, and the stop below ends it.
       await until(() => waits.some((w) => w.endedBy === undefined) && (entry()?.statusMessage ?? '').startsWith('Retry 1:'));
       expect(entry()?.status).toBe('running');
       expect(entry()?.statusMessage).toContain(SENTINEL);

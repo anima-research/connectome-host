@@ -20,7 +20,6 @@ afterEach(async () => {
 
 type Event = Record<string, unknown>;
 
-/** A fleet with one child, 'leaf', whose buffer took `events` as its socket would. */
 function childWith(events: Event[]) {
   const dir = mkdtempSync(join(tmpdir(), 'fleet-peek-'));
   dirs.push(dir);

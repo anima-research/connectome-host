@@ -281,8 +281,6 @@ describe('a spawn\'s or fork\'s failure says whether anything ran, and what to d
     } finally { await h.cleanup(); }
   });
 
-  /** agent-framework's rejection: its own words, with the provider's on a
-   *  bounded copy of membrane's error as the cause. */
   const CAUSE_SENTINEL = 'sentinel-9c1e provider said: invalid x-api-key';
   const failedWithCause = () =>
     new Error('the model call failed (invalid_request, HTTP 400)', {

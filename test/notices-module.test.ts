@@ -1158,8 +1158,6 @@ describe('the marker the agent reads', () => {
   });
 });
 
-/** Text from outside the host, which no post or marker may carry: a provider's
- *  error, a refusal's category, a file path. */
 const SENTINEL = 'sentinel-7f3a provider said: invalid x-api-key';
 
 describe("an alert's message stays with the operator", () => {

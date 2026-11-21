@@ -614,7 +614,6 @@ export class FetchModule implements Module {
       try {
         response = await this.config.membrane.complete(request);
       } catch {
-        // The provider's words stay in the host's record of model calls, which the provider's adapter writes.
         // After an image was shown, the image is the likeliest thing its provider wouldn't take.
         const advice = seen.looked.length > 0
           ? 'If an image is what its provider refused, ask again in a way that needs no image.'

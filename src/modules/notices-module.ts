@@ -60,8 +60,6 @@ const CLOSES_ON_SUCCESS: ReadonlySet<string> = new Set([
   'hard-down', 'context-refusal', 'refusal', 'refusal-offpath', 'context-maintenance-failed',
 ]);
 
-/** Kinds beside the reply tier that mean the agent's own turns failed, so
- *  the marker tells the agent it couldn't respond. */
 const OWN_TURN_KINDS: ReadonlySet<string> = new Set(['hard-down', 'context-refusal', 'refusal']);
 
 /** Alert kinds whose `agentName` is a component id (an MCPL server), not an
@@ -164,8 +162,6 @@ const UNTIL_WORDS: Readonly<Record<string, string>> = Object.freeze({
   'auth-expiring': 'The credential expires at',
 });
 
-/** A table's own entry: a kind named like an Object property, such as
- *  `constructor`, takes the fallback words. */
 function wordsFor(table: Readonly<Record<string, string>>, kind: string): string | undefined {
   return Object.hasOwn(table, kind) ? table[kind] : undefined;
 }
