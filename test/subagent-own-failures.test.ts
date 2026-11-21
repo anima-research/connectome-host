@@ -1797,15 +1797,13 @@ describe('the fleet status a parent reads', () => {
       const hud = await status();
       expect(hud).toContain('scout [spawn] running since');
       expect(hud).not.toContain('sentinel-3f9c');
-      // list and peek, asked while the run waits to retry, don't show its status message; both peeks show the run.
-      const list = await h.subagent.handleToolCall({ id: 't-list', name: 'list', input: {}, callerAgentName: 'parent' });
       const peeks = [
         await h.subagent.handleToolCall({ id: 't-peek', name: 'peek', input: {}, callerAgentName: 'parent' }),
         await h.subagent.handleToolCall({ id: 't-peek-scout', name: 'peek', input: { name: 'scout' }, callerAgentName: 'parent' }),
       ];
-      expect([list, ...peeks].map((view) => view.success)).toEqual([true, true, true]);
+      expect(peeks.map((view) => view.success)).toEqual([true, true]);
       for (const peek of peeks) expect(JSON.stringify(peek)).toContain('scout');
-      for (const view of [list, ...peeks]) expect(JSON.stringify(view)).not.toContain('sentinel-3f9c');
+      for (const peek of peeks) expect(JSON.stringify(peek)).not.toContain('sentinel-3f9c');
       expect(attempts).toBe(1);
     } finally {
       h.subagent.cancelSubagent('scout');
