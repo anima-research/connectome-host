@@ -1684,6 +1684,10 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
   try {
     summary = await cm.generateTransitionSummary();
   } catch (err) {
+    if (input.requester?.via === 'fleet') {
+      process.stderr.write(`[host] /newtopic's transition summary couldn't be written: ${messageOf(err)}\n`);
+      throw new Error("the transition summary couldn't be written; nothing was stored");
+    }
     throw new Error(`the transition summary couldn't be written (${messageOf(err)}); nothing was stored`);
   }
   // No await from these checks to the store: no turn starts, and nothing
