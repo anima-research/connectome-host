@@ -65,7 +65,7 @@ import { TimeModule } from './modules/time-module.js';
 import { waitToBeListed } from './fleet-begin.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
 import { ActivityModule } from './modules/activity-module.js';
-import { NoticesModule } from './modules/notices-module.js';
+import { NoticesModule, drainNoticeHome } from './modules/notices-module.js';
 import { noticeHomeDirectory } from './modules/notice-home.js';
 import { randomUUID } from 'node:crypto';
 import { SubscriptionGcModule } from './modules/subscription-gc-module.js';
@@ -825,6 +825,7 @@ async function runPiped(app: AppContext) {
       await mkdir(dir, { recursive: true }).catch(() => {});
       await Promise.all(serverIds.map((id) => appendMcplLogLine(dir, id, now, BATCH_MCPL_LOG_NOTE)));
     }
+    await drainNoticeHome(app.framework);
     await app.framework.stop();
     const webUiUrl = getWebUiModule(app.framework)?.listeningUrl();
     if (webUiUrl) console.log(batchWebUiNotice(webUiUrl));
@@ -889,6 +890,7 @@ async function runPiped(app: AppContext) {
     await new Promise<void>(r => rl.on('close', r));
     app.stopping = true;
     console.log('\nShutting down...');
+    await drainNoticeHome(app.framework);
     await app.framework.stop();
     if (restarting) {
       await stopWebUiServer().catch((error: unknown) => {

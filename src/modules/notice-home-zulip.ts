@@ -36,6 +36,7 @@ const NOT_DISPATCHED = [
 const UNCERTAIN = [
   'dispatch-timeout; remote send may still complete',
   'no-valid-zulip-acknowledgement', 'dispatch-threw; inspect transport logs',
+  'receipt-attachment-outside-declared-realm',
 ] as const;
 
 export type HomeOutcome =
@@ -46,7 +47,7 @@ export type HomeOutcome =
 
 /** Only a positive Zulip acknowledgement counts as SENT. A transport's success
  * bit alone, an error string, or a late/malformed answer proves nothing. */
-function acknowledgement(result: ToolResult, binding: NoticeHomeConfig, topic: string): HomeMessageId[] | null {
+function acknowledgement(result: ToolResult, binding: NoticeHomeConfig, topic: string): HomeMessageId[] | 'realm-mismatch' | null {
   if (result.success !== true || result.isError) return null;
   let raw = result.structured;
   if (raw === undefined && Array.isArray(result.data) && result.data.length === 1 &&
@@ -64,6 +65,12 @@ function acknowledgement(result: ToolResult, binding: NoticeHomeConfig, topic: s
   }
   const ids = r.ids === undefined ? [r.id] : r.ids;
   if (!validHomeMessageIds(ids) || !ids.includes(r.id)) return null;
+  // The connector builds each uploaded attachment's URL from its own realm,
+  // so the receipt does carry realm evidence: every URL must be on declaredRealm.
+  if (r.attachments !== undefined && !(Array.isArray(r.attachments) && r.attachments.every(a => {
+    const url = (a as { url?: unknown } | null)?.url;
+    try { return typeof url === 'string' && new URL(url).origin === binding.declaredRealm; } catch { return false; }
+  }))) return 'realm-mismatch';
   return ids;
 }
 
@@ -139,7 +146,7 @@ export class ZulipHomeDelivery {
         t.tool === `${b.toolPrefix}--send_message` && t.serverTool === 'send_message')) {
         return { state: 'not-dispatched', detail: 'tool-not-owned-by-bound-server' };
       }
-      // AF 0.33.0 supplies no realm here. If a backend DOES supply it, a
+      // AF 0.35.1 supplies no realm here. If a backend DOES supply it, a
       // mismatch (or malformed value) must never be overridden by attestation.
       if (server.realm !== undefined && server.realm !== b.declaredRealm) return { state: 'not-dispatched', detail: 'observable-realm-mismatch' };
       inspection = 'tool-list/schema';
@@ -177,6 +184,11 @@ export class ZulipHomeDelivery {
         return { state: 'uncertain', detail: 'dispatch-timeout; remote send may still complete' };
       }
       const ids = acknowledgement(result, b, topic);
+      if (ids === 'realm-mismatch') {
+        console.error(`[notices:home] serverId=${b.serverId}: the receipt's attachment URLs are not on declaredRealm ${b.declaredRealm}; ` +
+          'the message may have been posted to another realm. Check the connector credentials for this server.');
+        return { state: 'uncertain', detail: 'receipt-attachment-outside-declared-realm' };
+      }
       return ids ? { state: 'sent', messageIds: ids } : { state: 'uncertain', detail: 'no-valid-zulip-acknowledgement' };
     } catch { return { state: 'uncertain', detail: timedOut ? 'dispatch-timeout; remote send may still complete' : 'dispatch-threw; inspect transport logs' }; }
     finally { if (timer !== undefined) clearTimeout(timer); }

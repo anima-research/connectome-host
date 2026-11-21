@@ -29,15 +29,21 @@ const ALERT_KINDS = [
   'unknown-alert-kind',
 ] as const;
 type AlertKind = typeof ALERT_KINDS[number];
-// AF 0.33 emits completed before reporting refusal and without a stop reason.
+// AF 0.35.1 emits completed before reporting refusal and without a stop reason.
 // It signals a successful turn, which closes these kinds as legacy episodes do
 // (AF emits no source clear for them), but not that a main refusal has ended.
 const COMPLETED_CLOSES = ['hard-down', 'refusal-offpath', 'context-maintenance-failed'] as const;
 const TURN_END_CLOSES = [...COMPLETED_CLOSES, 'context-refusal', 'refusal'] as const;
-const HOME_TRACES = ['ops:alert', 'inference:completed', 'inference:turn_ended', 'mcpl:server-reconnected', 'module:added'] as const;
+const HOME_TRACES = ['ops:alert', 'inference:completed', 'inference:turn_ended', 'mcpl:server-reconnected', 'module:added',
+  'dendrite:agent-ended'] as const;
+/** AF uses `framework` for framework-wide alerts, but agents can use that name
+ * too. Keep these alerts keyed apart from every string subject. */
+const FRAMEWORK_SUBJECT = Object.freeze(['framework-pass'] as const); // Keep the existing pass-scope key.
+type Subject = string | null | typeof FRAMEWORK_SUBJECT;
 const oneOf = <T extends string>(values: readonly T[], value: unknown): value is T => values.some(v => v === value);
 const digest = (s: string) => createHash('sha256').update(s).digest('hex');
-const incidentKey = (kind: string | null, subject: string | null) => digest(JSON.stringify([kind, subject]));
+const incidentKey = (kind: string | null, subject: Subject) => digest(JSON.stringify([kind, subject]));
+const subjectKey = (subject: Subject) => digest(JSON.stringify(subject));
 /** The producer's fixed supersession message (credential monitor). A
  * superseding clear marks the incident; the successor's alert ends it, not a recovery. */
 export const supersedingClear = (message: unknown): boolean => typeof message === 'string' && /^superseded by /.test(message);
@@ -56,9 +62,14 @@ export interface HomeRuntime {
 }
 
 interface SourceRef { type: 'startup' | typeof HOME_TRACES[number]; timestamp: number | null }
-interface Tracking { activeIncidentIds: string[]; forgottenActive: number }
+/** Operator-owned subjects are published as configured; any other subject as
+ * a fixed label and a prefix of its incident key (see subjectLabel). */
+interface TrackedIncident { id: string; kind: AlertKind; subject: string }
+interface Tracking { activeIncidents: TrackedIncident[]; forgottenActive: number }
 interface ActiveIncident {
-  key: string; id: string; kind: AlertKind;
+  key: string; id: string; kind: AlertKind; subject: string;
+  /** Digest of the raw subject, so an ended agent's incidents can be found. */
+  subjectKey: string;
   /** Successor's incident key from a superseding clear; that successor's alert closes this incident. */
   supersededBy?: string;
 }
@@ -66,9 +77,10 @@ interface HomeRecord {
   id: string;
   eventKey: string;
   lastEventKey: string;
-  phase: 'incident' | 'recovery-observed' | 'superseded' | 'status';
+  phase: 'incident' | 'recovery-observed' | 'superseded' | 'subject-ended' | 'status';
   incidentId: string | null;
   incidentKey: string | null;
+  subject: string | null; // Null only for status records.
   instanceId: string;
   kind: AlertKind | 'startup-observation' | 'status-change';
   tracking?: Tracking; // Only status records.
@@ -81,7 +93,7 @@ interface HomeRecord {
   outcome: HomeOutcome;
 }
 interface HomeJournal {
-  version: 3;
+  version: 4;
   bindingId: string;
   currentInstance: string;
   retention: { evicted: number; forgottenActive: number };
@@ -90,7 +102,7 @@ interface HomeJournal {
   lastStatus: string | null;
 }
 
-const statusKey = (tracking: Tracking) => digest(JSON.stringify([tracking.activeIncidentIds, tracking.forgottenActive]));
+const statusKey = (tracking: Tracking) => digest(JSON.stringify([tracking.activeIncidents.map(a => a.id), tracking.forgottenActive]));
 
 const anchorsIncident = (r: HomeRecord, a: ActiveIncident): boolean =>
   r.incidentId === a.id && r.phase === 'incident' && r.kind === a.kind && r.incidentKey === a.key;
@@ -125,6 +137,8 @@ export class NoticeHome {
   private dropped = 0;
   private overflowReported = false;
   private observationDeliveryFailed = false;
+  /** Subjects named by operator configuration; only these are published as is. */
+  private operatorSubjects = new Set<string>(['framework']);
 
   constructor(private readonly binding: NoticeHomeConfig, private readonly runtime: HomeRuntime,
     private readonly now: () => number) {
@@ -136,13 +150,17 @@ export class NoticeHome {
         /[\x00-\x1f\x7f]/.test(runtime.instanceId)) throw new Error('notice home requires a host directory and current runtime instance identity');
     this.bindingId = digest(homeBindingKey(this.binding));
     this.instanceId = digest(runtime.instanceId);
-    this.journal = { version: 3, bindingId: this.bindingId, currentInstance: this.instanceId,
+    this.journal = { version: 4, bindingId: this.bindingId, currentInstance: this.instanceId,
       retention: { evicted: 0, forgottenActive: 0 }, records: [], active: [], lastStatus: null };
   }
 
-  bind(backend: HomeBackend): void {
+  /** `operatorSubjects`: the configured agent name and MCP server ids. */
+  bind(backend: HomeBackend, operatorSubjects: Iterable<string> = []): void {
     if (this.bound) return;
     this.bound = true;
+    for (const s of operatorSubjects) {
+      if (typeof s === 'string' && s && s.length <= 256 && !/[\x00-\x1f\x7f]/.test(s)) this.operatorSubjects.add(s);
+    }
     this.delivery = new ZulipHomeDelivery(this.binding, backend, this.sendTimeoutMs);
     const at = this.now();
     this.enqueue(async () => {
@@ -156,10 +174,12 @@ export class NoticeHome {
     if (!this.bound || this.shutdownDeadline !== null || this.disabled) return;
     const type = event.type;
     if (!oneOf(HOME_TRACES, type)) return;
-    const subject = typeof event.agentName === 'string' && event.agentName ? event.agentName : null;
+    const rawSubject = typeof event.agentName === 'string' && event.agentName ? event.agentName : null;
+    const ended = type === 'dendrite:agent-ended';
+    if (ended && rawSubject === null) return;
     const turnCloses = type === 'inference:completed' ? COMPLETED_CLOSES
       : type === 'inference:turn_ended' ? TURN_END_CLOSES : null;
-    if (turnCloses && subject === null) return;
+    if (turnCloses && rawSubject === null) return;
     const at = this.now();
     const source: SourceRef = { type, timestamp: typeof event.timestamp === 'number' && Number.isFinite(event.timestamp) ? event.timestamp : null };
     // Only fixed fields and digests enter the queue. The trace ID helps
@@ -167,24 +187,36 @@ export class NoticeHome {
     const traceId = typeof event.traceId === 'string' ? event.traceId : null;
     const sourceId = digest(JSON.stringify([source, traceId,
       source.timestamp === null && traceId === null ? randomUUID() : null]));
-    const rawKind = typeof event.kind === 'string' && event.kind ? event.kind : null;
+    // An agent-ended trace's `kind` is the agent's kind, not an alert kind.
+    const rawKind = !ended && typeof event.kind === 'string' && event.kind ? event.kind : null;
     const clear = rawKind?.endsWith('-clear') ?? false;
     const base = clear ? rawKind!.slice(0, -6) : rawKind;
     const successor = clear ? successorKind(event.message) : null;
     const kind = oneOf(ALERT_KINDS, base) ? base : 'unknown-alert-kind';
+    const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : null;
+    // AF 0.35.1 also emits per-agent provider-wait; only the unreadable
+    // wait store uses the all-models marker with no expiration.
+    const frameworkWide = type === 'ops:alert' && (
+      (base === 'context-maintenance-failed' && data?.scope === 'pass') ||
+      (rawSubject === 'framework' && (base === 'recovery-sync' || base === 'deferred-import' ||
+        (base === 'provider-wait' && data?.model === '*' && data.until === null))));
+    const subject: Subject = frameworkWide ? FRAMEWORK_SUBJECT : rawSubject;
     const component = type === 'mcpl:server-reconnected' && typeof event.serverId === 'string' ? event.serverId
       : type === 'module:added' && typeof event.moduleName === 'string' && event.moduleName.startsWith('mcpl:') ? event.moduleName.slice(5) : null;
-    if (type !== 'ops:alert' && !turnCloses && !component) return;
+    if (type !== 'ops:alert' && !turnCloses && !component && !ended) return;
     const boundServerObserved = component === this.binding.serverId;
     const alertKey = type === 'ops:alert' ? incidentKey(base, subject) : null;
     const successorKey = type === 'ops:alert' && successor !== null ? incidentKey(successor, subject) : null;
+    const who = alertKey !== null ? { subject: this.subjectLabel(subject, alertKey), subjectKey: subjectKey(subject) } : null;
+    const endedKey = ended ? subjectKey(subject) : null;
     const recoveries = turnCloses ? turnCloses.map(k => incidentKey(k, subject))
       : component ? [incidentKey('mcpl-down', component)] : [];
     this.enqueue(async () => {
       if (!time(at)) throw new Error('invalid host clock');
       this.observationDeliveryFailed = false;
       let reportStatus = false;
-      if (alertKey !== null) reportStatus = await this.alert(kind, alertKey, clear, source, sourceId, at, successorKey);
+      if (alertKey !== null) reportStatus = await this.alert(kind, alertKey, clear, source, sourceId, at, successorKey, who);
+      else if (endedKey !== null) reportStatus = await this.endSubject(endedKey, source, sourceId, at);
       else {
         for (const incident of [...this.journal.active]) {
           if (recoveries.includes(incident.key) &&
@@ -206,6 +238,27 @@ export class NoticeHome {
     // a deadline no later than this one; every subsequent send shares the rest.
     this.shutdownDeadline ??= performance.now() + this.sendTimeoutMs;
     await this.chain;
+  }
+
+  /** Operator-configured names are published as is; any other subject (such as
+   * a child agent's chosen name) only as a fixed label and an incident-key prefix. */
+  private subjectLabel(subject: Subject, key: string): string {
+    if (subject === FRAMEWORK_SUBJECT) return 'framework';
+    if (subject === null) return 'none';
+    return this.operatorSubjects.has(subject as string) ? subject as string : `unlisted-${key.slice(0, 12)}`;
+  }
+
+  /** An ended agent never completes another turn, so its incidents close here
+   * (one `subject-ended` post each). Framework and same-named server outages stay. */
+  private async endSubject(key: string, source: SourceRef, sourceId: string, at: number): Promise<boolean> {
+    const ending = this.journal.active.filter(a => a.subjectKey === key && a.kind !== 'mcpl-down');
+    if (!ending.length) return false;
+    this.journal.active = this.journal.active.filter(a => !ending.includes(a));
+    for (const a of ending) {
+      await this.publish({ phase: 'subject-ended', incidentId: a.id, incidentKey: a.key, kind: a.kind, subject: a.subject, source,
+        eventKey: digest(JSON.stringify([sourceId, a.key, 'subject-ended'])), at });
+    }
+    return true;
   }
 
   private readonly remainingShutdownMs = () => (this.shutdownDeadline ?? Infinity) - performance.now();
@@ -298,10 +351,11 @@ export class NoticeHome {
 
   /** Report status when tracking changes or an earlier unsent incident first delivers. */
   private async alert(kind: AlertKind, key: string, clear: boolean, source: SourceRef, sourceId: string, at: number,
-    successorKey: string | null = null): Promise<boolean> {
+    successorKey: string | null = null, who: { subject: string; subjectKey: string } | null = null): Promise<boolean> {
     const eventKey = digest(JSON.stringify([sourceId, key, clear]));
     if (this.journal.records.some((r) => r.eventKey === eventKey || r.lastEventKey === eventKey)) return false;
     let active = this.journal.active.find((a) => a.key === key);
+    const subject = active?.subject ?? who?.subject ?? 'none';
     if (successorKey !== null) {
       // A superseding clear changes nothing visible: the incident stays tracked
       // until its successor's alert is processed, which closes it (one status).
@@ -314,7 +368,7 @@ export class NoticeHome {
         if (a.key === successorKey) delete a.supersededBy; else a.supersededBy = successorKey;
       }
       this.journal.records.push({ id: randomUUID(), eventKey, lastEventKey: eventKey, phase: 'superseded',
-        incidentId: active?.id ?? null, incidentKey: key, instanceId: this.instanceId, kind, source, lastSource: source,
+        incidentId: active?.id ?? null, incidentKey: key, subject, instanceId: this.instanceId, kind, source, lastSource: source,
         observedAt: at, lastSeen: at, count: 1, outcome: { state: 'not-dispatched', detail: 'superseded-not-posted' } });
       await this.save();
       return false;
@@ -328,7 +382,7 @@ export class NoticeHome {
       changed = true;
       if (clear) {
         for (const p of predecessors) {
-          await this.publish({ phase: 'recovery-observed', incidentId: p.id, incidentKey: p.key, kind: p.kind, source, eventKey, at });
+          await this.publish({ phase: 'recovery-observed', incidentId: p.id, incidentKey: p.key, kind: p.kind, subject: p.subject, source, eventKey, at });
         }
         if (!active) return true;
       }
@@ -344,7 +398,7 @@ export class NoticeHome {
         const retention = this.journal.retention;
         retention.forgottenActive = Math.min(Number.MAX_SAFE_INTEGER, retention.forgottenActive + 1);
       }
-      active = { key, id: randomUUID(), kind };
+      active = { key, id: randomUUID(), kind, subject, subjectKey: who?.subjectKey ?? '' };
       this.journal.active.push(active);
     }
     if (!clear) {
@@ -362,20 +416,21 @@ export class NoticeHome {
       }
     } else if (active) this.journal.active = this.journal.active.filter((a) => a !== active);
     const sent = await this.publish({ phase: clear ? 'recovery-observed' : 'incident', incidentId: active?.id ?? null,
-      incidentKey: key, kind, source, eventKey, at });
+      incidentKey: key, kind, subject, source, eventKey, at });
     return changed || (!clear && sent);
   }
 
   private async status(source: SourceRef, at: number): Promise<void> {
     const startup = source.type === 'startup';
-    const tracking = { activeIncidentIds: this.journal.active.map(a => a.id), forgottenActive: this.journal.retention.forgottenActive };
+    const tracking = { activeIncidents: this.journal.active.map(({ id, kind, subject }) => ({ id, kind, subject })),
+      forgottenActive: this.journal.retention.forgottenActive };
     const key = statusKey(tracking);
     if (!startup && key === this.journal.lastStatus) return;
-    await this.publish({ phase: 'status', incidentId: null, incidentKey: null, kind: startup ? 'startup-observation' : 'status-change',
+    await this.publish({ phase: 'status', incidentId: null, incidentKey: null, subject: null, kind: startup ? 'startup-observation' : 'status-change',
       tracking, source, eventKey: digest(randomUUID()), at, statusKey: key });
   }
 
-  private async publish(input: Pick<HomeRecord, 'phase' | 'incidentId' | 'incidentKey' | 'kind' | 'source' | 'eventKey' | 'tracking'> &
+  private async publish(input: Pick<HomeRecord, 'phase' | 'incidentId' | 'incidentKey' | 'subject' | 'kind' | 'source' | 'eventKey' | 'tracking'> &
     { at: number; statusKey?: string }): Promise<boolean> {
     const { at, statusKey, ...observation } = input;
     const r: HomeRecord = { ...observation, id: randomUUID(), lastEventKey: input.eventKey, instanceId: this.instanceId,
@@ -389,9 +444,10 @@ export class NoticeHome {
       await this.save();
       const attachment = JSON.stringify({ ...ATTESTATION, record: r });
       const text = `[host service-home observation; ${ATTESTATION.verification}; self-echo ${ATTESTATION.selfEchoReadiness}]\n` +
-        `${new Date(r.observedAt).toISOString()} ${r.phase}: ${r.kind}\n` +
+        `${new Date(r.observedAt).toISOString()} ${r.phase}: ${r.kind}${r.subject === null ? '' : `; subject=${r.subject}`}\n` +
         `event=${r.id}; incident=${r.incidentId ?? 'not applicable'}; count=${r.count}\n` +
-        (r.tracking ? `Tracked incident IDs: ${r.tracking.activeIncidentIds.join(', ') || 'none'}\nForgotten: ${r.tracking.forgottenActive}\n` : '') +
+        (r.tracking ? `Tracked incidents: ${r.tracking.activeIncidents.map(a => `${a.id} ${a.kind} subject=${a.subject}`).join('; ') || 'none'}\n` +
+          `Forgotten: ${r.tracking.forgottenActive}\n` : '') +
         `Pre-dispatch record: ${r.id}.json. Repeats update the private journal, not this message.`;
       const topic = r.phase === 'status' ? this.binding.statusTopic : this.binding.incidentsTopic;
       r.outcome = await this.delivery!.send(r.id, topic, text, attachment, this.remainingShutdownMs);

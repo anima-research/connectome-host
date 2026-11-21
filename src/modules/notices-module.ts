@@ -222,6 +222,8 @@ export class NoticesModule implements Module {
   private owedLines = new Map<string, OwedLine[]>();
   private flushChain: Promise<void> = Promise.resolve();
   private home: NoticeHome | null = null;
+  /** Configured MCP server ids: subjects a home may publish by name. */
+  private serverIds: string[] = [];
 
   constructor(private readonly config: NoticesModuleConfig = {}) {
     if (config.home) {
@@ -258,9 +260,16 @@ export class NoticesModule implements Module {
     for (const ep of this.episodes.values()) this.cancelQuiet(ep);
     this.unsubscribe?.();
     this.unsubscribe = null;
-    if (this.home) await this.home.stop();
+    await this.drainHome();
     this.framework = null;
     this.ctx = null;
+  }
+
+  /** Close home admission and wait for accepted work, within the shared stop
+   * budget. The host calls this before `framework.stop()`, which closes the
+   * connector alongside module stops; a second call only waits. */
+  async drainHome(): Promise<void> {
+    if (this.home) await this.home.stop();
   }
 
   setFramework(framework: AgentFramework): void {
@@ -271,7 +280,7 @@ export class NoticesModule implements Module {
         servers: () => framework.listMcplServers(),
         tools: () => framework.getAllTools(),
         call: (call) => this.ctx!.callTool(call),
-      });
+      }, [this.config.agentName!, ...(this.config.knownServers ?? []), ...this.serverIds]);
       // The framework buffers bounded create()-time traces for host sinks.
       this.unsubscribe = framework.onTrace((event: TraceEvent) => this.onTrace(event as unknown as Record<string, unknown>), { replay: true });
       return;
@@ -282,6 +291,7 @@ export class NoticesModule implements Module {
   }
 
   setKnownServers(ids: string[]): void {
+    this.serverIds = [...ids];
     this.warnUnknownServers(ids);
   }
 
@@ -736,5 +746,18 @@ export class NoticesModule implements Module {
     if (missing.length > 0) {
       console.warn(`[notices] channel ids name MCPL servers not in this recipe: ${missing.join(', ')} — notices there will never be delivered`);
     }
+  }
+}
+
+/** Drain a framework's notice home while its connector is still live. Call
+ * before `framework.stop()`: AF stops modules in parallel with closing MCP
+ * connections, so a drain inside the module stop would race the teardown.
+ * Never rejects, so the stop that follows always runs. */
+export async function drainNoticeHome(framework: { getModule?(name: string): unknown }): Promise<void> {
+  try {
+    const notices = framework.getModule?.('notices');
+    if (notices instanceof NoticesModule) await notices.drainHome();
+  } catch (error) {
+    console.error(`[notices:home] drain before stop failed: ${error instanceof Error ? error.message : String(error)}; stopping anyway.`);
   }
 }

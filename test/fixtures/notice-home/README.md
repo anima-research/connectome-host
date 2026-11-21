@@ -14,9 +14,13 @@ Source-only inspection, no connector execution or network calls:
   code; no private files, sessions, grants, APIs or source worktree dependency.
 
 AF event regressions encode orderings read from stock `@animalabs/agent-framework`
-0.33.0, when it was the installed version. They were not re-read or rerun against
-the 0.35.1 this branch now installs. Line numbers are that 0.33.0 build's
-`src/framework.ts`: completeTurn before noteRefusal (29347-29365), successful
-endTurn-only `inference:turn_ended` (19082-19100), background maintenance failure
-(7920-7947) and store-held-lost alerts (16447-16449). These are synthetic module events,
-not provider turns or claims of live connector/realm/self-echo qualification.
+0.35.1, the version this branch installs. Line numbers are that build's
+`src/framework.ts`: completeTurn (`inference:completed`, no stop reason) before
+noteRefusal (30534-30552), refusal `ops:alert` only at streak >= 2
+(36225-36240), successful endTurn-only `inference:turn_ended` (19984), the
+framework-scoped maintenance pass failure under subject `framework` with
+`scope: 'pass'` (8451-8456) and the per-agent one with `scope: 'agent'`
+(8668-8680), `dendrite:agent-ended` on agent release (13499-13510), and
+store-held-lost alerts (17321, 17367, 17431). `listMcplServers()` exposes no
+realm (39154-39216). These are synthetic module events, not provider turns or
+claims of live connector/realm/self-echo qualification.

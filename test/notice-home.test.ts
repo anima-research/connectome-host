@@ -10,6 +10,7 @@ import { Membrane, MockAdapter } from '@animalabs/membrane';
 import { homeBindingKey, type NoticeHomeConfig } from '../src/notice-home-config.js';
 import { NoticesModule } from '../src/modules/notices-module.js';
 import { switchSessionSteps } from '../src/session-switch.js';
+import { stopForSessionSwitch } from '../src/session-switch-stop.js';
 import { validateRecipe } from '../src/recipe.js';
 import { forkSchema } from './fixtures/notice-home/fork-contract.js';
 
@@ -44,7 +45,7 @@ async function movedAside(dir: string): Promise<Record<string, Buffer>> {
   for (const name of (await readdir(dir)).filter(n => n.startsWith('journal.archived-')).sort()) out[name] = await readFile(join(dir, name));
   return out;
 }
-async function harness(options: { dir?: string; config?: NoticeHomeConfig; instance?: string; agentName?: string; sendTimeoutMs?: number; setup?: (h: any) => void } = {}) {
+async function harness(options: { dir?: string; config?: NoticeHomeConfig; instance?: string; agentName?: string; knownServers?: string[]; sendTimeoutMs?: number; setup?: (h: any) => void } = {}) {
   const dir = options.dir ?? await scratch();
   const config = options.config ?? binding();
   const agentName = options.agentName ?? 'worker';
@@ -101,7 +102,7 @@ async function harness(options: { dir?: string; config?: NoticeHomeConfig; insta
     getAgent: trap('getAgent/model'), requestInference: trap('framework.requestInference'),
     channels: { publishForAgent: trap('publishForAgent'), open: trap('channel_open'), setLocus: trap('setLocus') },
   });
-  const module = new NoticesModule({ agentName, home: config, homeRuntime: {
+  const module = new NoticesModule({ agentName, knownServers: options.knownServers, home: config, homeRuntime: {
     directory: dir, instanceId: options.instance ?? 'instance-A', sendTimeoutMs: options.sendTimeoutMs ?? 1000,
   }, now: () => t });
   running.push(module);
@@ -177,8 +178,8 @@ test('startup and incident changes report tracking only, with no health sampling
     expect(j.active.map((a: any) => a.kind)).toEqual(['unknown-alert-kind']);
     const statuses = j.records.filter((r: any) => r.phase === 'status');
     expect(statuses.map((r: any) => r.source.type)).toEqual(['startup', 'ops:alert']);
-    expect(statuses[0].tracking).toEqual({ activeIncidentIds: [], forgottenActive: 0 });
-    expect(statuses[1].tracking).toEqual({ activeIncidentIds: [j.active[0].id], forgottenActive: 0 });
+    expect(statuses[0].tracking).toEqual({ activeIncidents: [], forgottenActive: 0 });
+    expect(statuses[1].tracking).toEqual({ activeIncidents: [{ id: j.active[0].id, kind: 'unknown-alert-kind', subject: 'worker' }], forgottenActive: 0 });
     expect(intervals).not.toHaveBeenCalled();
     // Every registered timer is a completed delivery deadline, not a dormant
     // polling callback beyond a short observation window.
@@ -223,7 +224,7 @@ test('all observed alert kinds including refusal/unknown get generic incidents; 
   expect((await journal(h.dir)).active.map((a: any) => a.kind)).toEqual(['unknown-alert-kind']);
 });
 
-const statusPosts = (calls: ToolCall[]) => calls.map(c => JSON.stringify(c)).filter(c => c.includes('Tracked incident IDs:'));
+const statusPosts = (calls: ToolCall[]) => calls.map(c => JSON.stringify(c)).filter(c => c.includes('Tracked incidents:'));
 
 test('superseding clear is journal-only; the successor closes the old incident with one status, no recovery post', async () => {
   const h = await harness();
@@ -244,7 +245,7 @@ test('superseding clear is journal-only; the successor closes the old incident w
   // No intermediate "none" view: exactly one status, naming only the successor.
   const statuses = statusPosts(h.calls.slice(posted));
   expect(statuses).toHaveLength(1);
-  expect(statuses[0]).toContain(`Tracked incident IDs: ${expired.incidentId}`);
+  expect(statuses[0]).toContain(`Tracked incidents: ${expired.incidentId} auth-expired subject=worker`);
   expect(statuses[0]).not.toContain(expiring.incidentId);
 });
 
@@ -374,7 +375,7 @@ test('tracked successor: its ordinary clear also closes what it superseded, each
   expect(j.active).toEqual([]);
   const statuses = statusPosts(h.calls.slice(posted));
   expect(statuses).toHaveLength(1);
-  expect(statuses[0]).toContain('Tracked incident IDs: none');
+  expect(statuses[0]).toContain('Tracked incidents: none');
 });
 
 test('unmatched superseding clear is journal-only: no post, no status', async () => {
@@ -410,7 +411,7 @@ test('matching component reconnect or mcpl module-added clears mcpl-down, not un
   expect(observed(j, 152)).toMatchObject({
     phase: 'recovery-observed', kind: 'mcpl-down', incidentKey: keyFor('mcpl-down', 'component-A'), source: { type: 'mcpl:server-reconnected', timestamp: 152 },
   });
-  expect(j.records.at(-1).tracking.activeIncidentIds).toEqual([]);
+  expect(j.records.at(-1).tracking.activeIncidents).toEqual([]);
   h.alert('mcpl-down', 'new component episode', 153, { agentName: 'component-A' }); await h.settle();
   h.emit({ type: 'module:added', moduleName: 'component-A', timestamp: 154 }); await h.settle();
   expect((await journal(h.dir)).active).toHaveLength(1);
@@ -425,7 +426,9 @@ test('free-text inputs never appear in the journal, display or decoded attachmen
     declaredRealm: `https://${canary.toLowerCase()}.invalid`, stream: `stream-${canary}`,
     statusTopic: `status-${canary}`, incidentsTopic: `incidents-${canary}`,
   };
-  const h = await harness({ config, agentName: canary, instance: canary });
+  // Configured agent and server names are published by design (R1-2); here the
+  // canary is an alert subject outside them, as a child's chosen name is.
+  const h = await harness({ config, agentName: 'operator-agent', instance: canary });
   const data = {
     category: canary, scope: canary, pending: canary, kinds: { [canary]: 2 },
     progress: { pending: canary, summaryCounts: { [canary]: 3 } }, [canary]: { nested: canary },
@@ -463,7 +466,7 @@ test('free-text inputs never appear in the journal, display or decoded attachmen
   expect(fields(saved)).toEqual('active bindingId currentInstance lastStatus records retention version'.split(' '));
   const records = saved.records;
   for (const record of records) {
-    const expected = 'count eventKey id incidentId incidentKey instanceId kind lastEventKey lastSeen lastSource observedAt outcome phase source'.split(' ');
+    const expected = 'count eventKey id incidentId incidentKey instanceId kind lastEventKey lastSeen lastSource observedAt outcome phase source subject'.split(' ');
     if (record.phase === 'status') expected.push('tracking');
     expect(fields(record)).toEqual(expected.sort());
   }
@@ -525,7 +528,7 @@ test('restart preserves the previous journal and loses correlation with its inci
   expect(fresh.active).toEqual([]);
   expect(fresh.retention).toEqual({ evicted: 0, forgottenActive: 0 });
   expect(fresh.records).toEqual([expect.objectContaining({
-    kind: 'startup-observation', tracking: { activeIncidentIds: [], forgottenActive: 0 },
+    kind: 'startup-observation', tracking: { activeIncidents: [], forgottenActive: 0 },
   })]);
 
   r.alert('hard-down-clear', 'clear after restart', 631);
@@ -907,7 +910,7 @@ test('real AF ModuleContext dispatch reaches offline fake API with zero model ca
   } finally { await framework.stop(); }
 });
 
-// fix1 regressions: AF 0.33 source order, and pinned fork contracts (see fixtures).
+// fix1 regressions: AF 0.35.1 source order, and fork contracts (see fixtures).
 test('fix1 F2: startup connecting, actual mcpl-down/reconnect, and new incident do not latch', async () => {
   const h = await harness({ setup: h => { h.servers[0].connected = false; } });
   h.emit({ type: 'ops:alert', kind: 'mcpl-down', agentName: 'chat-ops', timestamp: 110, message: 'MCP server unreachable (attempt 1)' });
@@ -954,9 +957,9 @@ test('review6 1: a later successful turn closes the subject\'s auxiliary refusal
     ['context-maintenance-failed', observed(before, 120).incidentId, 'inference:completed', 'sent'],
     ['refusal-offpath', observed(before, 121).incidentId, 'inference:completed', 'sent'],
   ]);
-  expect(j.active.map((a: any) => a.key)).toEqual([keyFor('context-maintenance-failed', 'framework')]);
+  expect(j.active.map((a: any) => [a.kind, a.subject])).toEqual([['context-maintenance-failed', 'framework']]);
   expect(j.records.at(-1)).toMatchObject({ phase: 'status',
-    tracking: { activeIncidentIds: [observed(before, 122).incidentId] }, outcome: { state: 'sent' } });
+    tracking: { activeIncidents: [{ id: observed(before, 122).incidentId }] }, outcome: { state: 'sent' } });
 });
 
 test('review5 2: ordinary inference completion closes the matching subject\'s hard-down (and, per review6 1, its refusal-offpath and context-maintenance-failed), not other subjects\' or refusal incidents', async () => {
@@ -1190,7 +1193,7 @@ for (const first of ['status', 'incident'] as const) {
     }
     // Their derived statuses are delivered, not silently made local-only.
     for (const kind of ['hard-down', 'store-held-lost']) {
-      expect(j.records.some((r: any) => r.phase === 'status' && r.outcome.state === 'sent' && r.tracking.activeIncidentIds.includes(j.records.find((x: any) => x.kind === kind && x.phase === 'incident').incidentId))).toBe(true);
+      expect(j.records.some((r: any) => r.phase === 'status' && r.outcome.state === 'sent' && r.tracking.activeIncidents.some((a: any) => a.id === j.records.find((x: any) => x.kind === kind && x.phase === 'incident').incidentId))).toBe(true);
     }
     // startup + slow send (+ incident's status) + two incidents and statuses
     expect(h.calls).toHaveLength(first === 'status' ? 6 : 7);
@@ -1293,7 +1296,7 @@ test('review5 3: a fresh repeat that first delivers an incident also publishes i
   expect(fresh).toMatchObject({ incidentId: original.incidentId, outcome: { state: 'sent' } });
   const status = after.records.at(-1);
   expect(status).toMatchObject({ phase: 'status', source: { timestamp: 9011 },
-    tracking: { activeIncidentIds: [original.incidentId] }, outcome: { state: 'sent' } });
+    tracking: { activeIncidents: [{ id: original.incidentId }] }, outcome: { state: 'sent' } });
   expect(h.calls.slice(1).map(call => call.id)).toEqual([fresh, status].map(r => `notice-home-${r.id}`));
   expect(observed(after, 9010)).toEqual(original);
 
@@ -1309,13 +1312,13 @@ test('review6 2: an uncertain status is not the dedup baseline; the corrective s
   h.alert('hard-down', 'outage', 9020); await h.settle();
   let j = await journal(h.dir);
   expect(j.records.at(-1)).toMatchObject({ phase: 'status',
-    tracking: { activeIncidentIds: [observed(j, 9020).incidentId] }, outcome: { state: 'uncertain' } });
+    tracking: { activeIncidents: [{ id: observed(j, 9020).incidentId }] }, outcome: { state: 'uncertain' } });
   h.alert('hard-down-clear', 'source clear', 9021); await h.settle();
   j = await journal(h.dir);
   const corrective = j.records.at(-1);
   // Equal to the acknowledged startup view, but Zulip may show the lost one.
   expect(corrective).toMatchObject({ phase: 'status', source: { timestamp: 9021 },
-    tracking: { activeIncidentIds: [] }, outcome: { state: 'sent' } });
+    tracking: { activeIncidents: [] }, outcome: { state: 'sent' } });
   expect(h.calls.at(-1)!.id).toBe(`notice-home-${corrective.id}`);
   h.emit({ type: 'mcpl:server-reconnected', serverId: 'chat-ops', timestamp: 9022 }); await h.settle();
   expect(h.calls).toHaveLength(5); // The acknowledged correction is the baseline again.
@@ -1332,7 +1335,7 @@ test('R3: more than 64 unresolved identities bound tracking without disabling de
   expect(j.active).toHaveLength(64);
   expect(j.retention.forgottenActive).toBe(6);
   expect(j.records.some((r: any) => r.phase === 'recovery-observed')).toBe(false);
-  expect(j.records.at(-1).tracking).toEqual({ activeIncidentIds: j.active.map((a: any) => a.id), forgottenActive: 6 });
+  expect(j.records.at(-1).tracking).toEqual({ activeIncidents: j.active.map((a: any) => ({ id: a.id, kind: a.kind, subject: a.subject })), forgottenActive: 6 });
   h.alert('unknown-69-clear', 'latest source clear', 10100, { agentName: 'child-69' });
   await h.settle();
   expect((await journal(h.dir)).active).toHaveLength(63);
@@ -1389,13 +1392,16 @@ test('stop drains accepted work, rejects later traces and settles before returni
     const deadline = timers.mock.calls.at(-1)?.[1];
     h.alert('accepted', 'accepted before stop', 15001);
     const stopping = h.module.stop();
-    h.alert('future', 'after stop', 15002);
+    // Straight to the home: stop() also unsubscribes, which alone would hide a
+    // missing admission check. A distinct kind cannot coalesce into 15000.
+    (h.module as any).home.observe({ type: 'ops:alert', kind: 'quota-spent', agentName: 'worker', message: 'after stop', timestamp: 15002 });
     release(); await stopping;
     expect(deadline).toBe(HELD_SEND_TIMEOUT_MS);
   } finally { release(); timers.mockRestore(); }
   const j = await journal(h.dir);
   expect(observed(j, 15001)).toMatchObject({ outcome: { state: 'sent' } });
-  expect(observed(j, 15002)).toBeUndefined();
+  expect(j.records.some((r: any) => r.kind === 'quota-spent')).toBe(false);
+  expect(h.calls.some(c => JSON.stringify(c).includes('quota-spent'))).toBe(false);
   expect(h.module.homeState()?.queued).toBe(0);
 });
 
@@ -1455,4 +1461,188 @@ test('unidentified fresh alerts at the same wall-clock millisecond are not mista
   const incidents = (await journal(h.dir)).records.filter((r: any) => r.phase === 'incident');
   expect(incidents).toHaveLength(2);
   expect(delivered(h.calls, incidents[1])).toBe(true);
+});
+
+// R1 (maintainer review at d87844c) regressions.
+
+/** A stdio MCP server with Zulip's send_message. Each call writes a marker and
+ * answers after a delay, as the upstream connector does with one JSON text block. */
+const SLOW_ZULIP = `
+import { createInterface } from 'node:readline';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const [marks, delay] = [process.argv[2], Number(process.argv[3])];
+const schema = ${JSON.stringify(schema())};
+const send = (m) => process.stdout.write(JSON.stringify(m) + '\\n');
+let calls = 0;
+createInterface({ input: process.stdin }).on('line', (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.id === undefined || msg.method === undefined) return;
+  if (msg.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: msg.params?.protocolVersion ?? '2024-11-05',
+      capabilities: { tools: {} }, serverInfo: { name: 'slow-zulip', version: '0.0.0' } } });
+  } else if (msg.method === 'tools/list') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'send_message', description: 'fake', inputSchema: schema }] } });
+  } else if (msg.method === 'tools/call') {
+    const id = ++calls;
+    writeFileSync(join(marks, 'call-' + id), '');
+    setTimeout(() => send({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text',
+      text: JSON.stringify({ result: 'success', id }) }] } }), delay);
+  } else {
+    send({ jsonrpc: '2.0', id: msg.id, result: {} });
+  }
+});
+`;
+
+test('R1-1: a real framework stop through the host path delivers the in-flight and the queued send', async () => {
+  const dir = await scratch();
+  const server = join(dir, 'slow-zulip.mjs');
+  await writeFile(server, SLOW_ZULIP);
+  const config = binding();
+  const module = new NoticesModule({ agentName: 'worker', home: config,
+    homeRuntime: { directory: join(dir, 'delivery'), instanceId: 'real-stop' } });
+  const framework = await AgentFramework.create({ storePath: join(dir, 'store'),
+    membrane: new Membrane(new MockAdapter({ responseGenerator: () => { throw new Error('model callback forbidden'); } })),
+    agents: [{ name: 'worker', model: 'mock', systemPrompt: 'synthetic only', maxTokens: 64, allowedTools: [] }],
+    modules: [module],
+    mcplServers: [{ id: config.serverId, command: process.execPath, args: [server, dir, '300'] }],
+  });
+  let stopped = false;
+  try {
+    let inject: ((event: TraceEvent) => void) | undefined;
+    const subscribe = framework.onTrace.bind(framework);
+    framework.onTrace = (listener, options) => { inject = listener; return subscribe(listener, options); };
+    module.setKnownServers([config.serverId]);
+    module.setFramework(framework);
+    await module.homeSettled();
+    expect((await journal(join(dir, 'delivery'))).records[0].outcome.state).toBe('sent');
+    inject!({ type: 'ops:alert', kind: 'hard-down', agentName: 'worker', message: 'in flight', timestamp: 21000 } as never);
+    const inFlight = Date.now() + 5000;
+    while (!(await readdir(dir)).includes('call-2')) {
+      if (Date.now() > inFlight) throw new Error('the first send never reached the server');
+      await new Promise(r => setTimeout(r, 10));
+    }
+    inject!({ type: 'ops:alert', kind: 'quota-spent', agentName: 'worker', message: 'queued', timestamp: 21001 } as never);
+    expect(module.homeState()?.queued).toBe(2);
+    stopped = true;
+    await stopForSessionSwitch(framework, 'next-session', () => {});
+    const j = await journal(join(dir, 'delivery'));
+    expect(observed(j, 21000)).toMatchObject({ kind: 'hard-down', outcome: { state: 'sent' } });
+    expect(observed(j, 21001)).toMatchObject({ kind: 'quota-spent', outcome: { state: 'sent' } });
+    expect(j.records.every((r: any) => r.outcome.state === 'sent')).toBe(true);
+  } finally { if (!stopped) await framework.stop().catch(() => {}); }
+}, 20000);
+
+test('R1-1: draining twice only waits; the second call admits nothing', async () => {
+  const h = await harness();
+  await h.module.drainHome();
+  h.alert('hard-down', 'after drain', 21100);
+  await h.module.drainHome(); await h.module.stop();
+  expect((await journal(h.dir)).records.some((r: any) => r.source.timestamp === 21100)).toBe(false);
+  expect(h.calls).toHaveLength(1);
+});
+
+test('R1-2: posts name operator-owned subjects, label any other, and status lists each kind', async () => {
+  const h = await harness({ knownServers: ['chat-ops'] });
+  h.alert('hard-down', 'main agent', 22000);
+  h.alert('mcpl-down', 'server', 22001, { agentName: 'chat-ops' });
+  h.alert('provider-wait', 'framework', 22002, { agentName: 'framework' });
+  h.alert('hard-down', 'model-chosen child', 22003, { agentName: 'Secret Child Name' });
+  await h.settle();
+  const j = await journal(h.dir);
+  const childLabel = `unlisted-${keyFor('hard-down', 'Secret Child Name').slice(0, 12)}`;
+  const posts = h.calls.map(c => (c.input as any).content as string);
+  const incident = (t: number) => posts.find(p => p.includes(observed(j, t).id))!;
+  expect(incident(22000)).toContain('incident: hard-down; subject=worker');
+  expect(incident(22001)).toContain('incident: mcpl-down; subject=chat-ops');
+  expect(incident(22002)).toContain('incident: provider-wait; subject=framework');
+  expect(incident(22003)).toContain(`incident: hard-down; subject=${childLabel}`);
+  expect(j.active.map((a: any) => a.subject)).toEqual(['worker', 'chat-ops', 'framework', childLabel]);
+  const status = posts.at(-1)!;
+  for (const [t, kind, subject] of [[22000, 'hard-down', 'worker'], [22001, 'mcpl-down', 'chat-ops'],
+    [22002, 'provider-wait', 'framework'], [22003, 'hard-down', childLabel]] as const) {
+    expect(status).toContain(`${observed(j, t).incidentId} ${kind} subject=${subject}`);
+  }
+  const sinks = [await readFile(join(h.dir, 'journal.json'), 'utf8'), ...h.calls.map(c => JSON.stringify(c)),
+    ...h.calls.map(c => Buffer.from((c.input as any).attachments[0].data, 'base64').toString())];
+  expect(sinks.some(s => s.includes('Secret Child Name'))).toBe(false);
+});
+
+test('R1-3: an ended agent\'s incidents close, without a recovery claim or touching others', async () => {
+  const h = await harness();
+  h.alert('hard-down', 'child failed', 23000, { agentName: 'child-A' });
+  h.alert('refusal-offpath', 'child refused', 23001, { agentName: 'child-A' });
+  h.alert('hard-down', 'other child failed', 23002, { agentName: 'child-B' });
+  h.alert('mcpl-down', 'a server sharing the name', 23003, { agentName: 'child-A' });
+  await h.settle();
+  const posted = h.calls.length;
+  h.emit({ type: 'dendrite:agent-ended', agentName: 'child-A', kind: 'subagent', reason: 'stopped', timestamp: 23004 });
+  await h.settle();
+  const j = await journal(h.dir);
+  expect(j.active.map((a: any) => [a.kind, a.key])).toEqual([['hard-down', keyFor('hard-down', 'child-B')], ['mcpl-down', keyFor('mcpl-down', 'child-A')]]);
+  const ended = j.records.filter((r: any) => r.phase === 'subject-ended');
+  expect(ended.map((r: any) => [r.kind, r.incidentId, r.outcome.state])).toEqual([
+    ['hard-down', observed(j, 23000).incidentId, 'sent'], ['refusal-offpath', observed(j, 23001).incidentId, 'sent']]);
+  expect(j.records.some((r: any) => r.phase === 'recovery-observed')).toBe(false);
+  const later = h.calls.slice(posted).map(c => (c.input as any).content as string);
+  expect(later).toHaveLength(3);
+  expect(later.at(-1)).not.toContain(observed(j, 23000).incidentId);
+  expect(later.at(-1)).toContain(observed(j, 23002).incidentId);
+});
+
+test('R1-4: receipt attachment URLs must be on the declared realm', async () => {
+  const receipt = (attachments: unknown) => async () => ({ success: true, data: [{ type: 'text',
+    text: JSON.stringify({ result: 'success', id: 42, attachments }) }] });
+  const log = spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const same = await harness({ setup: h => { h.result = receipt([{ name: 'r.json', path: '/user_uploads/1/r.json', url: 'https://example.invalid/user_uploads/1/r.json' }]); } });
+    expect((await journal(same.dir)).records[0].outcome).toEqual({ state: 'sent', messageIds: [42] });
+    for (const attachments of [
+      [{ name: 'r.json', path: '/user_uploads/1/r.json', url: 'https://other.invalid/user_uploads/1/r.json' }],
+      [{ url: 'https://example.invalid/user_uploads/1/a' }, { url: 'https://example.invalid.other.invalid/user_uploads/1/b' }],
+      [{ name: 'r.json', path: '/user_uploads/1/r.json' }], 'https://example.invalid/', [null],
+    ]) {
+      const h = await harness({ setup: h => { h.result = receipt(attachments); } });
+      expect((await journal(h.dir)).records[0].outcome).toEqual({ state: 'uncertain', detail: 'receipt-attachment-outside-declared-realm' });
+    }
+    expect(log.mock.calls.flat().join(' ')).toContain('not on declaredRealm https://example.invalid');
+  } finally { log.mockRestore(); }
+});
+
+test('R1-5: an agent named framework does not close the framework-wide maintenance failure', async () => {
+  const h = await harness({ agentName: 'framework' });
+  h.alert('context-maintenance-failed', 'pass failed', 25000, { agentName: 'framework', data: { scope: 'pass' } });
+  h.alert('context-maintenance-failed', 'agent maintenance failed', 25001, { agentName: 'framework', data: { scope: 'agent' } });
+  await h.settle();
+  h.emit({ type: 'inference:completed', agentName: 'framework', timestamp: 25002 });
+  h.emit({ type: 'inference:turn_ended', agentName: 'framework', timestamp: 25003 });
+  h.emit({ type: 'dendrite:agent-ended', agentName: 'framework', kind: 'subagent', timestamp: 25004 });
+  await h.settle();
+  const j = await journal(h.dir);
+  expect(j.active.map((a: any) => a.id)).toEqual([observed(j, 25000).incidentId]);
+  expect(j.active[0]).toMatchObject({ kind: 'context-maintenance-failed', subject: 'framework' });
+  expect(j.records.filter((r: any) => r.phase === 'recovery-observed').map((r: any) => r.incidentId))
+    .toEqual([observed(j, 25001).incidentId]);
+});
+
+test('R1-5: a child named framework ends only its own incidents', async () => {
+  const h = await harness();
+  const subject = { agentName: 'framework' };
+  h.alert('context-maintenance-failed', 'pass failed', 25100, { ...subject, data: { scope: 'pass' } });
+  h.alert('recovery-sync', 'sync failed', 25101, subject);
+  h.alert('deferred-import', 'import failed', 25102, subject);
+  h.alert('provider-wait', 'recorded waits unreadable', 25103, { ...subject, data: { model: '*', until: null } });
+  h.alert('provider-wait', 'child provider wait', 25104, { ...subject, data: { model: 'child-model', until: null } });
+  h.alert('hard-down', 'child failed', 25105, subject);
+  await h.settle();
+
+  h.emit({ type: 'dendrite:agent-ended', ...subject, kind: 'subagent', timestamp: 25106 });
+  await h.settle();
+
+  const j = await journal(h.dir);
+  const frameworkIds = [25100, 25101, 25102, 25103].map(at => observed(j, at).incidentId);
+  expect(j.active.map((a: any) => a.id)).toEqual(frameworkIds);
+  expect(j.records.filter((r: any) => r.phase === 'subject-ended').map((r: any) => [r.incidentId, r.outcome.state]))
+    .toEqual([25104, 25105].map(at => [observed(j, at).incidentId, 'sent']));
+  expect(j.records.at(-1).tracking.activeIncidents.map((a: any) => a.id)).toEqual(frameworkIds);
 });

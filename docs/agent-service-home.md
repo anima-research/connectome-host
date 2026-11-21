@@ -50,20 +50,31 @@ tool ownership as reported by AF's dispatch resolver, and the explicit
 No `reply_to`, latest-inbound route, `channel_publish`, fallback server/topic,
 credential-file read, new HTTP client, grant change, or LLM tool selection.
 Missing capability refuses locally; it does not choose another destination.
-The schema guard accepts the pinned public fork's explicit `string|null` fields
-as well as string-only fields, but always supplies non-null stream/to/topic.
+Two connector versions are supported, both read from source: upstream
+`anima-research/zulip_mcp` `main` at `bd500ba8` (string fields, numeric
+message IDs) and the `theaspirational/zulip_mcp` fork at `61298a12`
+(`string|null` fields, `<tag>:<n>` message IDs; the tagged IDs are open
+upstream as anima-research/zulip_mcp#67). The host does not choose the
+connector; the recipe does. The schema guard accepts the fork's explicit
+`string|null` fields as well as string-only fields, but always supplies
+non-null stream/to/topic.
 It validates supplied values against enum/const/length constraints and refuses
 unsupported schema constraints rather than guessing a default or reply target.
 
-**This trust mode does NOT independently verify the authenticated realm.**
-AF 0.33.0's public server listing does not expose that realm (observed on
-0.33.0; not rechecked on the 0.35.1 this branch installs). The display and
-attachment label it `verification=operator-attested/unverified`. The operator
-attests the registered-server/declaredRealm association. An optional backend
-`realm` value, if exposed, must match or the adapter refuses. Unchanged server
-ID/prefix cannot detect changed credentials, endpoint or realm. Stronger
-connector-attested realm identity/an expected-realm guard is future work, not
-implemented here.
+**This trust mode does NOT verify the authenticated realm before sending.**
+AF 0.35.1's public server listing (`listMcplServers()`) does not expose that
+realm. The display and attachment label it
+`verification=operator-attested/unverified`. The operator attests the
+registered-server/declaredRealm association. An optional backend `realm`
+value, if exposed, must match or the adapter refuses. Unchanged server
+ID/prefix cannot detect changed credentials, endpoint or realm before a send.
+**The realm is checked after the fact:** the connector uploads the attachment
+first and returns each upload's URL, built from its own configured realm. When
+a receipt carries `attachments`, every URL's origin must equal `declaredRealm`;
+otherwise the record is `uncertain`
+(`receipt-attachment-outside-declared-realm`) and stderr says the message may
+have gone to another realm. Stronger connector-attested realm identity before
+dispatch is future work, not implemented here.
 
 The self-echo attestation represents a **required deployment preflight**, not
 runtime enforcement, a security boundary, or evidence supplied by these tests.
@@ -82,8 +93,8 @@ policy before a pilot. No live qualification/activation is part of this slice.
 
 ## What is actually observed
 
-* Status reports **tracked incidents only**: active incident IDs and a count
-  of forgotten identities. It is a startup observation and a report on changes
+* Status reports **tracked incidents only**: each active incident's ID, kind
+  and subject, and a count of forgotten identities. It is a startup observation and a report on changes
   to local tracking, not a health snapshot. Routine turns do not post status;
   the sink does not read inference, refusal totals or provider admission state.
   Reconnect or registration of the bound server, or the first successful
@@ -96,8 +107,12 @@ policy before a pilot. No live qualification/activation is part of this slice.
   framework/component/child subjects, unknown kinds (generic presentation), and
   `refusal`; there is no category/tier censorship in home mode. Coalescing,
   same-observation delivery failure, overload drops and storage disablement mean
-  not every alert gets a remote post. Stop unsubscribes, rejects new work and
-  drains accepted observations. Sends share one five-second budget from stop;
+  not every alert gets a remote post. The host drains the home before it
+  stops the framework (on shutdown and on session switch), because
+  agent-framework closes MCP connections in parallel with module stops: a
+  drain that started inside the module stop would find the connector closing.
+  The drain closes admission and waits for accepted observations; the module
+  stop then unsubscribes and only waits. Sends share one five-second budget from the drain;
   an in-flight send keeps its existing deadline and later sends use only the
   time remaining. After expiry, work that would otherwise dispatch is recorded
   locally as `not-dispatched`, subject to the normal coalescing and retention
@@ -106,9 +121,8 @@ policy before a pilot. No live qualification/activation is part of this slice.
   `unknown-alert-kind`. Current-boot traces cached by AF are requested with
   `replay: true`; events not emitted, before the cache, or beyond its bounded
   early-trace retention are not reconstructed. There is no failures.log tailer.
-* AF 0.33.0 logs **each individual refusal** to its existing failures.log, but
-  emits a refusal `ops:alert` only at consecutive streak **>= 2** (observed on
-  0.33.0; not rechecked on the 0.35.1 this branch installs). This path does
+* AF 0.35.1 logs **each individual refusal** to its existing failures.log, but
+  emits a refusal `ops:alert` only at consecutive streak **>= 2**. This path does
   not publish an individual incident for a first refusal; absence of an alert
   does not mean no refusal occurred. Categories are not used to hide observed
   alerts.
@@ -125,21 +139,41 @@ policy before a pilot. No live qualification/activation is part of this slice.
   `inference:completed` and `inference:turn_ended` both close a matching
   subject's `hard-down`, `refusal-offpath` and `context-maintenance-failed`
   incidents, including for a child agent, as a successful turn closes those
-  legacy episodes; AF emits no source clear for them. A framework-scoped maintenance failure has no
-  matching turn and waits for a restart or session switch. In AF 0.33.0
-  (observed there; not rechecked on the 0.35.1 this branch installs),
-  `inference:completed` precedes refusal reporting and has no stop reason, so
-  it does not clear refusal or context-refusal; `inference:turn_ended` can
-  close those as well. A closing turn is not evidence of maintenance repair
-  or fidelity. Absence of an incident does not prove health.
+  legacy episodes; AF emits no source clear for them. In AF 0.35.1
+  `inference:completed` precedes refusal reporting and has no stop
+  reason, so it does not clear refusal or context-refusal;
+  `inference:turn_ended` can close those as well. When an agent ends
+  (`dendrite:agent-ended`, as when a child is released), AF forgets its
+  failure accounting and emits no clear, so the home closes that agent's
+  tracked incidents itself, recording one `subject-ended` per incident (not
+  a recovery claim) and checking for a status update if any close. Same-named
+  `mcpl-down` incidents stay open. All framework-wide incidents also stay
+  tracked when an agent ends; neither turns nor agent ends match their keys,
+  even for an agent named `framework`. The home keys these apart from all
+  agent subjects: `context-maintenance-failed` with
+  `scope: 'pass'`, and `recovery-sync`, `deferred-import`, and `provider-wait`
+  under `framework` (for `provider-wait`, only the unreadable wait store
+  marker with `model: '*'` and `until: null`).
+  A closing turn is not evidence of maintenance repair or fidelity.
+  Absence of an incident does not prove health.
   A matching server-reconnected or `mcpl:<serverId>` module-added observation
   closes `mcpl-down`. Other kinds await their clear event; no cause/offending
   message is guessed from the last inbound item.
 
 The journal, Zulip display and inline JSON attachment contain **no diagnostic
 free text**. They carry fixed labels (including a fixed set of alert kinds),
-times, IDs, counts and delivery state. Raw subjects, trace IDs, messages and
-structured alert data are not copied. Diagnostics remain in the existing local
+times, IDs, counts and delivery state, plus each incident's **subject** label.
+The host agent's configured name and configured MCP server IDs are allowed
+verbatim. Framework-wide incidents and incidents for an ordinary subject
+named `framework` (including a child agent) both display as
+`subject=framework`, but their incident keys are distinct. A missing subject
+displays as `none`;
+other names display as `unlisted-` and the first 12 hex digits of the incident
+key (the journal's `incidentKey`), so the post can be matched to the journal.
+Each incident post shows
+`<phase>: <kind>; subject=<subject>`, and status lists every tracked incident
+as `<id> <kind> subject=<subject>`. Trace IDs, messages and structured alert
+data are not copied. Diagnostics remain in the existing local
 producer logs; this mode does not add a text forwarding path. Operator routing
 strings go to the connector only as routing arguments, not into the contents
 of these three sinks.
@@ -303,7 +337,8 @@ dedup, preservation and reset on restart and session switch, durable ambiguity/n
 non-dispatch, drift, malformed answers,
 per-record uncertainty, connector echoes and independent lifecycle events,
 bounded rolling compaction, overload and child recovery, quiet routine turns,
-and bounded stop. They do **not** prove a live connector's
+bounded stop, and a real `framework.stop()` through the host's stop path with
+one send in flight and one queued, against a stdio test server. They do **not** prove a live connector's
 authenticated realm, echo suppression, upload availability, destination access,
 shared-stream wake policy, or crash/power-loss behavior of a production disk.
 No other connector implementation is claimed.
@@ -332,7 +367,7 @@ No other connector implementation is claimed.
   successful turn that emits `inference:completed` but no
   `inference:turn_ended` for that agent leaves the incident active. Legacy
   notices close those episodes on that completion. The operator sees the
-  incident ID stay in later status posts under `Tracked incident IDs`, with no
+  incident ID stay in later status posts under `Tracked incidents`, with no
   `recovery-observed` post. It stays until a matching `inference:turn_ended`
   or explicit clear, eviction from the 64 tracked incidents (counted as
   forgotten), or a host restart or session switch.
