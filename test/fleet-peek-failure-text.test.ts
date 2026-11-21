@@ -8,7 +8,8 @@ import { AgentTreeReducer } from '../src/state/agent-tree-reducer.js';
 const SENTINEL = 'sentinel-5d8b provider said: invalid x-api-key';
 const NOTE = "Each event's error and attemptError read \"left out\" in place of their text, and its stack and providerErrorCode, " +
   "an alert's message and data, and an errorType of safety are left out. Streamed chunks (inference:tokens) are left out too: " +
-  "a child's finished reply is in its inference:speech.";
+  "the final reply of a child's main agent is in its inference:speech, where a reply that the provider refused at its end " +
+  "can still show.";
 
 const dirs: string[] = [];
 const fleets: FleetModule[] = [];
