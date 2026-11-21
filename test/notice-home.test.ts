@@ -357,6 +357,26 @@ test('dropped successor: a superseding clear back to the predecessor keeps it op
   expect(statusPosts(h.calls).at(-1)).toContain(expiring.incidentId);
 }, 60000);
 
+test('tracked successor: its ordinary clear also closes what it superseded, each with a recovery post, one status', async () => {
+  const h = await harness();
+  h.alert('auth-expired', 'expired', 3300);
+  h.alert('auth-rejected', 'gone', 3301); await h.settle();
+  h.alert('auth-rejected-clear', 'superseded by auth-expired', 3302); await h.settle();
+  let j = await journal(h.dir);
+  const expired = observed(j, 3300), rejected = observed(j, 3301);
+  expect(j.active.find((a: any) => a.id === rejected.incidentId)?.supersededBy).toBeDefined();
+  const posted = h.calls.length;
+  h.alert('auth-expired-clear', 'credential ok', 3303); await h.settle();
+  j = await journal(h.dir);
+  const recoveries = j.records.filter((r: any) => r.phase === 'recovery-observed' && r.source.timestamp === 3303);
+  expect(recoveries.map((r: any) => r.incidentId).sort()).toEqual([expired.incidentId, rejected.incidentId].sort());
+  for (const r of recoveries) expect(delivered(h.calls, r)).toBe(true);
+  expect(j.active).toEqual([]);
+  const statuses = statusPosts(h.calls.slice(posted));
+  expect(statuses).toHaveLength(1);
+  expect(statuses[0]).toContain('Tracked incident IDs: none');
+});
+
 test('unmatched superseding clear is journal-only: no post, no status', async () => {
   const h = await harness();
   const posted = h.calls.length;

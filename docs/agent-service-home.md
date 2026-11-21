@@ -117,10 +117,11 @@ policy before a pilot. No live qualification/activation is part of this slice.
   `superseded by ` (as when `auth-expiring` becomes `auth-expired`) is only
   journaled as a `superseded` record: no post, no status, and the incident
   stays tracked. The named successor's alert, when processed, closes it and
-  opens its own incident with one status; no recovery is posted. If the
-  successor is dropped (full queue), the old incident stays tracked until the
-  successor's own clear closes it with a recovery post, or a further
-  superseding clear of the successor hands it to the next successor.
+  opens its own incident with one status; no recovery is posted. Until then
+  the old incident stays tracked. The successor's ordinary clear closes it
+  with a recovery post, whether or not the successor is tracked (a full queue
+  can drop its alert); a further superseding clear of the successor hands it
+  to the next successor.
   `inference:completed` and `inference:turn_ended` both close a matching
   subject's `hard-down`, `refusal-offpath` and `context-maintenance-failed`
   incidents, including for a child agent, as a successful turn closes those

@@ -319,23 +319,18 @@ export class NoticeHome {
       await this.save();
       return false;
     }
-    if (clear && !active) {
-      // An untracked successor (its alert was dropped) recovered: close what it superseded.
-      const predecessors = this.journal.active.filter((a) => a.supersededBy === key);
-      if (predecessors.length) {
-        this.journal.active = this.journal.active.filter((a) => !predecessors.includes(a));
+    let changed = clear ? !!active : !active;
+    // The successor's alert closes what it superseded; its ordinary clear, tracked
+    // or not (its alert may have been dropped), closes it with a recovery post each.
+    const predecessors = this.journal.active.filter((a) => a.supersededBy === key);
+    if (predecessors.length) {
+      this.journal.active = this.journal.active.filter((a) => !predecessors.includes(a));
+      changed = true;
+      if (clear) {
         for (const p of predecessors) {
           await this.publish({ phase: 'recovery-observed', incidentId: p.id, incidentKey: p.key, kind: p.kind, source, eventKey, at });
         }
-        return true;
-      }
-    }
-    let changed = clear ? !!active : !active;
-    if (!clear) {
-      const predecessors = this.journal.active.filter((a) => a.supersededBy === key);
-      if (predecessors.length) {
-        this.journal.active = this.journal.active.filter((a) => !predecessors.includes(a));
-        changed = true;
+        if (!active) return true;
       }
     }
     if (!clear && !active) {
