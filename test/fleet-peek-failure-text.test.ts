@@ -7,9 +7,9 @@ import { AgentTreeReducer } from '../src/state/agent-tree-reducer.js';
 
 const SENTINEL = 'sentinel-5d8b provider said: invalid x-api-key';
 const NOTE = "Each event's error and attemptError read \"left out\" in place of their text, and its stack and providerErrorCode, " +
-  "an alert's message and data, and an errorType of safety are left out. Streamed chunks (inference:tokens) are left out too: " +
-  "the final reply of a child's main agent is in its inference:speech, where a reply that the provider refused at its end " +
-  "can still show.";
+  "an alert's message and data, and an errorType of safety are left out. Streamed chunks (inference:tokens) and panel answers " +
+  "(panel-response) are left out too. The final reply of a child's main agent is in its inference:speech, which the child sends " +
+  "where its subscription includes it. A reply that the provider refused at its end can still show there.";
 
 const dirs: string[] = [];
 const fleets: FleetModule[] = [];
@@ -50,6 +50,7 @@ const ARRIVED: Event[] = [
   { type: 'workspace-file-snapshot', corrId: 'w1', path: 'notes.md', totalLines: 0, fromLine: 1, toLine: 0, content: '', truncated: false, error: 'no such file', ts: 6 },
   { type: 'inference:speech', agentName: 'leaf', content: 'Looking into it.', ts: 7 },
   { type: 'inference:tokens', agentName: 'leaf', content: SENTINEL, ts: 8 },
+  { type: 'panel-response', corrId: 'p1', op: 'credential', ok: true, credential: { state: 'rejected', message: `anthropic rejected the credential (${SENTINEL})` }, ts: 9 },
 ];
 
 const SHOWN: Event[] = [
@@ -88,7 +89,8 @@ test("no text of a child's failed turn reaches a parent through fleet--peek, its
   };
   expect(JSON.stringify(snapshot)).toContain('sentinel-5d8b');
   const alert = { type: 'ops:alert', kind: 'refusal', agentName: 'leaf', message: `category=${SENTINEL}`, data: { category: SENTINEL, streak: 2 }, ts: 14 };
-  const child = childWith([...failure, snapshot, alert]);
+  const panel = { type: 'panel-response', corrId: 'p1', op: 'credential', ok: true, credential: { state: 'rejected', message: `anthropic rejected the credential (${SENTINEL})` }, ts: 15 };
+  const child = childWith([...failure, snapshot, alert, panel]);
   const peek = await child.peek();
   expect(peek.success).toBe(true);
   expect((peek.data as { count: number }).count).toBe(5);
