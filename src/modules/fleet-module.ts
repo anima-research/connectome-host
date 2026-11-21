@@ -2613,7 +2613,8 @@ export class FleetModule implements Module {
 const LEFT_OUT = 'left out';
 const PEEK_NOTE = `Each event's error and attemptError read "${LEFT_OUT}" in place of their text, and its stack and ` +
   "providerErrorCode, an alert's message and data, and an errorType of safety are left out. Streamed chunks " +
-  "(inference:tokens) are left out too: a child's finished reply is in its inference:speech.";
+  "(inference:tokens) are left out too: the final reply of a child's main agent is in its inference:speech, where a reply " +
+  "that the provider refused at its end can still show.";
 
 function peekView(event: WireEvent): Record<string, unknown> {
   const shown = withoutErrorText(event);
