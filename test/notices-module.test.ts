@@ -1179,7 +1179,7 @@ describe("an alert's message stays with the operator", () => {
     ['refusal', "⚠ [host notice] clerk — refusal: a request couldn't be completed."],
     ['context-maintenance-failed', "⚠ [host notice] clerk — context-maintenance-failed: its context maintenance didn't finish."],
     ['compression-quarantine', '⚠ [host notice] clerk — compression-quarantine: part of its history is held back from summaries and stays whole, which in time fills its context budget; an operator can inspect what is held, then branch, pin or clear it.'],
-    ['instructions-unavailable', "⚠ [host notice] clerk — instructions-unavailable: its instructions couldn't be loaded, so none are injected."],
+    ['instructions-unavailable', "⚠ [host notice] clerk — instructions-unavailable: its instructions couldn't be loaded, so none are injected; failures.log says why."],
     ['a-kind-of-its-own', '⚠ [host notice] clerk — a-kind-of-its-own: the host raised an alert of this kind.'],
   ];
   for (const [kind, text, subject] of WORDS) {
