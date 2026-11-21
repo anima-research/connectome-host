@@ -519,6 +519,8 @@ export function App() {
   type SidebarTab = 'tree' | 'lessons' | 'mcp' | 'files' | 'context' | 'settings' | 'pins' | 'health';
   const [sidebarTab, setSidebarTab] = createSignal<SidebarTab>('tree');
   const [mainView, setMainView] = createSignal<'chat' | 'context' | 'dry'>('chat');
+  // Phones: the w-96 sidebar crushed the main pane, so below md we show one at a time.
+  const [mobilePane, setMobilePane] = createSignal<'main' | 'side'>('main');
   const [dryContext, setDryContext] = createSignal<DryContextData | null>(null);
 
   const [panelScope, setPanelScope] = createSignal<string>('local');
@@ -1389,8 +1391,12 @@ export function App() {
         onClose={() => { setOpenFile(null); setFileLoading(false); }}
       />
 
+      <div class="md:hidden flex border-b border-neutral-800 bg-neutral-900 text-xs font-mono">
+        <button type="button" class={`flex-1 py-2 ${mobilePane() === 'main' ? 'text-neutral-100 border-b-2 border-cyan-600' : 'text-neutral-500'}`} onClick={() => setMobilePane('main')}>Chat / Context</button>
+        <button type="button" class={`flex-1 py-2 ${mobilePane() === 'side' ? 'text-neutral-100 border-b-2 border-cyan-600' : 'text-neutral-500'}`} onClick={() => setMobilePane('side')}>Panels</button>
+      </div>
       <div class="flex flex-1 min-h-0">
-        <main class="flex-1 flex flex-col min-w-0">
+        <main class={`flex-1 flex-col min-w-0 md:flex ${mobilePane() === 'main' ? 'flex' : 'hidden'}`}>
           <div class="flex border-b border-neutral-800 bg-neutral-900/40 text-[11px] font-mono">
             <button type="button" class={`px-3 py-1.5 ${mainView() === 'chat' ? 'text-neutral-100 bg-neutral-900 border-b border-cyan-700' : 'text-neutral-500 hover:text-neutral-300'}`} onClick={() => setMainView('chat')}>Chat</button>
             <button type="button" class={`px-3 py-1.5 ${mainView() === 'context' ? 'text-neutral-100 bg-neutral-900 border-b border-cyan-700' : 'text-neutral-500 hover:text-neutral-300'}`} onClick={() => setMainView('context')}>Context</button>
@@ -1562,7 +1568,7 @@ export function App() {
             onRefreshLog={refreshOpLog}
           />
         </Show>
-        <aside class="w-96 xl:w-[30rem] border-l border-neutral-800 bg-neutral-950 shrink-0 flex flex-col">
+        <aside class={`w-full md:w-96 xl:w-[30rem] md:border-l border-neutral-800 bg-neutral-950 shrink-0 flex-col md:flex ${mobilePane() === 'side' ? 'flex' : 'hidden'}`}>
           <SidebarTabs
             current={sidebarTab()}
             onSelect={(tab) => {
