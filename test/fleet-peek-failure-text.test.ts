@@ -49,8 +49,8 @@ const ARRIVED: Event[] = [
   { type: 'tool:failed', agentName: 'leaf', tool: 'fetch', callId: 'c1', error: SENTINEL, ts: 5 },
   { type: 'workspace-file-snapshot', corrId: 'w1', path: 'notes.md', totalLines: 0, fromLine: 1, toLine: 0, content: '', truncated: false, error: 'no such file', ts: 6 },
   { type: 'inference:speech', agentName: 'leaf', content: 'Looking into it.', ts: 7 },
-  { type: 'inference:tokens', agentName: 'leaf', content: SENTINEL, ts: 8 },
-  { type: 'panel-response', corrId: 'p1', op: 'credential', ok: true, credential: { state: 'rejected', message: `anthropic rejected the credential (${SENTINEL})` }, ts: 9 },
+  { type: 'inference:tokens', agentName: 'leaf', content: SENTINEL, blockType: 'text', ts: 8 },
+  { type: 'panel-response', corrId: 'p1', op: 'credential', ok: true, data: { subscription: true, agent: 'leaf', provider: 'anthropic', kind: 'rejected', message: `anthropic rejected the credential (${SENTINEL})` }, ts: 9 },
 ];
 
 const SHOWN: Event[] = [
@@ -74,7 +74,7 @@ test("fleet--peek shows a child's events without a failure's own text, says so, 
 test("no text of a child's failed turn reaches a parent through fleet--peek, its tree's snapshot included", async () => {
   const failure = [
     { type: 'inference:started', agentName: 'leaf', ts: 10 },
-    { type: 'inference:tokens', agentName: 'leaf', content: SENTINEL, ts: 10 },
+    { type: 'inference:tokens', agentName: 'leaf', content: SENTINEL, blockType: 'text', ts: 10 },
     { type: 'inference:failed', agentName: 'leaf', error: SENTINEL, stack: `Error: ${SENTINEL}`, ts: 11 },
     { type: 'inference:exhausted', agentName: 'leaf', error: SENTINEL, errorType: 'auth', httpStatus: 401, providerErrorCode: 'sentinel-5d8b-code', ts: 12 },
   ];
@@ -89,7 +89,7 @@ test("no text of a child's failed turn reaches a parent through fleet--peek, its
   };
   expect(JSON.stringify(snapshot)).toContain('sentinel-5d8b');
   const alert = { type: 'ops:alert', kind: 'refusal', agentName: 'leaf', message: `category=${SENTINEL}`, data: { category: SENTINEL, streak: 2 }, ts: 14 };
-  const panel = { type: 'panel-response', corrId: 'p1', op: 'credential', ok: true, credential: { state: 'rejected', message: `anthropic rejected the credential (${SENTINEL})` }, ts: 15 };
+  const panel = { type: 'panel-response', corrId: 'p1', op: 'credential', ok: true, data: { subscription: true, agent: 'leaf', provider: 'anthropic', kind: 'rejected', message: `anthropic rejected the credential (${SENTINEL})` }, ts: 15 };
   const child = childWith([...failure, snapshot, alert, panel]);
   const peek = await child.peek();
   expect(peek.success).toBe(true);
@@ -100,12 +100,13 @@ test("no text of a child's failed turn reaches a parent through fleet--peek, its
   expect(node.attemptError).toBe('left out');
 });
 
-test("fleet--peek's lines counts the events it shows, with streamed chunks left out before the count", async () => {
+test("fleet--peek's lines counts the events it shows, with streamed chunks and panel answers left out before the count", async () => {
   const child = childWith([
     { type: 'inference:speech', agentName: 'leaf', content: 'First reply.', ts: 1 },
-    { type: 'inference:tokens', agentName: 'leaf', content: 'Sec', ts: 2 },
-    { type: 'inference:tokens', agentName: 'leaf', content: 'ond', ts: 3 },
+    { type: 'inference:tokens', agentName: 'leaf', content: 'Sec', blockType: 'text', ts: 2 },
+    { type: 'inference:tokens', agentName: 'leaf', content: 'ond', blockType: 'text', ts: 3 },
     { type: 'inference:speech', agentName: 'leaf', content: 'Second reply.', ts: 4 },
+    { type: 'panel-response', corrId: 'p2', op: 'health', ok: true, data: { agent: 'leaf' }, ts: 5 },
   ]);
   const peek = await child.peek(2);
   expect(peek.data).toEqual({
@@ -115,5 +116,5 @@ test("fleet--peek's lines counts the events it shows, with streamed chunks left 
       { type: 'inference:speech', agentName: 'leaf', content: 'Second reply.', ts: 4 },
     ],
   });
-  expect(child.buffer()).toHaveLength(4);
+  expect(child.buffer()).toHaveLength(5);
 });
