@@ -753,3 +753,13 @@ describe('fleet refusals name what the agent can do', () => {
     );
   });
 });
+
+test('fleet--command refuses /auth in each of its forms, since it is a person\'s command', async () => {
+  const { call } = setup();
+  for (const command of ['/auth', '/auth status', '/auth login', '/auth refresh', '/ auth status']) {
+    expect([command, (await call('command', { name: 'any', command })).error]).toEqual([command,
+      "Nothing was sent: /auth is for a person to run in the child's own console, since it reads or changes the child's " +
+      "provider credential, and its output can carry the provider's own words. Ask whoever runs the child to run it."]);
+  }
+  expect((await call('command', { name: 'any', command: '/status' })).error).toMatch(/^There's no child named 'any', so nothing was sent\. /);
+});

@@ -1,0 +1,1 @@
+- `fetch` with a `prompt` says that its separate model's call failed, where its error gave that call's error message, which can hold the provider's own words. The error keeps its lead-in, what the model had asked to see and its advice. The host's record of model calls keeps the provider's message for whoever runs the host.

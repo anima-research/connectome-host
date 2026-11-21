@@ -1569,6 +1569,14 @@ export class FleetModule implements Module {
           'words, never a session\'s, so calling it again won\'t change that. Ask the user to run /bug themselves.',
       };
     }
+    if (typeof input.command === 'string' && parseCommand(input.command).name === 'auth') {
+      return {
+        success: false,
+        isError: true,
+        error: "Nothing was sent: /auth is for a person to run in the child's own console, since it reads or changes the " +
+          "child's provider credential, and its output can carry the provider's own words. Ask whoever runs the child to run it.",
+      };
+    }
     const ok = await this.requireReachable(input.name, 'nothing was sent');
     if (!('child' in ok)) return ok;
     if (typeof input.command !== 'string') {
@@ -1586,9 +1594,10 @@ export class FleetModule implements Module {
     const c = this.children.get(input.name);
     if (!c) return this.unknownChild(input.name, 'there are no events to show');
     const requested = input.lines ?? 50;
-    const n = Math.max(1, Math.min(requested, c.events.length || 1));
-    const slice = c.events.length > 0 ? c.events.slice(-n) : [];
-    return { success: true, data: { name: c.name, count: slice.length, events: slice } };
+    const shown = c.events.filter((event) => event.type !== 'inference:tokens' && event.type !== 'panel-response');
+    const n = Math.max(1, Math.min(requested, shown.length || 1));
+    const slice = shown.length > 0 ? shown.slice(-n) : [];
+    return { success: true, data: { name: c.name, count: slice.length, events: slice.map(peekView), note: PEEK_NOTE } };
   }
 
   private async handleKill(input: { name: string }): Promise<ToolResult> {
@@ -2599,6 +2608,40 @@ export class FleetModule implements Module {
       tick();
     });
   }
+}
+
+const LEFT_OUT = 'left out';
+const PEEK_NOTE = `Each event's error and attemptError read "${LEFT_OUT}" in place of their text, and its stack and ` +
+  "providerErrorCode, an alert's message and data, and an errorType of safety are left out. Streamed chunks " +
+  "(inference:tokens) and panel answers (panel-response) are left out too. The final reply of a child's main agent is in its " +
+  "inference:speech, which the child sends where its subscription includes it. A reply that the provider refused at its end " +
+  "can still show there.";
+
+function peekView(event: WireEvent): Record<string, unknown> {
+  const shown = withoutErrorText(event);
+  delete shown.stack;
+  delete shown.providerErrorCode;
+  if (shown.errorType === 'safety') delete shown.errorType;
+  if (shown.type === 'ops:alert') {
+    delete shown.message;
+    delete shown.data;
+  }
+  return shown;
+}
+
+function withoutErrorText(value: object): Record<string, unknown> {
+  const shown: Record<string, unknown> = {};
+  for (const [key, field] of Object.entries(value)) {
+    const text = typeof field === 'string' || (typeof field === 'object' && field !== null);
+    shown[key] = (key === 'error' || key === 'attemptError') && text ? LEFT_OUT : nestedWithoutErrorText(field);
+  }
+  return shown;
+}
+
+function nestedWithoutErrorText(field: unknown): unknown {
+  if (Array.isArray(field)) return field.map(nestedWithoutErrorText);
+  if (typeof field === 'object' && field !== null) return withoutErrorText(field);
+  return field;
 }
 
 function isUrlOrAbsolute(p: string): boolean {

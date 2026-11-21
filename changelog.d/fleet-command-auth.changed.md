@@ -1,0 +1,1 @@
+- `fleet--command` refuses `/auth` in each of its forms, as it refuses `/bug`. `/auth status` prints the provider's own words when it rejects a credential, which a parent agent then read in `fleet--peek`, and `/auth`'s other forms change a credential or start a login, which are a person's acts. A person still runs `/auth` in the child's own console.
