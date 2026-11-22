@@ -294,8 +294,7 @@ With native tools and `sameRoundThinkTextPolicy: "private"`, text beside a
 `think` call stays private. The recipe sets the policy's starting value. The
 agent can see and change its own value through `agent_settings`
 (`same_round_skip_reply_text_policy`), and its choice persists across
-restarts. Both features came in Agent Framework 0.35.1, and this host's
-dependency range starts there.
+restarts. Both features came in Agent Framework 0.35.1.
 
 See Agent Framework's `docs/disabled-prose-routing.md`,
 `docs/explicit-prose-routing.md`, `docs/hybrid-prose-routing.md`, and
