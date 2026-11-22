@@ -546,7 +546,8 @@ function credentialLines(state: CredentialState): Line[] {
     lines.push({ text: `  actions: ${state.actions.map((a) => `/auth ${a.id === 'set-token' ? 'token <tok>' : a.id}`).join(', ')}`, style: 'system' });
   }
   if (state.lastAction) {
-    lines.push({ text: `  last action: ${state.lastAction.id} ${state.lastAction.ok ? 'ok' : 'FAILED'}${state.lastAction.message ? ` — ${state.lastAction.message}` : ''}`, style: 'system' });
+    const outcome = state.lastAction.message || state.lastAction.said;
+    lines.push({ text: `  last action: ${state.lastAction.id} ${state.lastAction.ok ? 'ok' : 'FAILED'}${outcome ? ` — ${outcome}` : ''}`, style: 'system' });
   }
   return lines;
 }
@@ -562,7 +563,7 @@ function handleAuth(app: AppContext, args: string[], requester: OperatorRequeste
     };
   }
   const shown = (state: CredentialState): CredentialState => requester.via === 'fleet'
-    ? keepNamedStrings(state, { ...CREDENTIAL_STRINGS, unsaved: true }) as CredentialState
+    ? keepNamedStrings(state, { ...CREDENTIAL_STRINGS, lastAction: { ...CREDENTIAL_STRINGS.lastAction, said: true }, unsaved: true }) as CredentialState
     : state;
   const sub = (args[0] ?? 'status').toLowerCase();
   if (sub === 'status') return { lines: credentialLines(shown(monitor.snapshot())) };
@@ -589,7 +590,7 @@ function handleAuth(app: AppContext, args: string[], requester: OperatorRequeste
     lines: [{ text: `/auth ${id}: running…`, style: 'system' }],
     asyncWork: monitor.runAction(id, params).then(shown).then((state) => ({
       lines: [
-        { text: `/auth ${id}: ${state.lastAction?.ok ? 'done' : 'FAILED'}${state.lastAction === undefined ? ' — no outcome recorded' : state.lastAction.message ? ` — ${state.lastAction.message}` : ''}`, style: 'system' },
+        { text: `/auth ${id}: ${state.lastAction?.ok ? 'done' : 'FAILED'} — ${state.lastAction ? state.lastAction.message || state.lastAction.said : 'no outcome recorded'}`, style: 'system' },
         ...credentialLines(state),
       ],
     })),

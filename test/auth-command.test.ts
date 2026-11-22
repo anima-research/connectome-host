@@ -41,7 +41,7 @@ describe('/auth', () => {
       snapshot: () => state(),
       runAction: async (id: CredentialActionId, params?: { token?: string }) => {
         ran.push([id, params]);
-        return state({ kind: 'ok', actions: [], lastAction: { id, at: 0, ok: true, message: 'refreshed; credential verified' } });
+        return state({ kind: 'ok', actions: [], lastAction: { id, at: 0, ok: true, message: 'refreshed; credential verified', said: 'refreshed; credential verified' } });
       },
     };
     const result = handleCommand('/auth refresh', app(monitor));
@@ -57,7 +57,7 @@ describe('/auth', () => {
       snapshot: () => state(),
       runAction: async (id: CredentialActionId, params?: { token?: string }) => {
         ran.push([id, params]);
-        return state({ kind: 'ok', actions: [], lastAction: { id, at: 0, ok: true, message: 'token replaced; credential verified' } });
+        return state({ kind: 'ok', actions: [], lastAction: { id, at: 0, ok: true, message: 'token replaced; credential verified', said: 'token replaced; credential verified' } });
       },
     };
     const result = handleCommand('/auth token sk-ant-oat01-secret', app(monitor));
