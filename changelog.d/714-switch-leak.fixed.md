@@ -1,3 +1,4 @@
-- Try to stop the new framework when setup fails at boot or during a session
-  switch. Wait up to five seconds for cleanup, logging any failure or timeout
-  without hiding the original setup error (#714).
+- Stop the new framework with a five-second shutdown budget when post-create
+  setup fails during a session switch or at boot, including when committing the
+  release at boot fails. If the stop fails or times out, log it and close the
+  store if still open, without hiding the original error (#714).

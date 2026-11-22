@@ -88,6 +88,7 @@ import { TURN_SETTLED_TRACES } from './state/turn-trace.js';
 import { setCallLogPath } from './bug-report.js';
 import { SessionManager } from './session-manager.js';
 import { startFramework } from './start-framework.js';
+import { stopAfterFailedSetup } from './stop-after-failed-setup.js';
 import { StartRefusal, currentForStart, releaseHere, type ReleaseHere } from './update/host.js';
 import { installCommandAt } from './update/install-command-name.js';
 import { childrenFilePath, trialPlaces } from './update/contract.js';
@@ -637,22 +638,7 @@ agents: [agentConfig],
 
     return framework;
   } catch (error) {
-    // The caller hasn't received the framework yet, so it can't stop it.
-    const cleanupStopTimeoutMs = 5_000;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        framework.stop(),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`stop() did not finish within ${cleanupStopTimeoutMs} ms`)), cleanupStopTimeoutMs);
-        }),
-      ]);
-    } catch (stopError) {
-      onCleanupStopFailed?.();
-      console.error('[framework] stopping the framework after setup failed:', stopError);
-    } finally {
-      clearTimeout(timer);
-    }
+    await stopAfterFailedSetup(framework, onCleanupStopFailed);
     throw error;
   }
 }

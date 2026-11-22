@@ -23,11 +23,15 @@ function framework(order: string[], options: {
     },
     notifyOps: (kind: string, agent: string, message: string) => { order.push(`the operator is told (${kind}, of ${agent}): ${message}`); },
     start: () => { options.atStart?.(); order.push('framework starts its agents'); },
-    stop: async () => {
+    stop: async (budget?: number) => {
       await Bun.sleep(20);
-      if (options.stopFails) throw new Error('the stop failed');
+      if (options.stopFails) {
+        order.push(`framework stop budget: ${budget} ms`);
+        throw new Error('the stop failed');
+      }
       order.push('framework stopped');
     },
+    getStore: () => ({ isClosed: () => false, close: () => { order.push('store closed'); } }),
     getModule: (name: string) => (options.fleet && name === options.fleet.name ? options.fleet : null),
     listMcplServers: () => options.servers ?? [],
   } as unknown as Parameters<typeof startFramework>[0];
@@ -189,17 +193,17 @@ describe('startFramework, for a host an install started', () => {
     expect(readCurrent(root)).toBe('0.10.2');
   });
 
-  test("a stop that fails after a refused commit is logged, and the commit's refusal is what's thrown", async () => {
+  test("a failed cleanup stop after a refused commit is logged, closes the store, and preserves the refusal", async () => {
     const order: string[] = [];
     const logged: string[] = [];
-    const log = spyOn(console, 'error').mockImplementation((line) => { logged.push(String(line)); });
+    const log = spyOn(console, 'error').mockImplementation((...args) => { logged.push(args.map(String).join(' ')); });
     try {
       await expect(startFramework(framework(order, { servers: [{ id: 'discord', connected: false }], stopFails: true }), { root, release: '0.11.0' }))
         .rejects.toThrow("The MCPL server discord wasn't connected when this release went to commit");
     } finally {
       log.mockRestore();
     }
-    expect(logged).toEqual(['[update] stopping the framework after its start ended failed too: the stop failed']);
-    expect(order).toEqual([]);
+    expect(logged).toEqual(['[framework] stopping the framework after setup failed: Error: the stop failed']);
+    expect(order).toEqual(['framework stop budget: 5000 ms', 'store closed']);
   });
 });

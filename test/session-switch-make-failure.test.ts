@@ -11,7 +11,7 @@ const INDEX = fileURLToPath(new URL('../src/index.ts', import.meta.url));
 const MCP_CHILD = fileURLToPath(new URL('./fixtures/placed-reaction-child.cjs', import.meta.url));
 const SETUP_ERROR = 'injected post-create setup failure';
 const STOP_ERROR = 'injected replacement stop failure';
-const STOP_TIMEOUT = 'stop() did not finish within 5000 ms';
+const STOP_TIMEOUT = 'Shutdown timed out after 5000 ms; pending: module:switch-failure-probe';
 
 const EXTENSION = `
 import { writeFileSync } from 'node:fs';
@@ -49,17 +49,20 @@ export function register(api, { stopped, stop, shutdown, boot }) {
 }
 `;
 
-async function failedSwitch(socketPath: string): Promise<Record<string, unknown>> {
+async function sessionCommand(socketPath: string, command: string) {
   const socket = await connectWhenAccepting(socketPath, { timeoutMs: 10_000 });
   const lines = createInterface({ input: socket });
   const deadline = setTimeout(() => socket.destroy(), 10_000);
+  const output: string[] = [];
   try {
-    socket.write(JSON.stringify({ type: 'command', command: '/session new replacement', corrId: 'switch' }) + '\n');
+    socket.write(JSON.stringify({ type: 'command', command, corrId: 'switch' }) + '\n');
     for await (const line of lines) {
       const event = JSON.parse(line);
-      if (event.type === 'command-done' && event.corrId === 'switch') return event;
+      if (event.corrId !== 'switch') continue;
+      if (event.type === 'command-output') output.push(event.text);
+      if (event.type === 'command-done') return { done: event as Record<string, unknown>, output };
     }
-    throw new Error('No response to the session switch');
+    throw new Error(`No response to ${command}`);
   } finally {
     clearTimeout(deadline);
     lines.close();
@@ -99,7 +102,8 @@ for (const [label, stop, shutdown, boot = false] of [
         expect(await host.exited).toBe(1);
         expect(await stderr).toMatch(new RegExp(`Fatal error:[\\s\\S]*[Ee]rror: ${SETUP_ERROR}`));
       } else {
-        expect(await failedSwitch(socketPath)).toHaveProperty('error', SETUP_ERROR);
+        const { done } = await sessionCommand(socketPath, '/session new replacement');
+        expect(done).toHaveProperty('error', SETUP_ERROR);
       }
       expect(readFileSync(stopped, 'utf8')).toBe('cleanup attempted');
       const pids = readFileSync(pidsPath, 'utf8').trim().split('\n').map(Number);
@@ -111,6 +115,12 @@ for (const [label, stop, shutdown, boot = false] of [
         // Check before killing the host: otherwise EOF alone can stop the MCP child.
         expect(await waitForEnd(pids[1]!, 5_000)).toBe(true);
         expect(host.exitCode).toBeNull();
+        // The failed make left replacement marked active, so switch away first.
+        for (const command of ['/session switch Session 1', '/session switch replacement']) {
+          const { done, output } = await sessionCommand(socketPath, command);
+          expect(done.error).toBeUndefined();
+          expect(output).toContain('Session switched.');
+        }
       }
     } finally {
       if (host.exitCode === null && host.signalCode === null) host.kill('SIGKILL');
