@@ -144,6 +144,7 @@ subject to the subscription filter: `inference:*`, `tool:*`, `usage:updated`,
 | `lifecycle` (`phase: "idle"`) | `texts` | When, after at least one `inference:started` or `text` received (or once a self-restart is armed), every framework agent has read idle with nothing in flight but a background script left running for ≥500 ms. An `inference:started`, a `text` received, arming or cancelling a self-restart, or a client's `ready` that reports turn work or finds the host not quiet after its idle, starts the 500 ms again. `texts` is how many texts the host has received on this connection, all of which this quiet covers. Nothing in flight means no turn the framework counts alive (one assembling, or waiting to retry, included), no gated wake, no event on the framework's queue, no `text` whose processing (every module's `onProcess`) is still under way, no subagent run, and no operator's work still under way: a `command`'s follow-up (such as `/newtopic`'s summary), from whichever entry sent the command; a credential action (such as `/auth login` waiting for its code to be entered, which the Codex subscription's login gives up on after 10 min by default); and an action that holds a session switch off (the Web UI's session-changing actions, a session-changing `panel-request`, a release switch's `quiesce`). A background script left running doesn't hold it: in agent-framework 0.28.0, a script that ends cleanly wakes no one. A text a recipe's wake-gate debounce holds isn't seen: agent-framework 0.30.0 doesn't count it, so the idle can come before that turn. Fires once, and again only after the next `inference:started` or `text` received, or a client's `ready` that finds the host not quiet. A text a wake gate declines still ends in an idle, once nothing has been in flight for 500 ms after its processing; texts that arrive together share one. |
 | `lifecycle` (`phase: "exiting"`) | `reason` | `shutdown:graceful`, `shutdown:immediate`, `command:/quit`, `SIGTERM`, `SIGINT`, `exit-when-idle`, `self-restart`. A crash emits nothing. |
 | `inference:speech` | `agentName, content` | Primary agent only: the text of an inference round that ended without tool calls, without its thinking or any other block; `""` for such a round with no text. None for a stream whose `inference:started` is `silent`, such as a silent heartbeat's. Used by `fleet--relay`. |
+| `inference:round_text` | `agentName, content` | The text of each other round that ended with text, sent once the round ends: a round that ended in tool calls, a round of a `silent` start, and every round of an agent other than the primary, such as a subagent's. None for a round that failed, was aborted or was exhausted. |
 | `command-output` | `text, style, corrId?` | One per line of a `command` reply, carrying the command's `corrId` when it had one. A response, not telemetry (see below). |
 | `command-done` | `corrId, error?, refused?` | The end of the answer to a `command` that carried a `corrId`, with `error` when the command threw, and `refused: true` when `/update` answered that it didn't do what was asked; its lines say why. Only `/update` marks an answer so, and another command's refusal, such as `/session new` or `/session switch` while a switch is under way, ends with a plain `command-done`. `/update` marks it for its refusals, such as an install with nothing newer offered, a restart whose turns didn't end in time or a `back keep` for a Go back no longer offered, for words it doesn't take, for a check whose read of the registry failed, and for `back` alone when it can't read the Go back offer or asks a host that isn't an install. |
 
@@ -176,8 +177,9 @@ name it assigned.
   `lifecycle`; `lifecycle:*` does **not** match it.
 
 The ten response types — the nine `corrId` replies and `command-output` —
-bypass the filter, so a `command` gets its reply even under `[]`. `lifecycle`
-and `inference:speech` do **not**; a narrowed subscription must list them.
+bypass the filter, so a `command` gets its reply even under `[]`. `lifecycle`,
+`inference:speech` and `inference:round_text` do **not**; a narrowed
+subscription must list them.
 
 ---
 
@@ -264,7 +266,7 @@ prompt. autoStart, autoRestart and `fleet--restart` bypass the check.
 | `fleet--status` | `name?` | Detailed record (shows the *requested* subscription, before the forced union below). |
 | `fleet--send` | `name, content` | Send a `text` command. |
 | `fleet--command` | `name, command` | Send a `command`; returns immediately — output arrives as `command-output` events (see `fleet--peek`). For a command that the fleet sent, `/auth` leaves out the credential's two messages, which can hold the provider's words. |
-| `fleet--peek` | `name, lines?=50` | Last N events from the child's 500-event ring buffer, each without a failure's own text: an `error` or `attemptError` at any depth that holds text or an object reads `"left out"`, and `stack`, `providerErrorCode`, an alert's `message` and `data`, and an `errorType` of `safety` are left out. Streamed chunks (`inference:tokens`) are left out before `lines` is counted. The final reply of a child's main agent is in its `inference:speech`, which the child sends where its subscription includes it; a reply that the provider refused at its end can still show there. A `note` in the result says so. The buffer keeps each event whole, and holds no `panel-response`, which goes only to its request. |
+| `fleet--peek` | `name, lines?=50` | Last N events from the child's 500-event ring buffer, each without a failure's own text: an `error` or `attemptError` at any depth that holds text or an object reads `"left out"`, and `stack`, `providerErrorCode`, an alert's `message` and `data`, and an `errorType` of `safety` are left out. Streamed chunks (`inference:tokens`) are left out before `lines` is counted. The final reply of a child's main agent is in its `inference:speech`, and the text of each other round is in an `inference:round_text`; the child sends them where its subscription includes them. A reply that the provider refused at its end can still show in `inference:speech`. A `note` in the result says so. The buffer keeps each event whole, and holds no `panel-response`, which goes only to its request. |
 | `fleet--kill` | `name` | `shutdown`, wait `gracefulShutdownMs`, SIGTERM, wait `sigtermEscalationMs`, SIGKILL. |
 | `fleet--restart` | `name` | Kill, then relaunch with the same recipe, dataDir, subscription, `env` and `autoRestart`. Cancels a pending automatic restart and starts a fresh retry budget (§4.6), as a `fleet--launch` of the same name does. |
 | `fleet--relay` | `from, to, prefix?` | Send to `to` the last `inference:speech` this host has had from `from` since its connection to `from` last opened. Refused when that frame is `""`, a round with no text, and while this host has no connection to a `from` that may be running (below). |
@@ -331,7 +333,7 @@ the Web UI reads the child's panels again. A recipe's `subscription`
 therefore means "events I want *in addition to* what rendering needs".
 
 **Not forced:** `lifecycle` (needed by `fleet--await`), `inference:speech`
-(needed by `fleet--relay`) and `ops:alert`. A narrowed recipe must list the
+(needed by `fleet--relay`), `inference:round_text` and `ops:alert`. A narrowed recipe must list the
 ones it wants. `command-output` needs no entry: it bypasses the child's filter
 (§2.3).
 
