@@ -1569,14 +1569,6 @@ export class FleetModule implements Module {
           'words, never a session\'s, so calling it again won\'t change that. Ask the user to run /bug themselves.',
       };
     }
-    if (typeof input.command === 'string' && parseCommand(input.command).name === 'auth') {
-      return {
-        success: false,
-        isError: true,
-        error: "Nothing was sent: /auth is for a person to run in the child's own console, since it reads or changes the " +
-          "child's provider credential, and its output can carry the provider's own words. Ask whoever runs the child to run it.",
-      };
-    }
     const ok = await this.requireReachable(input.name, 'nothing was sent');
     if (!('child' in ok)) return ok;
     if (typeof input.command !== 'string') {

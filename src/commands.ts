@@ -49,6 +49,7 @@ import {
   COMMAND_WAYS, PAGE_WAYS, cliWays, goBackLines, goBackUnread, statusLines, type UpdateWays,
 } from './web/update-text.js';
 import { agentActivity, type AgentBudgetHold, type AgentRetrying } from './web/agent-activity.js';
+import { CREDENTIAL_STRINGS, keepNamedStrings } from './modules/web-ui-observers.js';
 
 interface AppContext {
   framework: AgentFramework;
@@ -451,7 +452,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
       return handleFast(app, args[0]);
 
     case 'auth':
-      return handleAuth(app, args);
+      return handleAuth(app, args, requester);
 
     case 'session':
       return handleSession(app, args);
@@ -525,7 +526,7 @@ function handleUpdate(args: string[], ways: UpdateWays): CommandResult {
 
 function credentialLines(state: CredentialState): Line[] {
   const lines: Line[] = [
-    { text: `Credential (${state.provider}): ${state.kind}${state.kind === 'ok' ? '' : ` — ${state.message}`}`, style: 'system' },
+    { text: `Credential (${state.provider}): ${state.kind}${state.kind === 'ok' || !state.message ? '' : ` — ${state.message}`}`, style: 'system' },
   ];
   if (state.expiresAt !== undefined) {
     lines.push({ text: `  expires ${new Date(state.expiresAt).toISOString()}${state.rotatable ? ' (host can refresh)' : ' (no refresh token — paste a new one when it expires)'}`, style: 'system' });
@@ -545,12 +546,12 @@ function credentialLines(state: CredentialState): Line[] {
     lines.push({ text: `  actions: ${state.actions.map((a) => `/auth ${a.id === 'set-token' ? 'token <tok>' : a.id}`).join(', ')}`, style: 'system' });
   }
   if (state.lastAction) {
-    lines.push({ text: `  last action: ${state.lastAction.id} ${state.lastAction.ok ? 'ok' : 'FAILED'} — ${state.lastAction.message}`, style: 'system' });
+    lines.push({ text: `  last action: ${state.lastAction.id} ${state.lastAction.ok ? 'ok' : 'FAILED'}${state.lastAction.message ? ` — ${state.lastAction.message}` : ''}`, style: 'system' });
   }
   return lines;
 }
 
-function handleAuth(app: AppContext, args: string[]): CommandResult {
+function handleAuth(app: AppContext, args: string[], requester: OperatorRequester): CommandResult {
   const monitor = app.credentials;
   if (!monitor) {
     return {
@@ -560,8 +561,11 @@ function handleAuth(app: AppContext, args: string[]): CommandResult {
       }],
     };
   }
+  const shown = (state: CredentialState): CredentialState => requester.via === 'fleet'
+    ? keepNamedStrings(state, { ...CREDENTIAL_STRINGS, unsaved: true }) as CredentialState
+    : state;
   const sub = (args[0] ?? 'status').toLowerCase();
-  if (sub === 'status') return { lines: credentialLines(monitor.snapshot()) };
+  if (sub === 'status') return { lines: credentialLines(shown(monitor.snapshot())) };
   const usage: CommandResult = { lines: [{ text: 'Usage: /auth [status|refresh|login|recheck|token <tok>]', style: 'system' }] };
   let id: CredentialActionId;
   let params: { token?: string } = {};
@@ -583,9 +587,9 @@ function handleAuth(app: AppContext, args: string[]): CommandResult {
   }
   return {
     lines: [{ text: `/auth ${id}: running…`, style: 'system' }],
-    asyncWork: monitor.runAction(id, params).then((state) => ({
+    asyncWork: monitor.runAction(id, params).then(shown).then((state) => ({
       lines: [
-        { text: `/auth ${id}: ${state.lastAction?.ok ? 'done' : 'FAILED'} — ${state.lastAction?.message ?? 'no outcome recorded'}`, style: 'system' },
+        { text: `/auth ${id}: ${state.lastAction?.ok ? 'done' : 'FAILED'}${state.lastAction === undefined ? ' — no outcome recorded' : state.lastAction.message ? ` — ${state.lastAction.message}` : ''}`, style: 'system' },
         ...credentialLines(state),
       ],
     })),
