@@ -1685,7 +1685,7 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
     summary = await cm.generateTransitionSummary();
   } catch (err) {
     if (input.requester?.via === 'fleet') {
-      process.stderr.write(`[host] /newtopic's transition summary couldn't be written: ${messageOf(err)}\n`);
+      process.stderr.write(`[${new Date().toISOString()}] [host] /newtopic's transition summary couldn't be written: ${messageOf(err).replace(/\s*[\r\n]+\s*/g, ' ')}\n`);
       throw new Error("the transition summary couldn't be written; nothing was stored");
     }
     throw new Error(`the transition summary couldn't be written (${messageOf(err)}); nothing was stored`);
