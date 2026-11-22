@@ -40,7 +40,7 @@ async function turnFrames(dir: string, turns = 1): Promise<Array<Record<string, 
       buffer = buffer.slice(at + 1);
     }
   });
-  socket.write(`${JSON.stringify({ type: 'subscribe', events: ['inference:speech', 'inference:round_text', 'inference:tokens', 'inference:started', 'inference:completed', 'inference:tool_calls_yielded', 'inference:turn_ended', 'lifecycle'] })}\n`);
+  socket.write(`${JSON.stringify({ type: 'subscribe', events: ['inference:speech', 'inference:tokens', 'inference:started', 'inference:completed', 'inference:tool_calls_yielded', 'inference:turn_ended', 'lifecycle'] })}\n`);
   const deadline = Date.now() + 20_000;
   for (let turn = 1; turn <= turns; turn++) {
     socket.write(`${JSON.stringify({ type: 'text', content: `hello ${turn}`, from: 'console' })}\n`);
@@ -67,7 +67,6 @@ test("a refused attempt's text goes with it: inference:speech carries the answer
     const frames = await turnFrames(dir);
     expect(frames.filter((f) => f.type === 'inference:tokens' && f.blockType === 'text').map((f) => f.content)).toEqual(['N', 'o', '', 'Ye', 's']);
     expect(frames.filter((f) => f.type === 'inference:speech').map((f) => f.content)).toEqual(['Yes']);
-    expect(frames.filter((f) => f.type === 'inference:round_text')).toEqual([]);
   }, { CHILD_REPLY: 'refusal-retry' });
 }, 60_000);
 
@@ -91,13 +90,11 @@ test("a turn that ends on an end-turn tool sends no inference:speech, so the ear
   }, { CHILD_REPLY: 'then-skip' });
 }, 60_000);
 
-test("a final round after an ordinary tool's round sends its own text alone, and the tool round's text goes out as inference:round_text after its tool calls", async () => {
+test("a final round after an ordinary tool's round sends its own text alone, without the tool round's", async () => {
   await withHost(async (dir) => {
     const frames = await turnFrames(dir);
     expect(frames.some((f) => f.type === 'inference:tool_calls_yielded')).toBe(true);
     expect(frames.filter((f) => f.type === 'inference:speech').map((f) => f.content)).toEqual(['Done.']);
-    expect(frames.filter((f) => f.type === 'inference:round_text').map((f) => f.content)).toEqual(['Checking.']);
-    expect(frames.findIndex((f) => f.type === 'inference:round_text')).toBeGreaterThan(frames.findIndex((f) => f.type === 'inference:tool_calls_yielded'));
   }, { CHILD_REPLY: 'tool-then-reply' });
 }, 60_000);
 
@@ -124,8 +121,6 @@ for (const [mode, what] of [['then-silent', 'that speaks'], ['then-silent-tool',
       expect(heard.filter((f) => f.type === 'inference:tokens' && f.blockType === 'text').map((f) => f.content).join('')).toContain('Private self-check.');
       expect(heard.some((f) => f.type === 'inference:tool_calls_yielded')).toBe(mode === 'then-silent-tool');
       expect(frames.filter((f) => f.type === 'inference:speech').map((f) => f.content)).toEqual([REPLY, 'After.']);
-      expect(frames.filter((f) => f.type === 'inference:round_text').map((f) => f.content))
-        .toEqual(mode === 'then-silent-tool' ? ['Checking.', 'Private self-check.'] : ['Private self-check.']);
     }, { CHILD_REPLY: mode });
   }, 60_000);
 }

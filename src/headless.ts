@@ -84,34 +84,6 @@ export function endHeadlessLog(): Promise<void> {
   });
 }
 
-export function roundTexts(primaryAgentName: string, emit: (event: Record<string, unknown>) => void): (event: unknown) => void {
-  const rounds = new Map<string, { silent: boolean; open: boolean; text: string }>();
-  return (event) => {
-    const { type, agentName } = event as { type?: string; agentName?: string };
-    if (typeof agentName !== 'string') return;
-    const round = rounds.get(agentName);
-    if (type === 'inference:started') {
-      rounds.set(agentName, { silent: (event as { silent?: unknown }).silent === true, open: true, text: '' });
-    } else if (type === 'inference:stream_resumed') {
-      rounds.set(agentName, { silent: round?.silent ?? false, open: true, text: '' });
-    } else if (type === 'inference:tokens' && round?.open) {
-      const { content, blockType } = event as { content?: string; blockType?: string };
-      if (blockType === 'text') round.text = content === '' ? '' : round.text + (content ?? '');
-    } else if (type === 'inference:tool_calls_yielded' && round?.open) {
-      if (round.text !== '') emit({ type: 'inference:round_text', agentName, content: round.text });
-      round.open = false;
-      round.text = '';
-    } else if (type === 'inference:completed') {
-      rounds.delete(agentName);
-      if (!round?.open) return;
-      if (agentName === primaryAgentName && !round.silent) emit({ type: 'inference:speech', agentName, content: round.text });
-      else if (round.text !== '') emit({ type: 'inference:round_text', agentName, content: round.text });
-    } else if (type === 'inference:failed' || type === 'inference:aborted' || type === 'inference:exhausted') {
-      rounds.delete(agentName);
-    }
-  };
-}
-
 export async function runHeadless(app: AppContext, argv: string[] = [], testing: { stoppedReadingMs?: number } = {}): Promise<void> {
   const opts = parseHeadlessArgs(argv);
   const dataDir = resolve(process.env.DATA_DIR || './data');
@@ -284,10 +256,13 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   // for a wake that must not surface prose (a silent heartbeat), and traces
   // an empty text token of its own to discard a refused attempt's text;
   // membrane's streams give no empty text chunk.
-  const roundText = roundTexts(primaryAgentName, emit);
+  let currentSpeech = '';
+  let roundOpen = false;
+  let silentStream = false;
 
   const idleTrace = (event: unknown): void => {
     const t = (event as { type?: string }).type;
+    const agentName = (event as { agentName?: string }).agentName;
 
     if (t === 'process:completed') {
       textsProcessing.delete((event as { processEvent?: unknown }).processEvent);
@@ -300,8 +275,24 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         turnWorkDoneSince = 0;
       }
       exitSince = 0;
+      if (agentName === primaryAgentName) {
+        currentSpeech = '';
+        silentStream = (event as { silent?: unknown }).silent === true;
+        roundOpen = !silentStream;
+      }
+    } else if (t === 'inference:tokens' && agentName === primaryAgentName) {
+      const { content, blockType } = event as { content?: string; blockType?: string };
+      if (blockType === 'text') currentSpeech = content === '' ? '' : currentSpeech + (content ?? '');
+    } else if (t === 'inference:stream_resumed' && agentName === primaryAgentName) {
+      roundOpen = !silentStream;
+    } else if (t === 'inference:tool_calls_yielded' && agentName === primaryAgentName) {
+      currentSpeech = '';
+      roundOpen = false;
+    } else if (t === 'inference:completed' && agentName === primaryAgentName) {
+      if (roundOpen) emit({ type: 'inference:speech', agentName, content: currentSpeech });
+      currentSpeech = '';
+      roundOpen = false;
     }
-    roundText(event);
   };
   let traced = app.framework;
   const forwarding = traceFollower(forwardTrace, { replay: true });
