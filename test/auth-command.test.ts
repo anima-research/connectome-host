@@ -111,7 +111,7 @@ describe('/auth that a fleet parent sent', () => {
     message: `anthropic rejected the credential (${SENTINEL})`,
     unsaved: 'the refreshed credential may not be in /x/creds.json: EACCES: permission denied',
     login: { verificationUrl: 'https://example.test/device', userCode: 'ABCD-1234' },
-    lastAction: { id: 'refresh', at: 0, ok: false, message: `refresh failed: ${SENTINEL}` },
+    lastAction: { id: 'refresh', at: 0, ok: false, message: `refresh failed: ${SENTINEL}`, said: 'refresh failed' },
   });
   const monitor = { snapshot: () => rejected, runAction: async () => rejected };
   const said = async (line: string, via: 'fleet' | 'host-console') => {
@@ -127,14 +127,14 @@ describe('/auth that a fleet parent sent', () => {
       '  WARNING: the refreshed credential may not be in /x/creds.json: EACCES: permission denied. /auth recheck writes it again.',
       '  login: open https://example.test/device and enter code ABCD-1234',
       '  actions: /auth refresh, /auth token <tok>, /auth recheck',
-      '  last action: refresh FAILED',
+      '  last action: refresh FAILED — refresh failed',
     ]);
     expect((await said('/auth status', 'host-console')).join('\n').split(SENTINEL)).toHaveLength(3);
   });
 
-  test('an action says only whether it worked', async () => {
+  test("an action says whether it worked, in the host's own words without the reason", async () => {
     const lines = await said('/auth refresh', 'fleet');
-    expect(lines.slice(0, 2)).toEqual(['/auth refresh: running…', '/auth refresh: FAILED']);
+    expect(lines.slice(0, 2)).toEqual(['/auth refresh: running…', '/auth refresh: FAILED — refresh failed']);
     expect(lines.join('\n')).not.toContain(SENTINEL);
     expect((await said('/auth refresh', 'host-console')).join('\n')).toContain(`/auth refresh: FAILED — refresh failed: ${SENTINEL}`);
   });
