@@ -923,6 +923,7 @@ async function main() {
   if (process.argv[2] === AUDIT_STORES_FLAG) {
     process.exit(await auditStoresFromEntry(process.argv.slice(3)));
   }
+  startedWith = readHostVersions();
   await waitToBeListed();
   installHere = releaseHere();
   if (installHere !== null) armTrialLog(installHere);

@@ -1,6 +1,6 @@
 - **`about--versions` gives an agent the versions that its host runs.**
   Every host has it, as a utility of the built-in `settings` toolset, so
-  no request's tool list carries it: an agent opens the toolset with
+  no agent request's tool list carries it: an agent opens the toolset with
   `toolsets--open {"toolset": "settings"}` and calls it with
   `toolsets--act {"tool": "about--versions", "args": {}}`. An agent without
   the `settings` toolset calls it by its own name, and an agent whose
@@ -15,6 +15,9 @@
   shows those, with `(not connected now)`, or says that its name and
   version aren't known. Agent Framework's range now starts at 0.35.2, the
   first release whose server rows carry a server's own name and version.
+  At the upgrade, each agent's summariser requests miss their prompt cache
+  once: they carry every tool that the agent may call, utilities included,
+  so they now carry this one too.
 - **`mcpl-admin--mcpl_list` gives each loaded server's own name and
   version** in its line, as `server="<name> <version>"`, or
   `server=unknown` where the host doesn't know them.
