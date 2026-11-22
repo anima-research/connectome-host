@@ -7,9 +7,9 @@ import { AgentTreeReducer } from '../src/state/agent-tree-reducer.js';
 
 const SENTINEL = 'sentinel-5d8b provider said: invalid x-api-key';
 const NOTE = "Each event's error and attemptError read \"left out\" in place of their text, and its stack and providerErrorCode, " +
-  "an alert's message and data, and an errorType of safety are left out. Streamed chunks (inference:tokens) and panel answers " +
-  "(panel-response) are left out too. The final reply of a child's main agent is in its inference:speech, which the child sends " +
-  "where its subscription includes it. A reply that the provider refused at its end can still show there.";
+  "an alert's message and data, and an errorType of safety are left out. Streamed chunks (inference:tokens) are left out too. " +
+  "The final reply of a child's main agent is in its inference:speech, which the child sends where its subscription includes it. " +
+  "A reply that the provider refused at its end can still show there.";
 
 const dirs: string[] = [];
 const fleets: FleetModule[] = [];
@@ -62,12 +62,12 @@ const SHOWN: Event[] = [
   { type: 'inference:speech', agentName: 'leaf', content: 'Looking into it.', ts: 7 },
 ];
 
-test("fleet--peek shows a child's events without a failure's own text, says so, and the buffer keeps them whole", async () => {
+test("fleet--peek shows a child's events without a failure's own text, says so, and the buffer keeps them whole but holds no panel answer", async () => {
   const child = childWith(ARRIVED);
   const peek = await child.peek();
   expect(peek.success).toBe(true);
   expect(peek.data).toEqual({ name: 'leaf', count: SHOWN.length, events: SHOWN, note: NOTE });
-  expect(child.buffer()).toEqual(ARRIVED);
+  expect(child.buffer()).toEqual(ARRIVED.filter((event) => event.type !== 'panel-response'));
 });
 
 test("no text of a child's failed turn reaches a parent through fleet--peek, its tree's snapshot included", async () => {
@@ -99,7 +99,7 @@ test("no text of a child's failed turn reaches a parent through fleet--peek, its
   expect(node.attemptError).toBe('left out');
 });
 
-test("fleet--peek's lines counts the events it shows, with streamed chunks and panel answers left out before the count", async () => {
+test("fleet--peek's lines counts the events it shows, with streamed chunks left out before the count and no panel answer in the buffer", async () => {
   const child = childWith([
     { type: 'inference:speech', agentName: 'leaf', content: 'First reply.', ts: 1 },
     { type: 'inference:tokens', agentName: 'leaf', content: 'Sec', blockType: 'text', ts: 2 },
@@ -115,5 +115,5 @@ test("fleet--peek's lines counts the events it shows, with streamed chunks and p
       { type: 'inference:speech', agentName: 'leaf', content: 'Second reply.', ts: 4 },
     ],
   });
-  expect(child.buffer()).toHaveLength(5);
+  expect(child.buffer()).toHaveLength(4);
 });
