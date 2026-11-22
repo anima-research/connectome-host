@@ -35,10 +35,14 @@ import { FLEET_BEGIN_ENV } from '../fleet-begin.js';
 import { socketRefusesConnection } from './fleet-socket-probe.js';
 
 /** Events every child sends whatever its subscription asks for, for the
- *  host's own readers: its usage and the window traces at which the Web UI
- *  reads the child's panels again
- *  (agent-streams.ts WindowFrames). */
-const HOST_FORCED_TELEMETRY_EVENTS: readonly string[] = ['usage:updated', 'window:undone', 'presentation:retracted'];
+ *  host's own readers: its usage, the window traces at which the Web UI
+ *  reads the child's panels again (agent-streams.ts WindowFrames), and the
+ *  events from which the host assembles each round's text. */
+export const HOST_FORCED_TELEMETRY_EVENTS: readonly string[] = [
+  'usage:updated', 'window:undone', 'presentation:retracted',
+  'inference:started', 'inference:stream_resumed', 'inference:tokens', 'inference:tool_calls_yielded',
+  'inference:completed', 'inference:failed', 'inference:aborted', 'inference:exhausted',
+];
 export const CLOCK_SLACK_MS = 60_000;
 const ADOPTION_UNRESOLVED = 'adoption unresolved;';
 
@@ -156,6 +160,7 @@ interface FleetChild {
   spawnError?: unknown;
   env?: Record<string, string>;
   lastCompletedSpeech?: string;
+  rounds?: Map<string, { open: boolean; text: string; entry?: WireEvent }>;
   saidExiting?: boolean;
   reopening?: Promise<void>;
   reopenedAt?: number;
@@ -1586,9 +1591,8 @@ export class FleetModule implements Module {
     const c = this.children.get(input.name);
     if (!c) return this.unknownChild(input.name, 'there are no events to show');
     const requested = input.lines ?? 50;
-    const shown = c.events.filter((event) => event.type !== 'inference:tokens');
-    const n = Math.max(1, Math.min(requested, shown.length || 1));
-    const slice = shown.length > 0 ? shown.slice(-n) : [];
+    const n = Math.max(1, Math.min(requested, c.events.length || 1));
+    const slice = c.events.length > 0 ? c.events.slice(-n) : [];
     return { success: true, data: { name: c.name, count: slice.length, events: slice.map(peekView), note: PEEK_NOTE } };
   }
 
@@ -2143,6 +2147,7 @@ export class FleetModule implements Module {
   private attach(child: FleetChild, sock: Socket): void {
     child.socket = sock;
     child.buffer = '';
+    child.rounds = new Map();
     child.textsSent = 0;
     child.saidExiting = false;
     sock.on('data', (chunk: string) => {
@@ -2197,6 +2202,11 @@ export class FleetModule implements Module {
       return;
     }
     child.lastEventAt = Date.now();
+    this.keepRoundText(child, event);
+    if (event.type === 'inference:tokens') {
+      this.fanOutEvent(child.name, event);
+      return;
+    }
     if (event.type === 'inference:started' && (event as { replay?: unknown }).replay !== true) {
       child.idleSinceWork = false;
     } else if (event.type === 'lifecycle') {
@@ -2224,6 +2234,35 @@ export class FleetModule implements Module {
     }
     this.fanOutEvent(child.name, event);
     if (statusChanged) this.persistState();
+  }
+
+  private keepRoundText(child: FleetChild, event: WireEvent): void {
+    const { type, agentName } = event as { type?: string; agentName?: unknown };
+    if (typeof agentName !== 'string') return;
+    const rounds = (child.rounds ??= new Map());
+    const round = rounds.get(agentName);
+    if (type === 'inference:started' || type === 'inference:stream_resumed') {
+      rounds.set(agentName, { open: true, text: '' });
+    } else if (type === 'inference:tokens' && round?.open) {
+      const { content, blockType } = event as { content?: string; blockType?: string };
+      if (blockType === 'text') round.text = content === '' ? '' : round.text + (content ?? '');
+    } else if ((type === 'inference:tool_calls_yielded' || type === 'inference:completed') && round?.open) {
+      const { ts, replay } = event as { ts?: unknown; replay?: unknown };
+      const entry: WireEvent | undefined = round.text === '' ? undefined : {
+        type: 'inference:round_text', agentName, content: round.text,
+        ...(typeof ts === 'number' ? { ts } : {}), ...(replay === true ? { replay: true } : {}),
+      };
+      if (entry) child.events.push(entry);
+      if (type === 'inference:tool_calls_yielded') rounds.set(agentName, { open: false, text: '' });
+      else if (entry) rounds.set(agentName, { open: false, text: '', entry });
+      else rounds.delete(agentName);
+    } else if (type === 'inference:speech' && round?.entry) {
+      const at = child.events.lastIndexOf(round.entry);
+      if (at >= 0) child.events.splice(at, 1);
+      rounds.delete(agentName);
+    } else if (type === 'inference:completed' || type === 'inference:failed' || type === 'inference:aborted' || type === 'inference:exhausted') {
+      rounds.delete(agentName);
+    }
   }
 
   private fanOutEvent(childName: string, event: WireEvent): void {
@@ -2609,9 +2648,9 @@ export class FleetModule implements Module {
 const LEFT_OUT = 'left out';
 const PEEK_NOTE = `Each event's error and attemptError read "${LEFT_OUT}" in place of their text, but for a failed tool ` +
   "call's own error, which shows. An event's stack and providerErrorCode, an alert's message and data, and an errorType of " +
-  "safety are left out. Streamed chunks (inference:tokens) are left out too. The final reply of a child's main agent is in " +
-  "its inference:speech, and the text of each other round is in an inference:round_text; the child sends them where its " +
-  "subscription includes them. A reply that the provider refused at its end can still show in either event.";
+  "safety are left out. Streamed chunks (inference:tokens) are not kept. When a round ends, its text shows as an " +
+  "inference:round_text, or, for the final reply of a child's main agent, as the inference:speech that the child sends where " +
+  "its subscription includes it. A reply that the provider refused at its end can still show in either.";
 
 function peekView(event: WireEvent): Record<string, unknown> {
   const shown = withoutErrorText(event);
