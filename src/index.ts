@@ -86,7 +86,7 @@ import { createPipedTurns, switchFollowing, traceFollower } from './piped-turns.
 import { openReadlineTerminal, type ReadlineTerminal, type ShownPrompt } from './readline-terminal.js';
 import { opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts.js';
 import { TURN_SETTLED_TRACES } from './state/turn-trace.js';
-import { readHostVersions, setCallLogPath } from './bug-report.js';
+import { readHostVersions, setCallLogPath, type HostVersions } from './bug-report.js';
 import { SessionManager } from './session-manager.js';
 import { startFramework } from './start-framework.js';
 import { StartRefusal, currentForStart, releaseHere, type ReleaseHere } from './update/host.js';
@@ -259,6 +259,8 @@ let instructionsRef: InstructionsModule | null = null;
 let installHere: ReleaseHere | null = null;
 let terminalAsker: SecretAsker | null = null;
 
+let startedWith: HostVersions | null = null;
+
 async function createFramework(
   membrane: Membrane,
   storePath: string,
@@ -277,7 +279,7 @@ async function createFramework(
 
   const extensionRegistry = extensions ?? await loadExtensions(recipe);
 
-  const aboutModule = new AboutModule(readHostVersions());
+  const aboutModule = new AboutModule(startedWith ??= readHostVersions());
   const moduleInstances: Module[] = [new TuiModule(), new TimeModule(timeZone), settingsModule, aboutModule];
 
   let subagentModule: SubagentModule | null = null;

@@ -3,5 +3,5 @@
   start. agent-framework refuses a module and a server's `toolPrefix` that
   meet, with `Module "about" collides with MCPL server "<id>"'s toolPrefix
   "about"`. To migrate, give that server another `toolPrefix`. Unchanged: a
-  server with no `toolPrefix` gets `mcpl--<id>`, which no module's name
-  meets, and no shipped recipe sets `about`.
+  server with no `toolPrefix` gets `mcpl--<id>`, which is never `about`,
+  and no shipped recipe sets `about`.

@@ -921,9 +921,17 @@ describe('mcpl_list labels', () => {
     servers.get('partial')!.serverInfo = { name: null, version: '1.2.0' };
     servers.get('quiet')!.serverInfo = null;
     const text = String((await call(makeModule(stub), 'mcpl_list')).data);
-    expect(text).toMatch(/^ *discord: CONNECTED — server=discord-mcpl 0\.8\.0, policy=/m);
-    expect(text).toMatch(/^ *partial: CONNECTED — server=\(no name\) 1\.2\.0, policy=/m);
+    expect(text).toMatch(/^ *discord: CONNECTED — server="discord-mcpl 0\.8\.0", policy=/m);
+    expect(text).toMatch(/^ *partial: CONNECTED — server="\(no name\) 1\.2\.0", policy=/m);
     expect(text).toMatch(/^ *quiet: CONNECTED — server=unknown, policy=/m);
+  });
+
+  test("a server's name and version stay one quoted value in its line, whatever they hold", async () => {
+    const { stub, servers } = makeStubFramework();
+    await (stub as unknown as { connectMcplServer: (c: { id: string; command: string }) => Promise<void> }).connectMcplServer({ id: 'odd', command: 'node' });
+    servers.get('odd')!.serverInfo = { name: 'x, policy=established', version: '"1"' };
+    const text = String((await call(makeModule(stub), 'mcpl_list')).data);
+    expect(text).toMatch(/^ *odd: CONNECTED — server="x, policy=established \\"1\\"", policy=established, /m);
   });
 });
 

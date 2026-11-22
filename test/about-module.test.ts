@@ -60,10 +60,14 @@ describe('about--versions', () => {
     expect(String((await answer(about([]))).data).split('\n').slice(2)).toEqual(['No MCPL server is loaded.']);
   });
 
-  test('once the host has stopped, it still gives the versions, and says the servers can\'t be listed', async () => {
-    const lines = String((await answer(about(null))).data).split('\n');
-    expect(lines.slice(0, 1)).toEqual(['connectome-host 0.27.1']);
-    expect(lines[2]).toMatch(/can't be listed/);
+  test("once the module has stopped, it still gives the versions, and says the servers can't be listed right now", async () => {
+    const module = about([row('discord', true, { name: 'discord-mcpl', version: '0.8.0' })]);
+    await module.stop();
+    expect(String((await answer(module)).data).split('\n')).toEqual([
+      'connectome-host 0.27.1',
+      'agent-framework 0.35.2 · membrane 0.10.4 · context-manager 0.28.0 · chronicle unknown',
+      "The MCPL servers can't be listed right now.",
+    ]);
   });
 
   test("it's a utility of the built-in toolset, not a tool in the agent's tool list", () => {

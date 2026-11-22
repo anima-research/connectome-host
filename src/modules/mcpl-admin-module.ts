@@ -237,8 +237,7 @@ export class McplAdminModule implements Module {
       {
         name: 'mcpl_list',
         description:
-          'List all MCPL servers: connection/retry state, the server\'s own name and version as it gave them ' +
-          'when it connected, whether policy was established, ' +
+          'List all MCPL servers: connection/retry state, whether policy was established, ' +
           'the effective grant, masked/denied capability paths, host-command authority, ' +
           'validated manifest revision/fetch/negotiation freshness, tool count, each tool\'s ' +
           'effective class and where it came from, target, and config source.',
@@ -446,7 +445,7 @@ export class McplAdminModule implements Module {
       const hostCommands = s.allowHostCommands === undefined
         ? 'unknown'
         : s.allowHostCommands ? 'allow' : 'deny';
-      const server = s.serverInfo ? nameAndVersion(s.serverInfo) : 'unknown';
+      const server = s.serverInfo ? JSON.stringify(nameAndVersion(s.serverInfo)) : 'unknown';
       lines.push(
         `${s.id}: ${connectionState} — server=${server}, policy=${policyState}, ` +
         `grant=${formatCapabilityList(s.effectiveGrant)}, ` +

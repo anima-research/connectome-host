@@ -151,8 +151,6 @@ const OUR_PACKAGES = ['agent-framework', 'membrane', 'context-manager', 'mcpl-co
 
 export type RuntimeMode = 'tui' | 'headless' | 'readline' | 'batch';
 
-/** What the host runs: its own version, its commit when it runs from a git
- *  checkout, and the version of each Connectome package that it loads. */
 export interface HostVersions {
   host: { version: string | null; commit: { sha: string; modified: boolean | null } | null };
   packages: Array<{ name: string; version: string | null }>;
@@ -786,7 +784,6 @@ function dependencyVersion(name: string, from: string): string | null {
 
 const STACK_PACKAGES = ['@animalabs/agent-framework', '@animalabs/membrane', '@animalabs/context-manager', '@animalabs/chronicle'];
 
-/** {@link HostVersions} as the install at `root` holds them when it's read. */
 export function readHostVersions(root: string = ROOT): HostVersions {
   return {
     host: { version: version(readJson(join(root, 'package.json'))?.version), commit: hostCommit(root) },
@@ -794,7 +791,6 @@ export function readHostVersions(root: string = ROOT): HostVersions {
   };
 }
 
-/** The host's version line, as a report's Environment opens with it. */
 export function hostVersionLine(host: HostVersions['host']): string {
   const commit = host.commit
     ? ` (commit ${host.commit.sha.slice(0, 12)}, modified: ${host.commit.modified === null ? 'unknown' : host.commit.modified ? 'yes' : 'no'})`
@@ -802,7 +798,6 @@ export function hostVersionLine(host: HostVersions['host']): string {
   return `connectome-host ${host.version ?? 'unknown'}${commit}`;
 }
 
-/** The packages' version line, as a report's Environment gives it. */
 export function packageVersionsLine(packages: HostVersions['packages']): string {
   return packages.map((p) => `${p.name.replace('@animalabs/', '')} ${p.version ?? 'unknown'}`).join(' · ');
 }

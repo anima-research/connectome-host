@@ -68,7 +68,7 @@ export class AboutModule implements Module {
     const lines = [hostVersionLine(this.versions.host), packageVersionsLine(this.versions.packages)];
     lines.push(...(this.framework
       ? serverVersionLines(this.framework.listMcplServers())
-      : ['The MCPL servers can\'t be listed, since the host has stopped.']));
+      : ['The MCPL servers can\'t be listed right now.']));
     return { success: true, data: lines.join('\n') };
   }
 }
