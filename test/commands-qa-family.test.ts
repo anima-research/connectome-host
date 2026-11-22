@@ -59,6 +59,7 @@ function makeStubWorld(agentStatus: string | null = 'idle') {
   const undone: string[] = [];
   const app = {
     framework: {
+      getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
       getAgent: () => undefined,
       getAllAgents: () => [agent],
       getAllModules: () => [],
@@ -202,6 +203,7 @@ describe('/budget honest display', () => {
   function makeBudgetApp(maxStreamTokens: number, last = 0) {
     return {
       framework: {
+        getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
         getAgent: () => undefined,
         getAllAgents: () => [{ name: 'a', maxStreamTokens, lastStreamInputTokens: last, getContextManager: () => null }],
         getAllModules: () => [],
@@ -228,7 +230,7 @@ describe('/budget honest display', () => {
       { name: 'a', maxStreamTokens: 1000, lastStreamInputTokens: 0, getContextManager: () => null },
       { name: 'b', maxStreamTokens: 2000, lastStreamInputTokens: 0, getContextManager: () => null },
     ];
-    const app = { ...makeBudgetApp(1000), framework: { getAgent: () => undefined, getAllAgents: () => agents, getAllModules: () => [] } } as any;
+    const app = { ...makeBudgetApp(1000), framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }), getAgent: () => undefined, getAllAgents: () => agents, getAllModules: () => [] } } as any;
     for (const arg of ['1e309k', '1e306m']) {
       expect(handleCommand(`/budget ${arg}`, app).lines[0]!.text).toBe(`Invalid token count: "${arg}". Examples: 150k, 1m, 200000`);
     }
@@ -241,6 +243,7 @@ describe('/budget honest display', () => {
     });
     const app = {
       framework: {
+        getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
         getAgent: () => undefined,
         getAllAgents: () => [
           agent('bound', 'claude-opus-5-5', 1_000_000),
@@ -266,6 +269,7 @@ describe('/budget honest display', () => {
     try {
       const app = {
         framework: {
+          getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
           getAgent: () => undefined,
           getAllAgents: () => [{
             name: 'bound', model: 'claude-opus-5-5', physicalWindowTokens: 1_000_000, maxStreamTokens: 150_000, lastStreamInputTokens: 400_000, getContextManager: () => null,
@@ -292,7 +296,7 @@ describe('/mcp add preserves env on overwrite', () => {
   });
 
   test('overwriting the command keeps env vars and reports them', () => {
-    const app = { framework: { getAllAgents: () => [], getAllModules: () => [] }, branchState: createBranchState() } as any;
+    const app = { framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }), getAllAgents: () => [], getAllModules: () => [] }, branchState: createBranchState() } as any;
     handleCommand('/mcp add envtest echo hello', app);
     handleCommand('/mcp env envtest FOO=bar SECRET=hunter2', app);
     const r = handleCommand('/mcp add envtest echo goodbye', app);
@@ -305,7 +309,7 @@ describe('/mcp add preserves env on overwrite', () => {
   });
 
   test('old args are dropped when the new command line has none', () => {
-    const app = { framework: { getAllAgents: () => [], getAllModules: () => [] }, branchState: createBranchState() } as any;
+    const app = { framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }), getAllAgents: () => [], getAllModules: () => [] }, branchState: createBranchState() } as any;
     handleCommand('/mcp add argtest echo one two', app);
     handleCommand('/mcp add argtest ls', app);
     const saved = JSON.parse(readFileSync(DEFAULT_CONFIG_PATH, 'utf-8')).mcplServers;
@@ -379,6 +383,37 @@ describe('/newtopic cut short by a stop', () => {
             ? 'To store it after the restart, run this one-line command:\n/newtopic Done: the ledger. Next: the release.'
             : 'To store it after the restart, run /newtopic with it as the text:\nDone: the ledger.\nNext: the release.'),
       );
+    }
+  });
+});
+
+describe('/newtopic sent by a fleet parent', () => {
+  test("a bare one whose summary can't be written leaves the cause out of its line and writes it to the host's log, on one line with its time", async () => {
+    const cause = 'sentinel-7e1a provider said:\n  overloaded';
+    const written: string[] = [];
+    const write = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    try {
+      const lines: Record<string, string> = {};
+      for (const via of ['fleet', 'headless'] as const) {
+        const { cm, app, text } = makeStubWorld('idle');
+        Object.assign(cm, {
+          getStrategy: () => ({}),
+          windowMode: () => 'presented',
+          indexLength: () => 0,
+          getPresentedMessages: () => [],
+          generateTransitionSummary: async () => { throw new Error(cause); },
+        });
+        lines[via] = text(await handleCommand('/newtopic', app, { requester: { via } }).asyncWork!);
+      }
+      expect(lines).toEqual({
+        fleet: "Topic reset failed: the transition summary couldn't be written; nothing was stored",
+        headless: `Topic reset failed: the transition summary couldn't be written (${cause}); nothing was stored`,
+      });
+      expect(written).toHaveLength(1);
+      expect(written[0]).toMatch(/^\[\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\] \[host\] \/newtopic's transition summary couldn't be written: sentinel-7e1a provider said: overloaded\n$/);
+    } finally {
+      process.stderr.write = write;
     }
   });
 });

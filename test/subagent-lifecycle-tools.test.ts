@@ -737,7 +737,9 @@ describe("a launch whose caller ends before it registers", () => {
       h.release();
       const told = () => h.parentMessages().find((m) => m.content.some((b) => b.text?.includes("[Subagent 'queued-3' failed, for 'caller', which has ended]")));
       await h.until(() => told() !== undefined, 'the failure reaches the primary', 20_000);
-      expect(told()!.content.map((b) => b.text ?? '').join('')).toContain('the request was refused');
+      const failure = told()!.content.map((b) => b.text ?? '').join('');
+      expect(failure).toContain('the model call failed (unknown)');
+      expect(failure).not.toContain('the request was refused');
       expect(h.recordOf('queued-3')!.relationships.spawnedBy).toBe('parent');
     } finally { await h.cleanup(); }
   }, 40_000);
@@ -1269,4 +1271,32 @@ describe('what a run that ends without a result says, and to whom', () => {
       expect(h.framework.listHeldMail({ to: 'caller' }).some((m) => JSON.stringify(m.content).includes("[Subagent 'moved-1'"))).toBe(false);
     } finally { await h.cleanup(); }
   }, 30_000);
+});
+
+describe('a failed subagent\'s error stays with the operator', () => {
+  test('its run\'s cause keeps the error, and neither list nor peek shows it to a parent', async () => {
+    const SENTINEL = 'sentinel-6e2a provider said: invalid x-api-key';
+    const h = await harness({
+      responseGenerator: (r) => {
+        if (r.model === 'mock-refused') throw new Error(SENTINEL);
+        return 'ok';
+      },
+    });
+    const fw = h.framework as unknown as { runEphemeralToCompletion: (...args: unknown[]) => Promise<unknown> };
+    const run = fw.runEphemeralToCompletion.bind(fw);
+    const rejections: unknown[] = [];
+    fw.runEphemeralToCompletion = (...args) => run(...args).catch((err: unknown) => { rejections.push(err); throw err; });
+    try {
+      expect((await h.call('spawn', { name: 'scout', systemPrompt: 'p', task: 'answer', model: 'mock-refused', sync: true })).success).toBe(false);
+      const causes = rejections.map((err) => (err instanceof Error && err.cause instanceof Error ? err.cause.message : ''));
+      expect(causes.some((m) => m.includes(SENTINEL))).toBe(true);
+      const active = (h.subagent as unknown as { activeSubagents: Map<string, { status: string }> }).activeSubagents;
+      expect(active.get('spawn-scout')?.status).toBe('failed');
+      const listed = await h.call('list', {});
+      expect(JSON.stringify(listed)).toContain('"name":"scout"');
+      const views = [listed, await h.call('peek', {}), await h.call('peek', { name: 'scout' })];
+      expect(views.map((view) => [view.success, view.error])).toEqual([[true, undefined], [true, undefined], [true, undefined]]);
+      for (const view of views) expect(JSON.stringify(view)).not.toContain('sentinel-6e2a');
+    } finally { await h.cleanup(); }
+  }, 20_000);
 });

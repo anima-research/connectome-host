@@ -54,10 +54,13 @@ export const DEFAULT_TIERS: Readonly<Record<string, NoticeTier>> = Object.freeze
   'refusal': 'silent',
 });
 
-/** agent-framework raises these kinds with no `-clear` alert. */
+/** Kinds whose episode closes on success, including a context refusal whose
+ *  held turn ran after release. A stopped or removed hold can clear earlier. */
 const CLOSES_ON_SUCCESS: ReadonlySet<string> = new Set([
   'hard-down', 'context-refusal', 'refusal', 'refusal-offpath', 'context-maintenance-failed',
 ]);
+
+const OWN_TURN_KINDS: ReadonlySet<string> = new Set(['hard-down', 'context-refusal', 'refusal']);
 
 /** Alert kinds whose `agentName` is a component id (an MCPL server), not an
  *  agent. */
@@ -79,7 +82,6 @@ const DEFAULT_RENOTIFY_MS = 30 * 60_000;
 const DEFAULT_WAKER_WINDOW_MS = 10 * 60_000;
 
 interface ActiveKind {
-  message: string;
   tier: NoticeTier;
   until?: number;
   at: number;
@@ -117,15 +119,15 @@ function episodeTier(ep: Episode): NoticeTier {
   return best;
 }
 
-function primaryKind(ep: Episode): { kind: string; message: string; until?: number } {
+function primaryKind(ep: Episode): { kind: string; until?: number } {
   const tier = episodeTier(ep);
   let pick: [string, ActiveKind] | undefined;
   for (const entry of ep.kinds) {
     if (entry[1].tier !== tier) continue;
     if (!pick || entry[1].at >= pick[1].at) pick = entry;
   }
-  const [kind, k] = pick ?? ['', { message: '', tier, at: 0 }];
-  return { kind, message: k.message, ...(k.until !== undefined ? { until: k.until } : {}) };
+  const [kind, k] = pick ?? ['', { tier, at: 0 }];
+  return { kind, ...(k.until !== undefined ? { until: k.until } : {}) };
 }
 
 export function globToRegExp(pattern: string): RegExp {
@@ -143,16 +145,46 @@ function matchesAny(value: string, patterns: readonly RegExp[]): boolean {
   return patterns.some((p) => p.test(value));
 }
 
+const REPLY_WORDS: Readonly<Record<string, string>> = Object.freeze({
+  'quota-spent': 'its subscription quota is spent',
+  'auth-expired': 'its provider credential has expired',
+  'auth-rejected': 'its provider credential was rejected',
+  'auth-login-required': 'its provider login must be redone',
+  'hard-down': 'its model calls keep failing',
+  'provider-hold': 'the provider is holding its requests',
+});
+
+const STATUS_WORDS: Readonly<Record<string, string>> = Object.freeze({
+  'context-refusal': "its context couldn't be compiled for a request",
+  'mcpl-down': "this server isn't answering",
+  'quota-unreadable': "its subscription quota couldn't be read, so no spent-quota hold is possible; an operator's Re-read quota reads it again",
+  'auth-expiring': 'its provider credential expires soon',
+  'credential-unsaved': "its provider credential couldn't be saved to its file, so a restart may not find the credential in use; an operator's Re-check writes it again",
+  'refusal-offpath': "a request outside its own turns, such as for a summary, couldn't be completed",
+  'refusal': "a request couldn't be completed",
+  'context-maintenance-failed': "its context maintenance didn't finish; failures.log says why",
+  'compression-quarantine': 'part of its history is held back from summaries and stays whole, which in time fills its context budget; an operator can inspect what is held, then branch, pin or clear it',
+  'instructions-unavailable': "its instructions couldn't be loaded, so none are injected; failures.log says why",
+});
+
+const UNTIL_WORDS: Readonly<Record<string, string>> = Object.freeze({
+  'auth-expiring': 'The credential expires at',
+});
+
+function wordsFor(table: Readonly<Record<string, string>>, kind: string): string | undefined {
+  return Object.hasOwn(table, kind) ? table[kind] : undefined;
+}
+
 function plainReason(kind: string): string {
-  switch (kind) {
-    case 'quota-spent': return 'its subscription quota is spent';
-    case 'auth-expired': return 'its provider credential has expired';
-    case 'auth-rejected': return 'its provider credential was rejected';
-    case 'auth-login-required': return 'its provider login must be redone';
-    case 'hard-down': return 'its model calls keep failing';
-    case 'provider-hold': return 'the provider is holding its requests';
-    default: return `it is temporarily unavailable (${kind})`;
-  }
+  return wordsFor(REPLY_WORDS, kind) ?? `it is temporarily unavailable (${kind})`;
+}
+
+function statusReason(kind: string): string {
+  return wordsFor(REPLY_WORDS, kind) ?? wordsFor(STATUS_WORDS, kind) ?? 'the host raised an alert of this kind';
+}
+
+function untilText(ep: { kind: string; until?: number }): string {
+  return ep.until !== undefined ? ` ${wordsFor(UNTIL_WORDS, ep.kind) ?? 'Expected back after'} ${fmtUntil(ep.until)}.` : '';
 }
 
 function fmtUntil(ms: number): string {
@@ -160,24 +192,20 @@ function fmtUntil(ms: number): string {
 }
 
 export function replyNoticeText(agent: string, ep: { kind: string; until?: number }): string {
-  const when = ep.until !== undefined ? ` Expected back after ${fmtUntil(ep.until)}.` : '';
-  return `⚠ [host notice] ${agent} cannot respond right now: ${plainReason(ep.kind)}.${when} An operator has been alerted.`;
+  return `⚠ [host notice] ${agent} cannot respond right now: ${plainReason(ep.kind)}.${untilText(ep)} An operator has been alerted.`;
 }
 
 export function replyClearText(agent: string): string {
   return `✓ [host notice] ${agent} can respond again.`;
 }
 
-export function statusNoticeText(subject: string, ep: { kind: string; message: string; until?: number }): string {
-  const when = ep.until !== undefined ? ` Expected back after ${fmtUntil(ep.until)}.` : '';
-  const msg = ep.message ? `: ${ep.message.slice(0, 500)}` : '';
-  return `⚠ [host notice] ${subject} — ${ep.kind}${msg}.${when}`;
+export function statusNoticeText(subject: string, ep: { kind: string; until?: number }): string {
+  return `⚠ [host notice] ${subject} — ${ep.kind}: ${statusReason(ep.kind)}.${untilText(ep)}`;
 }
 
-export function statusClearText(subject: string, kind: string, message: string, still?: string): string {
-  const msg = message ? ` (${message.slice(0, 200)})` : '';
+export function statusClearText(subject: string, kind: string, still?: string): string {
   const rest = still ? ` Still: ${still}.` : '';
-  return `✓ [host notice] ${subject} — ${kind} cleared${msg}.${rest}`;
+  return `✓ [host notice] ${subject} — ${kind} cleared.${rest}`;
 }
 
 interface Registry {
@@ -353,7 +381,7 @@ export class NoticesModule implements Module {
           const ep = this.agentEpisode();
           if (ep) {
             for (const kind of [...ep.kinds.keys()]) {
-              if (CLOSES_ON_SUCCESS.has(kind)) this.removeKind(ep, kind, { message: 'inference completed', superseded: false });
+              if (CLOSES_ON_SUCCESS.has(kind)) this.removeKind(ep, kind, { superseded: false });
             }
           }
         }
@@ -366,7 +394,7 @@ export class NoticesModule implements Module {
           const ep = this.episodes.get(serverId);
           if (ep) {
             for (const kind of [...ep.kinds.keys()]) {
-              if (COMPONENT_KINDS.has(kind)) this.removeKind(ep, kind, { message: 'reconnected', superseded: false });
+              if (COMPONENT_KINDS.has(kind)) this.removeKind(ep, kind, { superseded: false });
             }
           }
         }
@@ -391,7 +419,7 @@ export class NoticesModule implements Module {
       if (isProcessRefusal(key, base)) return;
       const ep = this.episodes.get(key);
       if (!ep || !ep.kinds.has(base)) return;
-      this.removeKind(ep, base, { message, superseded: /^superseded by /.test(message) });
+      this.removeKind(ep, base, { superseded: /^superseded by /.test(message) });
       return;
     }
 
@@ -412,7 +440,7 @@ export class NoticesModule implements Module {
       const now = this.now();
       const at = process && prior && prior.at + this.quietMs <= now ? now : prior?.at ?? now;
       const seq = prior && !process ? prior.seq : existing.nextSeq++;
-      existing.kinds.set(kind, { message, tier, until, at, seq });
+      existing.kinds.set(kind, { tier, until, at, seq });
       if (prior && !process) return;
       if (process) for (const heard of existing.statusHeard.values()) heard.delete(kind);
       this.scheduleStatus(existing);
@@ -420,7 +448,7 @@ export class NoticesModule implements Module {
       return;
     }
     const ep: Episode = {
-      id, key, kinds: new Map([[kind, { message, tier, until, at: this.now(), seq: 0 }]]), since: this.now(),
+      id, key, kinds: new Map([[kind, { tier, until, at: this.now(), seq: 0 }]]), since: this.now(),
       notified: new Map(), replyPosting: new Set(), pending: new Set(), statusHeard: new Map(), statusPosting: new Map(), statusOwedClear: new Map(), nextSeq: 1, markedForms: new Set(),
     };
     this.episodes.set(id, ep);
@@ -436,7 +464,7 @@ export class NoticesModule implements Module {
     return undefined;
   }
 
-  private removeKind(ep: Episode, kind: string, opts: { message: string; superseded: boolean }): void {
+  private removeKind(ep: Episode, kind: string, opts: { superseded: boolean }): void {
     const wasReply = episodeTier(ep) === 'reply';
     ep.kinds.delete(kind);
     const open = ep.kinds.size > 0;
@@ -453,7 +481,7 @@ export class NoticesModule implements Module {
     for (const [ch, owed] of ep.statusOwedClear) if (owed.delete(kind)) owedChannels.add(ch);
     if (!opts.superseded) {
       for (const ch of owedChannels) {
-        void this.post(ch, statusClearText(subject, kind, opts.message, still), ep, { track: false, owe: { key: ep.key, clearedKind: kind } });
+        void this.post(ch, statusClearText(subject, kind, still), ep, { track: false, owe: { key: ep.key, clearedKind: kind } });
       }
     }
     if (opts.superseded || !wasReply || stillReply) return;
@@ -468,7 +496,7 @@ export class NoticesModule implements Module {
     const kind = 'refusal-offpath';
     if (ep.id === PROCESS_REFUSAL && ep.kinds.has(kind) &&
         this.statusChannels.every((ch) => ep.statusHeard.get(ch)?.has(kind))) {
-      this.removeKind(ep, kind, { message: '', superseded: true });
+      this.removeKind(ep, kind, { superseded: true });
     }
   }
 
@@ -560,7 +588,7 @@ export class NoticesModule implements Module {
     posting.set(kind, k.seq);
     const subject = ep.key || this.config.agentName || 'the agent';
     const epoch = this.reconnectEpoch;
-    const r = await this.post(channelId, statusNoticeText(subject, { kind, message: k.message, ...(k.until !== undefined ? { until: k.until } : {}) }), ep, { track: true, kind });
+    const r = await this.post(channelId, statusNoticeText(subject, { kind, ...(k.until !== undefined ? { until: k.until } : {}) }), ep, { track: true, kind });
     if (posting.get(kind) === k.seq) posting.delete(kind);
     if (process && r.ok) this.processLastSuccess.set(channelId, this.now());
     if (r.reflush) this.reflush(ep, channelId);
@@ -584,7 +612,7 @@ export class NoticesModule implements Module {
     if (live?.seq === k.seq) { heard.add(kind); return; }
     if (live) { this.scheduleStatus(ep); return; }
     const still = this.episodes.get(ep.id) === ep && ep.kinds.size > 0 ? primaryKind(ep).kind : undefined;
-    void this.post(channelId, statusClearText(subject, kind, 'cleared while posting', still), ep, { track: false, owe: { key: ep.key, clearedKind: kind } });
+    void this.post(channelId, statusClearText(subject, kind, still), ep, { track: false, owe: { key: ep.key, clearedKind: kind } });
   }
 
   private async postReply(ep: Episode, channelId: string): Promise<void> {
@@ -717,7 +745,7 @@ export class NoticesModule implements Module {
   }
 
   private markerForm(kind: string): MarkerForm {
-    return this.tierFor(kind) === 'reply' || CLOSES_ON_SUCCESS.has(kind) ? 'unanswered' : 'status';
+    return this.tierFor(kind) === 'reply' || OWN_TURN_KINDS.has(kind) ? 'unanswered' : 'status';
   }
 
   /** The marker is written through this module's context for the agent

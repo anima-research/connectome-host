@@ -30,7 +30,7 @@ bun src/index.ts <recipe> --headless [--exit-when-idle] [--socket-path <path>]
 | Flag | Effect |
 |---|---|
 | `--headless` | Start the framework as usual, then run the headless runtime instead of the TUI or the piped loop. Takes precedence over `--no-tui`. |
-| `--exit-when-idle` | One-shot: once the host has said `lifecycle:idle` (below) and nothing at all has been in flight for ≥500 ms, a running background script included, shut down gracefully with exit code 0. An armed self-restart (`modules.selfRestart`) takes its place and exits 75 instead; if it is cancelled, the host exits 0 once nothing at all has been in flight for 500 ms after the poll, every 100 ms, that sees the cancel. FleetModule never passes this flag. |
+| `--exit-when-idle` | One-shot: once the host has said `lifecycle:idle` (below) and nothing at all has been in flight for ≥500 ms, a running background script included, shut down gracefully with exit code 0. An armed self-restart (`modules.selfRestart`) takes its place and exits 75 instead; if it is cancelled, the host exits 0 once nothing at all has been in flight for 500 ms after the poll, every 100 ms, that sees the cancel. An armed self-update (`modules.selfUpdate`) takes its place too. The host tries the update there, and exits 75 once it switches. While a try can't go ahead, the host stays running, until the update goes ahead or is disarmed. FleetModule never passes this flag. |
 | `--socket-path <p>` | Override the socket location. FleetModule never passes this either; it always expects `{dataDir}/ipc.sock`. |
 
 **Put the recipe first.** The recipe argument is the *first argument that does
@@ -71,11 +71,9 @@ emitted, the replay ends with `lifecycle` `replay-truncated` saying how many
 were cut. After that, events emitted while no client is connected are
 dropped, not buffered: a later client sends `describe` for a `snapshot`.
 
-**Shutdown.** Triggered by `{"type":"shutdown"}`, by `/quit` sent as a
-`command`, by SIGTERM or SIGINT, by `--exit-when-idle`, or by an agent's
-armed self-restart (`modules.selfRestart`), which goes once the host has said
-`lifecycle:idle` (below) and nothing at all has been in flight for ≥500 ms, a
-running background script included. The child emits
+**Shutdown.** A shutdown starts on `{"type":"shutdown"}`, on `/quit` sent as a `command`, on SIGTERM or SIGINT, or on `--exit-when-idle`. An agent's armed self-restart (`modules.selfRestart`) starts one too. It waits until the host has said `lifecycle:idle` (below) and nothing at all has been in flight for ≥500 ms, including a running background script. An update's switch starts one too, whether a person asked for it or an agent armed it (`modules.selfUpdate`).
+
+The child emits
 `lifecycle:exiting`; from then on it starts no session switch, and one under
 way that hasn't installed its new framework stops at its next step, stopping a
 framework it has made rather than starting it (one already installing
@@ -86,7 +84,7 @@ extension's `register()`, or an MCPL server's tool listing under
 `requestTimeoutMs: 0`, isn't. Then it calls `framework.stop()`
 (which cancels in-flight streams rather than letting them finish), closes the
 server, unlinks the socket and pid file, and exits once `headless.log` has
-taken its last lines: 0 (75 for a self-restart), or 1 if `framework.stop()`, or stopping what the switch made, failed. It waits at
+taken its last lines: 0 (75 for a self-restart or an update's switch), or 1 if `framework.stop()`, or stopping what the switch made, failed. It waits at
 most 2 s, then exits anyway with a line on its stderr. What it writes
 through `process.stdout.write` and `process.stderr.write` once the log has
 ended goes to its stderr too; Bun's `console.*` writes to its stdout and
@@ -127,7 +125,7 @@ Types live in `IncomingCommand` (`src/modules/fleet-types.ts`).
 | `request-workspace-file` | `path`, `corrId?` | → `workspace-file-snapshot` (≤5000 lines, with `truncated`, or `error`) |
 | `cancel-subagent` | `name`, `corrId?` | → `cancel-subagent-result`. The only way to stop a subagent that lives inside a child. |
 | `panel-request` | `op`, `params?`, `corrId?` | → `panel-response`, via the same `runPanelOp` the WebUI runs in-process (§3). |
-| `update-request` | `request`, `corrId` | → `update-response`. A switch's request from the install's host (`src/update/quiesce.ts`): `{op: 'quiesce', to, waitMs}` quiesces the child under the switch's reason for `to` and waits up to `waitMs` for its turns to end (a `waitMs` under a second still waits up to a second, agent-framework's least), answering whether it drained, which agents hold a turn and how many scripts run outside a turn, or, for a child whose quiesce was ended meanwhile, that it can't be counted; `{op: 'resume'}` ends the switch's quiesce, leaving any other. A request it can't read is answered `ok: false` with why. |
+| `update-request` | `request`, `corrId` | → `update-response`. A switch's request from the install's host (`src/update/quiesce.ts`). `{op: 'quiesce', to, waitMs}` quiesces the child under the switch's reason for `to`. Then it waits up to `waitMs` for the child's turns to end. A `waitMs` under a second still waits up to a second, agent-framework's least. The answer says whether the child drained, which agents hold a turn, and how many scripts run outside a turn. It carries `operatorHold`, with its `reason` if it has one, when the child was already quiesced under another reason. It carries `inFlight` when the child has work in flight beside the framework's drained, and names that work: where the answer reads drained, turn work that the child's own idle check still counts, such as a text the framework refused that it holds for the next; a session switch; an operator's work; a credential action; subagent runs. For a child whose quiesce was ended meanwhile, the answer says that it can't be counted. `{op: 'resume'}` ends the switch's quiesce, and leaves any other. A host also sends `{op: 'resume'}` at its own start to each child that it adopted, since a stop during a switch's try can leave a child holding the switch's quiesce. A request that the child can't read is answered `ok: false`, with why. |
 
 ### 2.2 Child → parent
 
@@ -265,8 +263,8 @@ prompt. autoStart, autoRestart and `fleet--restart` bypass the check.
 | `fleet--list` | — | One row per known child. |
 | `fleet--status` | `name?` | Detailed record (shows the *requested* subscription, before the forced union below). |
 | `fleet--send` | `name, content` | Send a `text` command. |
-| `fleet--command` | `name, command` | Send a `command`; returns immediately — output arrives as `command-output` events (see `fleet--peek`). |
-| `fleet--peek` | `name, lines?=50` | Last N raw events from the child's 500-event ring buffer. |
+| `fleet--command` | `name, command` | Send a `command`; returns immediately — output arrives as `command-output` events (see `fleet--peek`). For a command that the fleet sent, `/auth` leaves out the credential's two messages, which can hold the provider's words. |
+| `fleet--peek` | `name, lines?=50` | Last N events from the child's 500-event ring buffer, each without a failure's own text: an `error` or `attemptError` at any depth that holds text or an object reads `"left out"`, but for a `tool:failed` event's own `error`, which shows, and `stack`, `providerErrorCode`, an alert's `message` and `data`, and an `errorType` of `safety` are left out. The buffer keeps no streamed chunk (`inference:tokens`). When a round with text ends, this host puts its text into the buffer as an `inference:round_text` (`agentName, content`), just before the event that ended the round. Where the child then sends an `inference:speech` for that round, the speech takes its place. A round whose start this host didn't see has none. A reply that the provider refused at its end can still show in either. A `note` in the result says so. The buffer keeps each event that it holds whole, and holds no `panel-response`, which goes only to its request. |
 | `fleet--kill` | `name` | `shutdown`, wait `gracefulShutdownMs`, SIGTERM, wait `sigtermEscalationMs`, SIGKILL. |
 | `fleet--restart` | `name` | Kill, then relaunch with the same recipe, dataDir, subscription, `env` and `autoRestart`. Cancels a pending automatic restart and starts a fresh retry budget (§4.6), as a `fleet--launch` of the same name does. |
 | `fleet--relay` | `from, to, prefix?` | Send to `to` the last `inference:speech` this host has had from `from` since its connection to `from` last opened. Refused when that frame is `""`, a round with no text, and while this host has no connection to a `from` that may be running (below). |
@@ -328,8 +326,12 @@ the list already contains `*`) adds any event the tree reducer needs that no
 existing pattern covers. That set, `REDUCER_REQUIRED_EVENTS`, is derived from
 the reducer's handlers in `src/state/agent-tree-reducer.ts` — adding a handler
 extends it with no recipe edits — plus the events the host forces:
-`usage:updated`, and `window:undone` and `presentation:retracted`, at which
-the Web UI reads the child's panels again. A recipe's `subscription`
+`usage:updated`; `window:undone` and `presentation:retracted`, at which
+the Web UI reads the child's panels again; and `inference:started`,
+`inference:stream_resumed`, `inference:tokens`, `inference:tool_calls_yielded`,
+`inference:completed`, `inference:failed`, `inference:aborted` and
+`inference:exhausted`, from which this host assembles each round's text for
+`fleet--peek`. A recipe's `subscription`
 therefore means "events I want *in addition to* what rendering needs".
 
 **Not forced:** `lifecycle` (needed by `fleet--await`), `inference:speech`

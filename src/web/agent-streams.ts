@@ -1,4 +1,4 @@
-import { STREAM_END_TRACES } from '../state/turn-trace.js';
+import { retractionMarksRows, STREAM_END_TRACES } from '../state/turn-trace.js';
 import type { AgentNode } from '../state/agent-tree-reducer.js';
 import { AGENT_TREE_SCOPES, isChildScope, type UndoneMarksMessage } from './protocol.js';
 
@@ -107,15 +107,14 @@ export interface WindowFrameHooks {
 }
 
 /**
- * The frames that move an agent's window, agent-framework #291's undo, redo
- * and shed (DQ-4), each taken in order. The transcript shows the record,
+ * The frames that move an agent's window, each taken in order. The transcript shows the record,
  * which keeps the rows, and an `undone-marks` frame marks them. The shown
  * panels read the window again when the frame is for the agent they answer
  * for, in their scope, once:
  *
  * - locally, at the conversation agent's `window:undone` trace (an undo or a
  *   redo), and at an undone-marks frame for it that doesn't come right after
- *   that trace (a shed's, which has no trace): the host sends one after each
+ *   that trace (a shed's or an unsent-injection retraction's): the host sends one after each
  *   such trace, and both reading them would read each twice (a makeup read
  *   posts the window to count_tokens). Nor does the one the host sends right
  *   after each welcome, which marks the rows the page kept and moved no
@@ -125,8 +124,8 @@ export interface WindowFrameHooks {
  *   a window moved then (another client's undo, say) is read again once.
  *   The page's first welcome reads nothing, as no panel has read yet, and
  *   nor does one sent again on the same socket;
- * - for a fleet child, at a `child-event` of its `window:undone` or its
- *   shed (`presentation:retracted`, reason `shed`): for the agent the child's
+ * - for a fleet child, at a `child-event` of its `window:undone` or a
+ *   retraction that marks rows undone: for the agent the child's
  *   panels named, or for any of its agents before they have named one. For
  *   another of its agents they ask which agent they answer for, since the
  *   child may have restarted under the same scope with that one, and read
@@ -175,7 +174,7 @@ export class WindowFrames {
     }
     if (msg.type === 'child-event' && !local && msg.childName === shown.scope) {
       const event = msg.event as { type?: unknown; agentName?: unknown; reason?: unknown } | undefined;
-      const moved = event?.type === 'window:undone' || (event?.type === 'presentation:retracted' && event.reason === 'shed');
+      const moved = event?.type === 'window:undone' || (event?.type === 'presentation:retracted' && retractionMarksRows(event.reason));
       if (!moved) return;
       if (shown.agent === undefined || event.agentName === shown.agent) hooks.readPanels();
       else hooks.askPanelsAgent();

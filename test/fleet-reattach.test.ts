@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -75,7 +75,9 @@ function setup(config: FleetModuleConfig = {}) {
     } as unknown as Child;
     fleet.children.set(name, child);
     const seen = { ready: 0, idle: 0, marker: 0, snapshot: 0 };
+    const chunks: unknown[] = [];
     cleanups.push(fleet.onChildEvent(name, (_, event) => {
+      if (event.type === 'inference:tokens') chunks.push(event.content);
       if (event.type === 'lifecycle' && event.phase === 'ready') seen.ready += 1;
       if (event.type === 'lifecycle' && event.phase === 'idle') seen.idle += 1;
       if (event.type === 'probe:marker') seen.marker += 1;
@@ -110,13 +112,18 @@ function setup(config: FleetModuleConfig = {}) {
     };
     const reply = async (content: string) => {
       replies += 1;
-      writeFileSync(join(dir, `reply-${replies}`), content);
+      // The mock child takes reply-N the moment it exists, and writeFileSync
+      // creates the file before its content lands, so the text goes to
+      // reply-N.tmp and the rename makes reply-N appear only whole.
+      const file = join(dir, `reply-${replies}`);
+      writeFileSync(`${file}.tmp`, content);
+      renameSync(`${file}.tmp`, file);
       await until(() => child.events.some((e) => e.type === 'inference:speech' && e.content === content), 'the reply');
     };
     const marker = async () => {
       markers += 1;
       writeFileSync(join(dir, `marker-${markers}`), '');
-      await until(() => child.events.some((e) => e.content === `after marker ${markers}`), 'the token after the marker');
+      await until(() => chunks.includes(`after marker ${markers}`), 'the token after the marker');
     };
     const takeover = async () => {
       const other = await connectWhenAccepting(join(dir, 'ipc.sock'));

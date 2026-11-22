@@ -41,10 +41,15 @@ import { leavesOutChangedThinking } from './logging-adapter.js';
 import { formatToolClassRows, readToolClasses } from './tool-lifecycle-config.js';
 import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
 import { EXACT_VERSION } from './update/install.js';
-import { HOST_STOPPING, SWITCH_UNDER_WAY, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork } from './session-switch.js';
+import {
+  HOST_STOPPING, refusedWhileSwitchQuiesced, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork,
+} from './session-switch.js';
 import { hostUpdate, type UpdateAnswer } from './update/update.js';
-import { goBackLines, goBackUnread, statusLines } from './web/update-text.js';
-import { agentActivity, type AgentRetrying } from './web/agent-activity.js';
+import {
+  COMMAND_WAYS, PAGE_WAYS, cliWays, goBackLines, goBackUnread, statusLines, type UpdateWays,
+} from './web/update-text.js';
+import { agentActivity, type AgentBudgetHold, type AgentRetrying } from './web/agent-activity.js';
+import { CREDENTIAL_STRINGS, keepNamedStrings } from './modules/web-ui-observers.js';
 
 interface AppContext {
   framework: AgentFramework;
@@ -269,7 +274,7 @@ function rollbackFailed(app: AppContext, from: string, failed: string, err: unkn
 const CHANGES_THE_SESSION = new Set(['undo', 'redo', 'checkout', 'branchto', 'newtopic', 'nudge', 'puppet']);
 const CHANGES_THE_SESSION_GIVEN_A_VALUE = new Set(['checkpoint', 'restore', 'budget']);
 const SUBCOMMANDS_THAT_CHANGE_THE_SESSION = new Map([
-  ['session', new Set(['rename', 'delete', 'rm'])],
+  ['session', new Set(['rename', 'delete', 'rm', 'new', 'create', 'switch', 'sw'])],
   ['fleet', new Set(['stop', 'kill', 'restart'])],
 ]);
 
@@ -301,6 +306,8 @@ function stillRunning(app: AppContext): CommandResult | null {
 export interface CommandInput {
   lineByLine?: boolean;
   requester?: OperatorRequester;
+  typed?: string;
+  page?: boolean;
 }
 
 export function handleCommand(command: string, app: AppContext, input: CommandInput = {}): CommandResult {
@@ -314,7 +321,7 @@ export function handleCommand(command: string, app: AppContext, input: CommandIn
 function dispatchCommand(command: string, cmd: string, change: string | null, app: AppContext, input: CommandInput): CommandResult {
   const parts = command.slice(1).trim().split(/\s+/);
   const args = parts.slice(1);
-  const refused = change ? refusedWhileSwitching(app, change) : null;
+  const refused = change ? refusedWhileSwitching(app, change) ?? refusedWhileSwitchQuiesced(app, change) : null;
   if (refused) return { lines: [{ text: refused, style: 'system' }] };
   const framework = app.framework;
   const requester = input.requester ?? HOST_COMMAND;
@@ -331,6 +338,16 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
     }
 
     case 'help':
+      if (app.recipe?.modules?.setup === true) {
+        return {
+          lines: [
+            { text: '--- In setup ---', style: 'system' },
+            { text: '  /quit                  Leave setup. Setup then says how to go on where it stopped.', style: 'system' },
+            { text: '  /session new           Start a new conversation with setup\'s agent. What setup has done stays on disk.', style: 'system' },
+            { text: '  /help                  This list', style: 'system' },
+          ],
+        };
+      }
       return {
         lines: [
           { text: '--- Commands ---', style: 'system' },
@@ -435,7 +452,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
       return handleFast(app, args[0]);
 
     case 'auth':
-      return handleAuth(app, args);
+      return handleAuth(app, args, requester);
 
     case 'session':
       return handleSession(app, args);
@@ -456,7 +473,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
       return handleFleet(app, args);
 
     case 'update':
-      return handleUpdate(args);
+      return handleUpdate(args, input.page ? PAGE_WAYS : input.typed === undefined ? COMMAND_WAYS : cliWays(input.typed));
 
     default:
       return {
@@ -469,7 +486,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
  *  lines come back as the command's follow-up. Restart and Go back's two
  *  ways take the release they're for, as the Web UI sends them, so the
  *  host refuses rather than act on another one. */
-function handleUpdate(args: string[]): CommandResult {
+function handleUpdate(args: string[], ways: UpdateWays): CommandResult {
   const say = (lines: string[]): CommandResult => ({ lines: lines.map((text) => ({ text, style: 'system' as const })) });
   const after = (first: string, work: Promise<UpdateAnswer>): CommandResult =>
     ({ ...say([first]), asyncWork: work.then((answer) => ({ ...say(answer.lines), ...(answer.done ? {} : { refused: true }) })) });
@@ -481,25 +498,27 @@ function handleUpdate(args: string[]): CommandResult {
     return after('Reading the registry…',
       hostUpdate.readRegistry().then(() => {
         const status = hostUpdate.status();
-        return { done: status.check?.ok !== false, lines: statusLines(status) };
+        return { done: status.check?.ok !== false, lines: statusLines(status, ways) };
       }));
   }
-  if (sub === 'install' && choice === undefined) return after('Reading the registry, then installing…', hostUpdate.install());
+  if (sub === 'install' && choice === undefined) return after('Reading the registry, then installing…', hostUpdate.install(ways));
   if (sub === 'restart' && release === undefined) {
-    const quiescing = 'Restarting unless refused: turns in progress get up to 2 min to end…';
-    if (choice === undefined) return after(quiescing, hostUpdate.restartToInstalled());
-    if (choice === 'wait') return after('Waiting up to 10 min more for turns to end…', hostUpdate.waitLonger());
-    if (choice === 'now') return after('Stopping now…', hostUpdate.stopNow());
-    if (choice === 'resume') return after('Calling the restart off…', hostUpdate.resume());
-    if (version(choice)) return after(quiescing, hostUpdate.restartToInstalled(choice));
+    const quiescing = 'Asking the host to restart. If it goes ahead, new turns are held, and turns in progress get up ' +
+      'to 2 min to end…';
+    if (choice === undefined) return after(quiescing, hostUpdate.restartToInstalled(undefined, ways));
+    if (choice === 'wait') return after('Waiting up to 10 min more for turns to end…', hostUpdate.waitLonger(ways));
+    if (choice === 'now') return after('Stopping now…', hostUpdate.stopNow(ways));
+    if (choice === 'resume') return after('Calling the restart off…', hostUpdate.resume(ways));
+    if (version(choice)) return after(quiescing, hostUpdate.restartToInstalled(choice, ways));
   }
   if (sub === 'back') {
     if (choice === undefined) {
       const status = hostUpdate.status();
-      return { ...say(goBackLines(status)), ...(status.install && goBackUnread(status) === undefined ? {} : { refused: true }) };
+      return { ...say(goBackLines(status, ways)), ...(status.install && goBackUnread(status) === undefined ? {} : { refused: true }) };
     }
     if ((choice === 'keep' || choice === 'restore') && (release === undefined || version(release))) {
-      return after('Going back unless refused: turns in progress get up to 2 min to end…', hostUpdate.goBack(choice === 'keep', release));
+      return after('Asking the host to go back. If it goes ahead, new turns are held, and turns in progress get up to ' +
+        '2 min to end…', hostUpdate.goBack(choice === 'keep', release, ways));
     }
   }
   return usage;
@@ -507,7 +526,7 @@ function handleUpdate(args: string[]): CommandResult {
 
 function credentialLines(state: CredentialState): Line[] {
   const lines: Line[] = [
-    { text: `Credential (${state.provider}): ${state.kind}${state.kind === 'ok' ? '' : ` — ${state.message}`}`, style: 'system' },
+    { text: `Credential (${state.provider}): ${state.kind}${state.kind === 'ok' || !state.message ? '' : ` — ${state.message}`}`, style: 'system' },
   ];
   if (state.expiresAt !== undefined) {
     lines.push({ text: `  expires ${new Date(state.expiresAt).toISOString()}${state.rotatable ? ' (host can refresh)' : ' (no refresh token — paste a new one when it expires)'}`, style: 'system' });
@@ -527,12 +546,13 @@ function credentialLines(state: CredentialState): Line[] {
     lines.push({ text: `  actions: ${state.actions.map((a) => `/auth ${a.id === 'set-token' ? 'token <tok>' : a.id}`).join(', ')}`, style: 'system' });
   }
   if (state.lastAction) {
-    lines.push({ text: `  last action: ${state.lastAction.id} ${state.lastAction.ok ? 'ok' : 'FAILED'} — ${state.lastAction.message}`, style: 'system' });
+    const outcome = state.lastAction.message || state.lastAction.said;
+    lines.push({ text: `  last action: ${state.lastAction.id} ${state.lastAction.ok ? 'ok' : 'FAILED'}${outcome ? ` — ${outcome}` : ''}`, style: 'system' });
   }
   return lines;
 }
 
-function handleAuth(app: AppContext, args: string[]): CommandResult {
+function handleAuth(app: AppContext, args: string[], requester: OperatorRequester): CommandResult {
   const monitor = app.credentials;
   if (!monitor) {
     return {
@@ -542,8 +562,11 @@ function handleAuth(app: AppContext, args: string[]): CommandResult {
       }],
     };
   }
+  const shown = (state: CredentialState): CredentialState => requester.via === 'fleet'
+    ? keepNamedStrings(state, { ...CREDENTIAL_STRINGS, lastAction: { ...CREDENTIAL_STRINGS.lastAction, said: true }, unsaved: true }) as CredentialState
+    : state;
   const sub = (args[0] ?? 'status').toLowerCase();
-  if (sub === 'status') return { lines: credentialLines(monitor.snapshot()) };
+  if (sub === 'status') return { lines: credentialLines(shown(monitor.snapshot())) };
   const usage: CommandResult = { lines: [{ text: 'Usage: /auth [status|refresh|login|recheck|token <tok>]', style: 'system' }] };
   let id: CredentialActionId;
   let params: { token?: string } = {};
@@ -565,9 +588,9 @@ function handleAuth(app: AppContext, args: string[]): CommandResult {
   }
   return {
     lines: [{ text: `/auth ${id}: running…`, style: 'system' }],
-    asyncWork: monitor.runAction(id, params).then((state) => ({
+    asyncWork: monitor.runAction(id, params).then(shown).then((state) => ({
       lines: [
-        { text: `/auth ${id}: ${state.lastAction?.ok ? 'done' : 'FAILED'} — ${state.lastAction?.message ?? 'no outcome recorded'}`, style: 'system' },
+        { text: `/auth ${id}: ${state.lastAction?.ok ? 'done' : 'FAILED'} — ${state.lastAction ? state.lastAction.message || state.lastAction.said : 'no outcome recorded'}`, style: 'system' },
         ...credentialLines(state),
       ],
     })),
@@ -677,16 +700,12 @@ function handleSessionList(app: AppContext): CommandResult {
   return { lines };
 }
 
-const switchUnderWay: CommandResult = {
-  lines: [{ text: `${SWITCH_UNDER_WAY[0]!.toUpperCase()}${SWITCH_UNDER_WAY.slice(1)}.`, style: 'system' }],
-};
 const hostStopping: CommandResult = {
   lines: [{ text: `${HOST_STOPPING[0]!.toUpperCase()}${HOST_STOPPING.slice(1)}.`, style: 'system' }],
 };
 
 function handleSessionNew(app: AppContext, name?: string): CommandResult {
   if (app.stopping) return hostStopping;
-  if (app.switching) return switchUnderWay;
   const running = stillRunning(app);
   if (running) return running;
   const session = app.sessionManager.createSession(name);
@@ -700,7 +719,6 @@ function handleSessionNew(app: AppContext, name?: string): CommandResult {
 
 function handleSessionSwitch(app: AppContext, nameOrId?: string): CommandResult {
   if (app.stopping) return hostStopping;
-  if (app.switching) return switchUnderWay;
   if (!nameOrId) {
     return { lines: [{ text: 'Usage: /session switch <name or id>', style: 'system' }] };
   }
@@ -905,7 +923,7 @@ function handleUsage(app: AppContext): CommandResult {
   return { lines };
 }
 
-type AgentHealth = { name: string; status?: string; turnAlive?: boolean; retrying?: AgentRetrying | null };
+type AgentHealth = { name: string; status?: string; turnAlive?: boolean; retrying?: AgentRetrying | null; budgetHold?: AgentBudgetHold | null };
 
 function handleStatus(framework: AgentFramework): CommandResult {
   const agents = framework.getAllAgents();
@@ -1671,6 +1689,10 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
   try {
     summary = await cm.generateTransitionSummary();
   } catch (err) {
+    if (input.requester?.via === 'fleet') {
+      process.stderr.write(`[${new Date().toISOString()}] [host] /newtopic's transition summary couldn't be written: ${messageOf(err).replace(/\s*[\r\n]+\s*/g, ' ')}\n`);
+      throw new Error("the transition summary couldn't be written; nothing was stored");
+    }
     throw new Error(`the transition summary couldn't be written (${messageOf(err)}); nothing was stored`);
   }
   // No await from these checks to the store: no turn starts, and nothing

@@ -121,20 +121,25 @@ stream, and decides where and how loudly each alert kind is told.
   Zulip, never on Discord" is one line. Public channels never see error text.
 - `status` kinds (`context-refusal`, `mcpl-down`, `quota-unreadable`,
   `auth-expiring`, `credential-unsaved`, …) and all `reply` kinds also go to
-  `statusChannels` with the operator-grade message (kind + error text). Status
-  channels follow the kind-level timeline: one line once a kind has been
-  active for `quietMs` (so a flap that resolves in seconds says nothing),
-  one line when a told kind clears, naming what remains.
-- `silent` kinds (`refusal`, and anything unknown) only reach failures.log
-  and the webhook as before.
+  `statusChannels`, as the kind and a fixed line saying what happened
+  ("context-refusal: its context couldn't be compiled for a request"). The
+  alert's own message, which can carry a provider's error text, never goes
+  to a channel: it stays on the TUI's alert line, the Web UI, failures.log
+  and the webhook. Status channels follow the kind-level timeline: one line
+  once a kind has been active for `quietMs` (so a flap that resolves in
+  seconds says nothing), one line when a told kind clears, naming the kind
+  still open that is most in force: the newest of the highest tier.
+- `silent` kinds (`refusal`, and anything unknown) reach no channel: only
+  the TUI's alert line, the Web UI, failures.log and the webhook, as before.
 
 Off-path refusals with subject `host` are process notices about individual calls.
-They include the model, category, message count, and input-token count. A burst
-shares one `quietMs` window and posts its latest diagnostics. Each configured
+They use the same fixed wording as other status notices. Model, category,
+message count, input-token count, and provider text stay with the existing alert
+observers and logs. A burst shares one `quietMs` window. Each configured
 status channel also has a `renotifyMs` floor (30 minutes by default) between
 successfully acknowledged process posts, including across consumed notices and
 reconnects. The same setting controls when a reply channel can be notified again
-after its previously announced end. Diagnostics coalesce to the latest message during the process-post floor;
+after its previously announced end. Refusals coalesce into one notice during the process-post floor;
 scheduled delivery to a channel proceeds independently of delayed or broken
 channels. A reconnect retry can wait for lines already queued for other channels,
 until those publishes return or reach their deadlines. A later refusal,

@@ -4,7 +4,7 @@ import { handleCommand } from '../src/commands.js';
 
 function app(nudgeAgent: AgentFramework['nudgeAgent']): Parameters<typeof handleCommand>[1] {
   return {
-    framework: { nudgeAgent } as AgentFramework,
+    framework: { nudgeAgent, getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }) } as unknown as AgentFramework,
     sessionManager: {} as never,
     recipe: { name: 'test' } as never,
     branchState: {} as never,

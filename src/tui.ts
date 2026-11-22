@@ -21,7 +21,7 @@ import type { SubagentModule, ActiveSubagent } from './modules/subagent-module.j
 import { FleetTreeAggregator } from './state/fleet-tree-aggregator.js';
 import type { AgentNode } from './state/agent-tree-reducer.js';
 import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from './state/stream-usage.js';
-import { STREAM_END_TRACES, TURN_RUNNING_TRACES, traceError } from './state/turn-trace.js';
+import { retractionMarksRows, STREAM_END_TRACES, TURN_RUNNING_TRACES, traceError } from './state/turn-trace.js';
 import { createFailureLines, createTurnFailures, turnEndedLine, type FailureStep } from './state/turn-failures.js';
 import { credentialActionHint, opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts.js';
 import { failureHint } from './failure-hint.js';
@@ -197,6 +197,15 @@ export function formatWireEvent(evt: WireEvent): { text: string; color: string }
     }
     case 'inference:started': return { text: `─ inference started (${get('agentName') ?? '?'}) ─`, color: DIM_GRAY };
     case 'inference:completed': return { text: `─ inference completed ─`, color: DIM_GRAY };
+    case 'inference:held':
+      return { text: `─ ${get('agentName') ?? '?'}: turn waiting for compression ─`, color: YELLOW };
+    case 'inference:hold_ended': {
+      const outcome = get('outcome');
+      const detail = outcome === 'released' ? 'turn queued again'
+        : outcome === 'stopped' ? 'waiting turn stopped'
+        : outcome === 'removed' ? 'waiting turn removed' : 'compression wait ended';
+      return { text: `─ ${get('agentName') ?? '?'}: ${detail} ─`, color: DIM_GRAY };
+    }
     case 'inference:turn_ended':
     case 'inference:aborted':
     case 'inference:failed':
@@ -1798,7 +1807,8 @@ export async function runTui(app: AppContext): Promise<void> {
 
     if (procPeekUnsub) { procPeekUnsub(); procPeekUnsub = null; }
     procPeekUnsub = fleetMod.onChildEvent(name, (_childName, evt) => {
-      procPeekLastEvent.set(key, evt);
+      const held = fleetMod?.getChildren().get(name)?.events;
+      if (held && held[held.length - 1] === evt) procPeekLastEvent.set(key, evt);
       if (!matches(evt)) return;
       const type = typeof evt.type === 'string' ? evt.type : '';
       const active = state.viewMode === 'peek-proc'
@@ -2180,6 +2190,13 @@ export async function runTui(app: AppContext): Promise<void> {
         break;
       }
 
+      case 'inference:held':
+      case 'inference:hold_ended': {
+        const line = formatWireEvent(event as WireEvent);
+        if (line) addEvent(line.text, line.color);
+        break;
+      }
+
       case 'inference:failed': {
         if (agent !== rootAgentName) {
           if (agent) {
@@ -2336,10 +2353,9 @@ export async function runTui(app: AppContext): Promise<void> {
       }
 
       case 'presentation:retracted': {
-        // A refusal rewind's or a failed inference's shed from the root
-        // agent's window takes its rows out as an undone turn's, with no
-        // window:undone: the history marks them, as the Web UI's marks do.
-        if (agent === rootAgentName && event.reason === 'shed') remarkHistory();
+        // A shed or a held turn's unsent injections leave the window as
+        // undone without a window:undone event, so mark them in the history.
+        if (agent === rootAgentName && retractionMarksRows(event.reason)) remarkHistory();
         break;
       }
 

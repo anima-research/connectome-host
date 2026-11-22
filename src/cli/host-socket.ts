@@ -43,11 +43,11 @@ export function socketOf(root: string): string {
   return join(dataDirOf(root), 'ipc.sock');
 }
 
-export async function openHost(root: string): Promise<HostClient | NoHost> {
-  return openSocket(socketOf(root));
+export async function openHost(root: string, waitMs?: number): Promise<HostClient | NoHost> {
+  return openSocket(socketOf(root), waitMs);
 }
 
-export async function openSocket(socketPath: string): Promise<HostClient | NoHost> {
+export async function openSocket(socketPath: string, waitMs?: number): Promise<HostClient | NoHost> {
   const socket = connect({ path: socketPath });
   socket.setEncoding('utf8');
   const listeners: Array<(event: HostEvent) => void> = [];
@@ -99,11 +99,12 @@ export async function openSocket(socketPath: string): Promise<HostClient | NoHos
     closed,
     close: () => { end(); socket.destroy(); },
   };
+  const wait = Math.min(waitMs ?? READY_WAIT_MS, READY_WAIT_MS);
   const timer = setTimeout(() => {
-    settle({ reason: `the socket ${socketPath} accepted the connection, but no host said it was ready within ` +
-      `${READY_WAIT_MS / 1000} s`, down: false });
+    settle({ reason: `the socket ${socketPath} accepted the connection, but no host said it was ready` +
+      (wait === READY_WAIT_MS ? ` within ${READY_WAIT_MS / 1000} s` : ''), down: false });
     client.close();
-  }, READY_WAIT_MS);
+  }, wait);
   socket.on('data', (chunk: string) => {
     buffer += chunk;
     for (let index = buffer.indexOf('\n'); index >= 0; index = buffer.indexOf('\n')) {

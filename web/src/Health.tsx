@@ -2,7 +2,7 @@ import { For, Show } from 'solid-js';
 import type { CallLedgerRow } from '@conhost/web/protocol';
 import { callFailed, callOriginLabel, callOriginTone } from './call-origin';
 import { healthComposition, lastInferenceLine, latestInferenceError } from './composition-text';
-import { agentActivity, type AgentRetrying } from '@conhost/web/agent-activity';
+import { agentActivity, type AgentBudgetHold, type AgentRetrying } from '@conhost/web/agent-activity';
 import { credentialNote, healthEntry, lastActionText, readFailureLine } from '@conhost/web/health-lookup';
 import { quarantineHeld } from '@conhost/web/quarantine-alert';
 import { loadRepairLines, type LoadRepairReport } from '@conhost/web/load-repair-alert';
@@ -74,6 +74,7 @@ export interface HealthSnapshot {
     turnAlive?: boolean;
     /** The turn's wait for its next try, or null (agent-framework with it). */
     retrying?: AgentRetrying | null;
+    budgetHold?: AgentBudgetHold | null;
     consecutiveInferenceFailures?: number;
     lastInference?: {
       startedAt?: number;
@@ -423,6 +424,7 @@ export function HealthPanel(props: {
     switch (status) {
       case 'idle': return 'text-emerald-400';
       case 'retrying': return 'text-orange-300';
+      case 'waiting for compression':
       case 'idle+turn-alive': return 'text-amber-300';
       case 'inferring':
       case 'streaming': return 'text-cyan-300';
