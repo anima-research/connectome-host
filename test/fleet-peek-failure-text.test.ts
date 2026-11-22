@@ -11,7 +11,7 @@ const NOTE = "Each event's error and attemptError read \"left out\" in place of 
   "out. Streamed chunks (inference:tokens) are left out too. " +
   "The final reply of a child's main agent is in its inference:speech, and the text of each other round is in an " +
   "inference:round_text; the child sends them where its subscription includes them. A reply that the provider refused at its " +
-  "end can still show in inference:speech.";
+  "end can still show in either event.";
 
 const dirs: string[] = [];
 const fleets: FleetModule[] = [];
