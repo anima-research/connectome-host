@@ -1594,7 +1594,7 @@ export class FleetModule implements Module {
     const c = this.children.get(input.name);
     if (!c) return this.unknownChild(input.name, 'there are no events to show');
     const requested = input.lines ?? 50;
-    const shown = c.events.filter((event) => event.type !== 'inference:tokens' && event.type !== 'panel-response');
+    const shown = c.events.filter((event) => event.type !== 'inference:tokens');
     const n = Math.max(1, Math.min(requested, shown.length || 1));
     const slice = shown.length > 0 ? shown.slice(-n) : [];
     return { success: true, data: { name: c.name, count: slice.length, events: slice.map(peekView), note: PEEK_NOTE } };
@@ -2200,6 +2200,10 @@ export class FleetModule implements Module {
   }
 
   private recordEvent(child: FleetChild, event: WireEvent): void {
+    if (event.type === 'panel-response') {
+      this.fanOutEvent(child.name, event);
+      return;
+    }
     child.lastEventAt = Date.now();
     if (event.type === 'inference:started' && (event as { replay?: unknown }).replay !== true) {
       child.idleSinceWork = false;
@@ -2613,9 +2617,8 @@ export class FleetModule implements Module {
 const LEFT_OUT = 'left out';
 const PEEK_NOTE = `Each event's error and attemptError read "${LEFT_OUT}" in place of their text, and its stack and ` +
   "providerErrorCode, an alert's message and data, and an errorType of safety are left out. Streamed chunks " +
-  "(inference:tokens) and panel answers (panel-response) are left out too. The final reply of a child's main agent is in its " +
-  "inference:speech, which the child sends where its subscription includes it. A reply that the provider refused at its end " +
-  "can still show there.";
+  "(inference:tokens) are left out too. The final reply of a child's main agent is in its inference:speech, which the child " +
+  "sends where its subscription includes it. A reply that the provider refused at its end can still show there.";
 
 function peekView(event: WireEvent): Record<string, unknown> {
   const shown = withoutErrorText(event);
