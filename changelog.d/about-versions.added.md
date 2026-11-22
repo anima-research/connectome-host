@@ -13,7 +13,8 @@
   loaded, by its id, with the server's own name and version as the last
   handshake of its connection gave them. A server that isn't connected now
   shows those, with `(not connected now)`, or says that its name and
-  version aren't known.
+  version aren't known. Agent Framework's range now starts at 0.35.2, the
+  first release whose server rows carry a server's own name and version.
 - **`mcpl-admin--mcpl_list` gives each loaded server's own name and
   version** in its line, as `server="<name> <version>"`, or
   `server=unknown` where the host doesn't know them.
