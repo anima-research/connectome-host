@@ -1807,7 +1807,8 @@ export async function runTui(app: AppContext): Promise<void> {
 
     if (procPeekUnsub) { procPeekUnsub(); procPeekUnsub = null; }
     procPeekUnsub = fleetMod.onChildEvent(name, (_childName, evt) => {
-      procPeekLastEvent.set(key, evt);
+      const held = fleetMod?.getChildren().get(name)?.events;
+      if (held && held[held.length - 1] === evt) procPeekLastEvent.set(key, evt);
       if (!matches(evt)) return;
       const type = typeof evt.type === 'string' ? evt.type : '';
       const active = state.viewMode === 'peek-proc'

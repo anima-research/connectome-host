@@ -75,7 +75,9 @@ function setup(config: FleetModuleConfig = {}) {
     } as unknown as Child;
     fleet.children.set(name, child);
     const seen = { ready: 0, idle: 0, marker: 0, snapshot: 0 };
+    const chunks: unknown[] = [];
     cleanups.push(fleet.onChildEvent(name, (_, event) => {
+      if (event.type === 'inference:tokens') chunks.push(event.content);
       if (event.type === 'lifecycle' && event.phase === 'ready') seen.ready += 1;
       if (event.type === 'lifecycle' && event.phase === 'idle') seen.idle += 1;
       if (event.type === 'probe:marker') seen.marker += 1;
@@ -121,7 +123,7 @@ function setup(config: FleetModuleConfig = {}) {
     const marker = async () => {
       markers += 1;
       writeFileSync(join(dir, `marker-${markers}`), '');
-      await until(() => child.events.some((e) => e.content === `after marker ${markers}`), 'the token after the marker');
+      await until(() => chunks.includes(`after marker ${markers}`), 'the token after the marker');
     };
     const takeover = async () => {
       const other = await connectWhenAccepting(join(dir, 'ipc.sock'));
