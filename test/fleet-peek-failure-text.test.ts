@@ -6,8 +6,9 @@ import { FleetModule } from '../src/modules/fleet-module.js';
 import { AgentTreeReducer } from '../src/state/agent-tree-reducer.js';
 
 const SENTINEL = 'sentinel-5d8b provider said: invalid x-api-key';
-const NOTE = "Each event's error and attemptError read \"left out\" in place of their text, and its stack and providerErrorCode, " +
-  "an alert's message and data, and an errorType of safety are left out. Streamed chunks (inference:tokens) are left out too. " +
+const NOTE = "Each event's error and attemptError read \"left out\" in place of their text, but for a failed tool call's own " +
+  "error, which shows. An event's stack and providerErrorCode, an alert's message and data, and an errorType of safety are left " +
+  "out. Streamed chunks (inference:tokens) are left out too. " +
   "The final reply of a child's main agent is in its inference:speech, and the text of each other round is in an " +
   "inference:round_text; the child sends them where its subscription includes them. A reply that the provider refused at its " +
   "end can still show in inference:speech.";
@@ -46,7 +47,7 @@ const ARRIVED: Event[] = [
   },
   { type: 'inference:exhausted', agentName: 'leaf', error: SENTINEL, shownReason: 'the stream was aborted', errorType: 'safety', ts: 3 },
   { type: 'ops:alert', kind: 'refusal', agentName: 'leaf', message: `refusal streak 2, category=${SENTINEL}`, data: { category: SENTINEL, streak: 2 }, ts: 4 },
-  { type: 'tool:failed', agentName: 'leaf', tool: 'fetch', callId: 'c1', error: SENTINEL, ts: 5 },
+  { type: 'tool:failed', agentName: 'leaf', tool: 'files', callId: 'c1', error: 'ENOENT: notes.md', stack: `Error: ${SENTINEL}`, result: { error: SENTINEL }, ts: 5 },
   { type: 'workspace-file-snapshot', corrId: 'w1', path: 'notes.md', totalLines: 0, fromLine: 1, toLine: 0, content: '', truncated: false, error: 'no such file', ts: 6 },
   { type: 'inference:speech', agentName: 'leaf', content: 'Looking into it.', ts: 7 },
   { type: 'inference:tokens', agentName: 'leaf', content: SENTINEL, blockType: 'text', ts: 8 },
@@ -58,12 +59,12 @@ const SHOWN: Event[] = [
   { type: 'inference:exhausted', agentName: 'leaf', error: 'left out', retryable: false, errorType: 'invalid_request', httpStatus: 400, ts: 2 },
   { type: 'inference:exhausted', agentName: 'leaf', error: 'left out', shownReason: 'the stream was aborted', ts: 3 },
   { type: 'ops:alert', kind: 'refusal', agentName: 'leaf', ts: 4 },
-  { type: 'tool:failed', agentName: 'leaf', tool: 'fetch', callId: 'c1', error: 'left out', ts: 5 },
+  { type: 'tool:failed', agentName: 'leaf', tool: 'files', callId: 'c1', error: 'ENOENT: notes.md', result: { error: 'left out' }, ts: 5 },
   { type: 'workspace-file-snapshot', corrId: 'w1', path: 'notes.md', totalLines: 0, fromLine: 1, toLine: 0, content: '', truncated: false, error: 'left out', ts: 6 },
   { type: 'inference:speech', agentName: 'leaf', content: 'Looking into it.', ts: 7 },
 ];
 
-test("fleet--peek shows a child's events without a failure's own text, says so, and the buffer keeps them whole but holds no panel answer", async () => {
+test("fleet--peek shows a child's events without a failure's own text but for a failed tool call's own error, says so, and the buffer keeps them whole but holds no panel answer", async () => {
   const child = childWith(ARRIVED);
   const peek = await child.peek();
   expect(peek.success).toBe(true);
