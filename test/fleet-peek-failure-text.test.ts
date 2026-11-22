@@ -8,8 +8,9 @@ import { AgentTreeReducer } from '../src/state/agent-tree-reducer.js';
 const SENTINEL = 'sentinel-5d8b provider said: invalid x-api-key';
 const NOTE = "Each event's error and attemptError read \"left out\" in place of their text, and its stack and providerErrorCode, " +
   "an alert's message and data, and an errorType of safety are left out. Streamed chunks (inference:tokens) are left out too. " +
-  "The final reply of a child's main agent is in its inference:speech, which the child sends where its subscription includes it. " +
-  "A reply that the provider refused at its end can still show there.";
+  "The final reply of a child's main agent is in its inference:speech, and the text of each other round is in an " +
+  "inference:round_text; the child sends them where its subscription includes them. A reply that the provider refused at its " +
+  "end can still show in inference:speech.";
 
 const dirs: string[] = [];
 const fleets: FleetModule[] = [];
@@ -34,7 +35,7 @@ function childWith(events: Event[]) {
   const record = (fleet as unknown as { recordEvent(child: object, event: object): void }).recordEvent.bind(fleet);
   for (const event of events) record(children.get('leaf')!, structuredClone(event));
   const peek = async (lines?: number) => fleet.handleToolCall({ id: 'peek', name: 'peek', input: { name: 'leaf', ...(lines === undefined ? {} : { lines }) } });
-  return { peek, buffer: () => children.get('leaf')!.events };
+  return { peek, buffer: () => children.get('leaf')!.events, lastSpeech: () => (children.get('leaf') as unknown as { lastCompletedSpeech?: string }).lastCompletedSpeech };
 }
 
 const ARRIVED: Event[] = [
@@ -116,4 +117,19 @@ test("fleet--peek's lines counts the events it shows, with streamed chunks left 
     ],
   });
   expect(child.buffer()).toHaveLength(4);
+});
+
+test("fleet--peek shows a round's text, and the reply that fleet--relay sends stays the child's last inference:speech", async () => {
+  const child = childWith([
+    { type: 'inference:speech', agentName: 'leaf', content: 'First reply.', ts: 1 },
+    { type: 'inference:round_text', agentName: 'leaf', content: 'Checking.', ts: 2 },
+    { type: 'inference:round_text', agentName: 'scout-1', content: 'Looking.', ts: 3 },
+  ]);
+  const peek = await child.peek();
+  expect((peek.data as { events: unknown[] }).events).toEqual([
+    { type: 'inference:speech', agentName: 'leaf', content: 'First reply.', ts: 1 },
+    { type: 'inference:round_text', agentName: 'leaf', content: 'Checking.', ts: 2 },
+    { type: 'inference:round_text', agentName: 'scout-1', content: 'Looking.', ts: 3 },
+  ]);
+  expect(child.lastSpeech()).toBe('First reply.');
 });
