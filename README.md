@@ -634,7 +634,7 @@ and `CODEX_HOME` directory if configured:
 ```
 
 Connectome asks the Codex app-server to refresh the ChatGPT login. By default,
-it starts a device-code flow if needed on the first model call. With
+it starts a device-code flow if needed on first token acquisition (a model call or an earlier `/auth refresh`). With
 `CODEX_REQUIRE_EXISTING_LOGIN=1` (or `true`), local app-server auth refuses a
 missing or API-key account before starting device-code login. This check runs
 on the first token acquisition (the first model call or an earlier `/auth refresh`),
@@ -1049,7 +1049,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `BEDROCK_BASE_URL` | — | Route Bedrock calls through a gateway |
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |
 | `CODEX_HOME` | `~/.codex` | Codex credential/config directory |
-| `CODEX_REQUIRE_EXISTING_LOGIN` | off | `1`/`true` (case-insensitive, whitespace trimmed): require an existing file-backed ChatGPT login on the first local model call; disable host login actions. Existing-session refresh and gate-token auth are unchanged. Unset, empty, `0`/`false`: off; other values warn and leave it off. Custom callbacks own their internal auth policy |
+| `CODEX_REQUIRE_EXISTING_LOGIN` | off | `1`/`true` (case-insensitive, whitespace trimmed): require an existing file-backed ChatGPT login on first token acquisition (a model call or an earlier `/auth refresh`); disable host login actions. Existing-session refresh and gate-token auth are unchanged. Unset, empty, `0`/`false`: off; other values warn and leave it off. Custom callbacks own their internal auth policy |
 | `CODEX_BASE_URL` | ChatGPT Codex backend | Optional subscription transport override |
 | `CODEX_GATE_TOKEN` | — | `openai-codex` through an inference gate that holds the ChatGPT logins (gate's `/codex` leg): no Codex CLI or login on this host. Requires `CODEX_BASE_URL` pointing at the gate |
 | `MODEL` | from recipe, else `claude-opus-4-6` (`gpt-5.4` for `openai-codex`) | Override model (wins over the recipe) |
