@@ -160,7 +160,7 @@ interface FleetChild {
   spawnError?: unknown;
   env?: Record<string, string>;
   lastCompletedSpeech?: string;
-  rounds?: Map<string, { open: boolean; text: string; entry?: WireEvent }>;
+  rounds?: Map<string, string>;
   saidExiting?: boolean;
   reopening?: Promise<void>;
   reopenedAt?: number;
@@ -2240,27 +2240,27 @@ export class FleetModule implements Module {
     const { type, agentName } = event as { type?: string; agentName?: unknown };
     if (typeof agentName !== 'string') return;
     const rounds = (child.rounds ??= new Map());
-    const round = rounds.get(agentName);
     if (type === 'inference:started' || type === 'inference:stream_resumed') {
-      rounds.set(agentName, { open: true, text: '' });
-    } else if (type === 'inference:tokens' && round?.open) {
+      rounds.set(agentName, '');
+    } else if (type === 'inference:tokens') {
       const { content, blockType } = event as { content?: string; blockType?: string };
-      if (blockType === 'text') round.text = content === '' ? '' : round.text + (content ?? '');
-    } else if ((type === 'inference:tool_calls_yielded' || type === 'inference:completed') && round?.open) {
-      const { ts, replay } = event as { ts?: unknown; replay?: unknown };
-      const entry: WireEvent | undefined = round.text === '' ? undefined : {
-        type: 'inference:round_text', agentName, content: round.text,
-        ...(typeof ts === 'number' ? { ts } : {}), ...(replay === true ? { replay: true } : {}),
-      };
-      if (entry) child.events.push(entry);
-      if (type === 'inference:tool_calls_yielded') rounds.set(agentName, { open: false, text: '' });
-      else if (entry) rounds.set(agentName, { open: false, text: '', entry });
-      else rounds.delete(agentName);
-    } else if (type === 'inference:speech' && round?.entry) {
-      const at = child.events.lastIndexOf(round.entry);
-      if (at >= 0) child.events.splice(at, 1);
+      const text = rounds.get(agentName);
+      if (text !== undefined && blockType === 'text') rounds.set(agentName, content === '' ? '' : text + (content ?? ''));
+    } else if (type === 'inference:tool_calls_yielded' || type === 'inference:completed') {
+      const text = rounds.get(agentName);
       rounds.delete(agentName);
-    } else if (type === 'inference:completed' || type === 'inference:failed' || type === 'inference:aborted' || type === 'inference:exhausted') {
+      const { ts, replay } = event as { ts?: unknown; replay?: unknown };
+      if (text) {
+        child.events.push({
+          type: 'inference:round_text', agentName, content: text,
+          ...(typeof ts === 'number' ? { ts } : {}), ...(replay === true ? { replay: true } : {}),
+        });
+      }
+    } else if (type === 'inference:speech') {
+      const [text, end] = child.events.slice(-2);
+      if (text?.type === 'inference:round_text' && text.agentName === agentName && end?.type === 'inference:completed' &&
+        end.agentName === agentName) child.events.splice(-2, 1);
+    } else if (type === 'inference:failed' || type === 'inference:aborted' || type === 'inference:exhausted') {
       rounds.delete(agentName);
     }
   }
