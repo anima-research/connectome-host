@@ -1175,7 +1175,7 @@ describe("an alert's message stays with the operator", () => {
     ['credential-unsaved', "⚠ [host notice] clerk — credential-unsaved: its provider credential couldn't be saved to its file, so a restart may not find the credential in use; an operator's Re-check writes it again."],
     ['refusal-offpath', "⚠ [host notice] clerk — refusal-offpath: a request outside its own turns, such as for a summary, couldn't be completed."],
     ['refusal', "⚠ [host notice] clerk — refusal: a request couldn't be completed."],
-    ['context-maintenance-failed', "⚠ [host notice] clerk — context-maintenance-failed: its context maintenance didn't finish."],
+    ['context-maintenance-failed', "⚠ [host notice] clerk — context-maintenance-failed: its context maintenance didn't finish; failures.log says why."],
     ['compression-quarantine', '⚠ [host notice] clerk — compression-quarantine: part of its history is held back from summaries and stays whole, which in time fills its context budget; an operator can inspect what is held, then branch, pin or clear it.'],
     ['instructions-unavailable', "⚠ [host notice] clerk — instructions-unavailable: its instructions couldn't be loaded, so none are injected; failures.log says why."],
     ['a-kind-of-its-own', '⚠ [host notice] clerk — a-kind-of-its-own: the host raised an alert of this kind.'],
