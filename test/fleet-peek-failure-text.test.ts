@@ -40,6 +40,7 @@ function childWith(events: Event[]) {
   return {
     peek, more, reconnect, buffer: () => children.get('leaf')!.events,
     lastSpeech: () => (children.get('leaf') as unknown as { lastCompletedSpeech?: string }).lastCompletedSpeech,
+    keptRounds: () => [...((children.get('leaf') as unknown as { rounds?: Map<string, unknown> }).rounds?.keys() ?? [])],
   };
 }
 
@@ -173,6 +174,7 @@ test("fleet--peek shows the text of a round that no inference:speech carries: a 
     { type: 'inference:round_text', agentName: 'leaf', content: 'Before.', replay: true, ts: 8 },
   ]);
   expect(child.lastSpeech()).toBeUndefined();
+  expect(child.keptRounds()).toEqual([]);
 });
 
 test("fleet--peek shows no text of a refused attempt that an empty chunk discards, of a round whose start this host didn't see, or of a round open across a new connection", async () => {
