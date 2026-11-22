@@ -158,8 +158,8 @@ export function SurgeryDialog(props: {
         <Show when={!props.result}>
           <p class="text-neutral-300 text-sm mb-2 leading-snug">
             {isRollback()
-              ? <>The chronicle forks at this message and the fork becomes the live branch — the {props.request.affected ?? '?'} message{props.request.affected === 1 ? '' : 's'} after it stay on the current branch and leave the agent's context. Nothing is deleted; checkout the parent branch to restore.</>
-              : <>The chronicle forks at the current head, these messages are redacted on the fork, and the fork becomes the live branch. The current branch keeps them. Already-folded summaries are not rewritten.</>}
+              ? <>The chronicle forks at this message, or, on a presented window, at the write that showed it to the agent, and the fork becomes the live branch — the {props.request.affected ?? '?'} message{props.request.affected === 1 ? '' : 's'} after it stay on the current branch. Rows shown to the agent in the same write as this message stay in its context, and rows stored before it was shown re-enter it at its next turn — the result says how many; a row another resident stored before that write stays on the fork too, in neither count; the others leave it. Nothing is deleted; checkout the parent branch to restore.</>
+              : <>The chronicle forks at the current head, these messages are redacted on the fork, and the fork becomes the live branch. The current branch keeps them. Summaries that folded them are dropped and rebuilt from the rows that stay (on a legacy store, they are not rewritten).</>}
           </p>
           <ul class="text-xs font-mono text-neutral-400 mb-3 space-y-0.5 max-h-40 overflow-y-auto border border-neutral-800 rounded p-2">
             <For each={props.request.previews}>{(p) => <li class="truncate">· {p}</li>}</For>
@@ -191,9 +191,29 @@ export function SurgeryDialog(props: {
           {(r) => (
             <>
               <Show when={r().ok} fallback={
-                <div class="text-sm text-rose-300 mb-3 font-mono whitespace-pre-wrap">{r().error ?? 'failed'}</div>
+                <>
+                  <div class="text-sm text-rose-300 mb-3 font-mono whitespace-pre-wrap">{r().error ?? 'failed'}</div>
+                  <Show when={r().mountError}>
+                    <div class="text-xs text-amber-200/90 mb-3">The store is on the branch it made, and the Web UI couldn't write the _config mount from it: {r().mountError}. The gate's files may still be the previous branch's.</div>
+                  </Show>
+                </>
               }>
                 <div class="text-sm text-emerald-300 mb-1">Done — {r().messagesRemoved ?? 0} message{r().messagesRemoved === 1 ? '' : 's'} left the live context.</div>
+                <Show when={r().mountError}>
+                  <div class="text-xs text-amber-200/90 mb-1">Done, but the _config mount wasn't refreshed: {r().mountError}. The gate's files may still be the previous branch's.</div>
+                </Show>
+                {/* A rollback on a presented window (agent-framework #291) cuts at the
+                    write that showed the target, so rows after it can stay. */}
+                <Show when={(r().returnedToArrivals ?? 0) > 0}>
+                  <div class="text-xs text-amber-200/90 mb-1">
+                    {r().returnedToArrivals} row{r().returnedToArrivals === 1 ? '' : 's'} after it stay in the record: stored before the agent was shown the target, they are out of its context until its next turn starts, or the host restarts before then, and enter it then.
+                  </div>
+                </Show>
+                <Show when={(r().keptInWindowAfterTarget ?? 0) > 0}>
+                  <div class="text-xs text-amber-200/90 mb-1">
+                    {r().keptInWindowAfterTarget} row{r().keptInWindowAfterTarget === 1 ? '' : 's'} after it stay in the agent's context: one write showed them with the target, and a branch cut can't separate them. Suppress them (select, then suppress) or hide them by Discord message id.
+                  </div>
+                </Show>
                 <div class="text-xs font-mono text-neutral-400 mb-1">now on <span class="text-cyan-300">{r().targetBranch}</span> · was {r().sourceBranch}</div>
                 <Show when={r().lastVisible?.preview}>
                   <div class="text-xs text-neutral-500 mb-3 truncate">last visible: <span class="text-neutral-300">{r().lastVisible!.participant ?? r().lastVisible!.role ?? ''}</span> — {r().lastVisible!.preview}</div>
@@ -236,7 +256,7 @@ const fmtAt = (iso: string): string => {
 };
 
 const kindColor = (kind: string): string =>
-  kind === 'rollback' || kind === 'undo-turn' || kind === 'redo-turn' ? 'text-amber-300'
+  kind === 'rollback' || kind === 'checkout' || kind === 'undo-turn' || kind === 'redo-turn' ? 'text-amber-300'
   : kind === 'suppress' || kind === 'hide' ? 'text-rose-300'
   : kind === 'quiesce' || kind === 'resume' ? 'text-sky-300'
   : 'text-neutral-300';
@@ -245,9 +265,26 @@ function summarize(e: OperatorLogEntryWire): string {
   const r = e.result ?? {};
   const p = e.params ?? {};
   switch (e.kind) {
-    case 'rollback': return `→ ${String(r.targetBranch ?? '?')} (−${String(r.messagesRemoved ?? '?')} msgs)`;
+    case 'rollback': {
+      // On a presented window (#291) rows after the target can stay: returned
+      // ones until the agent's next turn starts (or a restart before then),
+      // kept ones in its window.
+      const stayed = [
+        typeof r.returnedToArrivals === 'number' && r.returnedToArrivals > 0 ? `${r.returnedToArrivals} back at next turn or restart` : '',
+        typeof r.keptInWindowAfterTarget === 'number' && r.keptInWindowAfterTarget > 0 ? `${r.keptInWindowAfterTarget} kept` : '',
+      ].filter(Boolean).join(', ');
+      return `→ ${String(r.targetBranch ?? '?')} (−${String(r.messagesRemoved ?? '?')} msgs${stayed ? `; ${stayed}` : ''})`;
+    }
+    // A host's /checkout or /restore to a branch's head, or the framework's switchBranch over its API.
+    case 'checkout': return `→ ${String(r.targetBranch ?? p.branch ?? '?')}${r.sourceBranch ? ` (from ${String(r.sourceBranch)})` : ''}`;
     case 'suppress': return `→ ${String(r.targetBranch ?? '?')} (−${String(r.messagesRemoved ?? (Array.isArray(p.messageIds) ? p.messageIds.length : '?'))} msgs)`;
-    case 'undo-turn': case 'redo-turn': return `→ ${String(r.targetBranch ?? '?')}`;
+    // An undo on the agent's window (agent-framework #291) moves no branch: say how many rows left it or entered it again.
+    case 'undo-turn': case 'redo-turn': {
+      const w = r.window as { retracted?: unknown; represented?: unknown } | undefined;
+      return w && typeof w === 'object'
+        ? `window −${String(w.retracted ?? 0)} +${String(w.represented ?? 0)}`
+        : `→ ${String(r.targetBranch ?? '?')}`;
+    }
     case 'hide': return `−${String(r.hidden ?? '?')} on ${String(r.branch ?? '?')}`;
     case 'settings-update': { try { return JSON.stringify(p.patch ?? {}); } catch { return ''; } }
     case 'settings-reset': return `keys: ${Array.isArray(p.keys) ? p.keys.join(',') : String(p.keys ?? 'all')}`;

@@ -43,7 +43,7 @@ export interface CredentialState {
   /** Device-code login in progress (`auth-login-required`). */
   login?: { verificationUrl: string; userCode: string };
   /** Outcome of the last operator action, for the panel. */
-  lastAction?: { id: CredentialActionId; at: number; ok: boolean; message: string };
+  lastAction?: { id: CredentialActionId; at: number; ok: boolean; message: string; said: string };
   /** While the last write of the credential to its file failed: what the
    *  `credential-unsaved` alert said. */
   unsaved?: string;
@@ -360,7 +360,8 @@ export class CredentialMonitor {
         void this.source.cancelLogin().catch(() => false);
         queued = { ...params, restart: true };
       } else {
-        this.state = { ...this.state, lastAction: { id, at: this.now(), ok: false, message: 'a login is already in progress — enter the code shown, or wait for it to expire' } };
+        const message = 'a login is already in progress — enter the code shown, or wait for it to expire';
+        this.state = { ...this.state, lastAction: { id, at: this.now(), ok: false, message, said: message } };
         return Promise.resolve(this.snapshot());
       }
     }
@@ -379,8 +380,8 @@ export class CredentialMonitor {
 
   private async performAction(id: CredentialActionId, params: { token?: string; restart?: boolean }): Promise<CredentialState> {
     const at = this.now();
-    const done = (ok: boolean, message: string): CredentialState => {
-      this.state = { ...this.state, lastAction: { id, at, ok, message } };
+    const done = (ok: boolean, message: string, said = message): CredentialState => {
+      this.state = { ...this.state, lastAction: { id, at, ok, message, said } };
       return this.snapshot();
     };
     try {
@@ -422,11 +423,12 @@ export class CredentialMonitor {
       const reason = err instanceof Error ? err.message : String(err);
       const disabledLogin = isAuthFailure(err) && reason === this.source.loginDisabledReason;
       if (disabledLogin) this.observeError(err);
-      return done(false, `${id} failed: ${disabledLogin ? reason : trim(reason)}`);
+      const message = `${id} failed: ${disabledLogin ? reason : trim(reason)}`;
+      return done(false, message, disabledLogin ? message : `${id} failed`);
     }
   }
 
-  private async settle(what: string, id: CredentialActionId): Promise<[boolean, string]> {
+  private async settle(what: string, id: CredentialActionId): Promise<[boolean, string, string?]> {
     this.armExpiryTimer();
     if (!this.source.probe) {
       if (id === 'recheck') {
@@ -451,7 +453,7 @@ export class CredentialMonitor {
         return [false, `${what}, but the provider still rejects the credential`];
       }
       const reason = err instanceof Error ? err.message : String(err);
-      return [true, `${what}; verification inconclusive (${trim(reason)})`];
+      return [true, `${what}; verification inconclusive (${trim(reason)})`, `${what}; verification inconclusive`];
     }
   }
 

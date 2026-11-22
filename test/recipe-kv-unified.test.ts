@@ -167,6 +167,31 @@ describe('kv-unified recipe plumbing', () => {
     }
   });
 
+  test('forwards what a change of layout costs (context-manager 0.25.3) and rejects values it would refuse or read as off', () => {
+    const withKeys = {
+      ...config(),
+      policy: { ...config().policy, rewriteLambda: 500 },
+      thinkingLambda: 2,
+      thinkingHalfLifeTokens: 40_000,
+    };
+    const built = buildFrameworkStrategy(validateRecipe(recipe(withKeys)), 'model', 'UTC') as unknown as {
+      config: { kvUnified: RecipeKvUnifiedConfig };
+    };
+    expect(built.config.kvUnified).toEqual(withKeys);
+    // 0 is each price's "off", and reads as written.
+    expect(() => validateRecipe(recipe({ ...config(), policy: { ...config().policy, rewriteLambda: 0 }, thinkingLambda: 0 }))).not.toThrow();
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, '500', null, true]) {
+      expect(() => validateRecipe(recipe({ ...config(), policy: { ...config().policy, rewriteLambda: bad as never } })))
+        .toThrow(/kvUnified\.policy\.rewriteLambda must be a finite number of 0 or more/);
+      expect(() => validateRecipe(recipe({ ...config(), thinkingLambda: bad as never })))
+        .toThrow(/kvUnified\.thinkingLambda must be a finite number of 0 or more/);
+    }
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, '40000', null]) {
+      expect(() => validateRecipe(recipe({ ...config(), thinkingLambda: 2, thinkingHalfLifeTokens: bad as never })))
+        .toThrow(/kvUnified\.thinkingHalfLifeTokens must be a finite number above 0/);
+    }
+  });
+
   test('rejects a kvUnified object when another solver is selected', () => {
     const raw = recipe() as ReturnType<typeof recipe>;
     raw.agent.strategy.foldingStrategy = 'kv-stable';

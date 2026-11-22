@@ -1,5 +1,6 @@
 import type { TraceEvent } from '@animalabs/agent-framework';
 import { emptyUsage, foldUsageSample, type UsageCounts, type UsageSample } from './stream-usage.js';
+import { traceError } from './turn-trace.js';
 
 export type AgentPhase =
   | 'idle'
@@ -8,6 +9,12 @@ export type AgentPhase =
   | 'invoking'
   | 'executing'
   | 'done'
+  // An attempt failed and the turn isn't over: the framework retries it
+  // after its error policy's wait (which sends inference:waiting), holds it
+  // until a provider's limit lifts (which sends nothing) and runs it again,
+  // or ends it (exhausted or aborted). The phase covers all of these, and
+  // status stays 'running'.
+  | 'attempt-failed'
   | 'failed'
   // Terminal-but-benign: user cancel, zombie-reclaim, supersession, agent
   // reboot, budget-restart, and a turn agent-framework drops when its
@@ -58,6 +65,10 @@ export interface AgentNode {
   startedAt?: number;
   completedAt?: number;
   lastEventAt?: number;
+  /** The error of the turn's last failure (inference:failed or
+   *  inference:exhausted), while the node is 'attempt-failed' or ended
+   *  'failed'. Absent otherwise. */
+  attemptError?: string;
 }
 
 export interface AgentTreeSnapshot {
@@ -103,6 +114,7 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     const node = r._ensureNode(e.agentName);
     node.phase = 'sending';
     node.status = 'running';
+    delete node.attemptError;
     node.lastEventAt = ts;
     if (node.startedAt === undefined) node.startedAt = ts;
     // A new stream: its usage samples count from zero.
@@ -161,6 +173,7 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     if (node.status !== 'running') {
       node.status = 'running';
       node.phase = 'idle';
+      delete node.attemptError;
       delete node.completedAt;
       node.startedAt = ts;
     } else if (node.startedAt === undefined) {
@@ -192,6 +205,7 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     const end = e.reason === 'completed' ? 'completed' : e.reason === 'failed' ? 'failed' : 'cancelled';
     node.status = end;
     node.phase = end === 'completed' ? 'done' : end;
+    if (end !== 'failed') delete node.attemptError;
     node.completedAt = ts;
     node.lastEventAt = ts;
   },
@@ -201,6 +215,7 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     const node = r._ensureNode(e.agentName);
     node.status = 'cancelled';
     node.phase = 'cancelled';
+    delete node.attemptError;
     node.completedAt = ts;
     node.lastEventAt = ts;
   },
@@ -227,9 +242,9 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
   'inference:failed': (r, e, ts) => {
     if (!e.agentName) return;
     const node = r._ensureNode(e.agentName);
-    node.phase = 'failed';
-    node.status = 'failed';
-    node.completedAt = ts;
+    node.phase = 'attempt-failed';
+    node.status = 'running';
+    node.attemptError = traceError(e);
     node.lastEventAt = ts;
   },
 
@@ -253,6 +268,7 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     }
     node.phase = 'failed';
     node.status = 'failed';
+    node.attemptError = traceError(e);
     node.completedAt = ts;
     node.lastEventAt = ts;
   },
@@ -269,6 +285,7 @@ const EVENT_HANDLERS: Record<string, EventHandler> = {
     const node = r._ensureNode(e.agentName);
     node.phase = 'cancelled';
     node.status = 'cancelled';
+    delete node.attemptError;
     node.completedAt = ts;
     node.lastEventAt = ts;
   },

@@ -28,6 +28,7 @@
 // First, so its warning about an old Bun prints before the modules below run.
 import './bun-floor-check.js';
 import { hostMembraneRetry } from './membrane-retry.js';
+import { frameworkErrorPolicy } from './framework-error-policy.js';
 import {
   BedrockAdapter,
   Membrane,
@@ -58,6 +59,7 @@ import { historyModuleOptions, assertSemanticSearchRegistered } from './history-
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
 import { retrievalModuleConfig } from './retrieval-config.js';
+import { FetchModule, fetchModuleConfig } from './modules/fetch-module.js';
 import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { waitToBeListed } from './fleet-begin.js';
@@ -71,18 +73,23 @@ import { ObserversModule } from './modules/observers-module.js';
 import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { LifecycleModule } from './modules/lifecycle-module.js';
+import { REFUSED_TURN, SETUP_MODULE, SetupModule, openingMessage, showsItself, type SecretAsker } from './modules/setup-module.js';
+import { askHidden } from './setup/terminal-secret.js';
+import { speakerOf } from './speaker.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
 import { InstructionsModule } from './modules/instructions-module.js';
 import { loadMcplServers, applyAgentOverlay, mergeRecipeServers, composeMcplChildEnv, overlayWarnings, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { toolClassConfig } from './tool-lifecycle-config.js';
 import { batchModeStartNotice, batchTeardownNotice, batchWebUiNotice, batchEchoLine, BATCH_MCPL_LOG_NOTE } from './batch-mode.js';
 import { createPipedTurns, switchFollowing, traceFollower } from './piped-turns.js';
-import { openReadlineTerminal } from './readline-terminal.js';
+import { openReadlineTerminal, type ReadlineTerminal, type ShownPrompt } from './readline-terminal.js';
 import { opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts.js';
+import { TURN_SETTLED_TRACES } from './state/turn-trace.js';
 import { setCallLogPath } from './bug-report.js';
 import { SessionManager } from './session-manager.js';
 import { startFramework } from './start-framework.js';
 import { StartRefusal, currentForStart, releaseHere, type ReleaseHere } from './update/host.js';
+import { installCommandAt } from './update/install-command-name.js';
 import { childrenFilePath, trialPlaces } from './update/contract.js';
 import { hostUpdate, hostVersionOf } from './update/update.js';
 import { armTrialLog } from './update/trial-log.js';
@@ -250,6 +257,7 @@ function resolveModel(recipe: Recipe): string {
 let noticesRef: NoticesModule | null = null;
 let instructionsRef: InstructionsModule | null = null;
 let installHere: ReleaseHere | null = null;
+let terminalAsker: SecretAsker | null = null;
 
 async function createFramework(
   membrane: Membrane,
@@ -349,6 +357,10 @@ async function createFramework(
     moduleInstances.push(workspaceModule);
   }
 
+  if (modules.fetch) {
+    moduleInstances.push(new FetchModule(fetchModuleConfig(membrane, modules.fetch)));
+  }
+
   if (modules.instructions) {
     const instructionsConfig =
       typeof modules.instructions === 'object' ? modules.instructions : {};
@@ -415,16 +427,28 @@ async function createFramework(
     moduleInstances.push(mcplAdminModule);
   }
 
-  if (modules.selfRestart !== undefined && modules.selfRestart !== false) {
+  const selfRestartOn = modules.selfRestart !== undefined && modules.selfRestart !== false;
+  if (selfRestartOn || modules.selfUpdate === true) {
     const srCfg = typeof modules.selfRestart === 'object' ? modules.selfRestart : {};
     moduleInstances.push(new LifecycleModule({
       dataDir: resolve(config.dataDir),
       timeZone,
+      selfRestart: selfRestartOn,
+      selfUpdate: modules.selfUpdate === true,
+      headless,
+      ...(installHere ? { installCommand: installCommandAt(installHere.root) } : {}),
       ...(srCfg.cooldownMinutes !== undefined ? { cooldownMinutes: srCfg.cooldownMinutes } : {}),
     }));
   }
 
   let identityModule: IdentityModule | null = null;
+  if (modules.setup === true) {
+    moduleInstances.push(new SetupModule({
+      dir: process.env.CONNECTOME_SETUP_DIR || process.cwd(), env: process.env, asker: () => terminalAsker,
+      show: (line) => console.log(line),
+    }));
+  }
+
   if (modules.identity !== undefined && modules.identity !== false) {
     const idCfg = typeof modules.identity === 'object' ? modules.identity : {};
     identityModule = new IdentityModule({
@@ -511,6 +535,7 @@ async function createFramework(
   const framework = await AgentFramework.create({
     storePath,
     membrane,
+    ...frameworkErrorPolicy(recipe.agent.retry),
 agents: [agentConfig],
     modules: moduleInstances,
     mcplServers,
@@ -532,6 +557,7 @@ agents: [agentConfig],
     ...(toolClassConfig(recipe) as object),
     maintenanceIntervalMs: recipe.maintenanceIntervalMs,
     inferenceBounds: recipe.inferenceBounds,
+    toolResultInlineMaxChars: recipe.toolResultInlineMaxChars,
   });
 
   // An agent-framework without the heartbeat ignores modules.heartbeat: the
@@ -709,26 +735,35 @@ async function runPiped(app: AppContext) {
   const { handleCommand } = await import('./commands.js');
 
   let say = (line: string): void => { console.error(line); };
+  let endIfFinished = (): void => {};
   let atPrompt = false;
   let onAlert: ((event: Record<string, unknown>) => void) | null = null;
+  const setup = app.recipe.modules?.setup === true;
   const turns = createPipedTurns(app.agentName, {
     write: (text) => { atPrompt = false; process.stdout.write(text); },
     log: (line) => { atPrompt = false; console.log(line); },
     error: (line) => { say(line); },
-  }, failureHint(app.recipe, process.env, app.credentials));
+  }, failureHint(app.recipe, process.env, app.credentials), setup ? showsItself : undefined);
+  const refused = (): boolean =>
+    app.framework.queryInferenceLogs({ agentName: app.agentName, limit: 1 }).entries[0]?.summary?.stopReason === 'refusal';
   const traces = traceFollower((event) => {
     const e = event as { type: string; [key: string]: unknown };
     turns.onTrace(e);
     if (e.type === 'ops:alert') onAlert?.(e);
+    // agent-framework logs a turn's last inference, with its stop reason, after this trace in the same tick.
+    if (setup && e.type === 'inference:completed' && e.agentName === app.agentName) {
+      queueMicrotask(() => { if (refused()) say(REFUSED_TURN); });
+    }
+    if (setup && TURN_SETTLED_TRACES.has(e.type) && e.agentName === app.agentName) queueMicrotask(() => endIfFinished());
   });
   traces.follow(app.framework);
-  let afterSwitch = (): void => {};
+  let afterSwitch = async (): Promise<void> => {};
 
   async function processLine(line: string): Promise<boolean> {
     const trimmed = line.trim();
     if (!trimmed) return false;
     if (trimmed.startsWith('/')) {
-      const result = handleCommand(trimmed, app);
+      const result = handleCommand(trimmed, app, { lineByLine: true });
       if (result.quit) return true;
       for (const l of result.lines) console.log(l.text);
       if (result.asyncWork) {
@@ -748,15 +783,15 @@ async function runPiped(app: AppContext) {
         const sessionId = result.switchToSessionId;
         turns.switched();
         const switched = await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
-        afterSwitch();
         console.log(switched ? 'Session switched.' : switchLeftForStop(app.sessionManager.getActiveSession()));
+        if (switched) await afterSwitch();
       }
     } else {
       app.framework.pushEvent({
         type: 'external-message', source: 'cli',
         content: trimmed, metadata: {}, triggerInference: true,
       });
-      await turns.waitForTurn();
+      await turns.waitForTurn(setup && !batch ? null : undefined);
     }
     return false;
   }
@@ -789,7 +824,9 @@ async function runPiped(app: AppContext) {
   }
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: '> ' });
-  const terminal = openReadlineTerminal(config.dataDir, { showing: () => atPrompt, redraw: () => { rl.prompt(true); } });
+  shownPrompt.showing = () => atPrompt;
+  shownPrompt.redraw = () => { rl.prompt(true); };
+  const terminal = earlyTerminal ?? openReadlineTerminal(config.dataDir, shownPrompt);
   try {
     say = terminal.say;
     hostUpdate.attachNotices(terminal.say);
@@ -798,23 +835,49 @@ async function runPiped(app: AppContext) {
       const line = opsAlertLine(alerts, alert.kind, alert.agent, alert.message);
       if (line !== null) terminal.say(line.text);
     };
-    onAlert = (event) => { showAlert(opsAlertOf(event)); };
-    afterSwitch = () => { alerts.clear(); };
+    onAlert = (event) => {
+      const alert = opsAlertOf(event);
+      if (setup && alert.kind === 'refusal' && alert.agent === app.agentName) return;
+      showAlert(alert);
+    };
+    const opening = async (after: 'start' | 'switch'): Promise<void> => {
+      const held = app.framework.getAgent(app.agentName)?.getContextManager()?.queryMessages({}).messages ?? [];
+      const answered = turns.waitForTurn(null);
+      app.framework.pushEvent({
+        type: 'external-message', source: 'system', metadata: {}, triggerInference: true,
+        content: openingMessage(held.some((message) => speakerOf(message.participant, message.metadata).kind !== 'host'), after),
+      });
+      await answered;
+    };
+    afterSwitch = async () => {
+      alerts.clear();
+      if (setup) await opening('switch');
+    };
     let restarting = false;
     hostUpdate.attachStop({ supervised: false, stop: () => { restarting = true; setTimeout(() => { rl.close(); }, 0); } });
     console.log('connectome-host (readline mode). Type /help for commands.');
     if (terminal.logging()) terminal.say(`Error log: ${terminal.logPath}`);
     let closed = false;
-    rl.on('close', () => { closed = true; atPrompt = false; });
-    rl.prompt();
-    atPrompt = true;
+    rl.on('close', () => { closed = true; atPrompt = false; terminalAsker = null; });
+    if (setup) {
+      terminalAsker = {
+        ask: (name, purpose) => askHidden(rl, process.stdout, `${name} (${purpose}), typed hidden (Enter alone stores nothing)`),
+      };
+    }
+    const finished = (): boolean => (app.framework.getModule(SETUP_MODULE) as SetupModule | undefined)?.finishRequested === true;
+    endIfFinished = () => { if (!closed && finished()) rl.close(); };
+    const promptOrEnd = (): void => {
+      if (closed || finished()) return;
+      rl.prompt();
+      atPrompt = true;
+    };
     rl.on('line', async (line: string) => {
       atPrompt = false;
       if (await processLine(line)) { rl.close(); return; }
-      if (closed) return;
-      rl.prompt();
-      atPrompt = true;
+      promptOrEnd();
     });
+    if (setup) void opening('start').then(promptOrEnd);
+    else promptOrEnd();
     await new Promise<void>(r => rl.on('close', r));
     app.stopping = true;
     console.log('\nShutting down...');
@@ -845,6 +908,9 @@ function countLines(path: string): number {
 }
 
 let beforeFatalExit: (() => Promise<void>) | undefined;
+
+let earlyTerminal: ReadlineTerminal | null = null;
+const shownPrompt: ShownPrompt = { showing: () => false, redraw: () => {} };
 
 async function main() {
   // It exits as soon as what it wrote has gone out, since an extension the
@@ -946,6 +1012,7 @@ async function main() {
   const openrouterAdapter = provider === 'openrouter'
     ? new OpenRouterAdapter({
         apiKey: config.openrouterApiKey!,
+        baseURL: process.env.OPENROUTER_BASE_URL || undefined,
         xTitle: recipe.agent.name ?? recipe.name,
       })
     : undefined;
@@ -965,7 +1032,7 @@ async function main() {
   const primaryAgent = (): { name: string; agent: unknown } | null => {
     const fw = appRefForDebt?.framework;
     const agents = fw?.getAllAgents() ?? [];
-    const name = (fw as unknown as { primaryAgentName?: string } | undefined)?.primaryAgentName
+    const name = fw?.getPrimaryAgentName()
       ?? (agents.length === 1 ? agents[0]!.name : undefined);
     if (!name) return null;
     const agent = agents.find((a) => a.name === name);
@@ -1138,6 +1205,7 @@ async function main() {
     adapter.onProviderSuccess = () => credentials.observeSuccess();
   }
 
+  if (noTui && !batch && recipe.modules?.setup === true) earlyTerminal = openReadlineTerminal(config.dataDir, shownPrompt);
   const extensions = await loadExtensions(recipe);
   // Before any agent config is built: what this account does with thinking
   // whose earlier conversation changed decides whether agents leave it out.
@@ -1221,6 +1289,7 @@ async function main() {
   hostUpdate.configure({
     here: installHere,
     running: hostVersionOf(HOST_PACKAGE_JSON),
+    headless,
     host: {
       framework: () => app.framework,
       fleet: () => {
@@ -1262,6 +1331,7 @@ async function main() {
 }
 
 main().catch(async (err) => {
+  earlyTerminal?.end();
   if (err instanceof StartRefusal) console.error(err.message);
   else console.error('Fatal error:', err);
   // Headless, headless.log may still hold lines written just before the

@@ -9,7 +9,8 @@
  * would far outlast. With it off, a 529 is retried as any other retryable
  * failure, on the base schedule: by default three sends, 1 s then 2 s
  * apart. A recipe's `agent.retry` sets every field, its `overloaded`
- * schedule included.
+ * schedule included. The turn half of `agent.retry` is wired separately in
+ * src/framework-error-policy.ts.
  */
 import type { MembraneConfig } from '@animalabs/membrane';
 

@@ -34,7 +34,15 @@ import { PRIVATE_DIR_MODE } from '../update/data-swap.js';
 import { FLEET_BEGIN_ENV } from '../fleet-begin.js';
 import { socketRefusesConnection } from './fleet-socket-probe.js';
 
-const HOST_FORCED_TELEMETRY_EVENTS: readonly string[] = ['usage:updated'];
+/** Events every child sends whatever its subscription asks for, for the
+ *  host's own readers: its usage, the window traces at which the Web UI
+ *  reads the child's panels again (agent-streams.ts WindowFrames), and the
+ *  events from which the host assembles each round's text. */
+export const HOST_FORCED_TELEMETRY_EVENTS: readonly string[] = [
+  'usage:updated', 'window:undone', 'presentation:retracted',
+  'inference:started', 'inference:stream_resumed', 'inference:tokens', 'inference:tool_calls_yielded',
+  'inference:completed', 'inference:failed', 'inference:aborted', 'inference:exhausted',
+];
 export const CLOCK_SLACK_MS = 60_000;
 const ADOPTION_UNRESOLVED = 'adoption unresolved;';
 
@@ -151,7 +159,8 @@ interface FleetChild {
   groupSignal?: string;
   spawnError?: unknown;
   env?: Record<string, string>;
-  lastCompletedSpeech: string;
+  lastCompletedSpeech?: string;
+  rounds?: Map<string, string>;
   saidExiting?: boolean;
   reopening?: Promise<void>;
   reopenedAt?: number;
@@ -522,7 +531,6 @@ export class FleetModule implements Module {
       ...(p.groupEnded === true ? { groupEnded: true } : {}),
       killRequested: false,
       restartAttempts: [],
-      lastCompletedSpeech: '',
     };
     // Resolved env values may contain secrets. Chronicle stores historical
     // snapshots, so env is runtime-only and legacy persisted env is ignored.
@@ -955,7 +963,8 @@ export class FleetModule implements Module {
         description:
           "Forward the source child's most recent completed speech since this host's connection to it last opened " +
           'to the target child as a text message. ' +
-          'Speech is the text from an inference round that did not end in tool calls (the child\'s "final answer" from its last turn). ' +
+          'Speech is the text of the source\'s latest inference round that ended without tool calls, outside a silent ' +
+          'heartbeat, so after a silent heartbeat it is an earlier turn\'s. When that round had no text, nothing is relayed. ' +
           'A source that has exited can still be relayed (useful for "pass on the dead child\'s last findings"). ' +
           'A running source this host can\'t reach isn\'t, since a reply this host holds from it may not be its latest. ' +
           'Target child must be running. ' +
@@ -1363,7 +1372,6 @@ export class FleetModule implements Module {
       bootId: this.bootId(),
       killRequested: false,
       restartAttempts: [...(opts.autoRestartOf?.restartAttempts ?? [])],
-      lastCompletedSpeech: '',
     };
     if (input.env !== undefined) child.env = { ...input.env };
     if (existing) this.cancelAutoRestart(existing);
@@ -1575,7 +1583,7 @@ export class FleetModule implements Module {
           `string; ${got(input.command)}.`,
       };
     }
-    this.sendToChild(ok.child, { type: 'command', command: input.command });
+    this.sendToChild(ok.child, { type: 'command', command: input.command, from: 'fleet' });
     return { success: true, data: { name: input.name, sent: 'command', command: input.command } };
   }
 
@@ -1585,7 +1593,7 @@ export class FleetModule implements Module {
     const requested = input.lines ?? 50;
     const n = Math.max(1, Math.min(requested, c.events.length || 1));
     const slice = c.events.length > 0 ? c.events.slice(-n) : [];
-    return { success: true, data: { name: c.name, count: slice.length, events: slice } };
+    return { success: true, data: { name: c.name, count: slice.length, events: slice.map(peekView), note: PEEK_NOTE } };
   }
 
   private async handleKill(input: { name: string }): Promise<ToolResult> {
@@ -1690,6 +1698,18 @@ export class FleetModule implements Module {
 
     const speech = fromChild.lastCompletedSpeech;
     const unreachable = this.unreachable(fromChild);
+    if (speech === '') {
+      return {
+        success: false,
+        isError: true,
+        error: `Nothing was relayed: the latest inference round this host saw from '${input.from}' ended without ` +
+          'tool calls, outside a silent heartbeat, and had no text in it, so there was nothing to pass on. ' +
+          (unreachable === null
+            ? `fleet--send gives '${input.from}' something to answer, and fleet--relay passes on its reply once such a ` +
+              'round has text in it.'
+            : `'${input.from}' ${unreachable}.`),
+      };
+    }
     if (speech && unreachable !== null && (fromChild.status === 'ready' || fromChild.status === 'starting')) {
       return {
         success: false,
@@ -1710,8 +1730,9 @@ export class FleetModule implements Module {
             'opened' +
             (unreachable !== null
               ? `, and it ${unreachable}.`
-              : `. A reply counts once one of its inference rounds ends without tool calls, and fleet--relay ` +
-                `passes it on then; if '${input.from}' has nothing to answer, fleet--send gives it something.`)
+              : `. A reply counts once one of its inference rounds ends without tool calls, outside a silent ` +
+                `heartbeat, and fleet--relay passes it on then if that round has text in it; if '${input.from}' ` +
+                `has nothing to answer, fleet--send gives it something.`)
           : `Nothing was relayed: '${input.from}' has no finished reply on record, since its subscription ` +
             `(${fromChild.subscription.join(', ') || 'empty'}) leaves out inference:speech, so its replies never ` +
             `reach this host. fleet--restart keeps that subscription, ` +
@@ -1927,7 +1948,7 @@ export class FleetModule implements Module {
       c.reopenedAt = Date.now();
       c.closingAgainUntil = undefined;
       c.reopenFailure = undefined;
-      c.lastCompletedSpeech = '';
+      c.lastCompletedSpeech = undefined;
       this.takeChecked(c, checked, c.subscription);
       console.error(`[fleet] child "${c.name}" closed this host's connection while it ran, and this host ` +
         `connected to it again (pid ${c.pid}).`);
@@ -2126,6 +2147,7 @@ export class FleetModule implements Module {
   private attach(child: FleetChild, sock: Socket): void {
     child.socket = sock;
     child.buffer = '';
+    child.rounds = new Map();
     child.textsSent = 0;
     child.saidExiting = false;
     sock.on('data', (chunk: string) => {
@@ -2175,7 +2197,16 @@ export class FleetModule implements Module {
   }
 
   private recordEvent(child: FleetChild, event: WireEvent): void {
+    if (event.type === 'panel-response') {
+      this.fanOutEvent(child.name, event);
+      return;
+    }
     child.lastEventAt = Date.now();
+    this.keepRoundText(child, event);
+    if (event.type === 'inference:tokens') {
+      this.fanOutEvent(child.name, event);
+      return;
+    }
     if (event.type === 'inference:started' && (event as { replay?: unknown }).replay !== true) {
       child.idleSinceWork = false;
     } else if (event.type === 'lifecycle') {
@@ -2203,6 +2234,35 @@ export class FleetModule implements Module {
     }
     this.fanOutEvent(child.name, event);
     if (statusChanged) this.persistState();
+  }
+
+  private keepRoundText(child: FleetChild, event: WireEvent): void {
+    const { type, agentName } = event as { type?: string; agentName?: unknown };
+    if (typeof agentName !== 'string') return;
+    const rounds = (child.rounds ??= new Map());
+    if (type === 'inference:started' || type === 'inference:stream_resumed') {
+      rounds.set(agentName, '');
+    } else if (type === 'inference:tokens') {
+      const { content, blockType } = event as { content?: string; blockType?: string };
+      const text = rounds.get(agentName);
+      if (text !== undefined && blockType === 'text') rounds.set(agentName, content === '' ? '' : text + (content ?? ''));
+    } else if (type === 'inference:tool_calls_yielded' || type === 'inference:completed') {
+      const text = rounds.get(agentName);
+      rounds.delete(agentName);
+      const { ts, replay } = event as { ts?: unknown; replay?: unknown };
+      if (text) {
+        child.events.push({
+          type: 'inference:round_text', agentName, content: text,
+          ...(typeof ts === 'number' ? { ts } : {}), ...(replay === true ? { replay: true } : {}),
+        });
+      }
+    } else if (type === 'inference:speech') {
+      const [text, end] = child.events.slice(-2);
+      if (text?.type === 'inference:round_text' && text.agentName === agentName && end?.type === 'inference:completed' &&
+        end.agentName === agentName) child.events.splice(-2, 1);
+    } else if (type === 'inference:failed' || type === 'inference:aborted' || type === 'inference:exhausted') {
+      rounds.delete(agentName);
+    }
   }
 
   private fanOutEvent(childName: string, event: WireEvent): void {
@@ -2309,8 +2369,6 @@ export class FleetModule implements Module {
 
   async requestSwitch(childName: string, request: SwitchRequest, timeoutMs: number): Promise<{ ok: boolean; data?: unknown; error?: string }> {
     const child = this.children.get(childName);
-    // Keep the switch's requests outside the bound: a switch sends a child three at most, so they make no loop,
-    // and a child whose resume can't be sent stays quiesced until a later resume or its next start.
     if (child) await this.tryReopen(child, { withinBound: true });
     return this.requestAnswer(childName, `update-${request.op}`, 'update-response', `the switch's ${request.op}`, timeoutMs,
       (corrId) => ({ type: 'update-request', request, corrId }));
@@ -2585,6 +2643,41 @@ export class FleetModule implements Module {
       tick();
     });
   }
+}
+
+const LEFT_OUT = 'left out';
+const PEEK_NOTE = `Each event's error and attemptError read "${LEFT_OUT}" in place of their text, but for a failed tool ` +
+  "call's own error, which shows. An event's stack and providerErrorCode, an alert's message and data, and an errorType of " +
+  "safety are left out. Streamed chunks (inference:tokens) are not kept. When a round ends, its text shows as an " +
+  "inference:round_text, or, for the final reply of a child's main agent, as the inference:speech that the child sends where " +
+  "its subscription includes it. A reply that the provider refused at its end can still show in either.";
+
+function peekView(event: WireEvent): Record<string, unknown> {
+  const shown = withoutErrorText(event);
+  if (event.type === 'tool:failed' && 'error' in event) shown.error = event.error;
+  delete shown.stack;
+  delete shown.providerErrorCode;
+  if (shown.errorType === 'safety') delete shown.errorType;
+  if (shown.type === 'ops:alert') {
+    delete shown.message;
+    delete shown.data;
+  }
+  return shown;
+}
+
+function withoutErrorText(value: object): Record<string, unknown> {
+  const shown: Record<string, unknown> = {};
+  for (const [key, field] of Object.entries(value)) {
+    const text = typeof field === 'string' || (typeof field === 'object' && field !== null);
+    shown[key] = (key === 'error' || key === 'attemptError') && text ? LEFT_OUT : nestedWithoutErrorText(field);
+  }
+  return shown;
+}
+
+function nestedWithoutErrorText(field: unknown): unknown {
+  if (Array.isArray(field)) return field.map(nestedWithoutErrorText);
+  if (typeof field === 'object' && field !== null) return withoutErrorText(field);
+  return field;
 }
 
 function isUrlOrAbsolute(p: string): boolean {

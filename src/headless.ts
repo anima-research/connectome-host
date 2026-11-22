@@ -39,7 +39,8 @@ import { RESTART_EXIT_CODE } from './update/contract.js';
 import { hostUpdate } from './update/update.js';
 import { traceFollower } from './piped-turns.js';
 import {
-  PANEL_OPS_THAT_CHANGE_THE_SESSION, operatorWorkRunning, refusedWhileSwitching, switchLeftForStop, trackOperatorWork,
+  PANEL_OPS_THAT_CHANGE_THE_SESSION, operatorWorkRunning, refusedWhileSwitchQuiesced, refusedWhileSwitching, switchLeftForStop,
+  trackOperatorWork,
 } from './session-switch.js';
 import { STOPPED_READING_MS, watchForStall } from './client-stall.js';
 
@@ -249,11 +250,15 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     }
     emit(event);
   };
-  // `inference:speech` fires once per "final" inference round — the round
-  // that completed without yielding tool calls.  It carries the accumulated
-  // speech text, letting the parent implement fleet--relay without having
-  // to subscribe to the whole token stream.
+  // agent-framework traces inference:completed also when an end-turn tool
+  // ends a stream after its tool round, traces inference:stream_resumed only
+  // when it gives a live stream its tool results, marks a start `silent`
+  // for a wake that must not surface prose (a silent heartbeat), and traces
+  // an empty text token of its own to discard a refused attempt's text;
+  // membrane's streams give no empty text chunk.
   let currentSpeech = '';
+  let roundOpen = false;
+  let silentStream = false;
 
   const idleTrace = (event: unknown): void => {
     const t = (event as { type?: string }).type;
@@ -270,17 +275,23 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         turnWorkDoneSince = 0;
       }
       exitSince = 0;
-      if (agentName === primaryAgentName) currentSpeech = '';
+      if (agentName === primaryAgentName) {
+        currentSpeech = '';
+        silentStream = (event as { silent?: unknown }).silent === true;
+        roundOpen = !silentStream;
+      }
     } else if (t === 'inference:tokens' && agentName === primaryAgentName) {
-      const content = (event as { content?: string }).content;
-      if (content) currentSpeech += content;
+      const { content, blockType } = event as { content?: string; blockType?: string };
+      if (blockType === 'text') currentSpeech = content === '' ? '' : currentSpeech + (content ?? '');
+    } else if (t === 'inference:stream_resumed' && agentName === primaryAgentName) {
+      roundOpen = !silentStream;
     } else if (t === 'inference:tool_calls_yielded' && agentName === primaryAgentName) {
       currentSpeech = '';
+      roundOpen = false;
     } else if (t === 'inference:completed' && agentName === primaryAgentName) {
-      if (currentSpeech) {
-        emit({ type: 'inference:speech', agentName, content: currentSpeech });
-      }
+      if (roundOpen) emit({ type: 'inference:speech', agentName, content: currentSpeech });
       currentSpeech = '';
+      roundOpen = false;
     }
   };
   let traced = app.framework;
@@ -395,7 +406,12 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         let refused = false;
         try {
           const { handleCommand } = await import('./commands.js');
-          const result = handleCommand(cmd.command, app);
+          // A fleet parent's fleet--command says so; any other comes from a
+          // client of this socket. The operator log names which.
+          const result = handleCommand(cmd.command, app, {
+            requester: { via: cmd.from === 'fleet' ? 'fleet' : 'headless' },
+            typed: typeof cmd.typed === 'string' ? cmd.typed : undefined,
+          });
           for (const line of result.lines) output(line.text, line.style);
           refused = result.refused === true;
           if (result.asyncWork) {
@@ -539,7 +555,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       case 'panel-request': {
         const op = typeof cmd.op === 'string' ? cmd.op : '';
         const changes = PANEL_OPS_THAT_CHANGE_THE_SESSION.has(op);
-        const refused = changes ? refusedWhileSwitching(app, op) : null;
+        const refused = changes ? refusedWhileSwitching(app, op) ?? refusedWhileSwitchQuiesced(app, op) : null;
         if (refused) {
           reply({ type: 'panel-response', corrId: cmd.corrId, op, ok: false, error: refused, status: 409 });
           return;
@@ -559,7 +575,9 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
         const answering = import('./update/quiesce.js').then(({ answerSwitchRequest }) => answerSwitchRequest(app.framework, cmd.request));
         try {
           const data = await (asked === 'quiesce' ? trackOperatorWork(app, "the release switch's quiesce", answering) : answering);
-          reply({ type: 'update-response', corrId: cmd.corrId, ok: true, data });
+          const turnWork = data.drained === true && turnWorkInFlight() ? ['turn work'] : [];
+          const inFlight = asked === 'quiesce' ? [...turnWork, ...workBesideTurns()] : [];
+          reply({ type: 'update-response', corrId: cmd.corrId, ok: true, data: inFlight.length > 0 ? { ...data, inFlight } : data });
         } catch (error) {
           reply({ type: 'update-response', corrId: cmd.corrId, ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -607,11 +625,17 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
     return textsProcessing.size > 0 || host.activeTurnAgents.some(own) || host.parkedAdmissions > 0 ||
       host.gatedRequests > 0 || app.framework.getQueueDepth() > 0;
   };
-  const quietButScripts = (): boolean => {
-    if (app.switching || turnWorkInFlight() || operatorWorkRunning(app) || app.credentials?.actionInFlight() === true) return false;
+  const workBesideTurns = (): string[] => {
     const subagents = subagentModule()?.getConcurrencyStatus();
-    return app.framework.getHostModeStatus().drained && (!subagents || (subagents.active === 0 && subagents.queued === 0));
+    return [
+      ...(app.switching ? ['a session switch'] : []),
+      ...(operatorWorkRunning(app) ? ['an operator\'s work'] : []),
+      ...(app.credentials?.actionInFlight() === true ? ['a credential action'] : []),
+      ...(subagents && (subagents.active > 0 || subagents.queued > 0) ? ['subagent runs'] : []),
+    ];
   };
+  const quietButScripts = (): boolean =>
+    !turnWorkInFlight() && workBesideTurns().length === 0 && app.framework.getHostModeStatus().drained;
   const nothingInFlight = (): boolean =>
     quietButScripts() && app.framework.getHostModeStatus().backgroundScripts === 0;
 
@@ -731,6 +755,8 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
 
   async function gracefulShutdown(reason: string, cleanExitCode = 0): Promise<void> {
     if (app.stopping) return;
+    // The host is stopping: a session switch under way goes no further, and
+    // a bare /newtopic writing its summary stores nothing.
     app.stopping = true;
     const switchUnderWay = app.switching ? app.switchSettled : undefined;
     log(`shutdown: ${reason}`);
@@ -760,6 +786,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   hostUpdate.attachStop({
     supervised: true,
     stop: (reason, farewell) => { log(farewell); void gracefulShutdown(reason, RESTART_EXIT_CODE); },
+    stopping: () => app.stopping === true,
   });
 
   // `lifecycle:idle` fires once quiet follows an inference:started or a text, so the
@@ -771,13 +798,20 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
   // nothing at all has been in flight for the same 500 ms.
   {
     const IDLE_CONFIRM_MS = 500;
+    let lastTryLogged = '';
+    const logTry = (since: string, text: string) => {
+      if (`${since} ${text}` !== lastTryLogged) log(`[update] ${text}`);
+      lastTryLogged = `${since} ${text}`;
+    };
     let windowArmed = false;
 
     const idlePoll = setInterval(() => {
       if (app.stopping) { clearInterval(idlePoll); return; }
       const agents = app.framework.getAllAgents();
       const allIdle = agents.every((a) => a.state.status === 'idle');
-      const armed = selfRestart.isArmed();
+      const restartArmed = selfRestart.isArmed();
+      const updateArmed = hostUpdate.armedSwitch() !== null;
+      const armed = restartArmed || updateArmed;
       if (armed) hadAtLeastOneInference = true;
       if (armed !== windowArmed) { windowArmed = armed; idleSince = 0; exitSince = 0; }
       const turnWork = turnWorkInFlight();
@@ -813,9 +847,20 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       }
       if (exitSince === 0) { exitSince = now; return; }
       if (now - exitSince < IDLE_CONFIRM_MS || !idleEmitted) return;
-      if (armed) {
+      if (restartArmed) {
         clearInterval(idlePoll);
         void gracefulShutdown('self-restart', SELF_RESTART_EXIT_CODE);
+        return;
+      }
+      if (updateArmed) {
+        const since = hostUpdate.armedSwitch()?.since ?? '';
+        if (hostUpdate.armedDue()) {
+          const quietNow = () => app.framework.getAllAgents().every((a) => a.state.status === 'idle') && nothingInFlight();
+          void hostUpdate.runArmed(quietNow).then(
+            (answer) => { if (!answer.done) logTry(since, answer.lines.join(' ')); },
+            (err) => { logTry(since, `The armed update's try failed: ${String(err)}`); },
+          );
+        }
         return;
       }
       if (opts.exitWhenIdle) {

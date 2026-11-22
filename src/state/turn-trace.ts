@@ -20,8 +20,8 @@
  *     turn's last stream ended.
  *   - `inference:failed`: the attempt failed. The framework then retries it
  *     (another `inference:started`), holds the turn for a provider's stated
- *     wait or cooldown and runs it again later, or gives up
- *     (`inference:exhausted`). A quiesce can abandon it instead, and the
+ *     wait or cooldown or for compression to make room and runs it again
+ *     later, or gives up (`inference:exhausted`). A quiesce can abandon it, and the
  *     framework's stop cancels a retry it waits to send, each ending it with
  *     `inference:aborted`. Since agent-framework 0.27.0 a held turn whose
  *     retry is dropped, by an abandon, a stop, `abortInference`, the
@@ -35,10 +35,8 @@
  * A second end can follow the first: a turn a tool ended sends `completed`
  * and then `turn_ended`, and a failed attempt sends `failed` and then
  * `exhausted`, or `aborted` when a quiesce abandons it, a stop cancels its
- * retry or its held retry is dropped. A surface that shows a turn's state (a status line, a wait, a
- * notice, the relay) reads an end that follows an end as nothing new. A
- * stream panel, which shows each of a stream's events as it comes, shows
- * both.
+ * retry or its held retry is dropped. A stream panel, which shows each of a
+ * stream's events as it comes, shows both.
  *
  * The second end comes before the turn releases its agent, and the
  * framework starts no next turn of the agent while the turn stands (its
@@ -77,6 +75,11 @@ export const TURN_RUNNING_TRACES: ReadonlySet<string> = new Set([
   'inference:tool_calls_yielded',
   'inference:stream_resumed',
 ]);
+
+/** Retractions that take rows out of the window with `undone: true`. */
+export function retractionMarksRows(reason: unknown): boolean {
+  return reason === 'shed' || reason === 'unsent-injection';
+}
 
 /** agent-framework builds a failed or exhausted trace's error from an
  *  Error's message, so it can be empty. */

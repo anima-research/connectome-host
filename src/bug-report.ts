@@ -86,16 +86,16 @@ const MODEL_FAMILY: Record<string, (first: string) => boolean> = {
 const BUILT_IN_MODULES = [
   'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc', 'channelMode',
-  'selfRestart',
+  'selfRestart', 'setup', 'fetch', 'selfUpdate',
 ];
 const LIVE_MODULE_NAMES = new Set([
-  'activity', 'api', 'channel-mode', 'discord', 'fleet', 'health', 'history', 'identity', 'instructions',
-  'lessons', 'lifecycle', 'mcpl-admin', 'notices', 'observers', 'openai-codex', 'retrieval', 'settings', 'subagent',
-  'subscription-gc', 'time', 'tts-relay', 'tui', 'webui', 'workspace',
+  'activity', 'api', 'channel-mode', 'discord', 'fetch', 'fleet', 'health', 'history', 'identity', 'instructions',
+  'lessons', 'lifecycle', 'mcpl-admin', 'notices', 'observers', 'openai-codex', 'retrieval', 'settings', 'setup',
+  'subagent', 'subscription-gc', 'time', 'tts-relay', 'tui', 'webui', 'workspace',
 ]);
 
 const FORMATTERS = new Set(['native', 'anthropic-xml']);
-const PROSE_ROUTING = new Set(['locus', 'explicit', 'hybrid', 'disabled']);
+const PROSE_ROUTING = new Set(['locus', 'explicit', 'hybrid', 'disabled', 'locked']);
 const CACHE_TTLS = new Set(['5m', '1h']);
 
 const MEMBRANE_ERROR_TYPES = new Set([
@@ -138,7 +138,7 @@ export const HOST_LOG_TAGS = new Set([
   'membrane:content', 'membrane:cost', 'membrane:gemini', 'membrane:normalize-tool-pairs',
   'membrane:openrouter', 'membrane:usage', 'merge-quarantine', 'merge-topology', 'message-store',
   'mint-preimage', 'notices', 'nudge', 'openai-codex', 'operator', 'operator-log', 'ops-alert',
-  'picker-config-drift', 'picker-dead-ids', 'picker-unrealizable', 'prose', 'provider-admission',
+  'picker-config-drift', 'picker-dead-ids', 'picker-unrealizable', 'pins', 'prose', 'provider-admission',
   'provider-cooldown', 'puppet', 'push-event-rejected', 'reasoning', 'reasoning-effort', 'refusal-retry',
   'refusal-rewind', 'rfc005', 'routespeech', 'routing', 'section', 'self-restart', 'self-wake', 'settings', 'shutdown',
   'sleep', 'spill', 'store-topology', 'subagent', 'subscription-gc', 'thinking', 'thinking-binding', 'tool', 'tool-boundary',

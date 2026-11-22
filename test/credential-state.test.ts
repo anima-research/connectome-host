@@ -247,6 +247,7 @@ describe('CredentialMonitor — actions', () => {
     expect(s.kind).toBe('ok');
     expect(s.lastAction).toMatchObject({ id: 'refresh', ok: true });
     expect(s.lastAction!.message).toContain('verified');
+    expect(s.lastAction!.said).toBe(s.lastAction!.message);
     expect(alerts.map((a) => a.kind)).toEqual(['auth-rejected', 'auth-rejected-clear']);
   });
 
@@ -269,6 +270,7 @@ describe('CredentialMonitor — actions', () => {
     const s = await monitor.runAction('set-token', { token: 'sk-ant-new' });
     expect(s.lastAction?.ok).toBe(true);
     expect(s.lastAction?.message).toMatch(/inconclusive/);
+    expect(s.lastAction?.said).toBe('token replaced; verification inconclusive');
     expect(s.kind).toBe('auth-rejected');
   });
 
@@ -289,6 +291,7 @@ describe('CredentialMonitor — actions', () => {
     const s = await monitor.runAction('refresh');
     expect(s.lastAction).toMatchObject({ ok: false });
     expect(s.lastAction!.message).toContain('invalid_grant');
+    expect(s.lastAction!.said).toBe('refresh failed');
     expect(s.kind).toBe('auth-rejected');
   });
 
@@ -304,6 +307,7 @@ describe('CredentialMonitor — actions', () => {
         expect(state.kind).toBe('ok');
         expect(state.lastAction!.ok).toBe(false);
         expect(state.lastAction!.message.length).toBeLessThanOrEqual('refresh failed: '.length + 200);
+        expect(state.lastAction!.said).toBe('refresh failed');
         expect(alerts).toEqual([]);
       } finally { monitor.dispose(); }
     }

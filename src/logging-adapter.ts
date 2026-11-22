@@ -1,8 +1,10 @@
 // AnthropicAdapter wrapper that appends each LLM call's RAW request, RAW
 // response, and any error to a JSONL log file. Successful calls keep a
 // compact request summary; the full raw request is retained only for
-// refusals, anomalous responses and errors, where forensic inspection
-// matters (a keepalive poke's only with full payloads: see below).
+// refusals, anomalous responses, and the first failing request of each kind
+// of error in a cache lineage's run of failures, within a budget per log,
+// where forensic inspection matters (a keepalive poke's only with full
+// payloads: see below).
 //
 // "Raw" means the actual Anthropic API payload (post-buildRequest,
 // including `thinking`, tool definitions in Anthropic shape, etc.) and the
@@ -18,8 +20,9 @@
 // One file per process lifetime (timestamped at construction). Each line is a
 // JSON object with shape:
 //   { type: 'call'|'error', kind: 'complete'|'stream'|'keepalive', timestamp, durationMs,
-//     messageId?, requestId?, requestSummary, rawRequest?, rawResponse, anomaly?,
-//     error?, errorType?, httpStatus?, providerErrorCode?, retryable?, errorChars?, truncated? }
+//     messageId?, requestId?, requestSummary, rawRequest?, requestSha256?, rawRequestOmitted?,
+//     rawResponse, anomaly?, error?, errorType?, httpStatus?, providerErrorCode?, retryable?,
+//     errorChars?, truncated? }
 // A failure's `error` is { name, message, stack } with its text bounded, or
 // a non-Error's text. The request summary leaves out only the parts it
 // can't read; a record whose response can't be read keeps only the head
@@ -56,10 +59,11 @@ import type {
   StreamCallbacks,
   KeepaliveCall,
 } from '@animalabs/membrane';
+import { createHash } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { parseLoggedCall, summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
 import { describeErrorObject } from './logging-error-fields.js';
-import { serializeRecordOutcome, type RecordKept } from './logging-record.js';
+import { MAX_RECORD_BYTES, serializeRecordOutcome, type RecordKept } from './logging-record.js';
 
 export type ReasoningGetter = () => {
   enabled: boolean;
@@ -94,18 +98,21 @@ export function modelAcceptsAdaptiveThinking(model: string): boolean {
 
 /** Whether `model` returns the notes it writes between tool calls ("found X,
  *  checking Y next") as signed `thinking` blocks instead of `text`, and
- *  accepts `thinking.display: 'updates'` to get their text back: Fable 5 and
- *  5.1, Mythos 5.1, Opus 5.5 and Sonnet 5.5 (Anthropic's migration docs; on
- *  Opus 5.5 and Sonnet 5.5, notes longer than a sentence or two). Thinking
+ *  accepts `thinking.display: 'updates'` to get their text back: Fable 5,
+ *  5.1 and 5.2, Mythos 5.1 and 5.2, Opus 5.5 and Sonnet 5.5 (Anthropic's
+ *  migration docs; on Opus 5.5 and Sonnet 5.5, notes longer than a sentence
+ *  or two; on Fable 5.2, its prompting guide, and the API took 'updates' on
+ *  2026-11-09; on Mythos 5.2, untried, the same guide, which covers both
+ *  models though its sentence on the notes names Fable 5.2). Thinking
  *  can't be turned off on any of them, and under the default display
  *  ('omitted') those notes come back empty. A later model isn't assumed to
  *  accept 'updates': an unaccepted display is a 400 on every turn, the same
  *  fail-safe posture as modelAcceptsEffort. So the ID may go on with a dated
  *  snapshot (`-20260301`, `@20260301`) or a suffix such as the 1M-context
  *  marker ([1m]), but not with a version: a digit (`opus-5-50`) or a hyphen
- *  and one or two digits (`fable-5-2`, `fable-5-10`). */
+ *  and one or two digits (`fable-5-3`, `fable-5-10`). */
 export function modelReturnsNotesInThinking(model: string): boolean {
-  return /claude-(fable-5(-1)?|mythos-5-1|opus-5-5|sonnet-5-5)(?!\d|-\d{1,2}(?!\d))/.test(model);
+  return /claude-(fable-5(-[12])?|mythos-5-[12]|opus-5-5|sonnet-5-5)(?!\d|-\d{1,2}(?!\d))/.test(model);
 }
 
 /** What a model does with its signed thinking (anima-research/context-manager#155). */
@@ -131,12 +138,20 @@ const NEITHER: ModelThinking = { binds: false, dropBlock: false, thinksWithoutCo
 const UNREACHED: ModelThinking = { binds: true, dropBlock: false, thinksWithoutConfig: false };
 
 const MODEL_THINKING: ReadonlyArray<readonly [string, ModelThinking]> = [
+  // Fable 5.2: measured on 2026-11-09. A signed block replayed under a
+  // changed tool list was dropped, and reported as dropped with the control;
+  // it thought with no config; and it refused a 1,500,057-token prompt with
+  // "> 1000000 maximum".
+  ['fable-5-2', BINDS_WITH_CONTROL],
   ['fable-5-1', BINDS_WITH_CONTROL],
   ['opus-5-5', BINDS_WITH_CONTROL],
   ['sonnet-5-5', BINDS_WITH_CONTROL],
   ['haiku-5-5', BINDS_WITH_CONTROL],
   // Membrane's changelog records the Mythos family refusing thinking configs
-  // with a 400, so it isn't sent the control untried.
+  // with a 400, so it isn't sent the control untried. Mythos 5.2 is recorded
+  // by family: its docs page says it requires verification, and it wasn't
+  // reached to measure.
+  ['mythos-5-2', BINDS_WITHOUT_CONTROL],
   ['mythos-5-1', BINDS_WITHOUT_CONTROL],
   ['mythos-5', BINDS_WITHOUT_CONTROL],
   ['mythos-preview', BINDS_WITHOUT_CONTROL],
@@ -224,6 +239,28 @@ export type ProviderCallObserver = (record: ProviderCallRecord) => void;
  *  rate_limit_error; this block followed by arbitrary persona blocks is
  *  accepted (the mechanism the Agent SDK's system-prompt-append uses). */
 const OAUTH_SYSTEM_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+const FAILING_RUNS_REMEMBERED = 256;
+
+const FAILED_REQUEST_COPY_BUDGET = 64 * 1024 * 1024;
+
+const FAILED_REQUEST_COPY_REFILL_MS = 24 * 60 * 60 * 1000;
+
+/** membrane's default retry delays are at most five minutes, so a call's
+ *  retries fall within one run. */
+const FAILING_RUN_GAP_MS = 60 * 60 * 1000;
+
+type Written = { lineage: string | undefined; kind: string; bytes: number; requestSha256: string };
+
+type FailingRun = { kinds: Map<string, string>; lastFailureAt: number };
+
+/** membrane types every 5xx as `server`, and a 500 can be an invalid request,
+ *  so the kind carries the HTTP status. */
+function failureKind(fields: Record<string, unknown> | undefined): string {
+  const name = (fields?.error as { name?: unknown } | undefined)?.name;
+  const type = typeof fields?.errorType === 'string' ? fields.errorType : `untyped ${typeof name === 'string' ? name : ''}`;
+  return typeof fields?.httpStatus === 'number' ? `${type} ${fields.httpStatus}` : type;
+}
 
 function guarded<T>(get: () => T): T | undefined {
   try { return get(); } catch { return undefined; }
@@ -700,6 +737,118 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     }
   }
 
+  /** Keyed by lineage, not request: agent-framework adds its failure marker
+   *  and new messages to each turn's request. */
+  private readonly failingRuns = new Map<string, FailingRun>();
+  private readonly failedCopyBudget = FAILED_REQUEST_COPY_BUDGET;
+  private failedCopyRoom: number | undefined;
+  private failedCopyRefilledAt = 0;
+  private budgetRefusalTold = false;
+
+  /** A rate-limit error's request is kept like any other's: Anthropic answers
+   *  an OAuth request whose first system block isn't OAUTH_SYSTEM_IDENTITY with
+   *  a masked 429. */
+  private errorRequestFields(rawRequest: unknown, lineage: string | undefined, kind: string, aborted: boolean): {
+    fields: Record<string, unknown>;
+    remember?: Written;
+  } {
+    if (rawRequest == null) return { fields: { rawRequest } };
+    let text: string | undefined;
+    try { text = JSON.stringify(rawRequest); } catch { }
+    if (typeof text !== 'string') return { fields: { rawRequest } };
+    const requestSha256 = createHash('sha256').update(text).digest('hex');
+    const bytes = Buffer.byteLength(text, 'utf8');
+    if (this.fullPayloads) return { fields: { rawRequest, requestSha256 } };
+    const omitted = (because: string) => ({
+      fields: {
+        requestSha256,
+        rawRequestOmitted: {
+          bytes,
+          reason: `${because}; LLM_CALLS_FULL_PAYLOADS=1, read when the host starts, keeps the full request of every call, successes and keepalive pokes included (within the 16 MiB line bound), so it's for a capture, not for leaving on`,
+        },
+      },
+    });
+    if (aborted) return omitted('a cancelled call (membrane types it `abort`) is never the request\'s doing');
+    const run = lineage === undefined ? undefined : this.followRun(lineage);
+    const copySha256 = run?.kinds.get(kind);
+    if (copySha256 !== undefined) {
+      const note = omitted('this lineage has failed with this kind of error (its type, or for an untyped error its name, '
+        + 'with its HTTP status when it has one) since a call on it last succeeded, with no more than an hour between its '
+        + 'failures, and an earlier error record in this log, whose requestSha256 is copySha256, has in full the first '
+        + 'request of this kind that the log kept '
+        + `since it began following this run (it follows the runs of the ${FAILING_RUNS_REMEMBERED} lineages whose runs began `
+        + 'latest), unless the file was rotated, truncated or removed since');
+      return { fields: { ...note.fields, rawRequestOmitted: { ...note.fields.rawRequestOmitted, copySha256 } } };
+    }
+    if (bytes >= MAX_RECORD_BYTES) {
+      return omitted('the request alone is at or over the 16 MiB line bound, so no record of it can be written whole');
+    }
+    if (bytes > this.failedCopyRoomNow()) {
+      this.tellBudgetRefusal(bytes);
+      return omitted(`this log's budget for failing requests in full (${this.failedCopyBudget} bytes, refilled at that `
+        + 'much a day) has no room for this one now');
+    }
+    return { fields: { rawRequest, requestSha256 }, remember: { lineage, kind, bytes, requestSha256 } };
+  }
+
+  private followRun(lineage: string): FailingRun {
+    const now = Date.now();
+    const run = this.failingRuns.get(lineage);
+    if (run && now - run.lastFailureAt <= FAILING_RUN_GAP_MS) {
+      run.lastFailureAt = Math.max(run.lastFailureAt, now);
+      return run;
+    }
+    if (run) this.failingRuns.delete(lineage);
+    const started: FailingRun = { kinds: new Map(), lastFailureAt: now };
+    this.failingRuns.set(lineage, started);
+    if (this.failingRuns.size > FAILING_RUNS_REMEMBERED) {
+      for (const [other, otherRun] of this.failingRuns) {
+        if (now - otherRun.lastFailureAt > FAILING_RUN_GAP_MS) this.failingRuns.delete(other);
+      }
+      while (this.failingRuns.size > FAILING_RUNS_REMEMBERED) {
+        this.failingRuns.delete(this.failingRuns.keys().next().value as string);
+      }
+    }
+    return started;
+  }
+
+  private failedCopyRoomNow(): number {
+    const now = Date.now();
+    const room = this.failedCopyRoom === undefined
+      ? this.failedCopyBudget
+      : Math.min(this.failedCopyBudget,
+        this.failedCopyRoom + (Math.max(0, now - this.failedCopyRefilledAt) * this.failedCopyBudget) / FAILED_REQUEST_COPY_REFILL_MS);
+    this.failedCopyRoom = room;
+    this.failedCopyRefilledAt = Math.max(this.failedCopyRefilledAt, now);
+    return room;
+  }
+
+  private tellBudgetRefusal(bytes: number): void {
+    if (this.budgetRefusalTold) return;
+    this.budgetRefusalTold = true;
+    try {
+      console.error(`[llm-calls] ${new Date().toISOString()} the budget for failing requests in full `
+        + `(${this.failedCopyBudget} bytes, refilled at that much a day) has no room for one of ${bytes} bytes: `
+        + 'a failing request is kept in full only while the budget has room for its size, and is otherwise recorded '
+        + 'by size and hash. LLM_CALLS_FULL_PAYLOADS=1, read when the host starts, keeps the full request '
+        + "of every call, successes and keepalive pokes included (within the 16 MiB line bound), so it's for a capture, "
+        + 'not for leaving on.');
+    } catch { }
+  }
+
+  private rememberFailedRequest({ lineage, kind, bytes, requestSha256 }: Written): void {
+    this.failedCopyRoom = this.failedCopyRoomNow() - bytes;
+    this.budgetRefusalTold = false;
+    if (lineage !== undefined) this.failingRuns.get(lineage)?.kinds.set(kind, requestSha256);
+  }
+
+  /** Not called for a keepalive poke: membrane's poke replays the lineage's
+   *  latest request the provider began answering, with max_tokens 0 and no
+   *  stream, so it can succeed while every new call fails. */
+  private endFailingRun(lineage: unknown): void {
+    if (typeof lineage === 'string') this.failingRuns.delete(lineage);
+  }
+
   private retainedRawRequest(
     response: ProviderResponse,
     rawRequest: unknown,
@@ -735,12 +884,19 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       const timestamp = new Date().toISOString();
       const durationMs = Date.now() - t0;
       const errorFields = 'error' in outcome ? describeErrorObject(outcome.error, true) : undefined;
+      // Membrane raises some errors, such as an unsupported prefill, before it
+      // calls onRequest, with the built request on the error itself.
+      if (rawRequest == null && 'error' in outcome) {
+        rawRequest = guarded(() => (outcome.error as { rawRequest?: unknown } | null)?.rawRequest) ?? null;
+      }
       const summary = this.requestSummary(request, rawRequest);
       const head = { type: errorFields ? 'error' : 'call', kind, timestamp, durationMs };
       const anomaly = 'response' in outcome ? responseAnomaly(outcome.response) : undefined;
       const errorId = 'error' in outcome ? errorRequestId(outcome.error) : undefined;
       const ids = 'response' in outcome ? responseIds(outcome.response) : errorId ? { requestId: errorId } : {};
       let record: Record<string, unknown>;
+      let remember: Written | undefined;
+      if ('response' in outcome) this.endFailingRun(summary.lineage);
       try {
         record = 'response' in outcome
           ? {
@@ -751,11 +907,17 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
               rawResponse: (outcome.response as { raw?: unknown }).raw ?? null,
               ...(anomaly ? { anomaly } : {}),
             }
-          : { ...head, ...ids, requestSummary: summary, rawRequest, ...errorFields };
+          : (() => {
+              const lineage = typeof summary.lineage === 'string' ? summary.lineage : undefined;
+              const kept = this.errorRequestFields(rawRequest, lineage, failureKind(errorFields), errorFields?.errorType === 'abort');
+              remember = kept.remember;
+              return { ...head, ...ids, requestSummary: summary, ...kept.fields, ...errorFields };
+            })();
       } catch {
         record = { ...head, ...ids, summaryUnavailable: true, ...errorFields };
       }
       const saved = this.log(record);
+      if (remember !== undefined && saved.written && saved.kept === 'whole') this.rememberFailedRequest(remember);
       if (anomaly) {
         try {
           const captured = rawRequest !== null && rawRequest !== undefined;

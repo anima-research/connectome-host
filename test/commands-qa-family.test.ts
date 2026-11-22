@@ -4,12 +4,31 @@ import { handleCommand, createBranchState } from '../src/commands.js';
 import { DEFAULT_CONFIG_PATH } from '../src/mcpl-config.js';
 import { clearAccountBindings, recordAccountBinding } from '../src/logging-adapter.js';
 
+// Since agent-framework #291 /undo and /redo are the framework's undo and
+// redo on the agent's window, and /checkout, /restore and /branchto its
+// switchBranch and rollbackToMessage. The stub framework below answers them
+// over the stub ContextManager; commands-branch-framework.test.ts runs them
+// on a real framework.
+
 interface StubMessage { id: string; participant: string; content: unknown[] }
 
 function makeStubWorld(agentStatus: string | null = 'idle') {
   const messagesByBranch = new Map<string, StubMessage[]>([['main', []]]);
   let currentName = 'main';
   let msgCounter = 0;
+
+  // The store the context reads. agent-framework's switchBranch moves it,
+  // past every context on it (each live one then follows the move), where a
+  // context's own switchBranch also initializes that context's strategy
+  // again, as a rollback's switch does for its agent. The stub framework's
+  // switchBranch moved the store through the context's, so it modelled a
+  // switch that re-initialized the strategy, which the real one didn't (J-H9).
+  const store = {
+    switchBranch: (name: string): void => {
+      if (!messagesByBranch.has(name)) throw new Error(`No such branch: ${name}`);
+      currentName = name;
+    },
+  };
 
   const cm = {
     currentBranch: () => ({ id: currentName, name: currentName, head: messagesByBranch.get(currentName)!.length }),
@@ -22,10 +41,7 @@ function makeStubWorld(agentStatus: string | null = 'idle') {
       messagesByBranch.set(newName, msgs.slice(0, idx + 1));
       return newName;
     },
-    switchBranch: async (name: string): Promise<void> => {
-      if (!messagesByBranch.has(name)) throw new Error(`No such branch: ${name}`);
-      currentName = name;
-    },
+    switchBranch: async (name: string): Promise<void> => store.switchBranch(name),
   };
 
   const agent = {
@@ -40,13 +56,24 @@ function makeStubWorld(agentStatus: string | null = 'idle') {
     { id: 'bbbb2222', name: 'other', manuallyNamed: true, createdAt: 't', lastAccessedAt: 't', messageCount: 1 },
   ];
 
+  const undone: string[] = [];
   const app = {
     framework: {
+      getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
       getAgent: () => undefined,
       getAllAgents: () => [agent],
       getAllModules: () => [],
+      undoLastTurn: (name: string) => { undone.push(name); return { undone: true, turnIndex: 0, window: { retracted: 2, represented: 0 } }; },
+      redo: () => ({ redone: false }),
+      // switchStore reads the store's branch before and after the switch, to
+      // tell a refusal from a move whose `_config` refresh failed (#264).
       getStore: () => ({ currentBranch: () => cm.currentBranch() }),
-      switchBranch: (name: string) => cm.switchBranch(name),
+      switchBranch: async (name: string) => store.switchBranch(name),
+      rollbackToMessage: async (_agent: string, opts: { messageId: string; branchName: string }) => {
+        const targetBranch = cm.branchAt(opts.messageId, opts.branchName);
+        await cm.switchBranch(targetBranch);
+        return { targetBranch, tailMessageId: opts.messageId };
+      },
     },
     sessionManager: {
       listSessions: () => sessions,
@@ -66,7 +93,7 @@ function makeStubWorld(agentStatus: string | null = 'idle') {
 
   const text = (r: { lines: Array<{ text: string }> }) => r.lines.map(l => l.text).join('\n');
 
-  return { cm, app, addMessage, deleted, text, currentName: () => currentName };
+  return { cm, app, addMessage, deleted, undone, text, currentName: () => currentName };
 }
 
 describe('multi-word names: rest-of-line parsing', () => {
@@ -137,17 +164,19 @@ describe('in-flight guard on head-moving commands', () => {
   }
 
   test('/undo proceeds when idle', () => {
-    const { app, addMessage, text } = makeStubWorld('idle');
+    const { app, addMessage, undone, text } = makeStubWorld('idle');
     addMessage(); addMessage('agent');
     const r = handleCommand('/undo', app);
-    expect(text(r)).toContain('Undoing');
+    expect(text(r)).toContain("Undone: stub-agent's last turn left its window (2 rows from its start: the turn's own, and any other, which its next turn shows again).");
+    expect(undone).toEqual(['stub-agent']);
   });
 
   test('agents without state (stubs) are treated as idle', () => {
-    const { app, addMessage, text } = makeStubWorld(null);
+    const { app, addMessage, undone, text } = makeStubWorld(null);
     addMessage(); addMessage('agent');
     const r = handleCommand('/undo', app);
-    expect(text(r)).toContain('Undoing');
+    expect(text(r)).toContain('Undone');
+    expect(undone).toEqual(['stub-agent']);
   });
 });
 
@@ -174,6 +203,7 @@ describe('/budget honest display', () => {
   function makeBudgetApp(maxStreamTokens: number, last = 0) {
     return {
       framework: {
+        getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
         getAgent: () => undefined,
         getAllAgents: () => [{ name: 'a', maxStreamTokens, lastStreamInputTokens: last, getContextManager: () => null }],
         getAllModules: () => [],
@@ -195,12 +225,25 @@ describe('/budget honest display', () => {
     expect(r.lines.map(l => l.text).join('\n')).toContain('a: 50 (last: 12');
   });
 
+  test('a count that overflows to Infinity is refused, and every agent keeps its budget', () => {
+    const agents = [
+      { name: 'a', maxStreamTokens: 1000, lastStreamInputTokens: 0, getContextManager: () => null },
+      { name: 'b', maxStreamTokens: 2000, lastStreamInputTokens: 0, getContextManager: () => null },
+    ];
+    const app = { ...makeBudgetApp(1000), framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }), getAgent: () => undefined, getAllAgents: () => agents, getAllModules: () => [] } } as any;
+    for (const arg of ['1e309k', '1e306m']) {
+      expect(handleCommand(`/budget ${arg}`, app).lines[0]!.text).toBe(`Invalid token count: "${arg}". Examples: 150k, 1m, 200000`);
+    }
+    expect(agents.map((a) => a.maxStreamTokens)).toEqual([1000, 2000]);
+  });
+
   test("an agent whose thinking binds and whose window is set is told apart: the budget doesn't break its stream", () => {
     const agent = (name: string, model: string, physicalWindowTokens?: number) => ({
       name, model, physicalWindowTokens, maxStreamTokens: 150_000, lastStreamInputTokens: 400_000, getContextManager: () => null,
     });
     const app = {
       framework: {
+        getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
         getAgent: () => undefined,
         getAllAgents: () => [
           agent('bound', 'claude-opus-5-5', 1_000_000),
@@ -226,6 +269,7 @@ describe('/budget honest display', () => {
     try {
       const app = {
         framework: {
+          getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }),
           getAgent: () => undefined,
           getAllAgents: () => [{
             name: 'bound', model: 'claude-opus-5-5', physicalWindowTokens: 1_000_000, maxStreamTokens: 150_000, lastStreamInputTokens: 400_000, getContextManager: () => null,
@@ -252,7 +296,7 @@ describe('/mcp add preserves env on overwrite', () => {
   });
 
   test('overwriting the command keeps env vars and reports them', () => {
-    const app = { framework: { getAllAgents: () => [], getAllModules: () => [] }, branchState: createBranchState() } as any;
+    const app = { framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }), getAllAgents: () => [], getAllModules: () => [] }, branchState: createBranchState() } as any;
     handleCommand('/mcp add envtest echo hello', app);
     handleCommand('/mcp env envtest FOO=bar SECRET=hunter2', app);
     const r = handleCommand('/mcp add envtest echo goodbye', app);
@@ -265,7 +309,7 @@ describe('/mcp add preserves env on overwrite', () => {
   });
 
   test('old args are dropped when the new command line has none', () => {
-    const app = { framework: { getAllAgents: () => [], getAllModules: () => [] }, branchState: createBranchState() } as any;
+    const app = { framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }), getAllAgents: () => [], getAllModules: () => [] }, branchState: createBranchState() } as any;
     handleCommand('/mcp add argtest echo one two', app);
     handleCommand('/mcp add argtest ls', app);
     const saved = JSON.parse(readFileSync(DEFAULT_CONFIG_PATH, 'utf-8')).mcplServers;
@@ -276,6 +320,9 @@ describe('/mcp add preserves env on overwrite', () => {
 
 describe('/newtopic cut short by a stop', () => {
   const CROSSED = 'Transition summary crossed a branch generation; reinitialize before retrying';
+  // Given its text, /newtopic stores it with resetHeadWindow; bare, it first
+  // writes the summary with context-manager's generateTransitionSummary(),
+  // which stores nothing (HOST-1), and that is where the refusal comes from.
   test('a reset that fails while the host is stopping says so and gives what the reset said; one that fails otherwise gives the failure', async () => {
     for (const stopping of [true, false]) {
       const { cm, app, text } = makeStubWorld('idle');
@@ -285,10 +332,88 @@ describe('/newtopic cut short by a stop', () => {
           throw new Error(CROSSED);
         },
       });
-      const follow = await handleCommand('/newtopic', app).asyncWork!;
+      const follow = await handleCommand('/newtopic Moving on.', app).asyncWork!;
       expect(text(follow)).toBe(stopping
         ? `Topic reset stopped: the host is stopping. What the reset said: ${CROSSED}`
         : `Topic reset failed: ${CROSSED}`);
+    }
+  });
+
+  test("a bare one whose summary can't be written while the host is stopping says so and gives what the summary said; one that fails otherwise gives the failure", async () => {
+    for (const stopping of [true, false]) {
+      const { cm, app, text } = makeStubWorld('idle');
+      Object.assign(cm, {
+        getStrategy: () => ({}),
+        windowMode: () => 'presented',
+        indexLength: () => 0,
+        getPresentedMessages: () => [],
+        generateTransitionSummary: async () => {
+          if (stopping) app.stopping = true;
+          throw new Error(CROSSED);
+        },
+      });
+      const said = `the transition summary couldn't be written (${CROSSED}); nothing was stored`;
+      const follow = await handleCommand('/newtopic', app).asyncWork!;
+      expect(text(follow)).toBe(stopping
+        ? `Topic reset stopped: the host is stopping. What the reset said: ${said}`
+        : `Topic reset failed: ${said}`);
+    }
+  });
+
+  // The refusal already names the stop, so it is passed on as it is, and
+  // the summary is given back for after the restart (#485 bot review 5,
+  // finding 17).
+  test('a bare one whose summary was written as the host began to stop says so once, and gives the summary back for after the restart', async () => {
+    for (const lineByLine of [false, true]) {
+      const { cm, app, text } = makeStubWorld('idle');
+      Object.assign(cm, {
+        getStrategy: () => ({}),
+        windowMode: () => 'presented',
+        indexLength: () => 0,
+        getPresentedMessages: () => [],
+        generateTransitionSummary: async () => {
+          app.stopping = true;
+          return 'Done: the ledger.\nNext: the release.';
+        },
+      });
+      const follow = await handleCommand('/newtopic', app, { lineByLine }).asyncWork!;
+      expect(text(follow)).toBe(
+        'Topic reset stopped: the host is stopping while the transition summary was written; nothing was stored. ' +
+          (lineByLine
+            ? 'To store it after the restart, run this one-line command:\n/newtopic Done: the ledger. Next: the release.'
+            : 'To store it after the restart, run /newtopic with it as the text:\nDone: the ledger.\nNext: the release.'),
+      );
+    }
+  });
+});
+
+describe('/newtopic sent by a fleet parent', () => {
+  test("a bare one whose summary can't be written leaves the cause out of its line and writes it to the host's log, on one line with its time", async () => {
+    const cause = 'sentinel-7e1a provider said:\n  overloaded';
+    const written: string[] = [];
+    const write = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    try {
+      const lines: Record<string, string> = {};
+      for (const via of ['fleet', 'headless'] as const) {
+        const { cm, app, text } = makeStubWorld('idle');
+        Object.assign(cm, {
+          getStrategy: () => ({}),
+          windowMode: () => 'presented',
+          indexLength: () => 0,
+          getPresentedMessages: () => [],
+          generateTransitionSummary: async () => { throw new Error(cause); },
+        });
+        lines[via] = text(await handleCommand('/newtopic', app, { requester: { via } }).asyncWork!);
+      }
+      expect(lines).toEqual({
+        fleet: "Topic reset failed: the transition summary couldn't be written; nothing was stored",
+        headless: `Topic reset failed: the transition summary couldn't be written (${cause}); nothing was stored`,
+      });
+      expect(written).toHaveLength(1);
+      expect(written[0]).toMatch(/^\[\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\] \[host\] \/newtopic's transition summary couldn't be written: sentinel-7e1a provider said: overloaded\n$/);
+    } finally {
+      process.stderr.write = write;
     }
   });
 });

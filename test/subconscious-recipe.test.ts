@@ -235,10 +235,31 @@ describe('validateRecipe — speech and tuneOut (Dendrite admission options)', (
     expect(() => validateRecipe(baseRecipe({ speech: 'delivery' }))).toThrow(/speech must be an object/);
   });
 
-  test('tuneOut.enabled offers tune_out without a reader', () => {
-    expect(validateRecipe(baseRecipe({ tuneOut: { enabled: true } })).tuneOut).toEqual({ enabled: true });
+  // agent-framework 0.33.0 removed tune-out without a reader (its #959):
+  // `create` refuses `tuneOut.enabled: true`, so a recipe that states it must
+  // fail at load, not print "Loaded recipe" and exit at create.
+  test('tuneOut.enabled: true is refused at load, as agent-framework 0.33.0 refuses it at create', () => {
+    expect(() => validateRecipe(baseRecipe({ tuneOut: { enabled: true } })))
+      .toThrow(/^Recipe tuneOut\.enabled was removed in agent-framework 0\.33\.0 \(tune-out without a reader\)/);
+    // Refused with a reader too: the framework refuses the key, not the missing reader.
+    expect(() => validateRecipe(baseRecipe({
+      tuneOut: { enabled: true },
+      subconscious: { enabled: true, name: 'Subconscious', model: 'm', systemPrompt: MODE },
+    }))).toThrow(/tuneOut\.enabled was removed in agent-framework 0\.33\.0/);
+    expect(() => validateRecipe(baseRecipe({ tuneOut: { enabled: true, announce: false } })))
+      .toThrow(/tuneOut\.enabled was removed in agent-framework 0\.33\.0/);
+  });
+
+  test("tuneOut.enabled's refusal names the migration", () => {
+    expect(() => validateRecipe(baseRecipe({ tuneOut: { enabled: true } })))
+      .toThrow('remove tuneOut.enabled; to keep tune_out, configure a subconscious as well.');
+  });
+
+  test('tuneOut.enabled: false still loads, as the framework still accepts it and does nothing with it', () => {
+    expect(validateRecipe(baseRecipe({ tuneOut: { enabled: false } })).tuneOut).toEqual({ enabled: false });
     expect(() => validateRecipe(baseRecipe({ tuneOut: { enabled: 'yes' } }))).toThrow(/tuneOut\.enabled must be a boolean/);
-    expect(() => validateRecipe(baseRecipe({ tuneOut: { silent: true } }))).toThrow(/tuneOut has unknown field "silent"/);
+    expect(() => validateRecipe(baseRecipe({ tuneOut: { silent: true } })))
+      .toThrow('Recipe tuneOut has unknown field "silent" (expected: announce).');
   });
 
   test('dendrite.collapseDerivationNoticesAfter sets when a source hears counts instead of lines (agent-framework#270)', () => {
@@ -253,7 +274,7 @@ describe('validateRecipe — speech and tuneOut (Dendrite admission options)', (
   });
 
   test('tuneOut.announce turns the excepted-channel announcement off', () => {
-    expect(validateRecipe(baseRecipe({ tuneOut: { enabled: true, announce: false } })).tuneOut).toEqual({ enabled: true, announce: false });
+    expect(validateRecipe(baseRecipe({ tuneOut: { announce: false } })).tuneOut).toEqual({ announce: false });
     expect(() => validateRecipe(baseRecipe({ tuneOut: { announce: 'no' } }))).toThrow(/tuneOut\.announce must be a boolean/);
   });
 });
@@ -269,13 +290,13 @@ describe('dendriteCreateOptions — what the host hands AgentFramework.create()'
       agent: { name: 'sherlock', systemPrompt: 'test', strategy: { type: 'passthrough' } },
       subconscious: { enabled: true, reader: 'forks', model: 'm', voice: 'v', forkIdleTimeoutMs: 1000 },
       speech: { locus: 'latest-inbound' },
-      tuneOut: { enabled: true, announce: false },
+      tuneOut: { announce: false },
       dendrite: { announceOrphans: false, collapseDerivationNoticesAfter: 3 },
     })) as Recipe;
     const options = dendriteCreateOptions(recipe, 'model-x', 'UTC');
     expect(Object.keys(options).sort()).toEqual(['dendrite', 'speech', 'subconscious', 'tuneOut']);
     expect(options.speech).toEqual({ locus: 'latest-inbound' });
-    expect(options.tuneOut).toEqual({ enabled: true, announce: false });
+    expect(options.tuneOut).toEqual({ announce: false });
     expect(options.dendrite).toEqual({ announceOrphans: false, collapseDerivationNoticesAfter: 3 });
     const sub = options.subconscious!;
     if (sub.reader !== 'forks') throw new Error('expected the fork reader config');

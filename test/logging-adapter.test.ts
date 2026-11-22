@@ -72,8 +72,8 @@ describe('LoggingAnthropicAdapter.withReasoning', () => {
 
   test.each([
     'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5',
-    'claude-opus-5-5', 'claude-sonnet-5', 'claude-sonnet-5-5', 'claude-fable-5', 'claude-fable-5-1',
-    'claude-mythos-5-1', 'anthropic.claude-opus-5-5', 'claude-haiku-5-5', 'claude-haiku-5-5-20260301',
+    'claude-opus-5-5', 'claude-sonnet-5', 'claude-sonnet-5-5', 'claude-fable-5', 'claude-fable-5-1', 'claude-fable-5-2',
+    'claude-mythos-5-1', 'claude-mythos-5-2', 'anthropic.claude-opus-5-5', 'claude-haiku-5-5', 'claude-haiku-5-5-20260301',
   ])('adaptive thinking for %s', (model) => {
     const adapter = new LoggingAnthropicAdapter({ apiKey: 'test' }, '/dev/null', enabled);
     const out = (adapter as unknown as { withReasoning(r: ProviderRequest): ProviderRequest })
@@ -135,9 +135,9 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
   const opus55: ProviderRequest = { ...baseRequest, model: 'claude-opus-5-5' };
 
   test.each([
-    'claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5',
+    'claude-fable-5', 'claude-fable-5-1', 'claude-fable-5-2', 'claude-mythos-5-1', 'claude-mythos-5-2', 'claude-opus-5-5', 'claude-sonnet-5-5',
     'anthropic.claude-opus-5-5', 'anthropic/claude-sonnet-5-5', 'claude-opus-5-5[1m]',
-    'claude-opus-5-5-20260301', 'claude-sonnet-5-5-20260101', 'claude-fable-5-1-20261001', 'claude-opus-5-5@20260301',
+    'claude-opus-5-5-20260301', 'claude-sonnet-5-5-20260101', 'claude-fable-5-1-20261001', 'claude-fable-5-2-20261109', 'claude-opus-5-5@20260301',
   ])('sends adaptive thinking with display updates to %s when no config would be sent', (model) => {
     const req = { ...baseRequest, model };
     expect(thinkingOf(notes(req))).toEqual({ type: 'adaptive', display: 'updates' });
@@ -146,8 +146,8 @@ describe('LoggingAnthropicAdapter.withProgressNotes', () => {
 
   test.each([
     'claude-opus-4-8', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-5-5', 'claude-haiku-4-5',
-    'claude-mythos-5', 'claude-fable-5-2', 'claude-opus-5-6', 'claude-opus-5-50',
-    'claude-fable-5-10', 'claude-fable-5-1-1', 'claude-mythos-5-12',
+    'claude-mythos-5', 'claude-fable-5-3', 'claude-mythos-5-3', 'claude-opus-5-6', 'claude-opus-5-50',
+    'claude-fable-5-10', 'claude-fable-5-1-1', 'claude-fable-5-2-1', 'claude-mythos-5-12', 'claude-mythos-5-22',
   ])('leaves %s untouched (same reference)', (model) => {
     const req = { ...baseRequest, model };
     expect(notes(req)).toBe(req);
@@ -458,7 +458,7 @@ describe('LoggingAnthropicAdapter request logging', () => {
     expect(JSON.stringify(internals.requestSummary(baseRequest, raw))).not.toContain('do not log me');
   });
 
-  test('retains the raw request only for refusals', () => {
+  test('of calls that get a response, retains the raw request only for refusals', () => {
     const rawRequest = { messages: ['forensic context'] };
     const success = { raw: { stop_reason: 'end_turn' } } as unknown as ProviderResponse;
     const refusal = { raw: { stop_reason: 'refusal' } } as unknown as ProviderResponse;

@@ -196,8 +196,41 @@ action.
   `"mentions"` (closed; only addressed messages reach you) and `"debounced"`
   (opens the channel, prepends a rule debouncing its `chat:ambient` traffic —
   default 180000 ms — and pins the channel so it isn't auto-closed for being
-  chatty). Pass the id as events carry it (`discord:<guildId>:<channelId>`), or
-  the rule never matches. Each channel gets its own rule, so its own timer.
+  chatty). Pass the channel's registered id exactly, as `channel_list` shows it
+  and its channel messages carry it, `<serverId>:<channel>`: for example
+  `zulip:backend`, `slack:C0123ABCD` or `discord:<guildId>:<channelId>`. (A
+  push event's `channelId` can be the server's raw id, not the registered one.)
+  The prefix before the first `:` is the MCPL server for that call: it opens and
+  closes the channel there, and the rule matches only that server's events
+  (`source: <serverId>`). The prefix must name a server this host knows,
+  connected or not. An id with no prefix (such as a raw Discord channel
+  snowflake) or an unknown prefix is refused before any step, with a message
+  showing the expected form. So is an id containing `*`: the gate reads `*` in
+  a rule's `source` or `channel` as a wildcard, so the rule would also match
+  other servers or channels. Nothing else picks the server: not the channel
+  registry, not `modules.channelMode.serverId` (ignored, with a startup
+  warning), and not a default. Each channel gets its own rule, so its own timer;
+  calling again replaces that rule, including one an older release installed
+  with `source: "discord"`. A second call for the same id while the first is
+  still running is refused. Debounced mode never closes the channel, even when a
+  later step fails; mentions closes it only on the prefix's server. When a step
+  fails, the result says which steps worked and which failed. Where
+  agent-framework recorded an open or close it couldn't finish (as on a
+  disconnected server), the result says it is recorded, not that nothing
+  changed. Subscription
+  GC still watches only `modules.subscriptionGc.serverId` (default `discord`);
+  if you rename a server, change that field too.
+
+  **Known limit:** the contract is that a channel id's prefix *is* its MCPL
+  server id, and channel mode doesn't check it against the server that
+  registered the channel. A server whose id differs from its channels' prefix
+  (say `discord-bot` registering `discord:<guildId>:<channelId>`) can't be used
+  with channel mode: with no `discord` server the call is refused as an
+  unknown server, and with one the open, the rule's `source` and the close go
+  to `discord` (a failed open still lets the rule and pin steps run). A server
+  id containing `:` can't be used either: for `chat:west` registering
+  `chat:west:room`, the prefix is `chat`. There is no `serverId` parameter or
+  other override; the fix is to give the server the id its channel ids carry.
 - **Your shell** — edit the file on disk. The gate notices a changed file (by
   mtime) when it evaluates the next event, checking at most once a second. A
   file that fails to parse or validate is ignored: the previous rules stay in
@@ -248,9 +281,10 @@ When declarative rules aren't enough, put a `gate.js` in the same directory as
 `gate.json` (on disk — write it with your shell, not through `_config/`). It
 exports a default function that receives the event and returns a behavior — or
 `null` to fall through to your `gate.json` policies. `_config/` versions
-`gate.js` itself but not files beside it that it imports or reads, so an
-undo or a branch switch takes back `gate.js` and leaves those as they are:
-keep `gate.js` self-contained, or put such files in a mount of their own.
+`gate.js` itself but not files beside it that it imports or reads, so a
+branch switch or a rollback takes back `gate.js` and leaves those as they are
+(an undo moves no branch, so it takes back nothing): keep `gate.js`
+self-contained, or put such files in a mount of their own.
 
 The event is `{ content, eventType, serverId, channelId, metadata, tags, mount,
 paths }`. `tags` can be absent on untagged events (so default it), and `mount` /
@@ -329,12 +363,15 @@ wake?" decision. Heavy logic belongs in your turn once you're up, not here.
   hears of as only a "maybe". On a host that still runs the heartbeat-mcpl
   server instead, the tools are the same (named `mcpl--heartbeat--…`), and the
   judge doesn't know its schedule.
-- **`tune_out`** (when you have a subconscious, or the recipe sets
-  `tuneOut.enabled`) — holds a channel: its traffic stops entering your
-  context and waking you. With a subconscious, it reads the held traffic,
-  reports to you on a cadence and judges whether a mention merits
-  interrupting you; without one the hold is silent. Cancelling, or the
-  duration ending, delivers the backlog either way.
+- **`tune_out`** (when you have a subconscious) — holds a channel: its
+  traffic stops entering your context and waking you. Your subconscious
+  reads the held traffic, reports to you on a cadence and judges whether a
+  mention merits interrupting you. Cancelling, or the duration ending,
+  delivers the backlog. Without a subconscious you are not offered
+  `tune_out` or `focus`, and no hold is silent: agent-framework 0.33.0
+  removed the recipe's `tuneOut.enabled`, which offered them without a
+  reader. They stay listed without one only while a hold whose release
+  failed is still on record, for you to check or cancel.
 
 ## Debugging
 

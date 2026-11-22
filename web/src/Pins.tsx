@@ -19,6 +19,8 @@ export interface PinsState {
   levelHonored: boolean;
   deepestLevel?: number;
   candidates?: PinCandidate[];
+  /** Why the candidates couldn't be read; `candidates` is then absent. */
+  candidatesError?: string;
 }
 
 /**
@@ -245,7 +247,13 @@ export function PinsPanel(props: {
             </button>
             <button type="button"
               class="px-2 py-0.5 text-[10px] rounded font-mono bg-neutral-800 hover:bg-neutral-700 text-neutral-300"
-              onClick={() => setShowPicker((v) => !v)}>
+              onClick={() => {
+                // The list is the server's, read when the panel loaded: opening
+                // the picker reads it again, with the rows stored since.
+                const opening = !showPicker();
+                setShowPicker(opening);
+                if (opening) props.onRefresh();
+              }}>
               {showPicker() ? 'hide messages' : `pick from messages (${(props.candidates ?? []).length})`}
             </button>
           </div>
@@ -257,8 +265,11 @@ export function PinsPanel(props: {
                      font-mono text-[10px] text-neutral-100" />
             <Show when={candidates().length === 0}>
               <div class="text-[10px] text-neutral-600 italic">
-                No pinnable messages loaded. Pins need a real store id, so only
-                server-sourced rows qualify — scroll the chat to load history.
+                {props.state?.candidatesError
+                  ? `The record's last 200 rows couldn't be read: ${props.state.candidatesError}`
+                  : filter().trim()
+                    ? 'No pinnable message matches the filter.'
+                    : "No pinnable messages among the record's last 200 rows."}
               </div>
             </Show>
             <div class="max-h-64 overflow-y-auto border border-neutral-800 rounded">

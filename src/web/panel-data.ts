@@ -1,4 +1,5 @@
-import type { AgentFramework } from '@animalabs/agent-framework';
+import { audienceOf, residentViewFilter, type AgentFramework } from '@animalabs/agent-framework';
+import { continuesBody, type BodyShard } from '@animalabs/context-manager';
 import { NativeFormatter } from '@animalabs/membrane';
 import type { ContentBlock, NormalizedMessage, NormalizedRequest, ToolDefinition } from '@animalabs/membrane';
 import { recipeModel, resolveProvider, type Recipe } from '../recipe.js';
@@ -410,6 +411,13 @@ export function applySettingsCancelTransition(app: PanelAppRef, agentName: strin
   fw.cancelAgentRuntimeSettingsTransition(agentName);
 }
 
+/**
+ * The operator's settings notice is written through the settings module's
+ * context for the agent (SettingsModule.noteForAgent), so it is stamped for
+ * that agent and enters its window at the agent's presentation points
+ * (agent-framework #291); a host without the module (SettingsModule is in
+ * every host this one builds) gets no notice.
+ */
 export function notifyAgentOfSettingsChange(
   app: PanelAppRef,
   agentName: string,
@@ -426,8 +434,10 @@ export function notifyAgentOfSettingsChange(
         + (budget !== undefined ? ` — budget ${budget}` : '')
         + (tail !== undefined ? `, tail ${tail}` : '')
         + (transition === 'converging' ? ' (converging gradually)' : '');
-    const cm = app.framework.getAgent(agentName)?.getContextManager();
-    cm?.addMessage('Context Manager', [{ type: 'text', text }], { system: true });
+    const settings = app.framework.getModule('settings') as { noteForAgent?: (agent: string, text: string) => boolean } | null;
+    if (typeof settings?.noteForAgent !== 'function' || !settings.noteForAgent(agentName, text)) {
+      console.warn(`[settings] notify skipped (change still applied): no started settings module to write ${agentName}'s notice through`);
+    }
   } catch (err) {
     console.warn('[settings] notify failed (change still applied):', err);
   }
@@ -449,6 +459,8 @@ export interface PinsSnapshotData {
   levelHonored: boolean;
   deepestLevel?: number;
   candidates?: Array<{ id: string; index: number; participant: string; text: string }>;
+  /** Why the candidates couldn't be read; `candidates` is then absent. */
+  candidatesError?: string;
 }
 
 function pinnableCm(app: PanelAppRef, agentName: string): {
@@ -523,49 +535,91 @@ export function buildPinsSnapshot(
     pinsSupported: supported,
     levelHonored,
     ...(deepestLevel !== undefined ? { deepestLevel } : {}),
-    ...(opts.withCandidates ? { candidates: buildPinCandidates(app, agentName) } : {}),
+    ...(opts.withCandidates ? buildPinCandidates(app, agentName) : {}),
   };
 }
 
+/**
+ * A row an undo took out of the agent's window (agent-framework #291,
+ * windowStatusOf 'undone') isn't a pin candidate: the fold plan a pin
+ * constrains is the window's, so a pin on it would hold nothing. Nor is a
+ * row whose audience stamp leaves the agent out (another resident's row on
+ * a shared store, or one a tune-out held from every resident), which never
+ * enters that window. A legacy window (windowMode 'legacy') is the record
+ * through the resident's view, which reads no stamp: there a row is a
+ * candidate when that view keeps it (residentViewFilter: not held traffic,
+ * a suppressed row or another agent's stored injection), another
+ * resident's row included. A row with no stamp (stored before it existed) and a
+ * stored arrival the agent's window doesn't hold yet (status 'out'), which
+ * enters it at the agent's next turn, are candidates. A message stored in
+ * parts (context-manager's shards of one body) is one candidate, as it is one
+ * row in the transcript: its first part's id, with the parts' text joined,
+ * the first part included when the last 200 rows start after it. A pin on
+ * any part of it covers the whole message. A read that fails gives its
+ * reason, not an empty list, so the picker doesn't say there are none.
+ */
 function buildPinCandidates(
   app: PanelAppRef,
   agentName: string,
-): Array<{ id: string; index: number; participant: string; text: string }> {
+): Pick<PinsSnapshotData, 'candidates' | 'candidatesError'> {
   try {
     const agent = app.framework.getAgent(agentName);
     const cm = agent?.getContextManager() as unknown as {
       getMessageCount?: () => number;
       getMessageWindow?: (
-        offset: number, limit: number, opts?: { resolveBlobs?: boolean },
-      ) => { messages: Array<{ id?: string; participant?: string; content?: unknown }>; startIndex: number };
+        offset: number, limit: number, opts?: { resolveBlobs?: boolean; alignToBodyGroups?: boolean },
+      ) => { messages: Array<{ id?: string; participant?: string; content?: unknown; metadata?: unknown } & BodyShard>; startIndex: number };
+      windowStatusOf?: (id: string) => string;
+      windowMode?: () => string;
     } | undefined;
     if (!cm || typeof cm.getMessageCount !== 'function' || typeof cm.getMessageWindow !== 'function') {
-      return [];
+      return { candidates: [] };
     }
+    const legacyView = cm.windowMode?.() === 'legacy' ? residentViewFilter(agentName) : undefined;
     const total = cm.getMessageCount();
     const start = Math.max(0, total - PIN_CANDIDATE_LIMIT);
-    const win = cm.getMessageWindow(start, total - start, { resolveBlobs: false });
+    // Rows that start inside a message stored in parts reach back to its
+    // first part, as the transcript's pages do.
+    const win = cm.getMessageWindow(start, total - start, { resolveBlobs: false, alignToBodyGroups: true });
     const out: Array<{ id: string; index: number; participant: string; text: string }> = [];
-    win.messages.forEach((m, i) => {
-      if (!m.id) return;
+    const textOf = (content: unknown): string => {
+      if (typeof content === 'string') return content;
       let text = '';
-      if (Array.isArray(m.content)) {
-        for (const b of m.content as Array<Record<string, unknown>>) {
+      if (Array.isArray(content)) {
+        for (const b of content as Array<Record<string, unknown>>) {
           if (b?.type === 'text') text += String(b.text ?? '');
         }
-      } else if (typeof m.content === 'string') {
-        text = m.content;
+      }
+      return text;
+    };
+    for (let i = 0; i < win.messages.length; i++) {
+      const m = win.messages[i]!;
+      const first = i;
+      // A message stored in parts: they join back with no separator.
+      let text = textOf(m.content);
+      while (i + 1 < win.messages.length && continuesBody(win.messages[i], win.messages[i + 1])) {
+        i++;
+        text += textOf(win.messages[i]!.content);
+      }
+      if (!m.id) continue;
+      if (cm.windowStatusOf?.(String(m.id)) === 'undone') continue;
+      if (legacyView) {
+        if (!legacyView(m as unknown as Parameters<typeof legacyView>[0])) continue;
+      } else {
+        const stamp = audienceOf(m.metadata);
+        if (stamp && !stamp.audience.includes(agentName)) continue;
       }
       out.push({
         id: String(m.id),
-        index: win.startIndex + i,
+        index: win.startIndex + first,
         participant: String(m.participant ?? '?'),
         text: text.slice(0, PIN_CANDIDATE_TEXT_CAP),
       });
-    });
-    return out;
-  } catch {
-    return [];
+    }
+    return { candidates: out };
+  } catch (err) {
+    console.warn(`[pins] couldn't read ${agentName}'s pin candidates:`, err);
+    return { candidatesError: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -846,6 +900,7 @@ export interface ContextCoverageSnapshot {
   queue: {
     inFlight: boolean;
     pending: string | null;
+    waiting: string | null;
     l1: number[];
     merges: Array<{ targetLevel: number; sourceCount: number; firstSource: string | null; lastSource: string | null }>;
   };
@@ -857,6 +912,7 @@ export function buildContextCoverageSnapshot(
     currentBranch: () => { name: string };
     getStrategy: () => unknown;
     getPendingWork?: () => { description?: string } | null;
+    getWaitingWork?: () => { description?: string } | null;
   },
 ): ContextCoverageSnapshot {
   const strategy = cm.getStrategy() as CoverageStrategy;
@@ -911,6 +967,7 @@ export function buildContextCoverageSnapshot(
   });
   const covered = projectedChunks.filter(chunk => chunk.maxLevel > 0);
   const pending = cm.getPendingWork?.()?.description ?? null;
+  const waiting = cm.getWaitingWork?.()?.description ?? null;
 
   return {
     agent: agentName,
@@ -929,6 +986,7 @@ export function buildContextCoverageSnapshot(
     queue: {
       inFlight: strategy.pendingCompression != null,
       pending,
+      waiting,
       l1: [...compressionQueue],
       merges: mergeQueue.map(merge => ({
         targetLevel: merge.level,

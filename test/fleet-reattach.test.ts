@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,11 +11,12 @@ import { connectWhenAccepting } from './ipc-connect.js';
 type Result = { success: boolean; error?: string; data?: unknown };
 type Event = { type?: string; phase?: string; content?: string };
 type Child = Record<string, unknown> & {
-  socket: Socket | null; lastCompletedSpeech: string; events: Event[]; reopening?: Promise<void>;
+  socket: Socket | null; lastCompletedSpeech?: string; events: Event[]; reopening?: Promise<void>;
 };
 type Fleet = {
   children: Map<string, Child>;
   connectChildSocket(child: object): Promise<void>;
+  connectStartingChild(child: object): Promise<void>;
   sendToChild(child: object, cmd: object): void;
   requestPanel(name: string, op: string): Promise<{ ok: boolean; error?: string; status?: number }>;
   requestSwitch(name: string, request: object, timeoutMs: number): Promise<{ ok: boolean; data?: unknown; error?: string }>;
@@ -42,7 +43,7 @@ async function until(check: () => boolean, label: string, timeoutMs = 8_000): Pr
 }
 
 function setup(config: FleetModuleConfig = {}) {
-  const fleet = new FleetModule(config) as unknown as Fleet;
+  const fleet = new FleetModule({ socketWaitTimeoutMs: 8_000, ...config }) as unknown as Fleet;
   const logged: string[] = [];
   const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); });
   cleanups.push(() => spy.mockRestore());
@@ -64,25 +65,26 @@ function setup(config: FleetModuleConfig = {}) {
       await until(() => !alive(), 'the child ending');
       rmSync(dir, { recursive: true, force: true });
     });
-    await until(() => existsSync(join(dir, 'ipc.sock')), 'the child listening');
     const adopted = recordedPid !== undefined || adoptedAlive === true;
     const child = {
       name, recipePath: join(dir, 'recipe.json'), dataDir: dir, socketPath: join(dir, 'ipc.sock'),
       pid: recordedPid ?? proc.pid, process: adopted ? null : proc, ...(adopted ? { adopted: true } : {}),
       socket: null, status: 'ready', startedAt: Date.now(), exitedAt: null, lastEventAt: null, exitCode: null,
       exitReason: null, events: [], buffer: '', subscription, idleSinceWork: false, textsSent: 0,
-      autoRestart: false, killRequested: false, restartAttempts: [], lastCompletedSpeech: '',
+      autoRestart: false, killRequested: false, restartAttempts: [],
     } as unknown as Child;
     fleet.children.set(name, child);
     const seen = { ready: 0, idle: 0, marker: 0, snapshot: 0 };
+    const chunks: unknown[] = [];
     cleanups.push(fleet.onChildEvent(name, (_, event) => {
+      if (event.type === 'inference:tokens') chunks.push(event.content);
       if (event.type === 'lifecycle' && event.phase === 'ready') seen.ready += 1;
       if (event.type === 'lifecycle' && event.phase === 'idle') seen.idle += 1;
       if (event.type === 'probe:marker') seen.marker += 1;
       if (event.type === 'snapshot') seen.snapshot += 1;
     }));
     const readies = () => seen.ready;
-    await fleet.connectChildSocket(child);
+    await fleet.connectStartingChild(child);
     fleet.sendToChild(child, { type: 'subscribe', events: subscription });
     const log = () => existsSync(join(dir, 'headless.log')) ? readFileSync(join(dir, 'headless.log'), 'utf8') : '';
     const lines = (end: string) => log().split('\n').filter((line) => line.endsWith(end)).length;
@@ -110,13 +112,18 @@ function setup(config: FleetModuleConfig = {}) {
     };
     const reply = async (content: string) => {
       replies += 1;
-      writeFileSync(join(dir, `reply-${replies}`), content);
+      // The mock child takes reply-N the moment it exists, and writeFileSync
+      // creates the file before its content lands, so the text goes to
+      // reply-N.tmp and the rename makes reply-N appear only whole.
+      const file = join(dir, `reply-${replies}`);
+      writeFileSync(`${file}.tmp`, content);
+      renameSync(`${file}.tmp`, file);
       await until(() => child.events.some((e) => e.type === 'inference:speech' && e.content === content), 'the reply');
     };
     const marker = async () => {
       markers += 1;
       writeFileSync(join(dir, `marker-${markers}`), '');
-      await until(() => child.events.some((e) => e.content === `after marker ${markers}`), 'the token after the marker');
+      await until(() => chunks.includes(`after marker ${markers}`), 'the token after the marker');
     };
     const takeover = async () => {
       const other = await connectWhenAccepting(join(dir, 'ipc.sock'));
@@ -129,6 +136,7 @@ function setup(config: FleetModuleConfig = {}) {
     const unblocked = () => existsSync(join(dir, 'unblocked'));
     const release = () => writeFileSync(join(dir, 'release'), '');
     await until(() => connections() === 1, 'the first connection');
+    await until(() => seen.ready === 1, "this host seeing the child's ready");
     return {
       child, proc, dir, alive, log, connections, disconnections, readies, seen, texts, signal, cut, reply, marker, takeover,
       unblocked, release,
@@ -250,10 +258,10 @@ test('the bound holds only within its window: a later close connects again, and 
   leaf.child.closingAgainUntil = Date.now();
   expect(await call('send', { name: 'leaf', content: 'after the window' })).toMatchObject({ success: true });
   await until(() => leaf.connections() === 7, "the call's connect");
+  await until(() => leaf.texts().includes('after the window'), 'the child taking the text');
   await leaf.takeover();
   await until(() => bounds() === 2, "the bound again, within the window of the call's connect");
   await until(holder.closed, "the holder's connection closing at the call's connect");
-  await until(() => leaf.texts().includes('after the window'), 'the child taking the text');
 }, 30_000);
 
 test('a child that says it is exiting is not connected to again, and this host logs no attempt', async () => {
@@ -342,7 +350,7 @@ test('a socket that takes each connect and closes it before any ready gets one c
     name: 'leaf', recipePath: join(dir, 'recipe.json'), dataDir: dir, socketPath: join(dir, 'ipc.sock'),
     pid: process.pid, process: null, adopted: true, socket: null, status: 'ready', startedAt: Date.now(), exitedAt: null,
     lastEventAt: null, exitCode: null, exitReason: null, events: [], buffer: '', subscription: ['*'], idleSinceWork: false,
-    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [], lastCompletedSpeech: '',
+    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [],
   } as unknown as Child;
   fleet.children.set('leaf', child);
   await fleet.connectChildSocket(child);
@@ -374,7 +382,7 @@ test("a connection whose first line isn't a ready is refused, and nothing it car
     name: 'leaf', recipePath: join(dir, 'recipe.json'), dataDir: dir, socketPath: join(dir, 'ipc.sock'),
     pid: process.pid, process: null, adopted: true, socket: null, status: 'ready', startedAt: Date.now(), exitedAt: null,
     lastEventAt: null, exitCode: null, exitReason: null, events: [], buffer: '', subscription: ['*'], idleSinceWork: false,
-    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [], lastCompletedSpeech: '',
+    textsSent: 0, autoRestart: false, killRequested: false, restartAttempts: [], lastCompletedSpeech: 'the held reply',
   } as unknown as Child;
   fleet.children.set('leaf', child);
   await fleet.connectChildSocket(child);
@@ -385,7 +393,7 @@ test("a connection whose first line isn't a ready is refused, and nothing it car
   ]);
   expect(child.socket).toBeNull();
   expect(child.events).toEqual([]);
-  expect(child.lastCompletedSpeech).toBe('');
+  expect(child.lastCompletedSpeech).toBe('the held reply');
 }, 30_000);
 
 test('after a failed connect, fleet--await tries to connect once before it waits', async () => {
@@ -602,7 +610,42 @@ test("fleet--relay passes on only a reply made since this host's connection to t
   const unreachable = await call('relay', { from: 'leaf', to: 'sibling' });
   expect(unreachable.success).toBe(false);
   expect(unreachable.error).toContain('may not be the latest');
+  expect(await call('send', { name: 'sibling', content: 'after the refusal' })).toMatchObject({ success: true });
+  await until(() => sibling.texts().includes('after the refusal'), 'the sibling reading past the refusal');
   expect(sibling.texts()).not.toContain('the reply before the loss');
+}, 30_000);
+
+test('a held reply with no text is forgotten by a connect, as any reply is', async () => {
+  const { fleet, call, launch } = setup();
+  fleet.reopenWindowMs = 100;
+  const leaf = await launch('leaf');
+  await launch('sibling');
+  await leaf.reply('');
+  expect((await call('relay', { from: 'leaf', to: 'sibling' })).error).toContain('had no text in it');
+  await leaf.cut();
+  await until(() => leaf.connections() === 2 && leaf.child.socket !== null, 'the parent connecting again');
+  expect(leaf.child.lastCompletedSpeech).toBeUndefined();
+  expect((await call('relay', { from: 'leaf', to: 'sibling' })).error)
+    .toContain("hasn't finished a reply since this host's connection to it last opened");
+}, 30_000);
+
+test("a held reply with no text is refused as empty while this host can't reach the child, saying why it can't", async () => {
+  const { call, launch, failed } = setup();
+  const leaf = await launch('leaf');
+  const sibling = await launch('sibling');
+  await leaf.reply('');
+  await leaf.signal('unlink', 'unlinked');
+  await leaf.cut();
+  await until(() => failed('leaf') === 1, 'the failed attempt');
+  const relayed = await call('relay', { from: 'leaf', to: 'sibling' });
+  expect(relayed.error).toStartWith(
+    "Nothing was relayed: the latest inference round this host saw from 'leaf' ended without tool calls, outside a " +
+    "silent heartbeat, and had no text in it, so there was nothing to pass on. 'leaf' is ready, but its connection " +
+    'to this host closed, and connecting to it again failed: ',
+  );
+  expect(await call('send', { name: 'sibling', content: 'after the refusal' })).toMatchObject({ success: true });
+  await until(() => sibling.texts().includes('after the refusal'), 'the sibling reading past the refusal');
+  expect(sibling.texts()).toBe('after the refusal\n');
 }, 30_000);
 
 test('after a failed connect, fleet--relay from the child tries once to connect to it', async () => {
@@ -619,7 +662,9 @@ test('after a failed connect, fleet--relay from the child tries once to connect 
   expect(relayed.error).toContain("hasn't finished a reply since this host's connection to it last opened");
   expect(reconnected('leaf')).toBe(1);
   expect(failed('leaf')).toBe(1);
-  expect(sibling.texts()).toBe('');
+  expect(await call('send', { name: 'sibling', content: 'after the refusal' })).toMatchObject({ success: true });
+  await until(() => sibling.texts().includes('after the refusal'), 'the sibling reading past the refusal');
+  expect(sibling.texts()).toBe('after the refusal\n');
 }, 30_000);
 
 test("fleet--relay waits for a connect to its source that starts while it waits for its target's", async () => {
@@ -638,7 +683,9 @@ test("fleet--relay waits for a connect to its source that starts while it waits 
   leaf.release();
   const relayed = await relaying;
   expect(relayed.error).toContain("hasn't finished a reply since this host's connection to it last opened");
-  expect(sibling.texts()).toBe('');
+  expect(await call('send', { name: 'sibling', content: 'after the refusal' })).toMatchObject({ success: true });
+  await until(() => sibling.texts().includes('after the refusal'), 'the sibling reading past the refusal');
+  expect(sibling.texts()).toBe('after the refusal\n');
 }, 30_000);
 
 for (const [state, arrange] of [
@@ -679,7 +726,6 @@ test("a process other than the recorded child answering on its socket is not tak
   const sleeper: ChildProcess = spawn('sleep', ['30'], { stdio: 'ignore' });
   cleanups.push(() => { sleeper.kill('SIGKILL'); });
   const leaf = await launch('leaf', { recordedPid: sleeper.pid, subscription: ['lifecycle'] });
-  await until(() => leaf.readies() === 1, 'the first ready');
   expect(await call('send', { name: 'leaf', content: 'after the subscribe' })).toMatchObject({ success: true });
   await until(() => leaf.texts().includes('after the subscribe'), 'the child reading past the subscribe');
   await leaf.signal('chatter', 'chattering');

@@ -15,13 +15,16 @@ import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type ForkReaderConfig, type FrameworkConfig, type MountConfig, type PersistentReaderConfig } from '@animalabs/agent-framework';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
-import { parseHandWrittenJson } from './hand-written-json.js';
+import { ENV_REFERENCE, readRecipeDocument, substituteEnvVars, type RecipeDocument, type RecipeSourceBase } from './recipe-document.js';
+export { readRecipeDocument, substituteEnvVars, type RecipeDocument } from './recipe-document.js';
 import { noteRecipeWarning } from './recipe-warnings.js';
+import { isBuiltinStrategyType } from './extensions.js';
 import { validateToolClassTable, validateToolLifecycle } from './tool-lifecycle-config.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
 import { REASONING_EFFORTS, type ReasoningEffort } from './modules/settings-module.js';
 import { DEFAULT_INSTRUCTIONS_PATH } from './modules/instructions-module.js';
 import { recipeFit, type RecipeFit } from './recipe-fit.js';
+import { shown } from './modules/shown.js';
 import { isServerPresentation, SERVER_PRESENTATIONS_TEXT } from './server-presentation.js';
 
 export interface RecipeStrategy {
@@ -95,10 +98,25 @@ export interface RecipeStrategy {
   compressionSplitFallback?: boolean;
   /** Allow a single-message placeholder inside a split-stitched L1 (default off). */
   compressionSplitPlaceholder?: boolean;
+  /**
+   * Context Manager: carry a summary no merge can take up a level, unchanged
+   * and with no model call, until it stands beside summaries of its level and
+   * the ordinary merge takes it (default off). A carried entry is never
+   * rendered, so a compile does not change at a carry.
+   */
+  carryStrandedSummaries?: boolean;
   /** Split-stitch: max sub-calls per chunk (default 40). */
   compressionSplitMaxCallsPerChunk?: number;
   /** Split-stitch: max sub-calls per strategy instance per 10-minute in-memory window (default 80). */
   compressionSplitMaxCallsPer10Min?: number;
+  /**
+   * Context Manager fallback-model rung (default unset). Once
+   * `compressionModel` has refused a compression or a merge on every rung
+   * that keeps it writing the memory in full, the canonical request goes once
+   * more to this model, before the split rung and before quarantine. The
+   * model is reached through the agent's own provider.
+   */
+  compressionFallbackModel?: string;
   /** Token budget for prior recall-pair context in compression/merge
    * requests (Context Manager `compressionRecallBudgetTokens`). */
   compressionRecallBudgetTokens?: number;
@@ -189,8 +207,6 @@ export interface RecipeStrategy {
    *  mixed targets keep identityReminder (context-manager
    *  witnessedIdentityReminder). */
   witnessedIdentityReminder?: string;
-  /** Follow the reminder with an instruction to apply it silently. */
-  identityReminderSilent?: boolean;
 }
 
 export interface RecipeKvUnifiedConfig {
@@ -214,12 +230,29 @@ export interface RecipeKvUnifiedConfig {
      * (context-manager ≥ 0.17): an integer from 0 to 64, 0 prices exact ages.
      * Optional; a strategy built from a recipe takes 4 unless set. */
     ageBandSteps?: number;
+    /** What rewriting the prompt costs, in points per `cacheScale` tokens
+     * a layout change rewrites, linear in the rewrite (context-manager
+     * ≥ 0.25.3): it takes the place of the quadratic `cacheLambda` term, so
+     * the layout last sent is cheaper than any change by that change's
+     * whole rewrite. Optional; absent or 0 keeps the quadratic term. */
+    rewriteLambda?: number;
   };
   tokenBucketSize: number;
   continuityBucketSize: number;
   fidelityBucketSize: number;
   labelCeiling: number;
   adoptEpsilon: number;
+  /** What a change of layout costs in thinking, in points per token of the
+   * agent's own thinking the change would make a model that binds thinking
+   * drop (context-manager ≥ 0.25.3). It is added to `adoptEpsilon` for the
+   * compile, so the layout holds while recent thinking is live and moves
+   * once it is gone anyway. Optional; absent or 0 prices none, and a model
+   * that doesn't bind thinking is never priced. */
+  thinkingLambda?: number;
+  /** How far back thinking still counts for `thinkingLambda`: a reply's
+   * thinking weighs half as much for each this many raw tokens between it
+   * and the newest message. Optional; 50,000 unless set. */
+  thinkingHalfLifeTokens?: number;
   treeifyNonContiguousSummaries: boolean;
   /** Preserve summaries spanning gaps instead of treeifying them. Mutually exclusive
    * with treeifyNonContiguousSummaries; both flags must be explicit. */
@@ -273,17 +306,21 @@ export interface RecipeAgent {
    * prompting structure intact. */
   formatter?: 'native' | 'anthropic-xml';
   /**
-   * Membrane retry policy for the host's own provider calls: compression and
-   * merging, retrieval, session naming and the TUI's status line.
-   * agent-framework retries the agent's turns itself, on membrane's default
-   * schedules, so this policy doesn't reach them. It applies over the host's
-   * default (`hostMembraneRetry`): membrane's base schedule (3 sends, 1 s then
-   * 2 s, for a retryable failure before anything was delivered) with its
-   * overloaded schedule off, so a 529 is retried as any other retryable
-   * failure. `{ "maxRetries": 4 }` rides out longer blips with exponential
-   * backoff (retryDelayMs 1000, x2, capped at maxRetryDelayMs 30000 by
-   * default), and `overloaded` brings back a patient schedule for 529s. See
-   * membrane's `RetryConfigInput` for every field.
+   * Retry settings for framework turns AND other provider calls (compression
+   * and merging, retrieval, session naming and the TUI status line).
+   * A non-empty object installs a framework-wide DefaultErrorPolicy, completing
+   * partial fields from the framework's turn defaults;
+   * absent or {} leaves the turn policy untouched. It covers the resident,
+   * forks and subagents in that instance; separate fleet hosts use their own
+   * recipes. maxRetries counts total sends including the first: 4 means 4
+   * sends / 3 waits for ordinary retryable failures. Rate limits get at least
+   * 5 sends per policy cycle. Turn policies keep 13 overloaded sends per cycle
+   * unless overloaded.maxRetries is specified, with equal-jitter backoff,
+   * at-least-10-minute stated-wait ceilings
+   * for subagents, and one fresh call after a deadline cut;
+   * overloaded.maxRetries:0 uses the base schedule instead. Other calls keep
+   * hostMembraneRetry's existing default
+   * (overloaded schedule off), with recipe overrides. See RetryConfigInput.
    */
   retry?: import('@animalabs/membrane').MembraneConfig['retry'];
   /** Prefill scaffold user message appended after the conversation (e.g.
@@ -303,9 +340,10 @@ export interface RecipeAgent {
    * runtime `/budget` command. When unset: contextBudgetTokens + 20k if the
    * budget is left out too; else 150k, a null budget included. It counts the provider's input tokens,
    * which with prompt caching on are only those after the last cache marker.
-   * On a model whose thinking binds and whose window the host passes (Fable
-   * 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5 through the Anthropic API), the
-   * framework doesn't break a turn's stream at it; the window still does.
+   * On a model whose thinking binds and whose window the host passes, through
+   * the Anthropic API (`thinkingBindingSettings` in framework-agent-config.ts
+   * says which, from `modelThinking`), the framework doesn't break a turn's
+   * stream at it; the window still does.
    */
   maxStreamTokens?: number;
   /** Per-agent context compile budget (input tokens), which holds
@@ -359,16 +397,59 @@ export interface RecipeAgent {
    */
   sameRoundThinkTextPolicy?: 'public' | 'private';
   /**
+   * What becomes of ordinary text that a `skip_reply` would leave unsent.
+   * Omitted or 'private': it stays private and isn't held. 'ask': it is held
+   * as a draft. With native tools, where some of it would have been posted
+   * or bounced without the `skip_reply`, the turn's first such `skip_reply`
+   * is refused once with a result that names the drafts and asks where they
+   * should go. With the XML formatter, nothing is refused, and the text is
+   * held when the turn ends. Nothing is held while proseRouting is
+   * 'disabled'. The agent can change its own with `agent_settings`.
+   */
+  sameRoundSkipReplyTextPolicy?: 'private' | 'ask';
+  /**
    * Prose delivery mode (agent-framework docs/explicit-prose-routing.md).
    * 'explicit' = model prefixes plain text with `>>destination`; unprefixed
    * prose bounces to a clipboard instead of auto-routing.
    * 'hybrid' = unprefixed prose keeps the current locus while an exact leading
    * `>>>destination` envelope routes through the authorized channel registry.
+   * 'locked' = plain text goes to one destination the agent chose, on every
+   * turn; only its `prose_locus` tool moves it, to a channel or to drafts
+   * (agent-framework docs/locked-prose-routing.md). An `allowedTools` list
+   * must name `prose_locus` for the agent to move it, and `drafts` for it to
+   * resend drafts; without a `proseLock`, a list that doesn't name
+   * `prose_locus` is refused. Refused beside `conversations`, whose forks
+   * speak in their home channel.
    * Default 'locus'.
    */
-  proseRouting?: 'locus' | 'explicit' | 'hybrid' | 'disabled';
+  proseRouting?: 'locus' | 'explicit' | 'hybrid' | 'disabled' | 'locked';
+  /**
+   * Locked routing's destination until the agent chooses one with
+   * `prose_locus`: "#channel", "@person", a channel id or "drafts". Left out,
+   * plain text is held as drafts until the agent chooses. Refused under any
+   * other mode, which would ignore it.
+   */
+  proseLock?: string;
   /** Default-off containment of whole-response prose wrappers for known tools. */
   toolWrapperProseGuard?: boolean;
+  /**
+   * Hold a turn's start until the agent's compression call already in flight
+   * ends (agent-framework `AgentConfig.primaryWaitsForAuxiliary`). Default
+   * false: the turn starts beside it. For a model whose provider limits how
+   * fast input tokens per minute may grow, such as Claude 3 Opus, where a
+   * compression call in flight can cost the larger turn its admission. An
+   * agent-framework that predates the setting always waits.
+   */
+  primaryWaitsForAuxiliary?: boolean;
+  /**
+   * Whether an explicit send (send_message, channel_publish, a `drafts`
+   * resend and the like) silences the plain speech its round and later
+   * rounds aim where the send may have posted, holding it as drafts
+   * (agent-framework `AgentConfig.sendSilencing`). Default false: plain
+   * speech beside a send is posted as any other is. An agent-framework that
+   * predates the setting always silences.
+   */
+  sendSilencing?: boolean;
   /**
    * Continue until skip_reply (agent-framework `AgentConfig.autoContinue`,
    * agent-framework's docs/auto-continue.md; off when omitted): a turn the
@@ -936,9 +1017,12 @@ export interface RecipeModules {
      * What a forked or spawned stream is told at its start. `'full'`
      * (default) describes the launch and the stream's place in it, and
      * gives a fork the "two parallel streams of you" framing; `'none'` hands
-     * a spawn its task alone, and a fork its task after one line saying it
-     * is the forked stream. What a stream is told is the deployment's to
-     * decide, not the host's.
+     * a spawn its task alone; a fork with a parent agent its task after
+     * saying it is the forked stream and, where its prose routing isn't its
+     * parent's (a locked parent's fork runs disabled), what that routing is;
+     * and a fork with no parent agent its task after saying to return its
+     * findings with subagent--return. What a stream is told is the
+     * deployment's to decide, not the host's.
      */
     orientation?: 'full' | 'none';
     /**
@@ -970,6 +1054,41 @@ export interface RecipeModules {
      * Requires an explicit retrieval model.
      */
     reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  };
+  /**
+   * The fetch tool (`fetch--fetch`): read a web page as text, whole or through
+   * a small model that answers a prompt. OPT-IN, defaults to off.
+   */
+  fetch?: boolean | {
+    /** The model that answers `prompt`. Defaults to a Claude Haiku, so a recipe on another provider sets this. */
+    model?: string;
+    /**
+     * Let the tool read local files too. It reads them through the workspace,
+     * so it reaches what the workspace's mounts allow and nothing more, and
+     * needs `modules.workspace`. Off by default. On, fetch is a reader of
+     * those files in its own right: an agent whose `allowedTools` holds
+     * fetch--fetch reads them with it, whether or not workspace--read is on
+     * that list.
+     */
+    local?: boolean;
+    /**
+     * Let web addresses reach private and local addresses: loopback, the LAN,
+     * a tailnet, cloud metadata services. Off by default, so a page or a
+     * redirect can't point the tool at one of those. It tells addresses apart
+     * by their range alone: an internal service on a publicly routable address
+     * reads as the internet does.
+     */
+    allowPrivateNetwork?: boolean;
+    /** Most bytes of one document to read. Defaults to 5 MiB, at most 64 MiB. */
+    maxBytes?: number;
+    /**
+     * Let the model that answers `prompt` look at a page's images: it is given
+     * a tool that fetches one the page names, under the same address guard as
+     * the page, a few to a call. Off by default, since it makes requests the
+     * page chooses and costs image tokens, and the model must be one that
+     * takes images.
+     */
+    images?: boolean;
   };
   /**
    * The gate (wake rules). `true` or left out: on, with the rules the agent
@@ -1024,11 +1143,19 @@ export interface RecipeModules {
    * agent. A missing FILE remains fail-open at runtime: no injection, with
    * a log line and an `instructions-unavailable` ops alert.
    *
-   * Cache economics: with position 'system' the injected block sits in the
-   * prompt-cache prefix of every agent, so each EDIT to the file is a
-   * fleet-wide cache cold start on the next turn (steady state between
-   * edits caches normally). Curate in batches rather than per-message;
-   * 'afterUser' is the cache-cheap, lower-salience alternative.
+   * Where the block lands, and what that costs:
+   * - 'system' (the default) puts it in every agent's system prompt. An edit
+   *   to the file misses the cache from the system prompt on, for every
+   *   agent, at its next turn, so curate in batches.
+   * - 'afterUser' places it after the newest user message at each start, so
+   *   it stays near the end. Unlike another module's 'afterUser' block, which
+   *   agent-framework stores where it lands, it isn't stored. It moves: a
+   *   request misses the cache from its old place on, and on a model that
+   *   binds a reply's thinking to everything before it, every reply after its
+   *   old place loses its thinking.
+   * - 'beforeUser' is deprecated (agent-framework#171). It's spliced in again
+   *   before the newest user message at every compile, so it moves, and it
+   *   can split a tool call from its result. Use 'afterUser' or 'system'.
    */
   instructions?: boolean | {
     /** Workspace path "<mountName>/<relativePath>". Default "instructions/AGENTS.md". */
@@ -1045,7 +1172,7 @@ export interface RecipeModules {
      * no more than this. Default 32768.
      */
     maxBytes?: number;
-    /** Where the block lands: 'system' (default) | 'beforeUser' | 'afterUser'. */
+    /** Where the block lands: 'system' (default) | 'beforeUser' (deprecated) | 'afterUser'. */
     position?: 'system' | 'beforeUser' | 'afterUser';
   };
   /**
@@ -1063,8 +1190,9 @@ export interface RecipeModules {
    * pending login, provider hold, MCPL server down, …). Off by default:
    * writing into a channel is a bigger act than showing a typing indicator.
    *
-   * - `statusChannels` — always get the operator-grade message (kind + error
-   *   text) for `status` and `reply` kinds, after `quietMs` without a clear.
+   * - `statusChannels` — get the kind and a fixed line saying what happened
+   *   for `status` and `reply` kinds, after `quietMs` without a clear; the
+   *   alert's own message stays on the operator's surfaces.
    * - `reply.in` / `reply.not` — channel-id patterns (`zulip:*`, exact ids)
    *   where a person who writes to the agent during an outage gets one canned
    *   "cannot respond right now" line, and where the channel whose message
@@ -1136,7 +1264,7 @@ export interface RecipeModules {
    * What the remote index holds: with `includePrivateTools` at the
    * framework default (true), the agent's think/journal/skip_reply prose is
    * indexed too. Search hits are checked against the CURRENT branch, so
-   * /undo, /checkout etc. hide undone turns from results, but the remote
+   * /branchto, /checkout etc. hide rolled-back turns from results, but the remote
    * copy stays; `/session delete` removes only the local store, not the
    * remote namespace (the client has no namespace delete).
    */
@@ -1197,14 +1325,30 @@ export interface RecipeModules {
   webui?: boolean | RecipeWebUi;
 
   /**
-   * Live TTS streaming tap (melodeus-tts-relay). Off by default. When set,
-   * the host mirrors the agent's streaming generation — chunks, block
-   * boundaries, activation start/end, tagged with the turn's channel — to
-   * the relay's `/bot` WebSocket, where voice clients (Melodeus / iOS) speak
-   * it. Also handles the relay's `interruption` events: the just-posted
-   * Discord message is edited down to the words actually voiced, and a note
-   * lands in the agent's context. `token` should be `${VAR}`-substituted
-   * from .env, never literal.
+   * TTS relay tap (melodeus-tts-relay). Off by default. When set, the host
+   * sends the agent's turns (activation start/end, on the turn's channel)
+   * and each message its prose publishes on the server `editServerId` names
+   * (one text block, on the channel it was published to; a message that's
+   * only whitespace isn't sent) to the relay's `/bot` WebSocket, where
+   * voice clients (Melodeus / iOS) speak it. Text the agent didn't publish,
+   * its thinking, tool calls and tool results, and messages sent by a tool
+   * call aren't sent, and nothing is sent while the host isn't connected to
+   * the relay, so a message published then isn't matched to an
+   * interruption. Also handles the relay's `interruption` events: the host
+   * edits at most one message it recently published in the interruption's
+   * channel, one the heard words match, to the text the client reports as
+   * voiced, and, with `notifyOnInterruption` on (its default), puts a note
+   * in the context of the agent voiced, when one agent can be named.
+   * Nothing is edited when no message matches, and no note is written when
+   * the messages that match are by more than one agent. What an agent wrote
+   * and didn't publish isn't voiced, so it holds back no edit. Messages are
+   * matched among each channel's latest 32, in the 32 channels published in
+   * last. A channel keeps the names of the agents voiced there, and of
+   * those whose messages it let go, a channel past those 32 or a message
+   * past its latest 32: until its next interruption, a message kept there
+   * is edited, and its author told, only when no other agent's messages
+   * were let go there. `token` should be `${VAR}`-substituted from .env,
+   * never literal.
    */
   ttsRelay?: RecipeTtsRelay;
 
@@ -1235,8 +1379,12 @@ export interface RecipeModules {
    * bundles subscribe + a per-channel ambient debounce gate rule + pinning
    * subscription-gc off; mentions mode reverses all three. On by default when
    * the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
-   * `false` disables. `serverId` names the MCPL server that owns subscriptions
-   * (default `discord`); `toolPrefix` is deprecated and read by nothing.
+   * `false` disables. Each call's MCPL server is the prefix of its channel
+   * id (`zulip:backend` → `zulip`), which must name a server this host knows;
+   * an id without one, or with a `*` in it, is refused. `serverId` is
+   * deprecated and ignored (a startup line says so); it used to name the one
+   * server for every call.
+   * `toolPrefix` is deprecated and read by nothing.
    * `defaultDebounceMs` sets the debounced-mode quiet window (180000 if
    * omitted).
    */
@@ -1271,6 +1419,21 @@ export interface RecipeModules {
    * the agent stays down after its own request.
    */
   selfRestart?: boolean | { cooldownMinutes?: number };
+  /** The host's own setup agent's tools, which `connectome setup` starts. */
+  setup?: boolean;
+
+  /**
+   * The agent's own update (`lifecycle--update`). Off by default. The agent
+   * can check for, install and restart onto a release of its own install,
+   * as `/update` does; going back stays the person's. A restart begins at the
+   * host's first quiet moment, as `QUIET_MOMENT` in `src/web/update-text.ts`
+   * says, though no sooner than a minute after a try that found something
+   * still going, and is armed only on a host whose environment at its start holds
+   * `CONNECTOME_SUPERVISED=1`, which the service written by `connectome service
+   * install` sets only if that service starts the host again when it exits
+   * with 75 and when it exits with 1.
+   */
+  selfUpdate?: boolean;
 }
 
 export interface RecipeWebUi {
@@ -1321,10 +1484,11 @@ export interface RecipeTtsRelay {
   userId?: string;
   /** Display name stamped on stream events. Defaults to the agent's name. */
   username?: string;
-  /** MCPL server id owning `edit_message` for interruption trims. Default 'discord'. */
+  /** MCPL server whose channels the relay voices, and which owns `edit_message` for interruption trims. Default 'discord'.
+   *  A message published on another server isn't voiced; the host logs a line naming that server at the first such message from it. */
   editServerId?: string;
   reconnectIntervalMs?: number;
-  /** Drop a context note when an interruption trims a posted message. Default true. */
+  /** Whether an interruption puts a note in the context of the agent voiced, when one agent can be named, saying what was voiced and whether the posted message was trimmed. Default true. */
   notifyOnInterruption?: boolean;
 }
 
@@ -1484,10 +1648,12 @@ export type RecipeForkReader = Omit<ForkReaderConfig, 'strategyFactory' | 'frami
 export type RecipeSpeech = NonNullable<FrameworkConfig['speech']>;
 
 /**
- * Tune-out without a reader (agent-framework FrameworkConfig.tuneOut): offer
- * `tune_out` / `focus` to the resident when no `subconscious` is configured.
- * A hold is then silent — nothing summarizes or wakes the resident; the
- * backlog is released on cancel or when the duration ends.
+ * Tune-out settings (agent-framework FrameworkConfig.tuneOut): `announce`
+ * only. The resident is offered `tune_out` / `focus` only with a reader
+ * (`subconscious`); there is no silent hold. `enabled`, which offered them
+ * without a reader, was removed in agent-framework 0.33.0: validateRecipe
+ * refuses `enabled: true`, as the framework's `create` does, and lets
+ * `enabled: false` load, which the framework accepts and ignores.
  */
 export type RecipeTuneOut = NonNullable<FrameworkConfig['tuneOut']>;
 
@@ -1587,7 +1753,7 @@ export interface Recipe {
   subconscious?: RecipeSubconscious;
   /** Where plain prose lands when nothing names a destination (agent-framework `speech`). */
   speech?: RecipeSpeech;
-  /** Offer `tune_out` without a reader (agent-framework `tuneOut`). */
+  /** Tune-out settings (agent-framework `tuneOut`): `announce`. `tune_out` itself comes with `subconscious`. */
   tuneOut?: RecipeTuneOut;
   /** Dendrite lifecycle options (agent-framework `dendrite`). The host passes no
    *  `derivationNotice`, so an agent isn't told of a derivation and
@@ -1620,6 +1786,17 @@ export interface Recipe {
    * the "Inference bounds" section of the README its package ships gives them.
    */
   inferenceBounds?: FrameworkConfig['inferenceBounds'];
+  /**
+   * The residence's inline cap for tool results, in characters, passed to
+   * agent-framework as FrameworkConfig.toolResultInlineMaxChars. Left out,
+   * agent-framework's default stands. A resident's own `agent_settings` value
+   * `tool_result_inline_max_chars` wins over it for that agent. A value that
+   * isn't a finite number of at least 1000, agent-framework's own minimum,
+   * stops the load, naming it. The default, what becomes of a result over the
+   * cap and how the cap in effect is reached are in that option's doc in
+   * agent-framework's types.
+   */
+  toolResultInlineMaxChars?: number;
 }
 
 export type RecipeProvider = NonNullable<RecipeAgent['provider']>;
@@ -1649,68 +1826,9 @@ export const DEFAULT_RECIPE: Recipe = {
   },
 };
 
-const ENV_REFERENCE = String.raw`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`;
-
 export function namesEnvReference(text: string): boolean {
   return new RegExp(ENV_REFERENCE).test(text);
 }
-
-/**
- * Walk a parsed-JSON value tree and substitute `${VAR_NAME}` patterns in
- * string values with `process.env.VAR_NAME`. Applied at recipe-load time,
- * before schema validation, so secrets can live in `.env` (gitignored)
- * while the recipe itself stays commit-safe.
- *
- * Patterns:
- *   - `${FOO}` — required.  Throws if FOO is unset (empty string OK).
- *   - `${FOO:-default}` — optional.  Uses FOO when set and non-empty,
- *     otherwise the literal default text.  Default may be empty
- *     (`${FOO:-}`) to mean "use FOO or just empty string, never throw".
- *   - VAR name: `[A-Za-z_][A-Za-z0-9_]*`.
- *   - Default text: any chars except `}`.  No nested `${...}` parsing
- *     and no escape syntax — keep recipes JSON-friendly.
- *   - Multiple occurrences in a single string are all substituted.
- *   - Non-string values (numbers, booleans, nulls) pass through unchanged.
- *   - Arrays and objects are walked recursively.
- *
- * No escape syntax yet — a literal `${...}` in recipe JSON is not a
- * supported case.
- */
-export function substituteEnvVars(value: unknown, source: string): unknown {
-  if (typeof value === 'string') {
-    return value.replace(
-      new RegExp(ENV_REFERENCE, 'g'),
-      (_match, name: string, defaultValue: string | undefined) => {
-        const v = process.env[name];
-        if (defaultValue !== undefined) {
-          return v !== undefined && v !== '' ? v : defaultValue;
-        }
-        if (v === undefined) {
-          throw new Error(
-            `Recipe "${source}" references environment variable \${${name}} which is not set. ` +
-            `Add it to your .env file, supply a default with \${${name}:-...}, ` +
-            `or delete the section of the recipe that uses it ` +
-            `(e.g. remove the mcpServers entry for a source you don't have).`,
-          );
-        }
-        return v;
-      },
-    );
-  }
-  if (Array.isArray(value)) {
-    return value.map((v) => substituteEnvVars(v, source));
-  }
-  if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = substituteEnvVars(v, source);
-    }
-    return out;
-  }
-  return value;
-}
-
-type RecipeSourceBase = { kind: 'file'; dir: string } | { kind: 'url'; base: string };
 
 export interface LoadedRecipe {
   recipe: Recipe;
@@ -1722,43 +1840,22 @@ export async function loadRecipe(source: string): Promise<Recipe> {
 }
 
 export async function loadRecipeDetailed(source: string, options: { fetchSystemPrompt?: boolean } = {}): Promise<LoadedRecipe> {
-  let raw: unknown;
-  let sourceBase: RecipeSourceBase;
+  return loadRecipeDocument(await readRecipeDocument(source), source, options);
+}
 
-  if (source.startsWith('http://') || source.startsWith('https://')) {
-    const res = await fetch(source);
-    if (!res.ok) throw new Error(`Failed to fetch recipe from ${source}: ${res.status} ${res.statusText}`);
-    try {
-      raw = await res.json();
-    } catch (error) {
-      if (error instanceof SyntaxError) throw new SyntaxError(`the recipe at ${source} isn't valid JSON`);
-      throw error;
-    }
-    sourceBase = { kind: 'url', base: source };
-  } else {
-    const path = resolve(source);
-    if (!existsSync(path)) throw new Error(`Recipe file not found: ${path}`);
-    const text = readFileSync(path, 'utf-8');
-    // A response's json() already skips a leading byte order mark, as
-    // UTF-8 decoding does; a file read as text keeps it.
-    try {
-      raw = parseHandWrittenJson(text);
-    } catch (error) {
-      // The parser's message can quote the file's text, and a recipe can
-      // hold a key inline, so it isn't passed on.
-      if (error instanceof SyntaxError) throw new SyntaxError(`${path} isn't valid JSON`);
-      throw error;
-    }
-    sourceBase = { kind: 'file', dir: dirname(path) };
-  }
+
+export async function loadRecipeDocument(document: RecipeDocument, source: string,
+  options: { fetchSystemPrompt?: boolean; env?: Record<string, string | undefined> } = {}): Promise<LoadedRecipe> {
+  let raw = document.raw;
+  const sourceBase = document.sourceBase;
 
   const persistable = structuredClone(raw) as Record<string, unknown>;
 
-  raw = substituteEnvVars(raw, source);
+  raw = substituteEnvVars(raw, source, options.env);
   const recipe = validateRecipe(raw);
   resolveChildRecipePaths(recipe, sourceBase);
   resolveExtensionPaths(recipe, sourceBase);
-  const resolved = options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe));
+  const resolved = options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe), options.env);
   copyResolvedPathsIntoRaw(persistable, resolved);
   return { recipe: resolved, persistable };
 }
@@ -1844,8 +1941,8 @@ export function runningFit(recipe: Recipe, envModel: string | undefined): Recipe
   };
 }
 
-function refuseUnfit(recipe: Recipe): Recipe {
-  const fit = runningFit(recipe, process.env.MODEL || undefined);
+function refuseUnfit(recipe: Recipe, env: Record<string, string | undefined> = process.env): Recipe {
+  const fit = runningFit(recipe, env.MODEL || undefined);
   if (fit.checked && !fit.fits) throw new Error(fit.refusal);
   return recipe;
 }
@@ -1922,6 +2019,17 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
   ) {
     throw new Error('Recipe agent.strategy.kvUnified.policy.ageBandSteps must be an integer from 0 to 64 when present.');
   }
+  // What a change of layout costs (context-manager ≥ 0.25.3), each optional.
+  const notNegative = (value: unknown): boolean => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  if (policy.rewriteLambda !== undefined && !notNegative(policy.rewriteLambda)) {
+    throw new Error('Recipe agent.strategy.kvUnified.policy.rewriteLambda must be a finite number of 0 or more when present.');
+  }
+  if (config.thinkingLambda !== undefined && !notNegative(config.thinkingLambda)) {
+    throw new Error('Recipe agent.strategy.kvUnified.thinkingLambda must be a finite number of 0 or more when present.');
+  }
+  if (config.thinkingHalfLifeTokens !== undefined && !(notNegative(config.thinkingHalfLifeTokens) && (config.thinkingHalfLifeTokens as number) > 0)) {
+    throw new Error('Recipe agent.strategy.kvUnified.thinkingHalfLifeTokens must be a finite number above 0 when present.');
+  }
   for (const key of [
     'tokenBucketSize', 'continuityBucketSize', 'fidelityBucketSize', 'labelCeiling',
   ] as const) {
@@ -1962,14 +2070,14 @@ function validateKvUnifiedConfig(strategy: Record<string, unknown>): void {
 const RECIPE_KEYS = [
   'name', 'description', 'version', 'agent', 'mcpServers', 'modules', 'extensions',
   'sessionNaming', 'codeExecution', 'conversations', 'subconscious', 'speech', 'tuneOut', 'dendrite', 'toolClassOverrides',
-  'maintenanceIntervalMs', 'inferenceBounds',
+  'maintenanceIntervalMs', 'inferenceBounds', 'toolResultInlineMaxChars',
 ] as const;
 const RECIPE_AGENT_KEYS = [
   'allowedTools', 'toolPresentation',
   'name', 'model', 'timezone', 'provider', 'baseUrl', 'formatter', 'retry', 'prefillUserMessage',
   'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
-  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'proseRouting',
-  'toolWrapperProseGuard', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
+  'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'sameRoundSkipReplyTextPolicy', 'proseRouting', 'proseLock',
+  'toolWrapperProseGuard', 'primaryWaitsForAuxiliary', 'sendSilencing', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
   'refusalHandling', 'clock',
 ] as const;
 export const DEFAULT_RECIPE_CLOCK: ClockConfig = Object.freeze({ intervalMinutes: 10 }) as ClockConfig;
@@ -2020,18 +2128,21 @@ const RECIPE_AGENT_MOCK_KEYS = [
 const RECIPE_MODULE_KEYS = [
   'subagents', 'lessons', 'retrieval', 'wake', 'workspace', 'instructions', 'activity', 'notices',
   'mcplAdmin', 'history', 'identity', 'fleet', 'webui', 'ttsRelay', 'subscriptionGc',
-  'channelMode', 'selfRestart', 'heartbeat',
+  'channelMode', 'selfRestart', 'heartbeat', 'setup', 'fetch', 'selfUpdate',
 ] as const;
+const RECIPE_FETCH_KEYS = ['model', 'local', 'allowPrivateNetwork', 'maxBytes', 'images'] as const;
+/** The most a recipe can ask for: past this, little HTML would convert within its memory limit anyway. */
+const MAX_FETCH_MAX_BYTES = 64 * 1024 * 1024;
 const RECIPE_KV_UNIFIED_KEYS = [
   'policy', 'tokenBucketSize', 'continuityBucketSize', 'fidelityBucketSize', 'labelCeiling',
-  'adoptEpsilon', 'treeifyNonContiguousSummaries', 'preserveGapBearingSummaries',
+  'adoptEpsilon', 'thinkingLambda', 'thinkingHalfLifeTokens', 'treeifyNonContiguousSummaries', 'preserveGapBearingSummaries',
   'hysteresisCertificate', 'engine', 'latentDemandMode',
 ] as const;
 const RECIPE_KV_UNIFIED_POLICY_KEYS = [
   'alpha', 'budgetLowRatio', 'budgetHighRatio', 'budgetUnderLambda', 'budgetOverLambda',
   'cacheLambda', 'cacheScale', 'cacheReadPrice', 'cacheWritePrice', 'continuityLambda',
   'continuityScale', 'continuityRecencyHalfLifeTokens', 'continuityRecencyFloor',
-  'continuityStableHalfLife', 'continuityStableFloor', 'ageBandSteps',
+  'continuityStableHalfLife', 'continuityStableFloor', 'ageBandSteps', 'rewriteLambda',
 ] as const;
 type ListsExactly<K extends string, L extends readonly string[]> =
   [Exclude<K, L[number]>] extends [never] ? ([Exclude<L[number], K>] extends [never] ? true : false) : false;
@@ -2122,6 +2233,10 @@ const MOUNT_KEY_INSTEAD: Record<string, string> = {
 
 const RETIRED_RECIPE_KEYS: Record<string, string> = {
   'modules.files': 'modules.workspace',
+  'agent.strategy.identityReminderSilent':
+    'a sentence asking for silence at the end of each nonblank reminder the recipe sets, ' +
+    'agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
+    'if it was true; if it was false, nothing',
 };
 
 function editDistance(a: string, b: string): number {
@@ -2173,9 +2288,56 @@ export function unknownRecipeKeys(raw: unknown): string[] {
     if (isObject(kvUnified)) {
       check('agent.strategy.kvUnified.policy.', kvUnified.policy, RECIPE_KV_UNIFIED_POLICY_KEYS);
     }
+    const strategy = obj.agent.strategy;
+    if (isObject(strategy) && isBuiltinStrategyType(String(strategy.type ?? 'autobiographical'))) {
+      for (const key of Object.keys(strategy)) {
+        const path = `agent.strategy.${key}`;
+        if (Object.hasOwn(RETIRED_RECIPE_KEYS, path)) found.push(`${path} (replaced by ${RETIRED_RECIPE_KEYS[path]})`);
+      }
+    }
   }
   check('modules.', obj.modules, RECIPE_MODULE_KEYS);
+  if (isObject(obj.modules)) check('modules.fetch.', obj.modules.fetch, RECIPE_FETCH_KEYS);
   return found;
+}
+
+/**
+ * `modules.fetch`: true, false, or an object whose values are checked, since
+ * a wrong one would otherwise surface only on the agent's first call. Its
+ * `local` reads through the workspace, so it can't stand with the workspace off.
+ */
+function validateRecipeFetch(fetch: unknown, workspace: unknown, provider: unknown): void {
+  if (fetch === undefined || fetch === false) return;
+  if (fetch !== true && (fetch === null || typeof fetch !== 'object' || Array.isArray(fetch))) {
+    throw new Error(`Recipe modules.fetch is ${JSON.stringify(fetch)}; it must be a boolean or object.`);
+  }
+  const { model, local, allowPrivateNetwork, maxBytes, images } = (fetch === true ? {} : fetch) as Record<string, unknown>;
+  if (images !== undefined && typeof images !== 'boolean') {
+    throw new Error(`Recipe modules.fetch.images is ${JSON.stringify(images)}; it must be a boolean.`);
+  }
+  if (model !== undefined && (typeof model !== 'string' || !model.trim())) {
+    throw new Error(`Recipe modules.fetch.model is ${JSON.stringify(model)}; it must be a non-empty string.`);
+  }
+  if (local !== undefined && typeof local !== 'boolean') {
+    throw new Error(`Recipe modules.fetch.local is ${JSON.stringify(local)}; it must be a boolean.`);
+  }
+  if (allowPrivateNetwork !== undefined && typeof allowPrivateNetwork !== 'boolean') {
+    throw new Error(`Recipe modules.fetch.allowPrivateNetwork is ${JSON.stringify(allowPrivateNetwork)}; it must be a boolean.`);
+  }
+  if (maxBytes !== undefined && !(Number.isSafeInteger(maxBytes) && (maxBytes as number) > 0 && (maxBytes as number) <= MAX_FETCH_MAX_BYTES)) {
+    throw new Error(`Recipe modules.fetch.maxBytes is ${JSON.stringify(maxBytes)}; it must be a whole number from 1 to ${MAX_FETCH_MAX_BYTES}.`);
+  }
+  if (local === true && workspace === false) {
+    throw new Error('Recipe modules.fetch.local reads files through the workspace, so it needs modules.workspace on.');
+  }
+  // The model that answers `prompt` defaults to a Claude id that only the
+  // Anthropic transport takes as written (the mock answers to any).
+  if (model === undefined && provider !== undefined && provider !== 'anthropic' && provider !== 'mock') {
+    throw new Error(
+      `Recipe turns modules.fetch on with agent.provider ${JSON.stringify(provider)} and no modules.fetch.model: `
+      + 'the model that answers a fetch prompt defaults to a Claude id this provider doesn\'t take. Set modules.fetch.model to one it serves.',
+    );
+  }
 }
 
 /**
@@ -2311,13 +2473,48 @@ export function validateRecipe(raw: unknown): Recipe {
     agent.proseRouting !== 'locus' &&
     agent.proseRouting !== 'explicit' &&
     agent.proseRouting !== 'hybrid' &&
-    agent.proseRouting !== 'disabled'
+    agent.proseRouting !== 'disabled' &&
+    agent.proseRouting !== 'locked'
   ) {
-    throw new Error(`Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', or 'disabled', got ${JSON.stringify(agent.proseRouting)}.`);
+    throw new Error(`Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', 'disabled', or 'locked', got ${JSON.stringify(agent.proseRouting)}.`);
+  }
+
+  if (agent.proseLock !== undefined && (typeof agent.proseLock !== 'string' || !agent.proseLock.trim())) {
+    throw new Error(
+      `Recipe agent.proseLock must be "#channel", "@person", a channel id or "drafts", got ${JSON.stringify(agent.proseLock)}.`,
+    );
+  }
+  // Only locked routing reads it: under any other mode the lock would never
+  // apply, and nothing would say so.
+  if (agent.proseLock !== undefined && agent.proseRouting !== 'locked') {
+    throw new Error(
+      `Recipe agent.proseLock requires agent.proseRouting "locked", got ${agent.proseRouting === undefined ? 'no proseRouting (locus)' : JSON.stringify(agent.proseRouting)}.`,
+    );
+  }
+  if (
+    agent.proseRouting === 'locked' &&
+    agent.proseLock === undefined &&
+    Array.isArray(agent.allowedTools) &&
+    !agent.allowedTools.includes('prose_locus')
+  ) {
+    throw new Error(
+      'Recipe agent.proseRouting "locked" without agent.proseLock needs agent.allowedTools to name "prose_locus": ' +
+        "otherwise the agent can't move its prose lock, so its plain text stays held as drafts, or where it chose before, on every turn. " +
+        'Add "prose_locus" to allowedTools (and "drafts", to resend drafts), or, for an agent that hasn\'t chosen yet, set agent.proseLock ' +
+        '("drafts" to hold plain text on purpose); a choice it has made stays until prose_locus moves it.',
+    );
   }
 
   if (agent.toolWrapperProseGuard !== undefined && typeof agent.toolWrapperProseGuard !== 'boolean') {
     throw new Error(`Recipe agent.toolWrapperProseGuard must be a boolean, got ${JSON.stringify(agent.toolWrapperProseGuard)}.`);
+  }
+
+  if (agent.primaryWaitsForAuxiliary !== undefined && typeof agent.primaryWaitsForAuxiliary !== 'boolean') {
+    throw new Error(`Recipe agent.primaryWaitsForAuxiliary must be a boolean, got ${JSON.stringify(agent.primaryWaitsForAuxiliary)}.`);
+  }
+
+  if (agent.sendSilencing !== undefined && typeof agent.sendSilencing !== 'boolean') {
+    throw new Error(`Recipe agent.sendSilencing must be a boolean, got ${JSON.stringify(agent.sendSilencing)}.`);
   }
 
   if (agent.autoContinue !== undefined && typeof agent.autoContinue !== 'boolean') {
@@ -2371,8 +2568,8 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error('Recipe agent.responses.serviceTier must be a non-empty string.');
     }
     if (responses.compactThreshold !== undefined &&
-        (typeof responses.compactThreshold !== 'number' || responses.compactThreshold <= 0)) {
-      throw new Error('Recipe agent.responses.compactThreshold must be a positive number.');
+        (typeof responses.compactThreshold !== 'number' || !Number.isFinite(responses.compactThreshold) || responses.compactThreshold <= 0)) {
+      throw new Error(`Recipe agent.responses.compactThreshold must be a positive number (finite), got ${shown(responses.compactThreshold)}.`);
     }
     const serviceTiers = ['auto', 'default', 'flex', 'priority'];
     if (responses.serviceTier !== undefined && !serviceTiers.includes(String(responses.serviceTier))) {
@@ -2422,8 +2619,8 @@ export function validateRecipe(raw: unknown): Recipe {
     }
   }
 
-  if (agent.maxStreamTokens !== undefined && (typeof agent.maxStreamTokens !== 'number' || agent.maxStreamTokens <= 0)) {
-    throw new Error('Recipe agent.maxStreamTokens must be a positive number.');
+  if (agent.maxStreamTokens !== undefined && (typeof agent.maxStreamTokens !== 'number' || !Number.isFinite(agent.maxStreamTokens) || agent.maxStreamTokens <= 0)) {
+    throw new Error(`Recipe agent.maxStreamTokens must be a positive number (finite), got ${shown(agent.maxStreamTokens)}.`);
   }
 
   // Anthropic answers a TTL it doesn't know ("1hr", "60m") with a 400 at the
@@ -2487,7 +2684,7 @@ export function validateRecipe(raw: unknown): Recipe {
   } else if (agent.baseUrl !== undefined) {
     throw new Error(
       `Recipe agent.baseUrl only applies to agent.provider 'openai-compatible' (got provider ${JSON.stringify(agent.provider ?? 'anthropic')}); ` +
-      'other providers take their endpoint from ANTHROPIC_BASE_URL / OPENAI_BASE_URL / BEDROCK_BASE_URL.',
+      'other providers take their endpoint from ANTHROPIC_BASE_URL / OPENAI_BASE_URL / BEDROCK_BASE_URL / CODEX_BASE_URL / OPENROUTER_BASE_URL.',
     );
   }
 
@@ -2504,7 +2701,7 @@ export function validateRecipe(raw: unknown): Recipe {
     };
     if (refreshAfterMinutes !== undefined) {
       if (typeof refreshAfterMinutes !== 'number' || !(refreshAfterMinutes > 0)) {
-        throw new Error(`Recipe agent.cacheKeepalive.refreshAfterMinutes must be a positive number, got ${JSON.stringify(refreshAfterMinutes)}.`);
+        throw new Error(`Recipe agent.cacheKeepalive.refreshAfterMinutes must be a positive number, got ${shown(refreshAfterMinutes)}.`);
       }
       const ttlMinutes = agent.cacheTtl === '1h' ? 60 : 5;
       if (refreshAfterMinutes >= ttlMinutes) {
@@ -2514,8 +2711,8 @@ export function validateRecipe(raw: unknown): Recipe {
         );
       }
     }
-    if (maxIdleHours !== undefined && (typeof maxIdleHours !== 'number' || !(maxIdleHours > 0))) {
-      throw new Error(`Recipe agent.cacheKeepalive.maxIdleHours must be a positive number, got ${JSON.stringify(maxIdleHours)}.`);
+    if (maxIdleHours !== undefined && (typeof maxIdleHours !== 'number' || !Number.isFinite(maxIdleHours) || !(maxIdleHours > 0))) {
+      throw new Error(`Recipe agent.cacheKeepalive.maxIdleHours must be a positive number (finite), got ${shown(maxIdleHours)}.`);
     }
   }
 
@@ -2535,6 +2732,16 @@ export function validateRecipe(raw: unknown): Recipe {
     );
   }
 
+  if (
+    agent.sameRoundSkipReplyTextPolicy !== undefined &&
+    agent.sameRoundSkipReplyTextPolicy !== 'private' &&
+    agent.sameRoundSkipReplyTextPolicy !== 'ask'
+  ) {
+    throw new Error(
+      `Recipe agent.sameRoundSkipReplyTextPolicy must be 'private' or 'ask', got ${JSON.stringify(agent.sameRoundSkipReplyTextPolicy)}.`,
+    );
+  }
+
   // Anthropic refuses, with a 400, a thinking budget that isn't below max_tokens.
   if (agent.thinking !== undefined) {
     if (!agent.thinking || typeof agent.thinking !== 'object' || Array.isArray(agent.thinking)) {
@@ -2544,8 +2751,8 @@ export function validateRecipe(raw: unknown): Recipe {
     if (typeof thinking.enabled !== 'boolean') {
       throw new Error('Recipe agent.thinking.enabled must be a boolean.');
     }
-    if (thinking.budgetTokens !== undefined && (typeof thinking.budgetTokens !== 'number' || thinking.budgetTokens <= 0)) {
-      throw new Error('Recipe agent.thinking.budgetTokens must be a positive number.');
+    if (thinking.budgetTokens !== undefined && (typeof thinking.budgetTokens !== 'number' || !Number.isFinite(thinking.budgetTokens) || thinking.budgetTokens <= 0)) {
+      throw new Error(`Recipe agent.thinking.budgetTokens must be a positive number (finite), got ${shown(thinking.budgetTokens)}.`);
     }
     if (thinking.type !== undefined && thinking.type !== 'enabled' && thinking.type !== 'adaptive') {
       throw new Error('Recipe agent.thinking.type must be "enabled" or "adaptive".');
@@ -2675,6 +2882,7 @@ export function validateRecipe(raw: unknown): Recipe {
       'compressionMergeSourceOnlyFallback',
       'compressionSplitFallback',
       'compressionSplitPlaceholder',
+      'carryStrandedSummaries',
       'recoverLiteralThinkingWrappedCompression',
     ] as const) {
       if (strategy[key] !== undefined && typeof strategy[key] !== 'boolean') {
@@ -2713,6 +2921,12 @@ export function validateRecipe(raw: unknown): Recipe {
       }
       const unknown = Object.keys(hoist).filter((key) => !['intoTool', 'fromTools', 'field', 'result', 'minChars'].includes(key));
       if (unknown.length > 0) throw new Error(`${where} has unknown key(s): ${unknown.join(', ')}.`);
+    }
+    if (
+      strategy.compressionFallbackModel !== undefined
+      && (typeof strategy.compressionFallbackModel !== 'string' || !strategy.compressionFallbackModel)
+    ) {
+      throw new Error('Recipe agent.strategy.compressionFallbackModel must be a non-empty string.');
     }
     for (const key of ['compressionSplitMaxCallsPerChunk', 'compressionSplitMaxCallsPer10Min'] as const) {
       const value = strategy[key];
@@ -3153,6 +3367,11 @@ export function validateRecipe(raw: unknown): Recipe {
     // use as its default, so a typo would load as no setting at all.
     validateRecipeReplyJudge(mods.wake);
     validateRecipeHeartbeat(mods.heartbeat, (raw as { mcpServers?: unknown }).mcpServers);
+    validateRecipeFetch(
+      mods.fetch,
+      mods.workspace,
+      (raw as { agent?: { provider?: unknown } }).agent?.provider,
+    );
 
     const retrieval = mods.retrieval;
     if (retrieval !== undefined && typeof retrieval !== 'boolean') {
@@ -3252,6 +3471,14 @@ export function validateRecipe(raw: unknown): Recipe {
       }
     }
 
+    if (mods.setup !== undefined && typeof mods.setup !== 'boolean') {
+      throw new Error('modules.setup must be true or false');
+    }
+
+    if (mods.selfUpdate !== undefined && typeof mods.selfUpdate !== 'boolean') {
+      throw new Error('modules.selfUpdate must be true or false');
+    }
+
     if (mods.ttsRelay !== undefined && mods.ttsRelay !== false) {
       if (typeof mods.ttsRelay !== 'object' || mods.ttsRelay === null) {
         throw new Error('modules.ttsRelay must be an object ({ url, token, ... })');
@@ -3262,6 +3489,9 @@ export function validateRecipe(raw: unknown): Recipe {
       }
       if (typeof tr.token !== 'string' || !tr.token) {
         throw new Error('modules.ttsRelay.token must be a non-empty string (use ${VAR} substitution)');
+      }
+      if (tr.editServerId !== undefined && (typeof tr.editServerId !== 'string' || !tr.editServerId)) {
+        throw new Error("modules.ttsRelay.editServerId must be a non-empty string, the key of the server the relay voices (leave it out for 'discord')");
       }
     }
 
@@ -3314,10 +3544,13 @@ export function validateRecipe(raw: unknown): Recipe {
           throw new Error('fleet.defaultSubscription must be an array of strings');
         }
       }
-      for (const k of ['socketWaitTimeoutMs', 'readyTimeoutMs', 'gracefulShutdownMs', 'sigtermEscalationMs'] as const) {
-        if (fleet[k] !== undefined && (typeof fleet[k] !== 'number' || (fleet[k] as number) < 0)) {
-          throw new Error(`fleet.${k} must be a non-negative number`);
-        }
+      const socketWait = fleet.socketWaitTimeoutMs;
+      if (socketWait !== undefined && (typeof socketWait !== 'number' || !Number.isFinite(socketWait) || socketWait < 0)) {
+        throw new Error(`fleet.socketWaitTimeoutMs must be a non-negative number (finite), got ${shown(socketWait)}`);
+      }
+      for (const k of ['readyTimeoutMs', 'gracefulShutdownMs', 'sigtermEscalationMs'] as const) {
+        const must = fleet[k] === undefined ? null : timerMs(0)(fleet[k]);
+        if (must) throw new Error(`fleet.${k} must be ${must}, got ${shown(fleet[k])}`);
       }
     }
   }
@@ -3355,6 +3588,14 @@ export function validateRecipe(raw: unknown): Recipe {
   }
 
   if (obj.inferenceBounds !== undefined) validateInferenceBounds(obj.inferenceBounds);
+
+  if (obj.toolResultInlineMaxChars !== undefined) {
+    const cap = obj.toolResultInlineMaxChars;
+    if (!Number.isFinite(cap) || (cap as number) < 1000) {
+      const shown = typeof cap === 'number' ? String(cap) : JSON.stringify(cap);
+      throw new Error(`Recipe toolResultInlineMaxChars is ${shown}; it must be a finite number of at least 1000.`);
+    }
+  }
 
   if (obj.subconscious !== undefined) {
     if (!obj.subconscious || typeof obj.subconscious !== 'object' || Array.isArray(obj.subconscious)) {
@@ -3449,15 +3690,26 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error('Recipe tuneOut must be an object.');
     }
     const tuneOut = obj.tuneOut as Record<string, unknown>;
+    // `enabled` is still read, only to refuse true: agent-framework 0.33.0
+    // removed it (agent-framework#959) and refuses `enabled: true` at
+    // create, so a recipe stating it fails here instead of loading and
+    // exiting at create. `false` the framework still accepts and ignores,
+    // so it loads here too.
     for (const key of Object.keys(tuneOut)) {
       if (key !== 'enabled' && key !== 'announce') {
-        throw new Error(`Recipe tuneOut has unknown field ${JSON.stringify(key)} (expected: enabled, announce).`);
+        throw new Error(`Recipe tuneOut has unknown field ${JSON.stringify(key)} (expected: announce).`);
       }
     }
     for (const key of ['enabled', 'announce'] as const) {
       if (tuneOut[key] !== undefined && typeof tuneOut[key] !== 'boolean') {
         throw new Error(`Recipe tuneOut.${key} must be a boolean.`);
       }
+    }
+    if (tuneOut.enabled === true) {
+      throw new Error(
+        'Recipe tuneOut.enabled was removed in agent-framework 0.33.0 (tune-out without a reader): ' +
+          'remove tuneOut.enabled; to keep tune_out, configure a subconscious as well.',
+      );
     }
   }
 
@@ -3532,6 +3784,13 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error(
         'Recipe conversations.agentPrefix must be a non-empty string of [A-Za-z0-9_-] ' +
         '(it names fork agents and their Chronicle namespaces).',
+      );
+    }
+    if (agent.proseRouting === 'locked') {
+      throw new Error(
+        'Recipe agent.proseRouting "locked" can\'t be combined with conversations: the forks that answer each channel ' +
+          'speak in their home channel, as in locus mode, so the lock would not govern their replies. ' +
+          'Remove conversations, or choose another proseRouting, removing agent.proseLock if it\'s set, since only "locked" takes it.',
       );
     }
   }

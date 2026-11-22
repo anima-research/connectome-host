@@ -89,7 +89,9 @@ describe('FleetModule subscribe union e2e', () => {
 
     const lastSet = readFileSync(logPath, 'utf-8').split('\n').filter(l => l.includes('subscription set: ')).at(-1)!;
     const applied = lastSet.slice(lastSet.indexOf('subscription set: ') + 'subscription set: '.length).split(', ');
-    const expected = [...new Set([...narrowSubscription, ...REDUCER_REQUIRED_EVENTS, 'usage:updated'])];
+    // The host's own: its usage, and the window moves at which the Web UI
+    // reads the child's panels again (#485 bot review 5, finding 18).
+    const expected = [...new Set([...narrowSubscription, ...REDUCER_REQUIRED_EVENTS, 'usage:updated', 'window:undone', 'presentation:retracted'])];
     expect(applied.sort()).toEqual(expected.sort());
   });
 });

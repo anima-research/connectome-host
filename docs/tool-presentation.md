@@ -1,6 +1,6 @@
 # Tool-presentation configuration
 
-Uses agent-framework's tool-presentation API (agent-framework #162), which every agent-framework this host can install (^0.29.0) carries.
+Uses agent-framework's tool-presentation API (agent-framework #162), which every agent-framework this host can install carries.
 
 ```json
 {

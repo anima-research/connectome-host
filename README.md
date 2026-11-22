@@ -18,11 +18,25 @@ else. It started as a knowledge-mining TUI, and those recipes still ship
 
 Built on the Connectome stack: [@animalabs/agent-framework](https://github.com/anima-research/agent-framework) + [@animalabs/context-manager](https://github.com/anima-research/context-manager) + [@animalabs/chronicle](https://github.com/anima-research/chronicle) + [@animalabs/membrane](https://github.com/anima-research/membrane).
 
+## A resident, from one line
+
+Setup needs Bun 1.4.4 or later and Node 22.12.0 or later. `curl -fsSL https://bun.sh/install | bash` installs Bun. On the machine where the resident will live, run:
+
+```bash
+bunx @animalabs/connectome-host setup discord
+```
+
+Setup puts the resident in the directory that you run it in, if that directory is empty or is already the resident's. Otherwise it puts the resident in `~/resident`. It says which directory before it asks anything. If `~/resident` holds other files and isn't the resident's either, setup stops and says so.
+
+If `bunx` doesn't have the package yet, it first downloads the package and what it depends on, and shows its own progress. This comes before setup says anything.
+
+From there, the host's own agent sets the resident up. It asks you only what only you can answer. Afterwards, the install's own `connectome` command looks after the resident. In the resident's directory, the command is `./connectome-host/connectome`. Once its directory comes first on your PATH, it is plain `connectome`. With nothing after it, the command says how the install is. Type the package's whole name, `bunx @animalabs/connectome-host`. Never type `bunx connectome`, which is another package on npm.
+
 ## What people run on it
 
 | Use | Start here |
 |---|---|
-| **A resident** — a persistent agent on Discord (or other surfaces), headless on a VPS, with autobiographical memory | [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md), [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md) |
+| **A resident** — a persistent agent on Discord (or other surfaces), headless on a VPS, with autobiographical memory | `bunx @animalabs/connectome-host setup discord` (above), which hands over to the setup agent's guide, [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md); [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md) for running one |
 | **A continued conversation** — bring a claude.ai conversation, a Claude Code session or a Codex rollout across and keep going | [`docs/claudeai-evacuation.md`](docs/claudeai-evacuation.md), [`docs/claude-code-ingest.md`](docs/claude-code-ingest.md), `scripts/import-codex-rollout.ts` |
 | **A fleet** — a conductor agent supervising headless child processes, one agent tree in the TUI and WebUI | [`docs/fleet-protocol.md`](docs/fleet-protocol.md), [`recipes/TRIUMVIRATE-SETUP.md`](recipes/TRIUMVIRATE-SETUP.md) |
 | **Knowledge mining** — miner / reviewer / clerk agents over Zulip and GitLab | [`recipes/SETUP.md`](recipes/SETUP.md), [`docs/LIBRARY-PIPELINE.md`](docs/LIBRARY-PIPELINE.md) |
@@ -33,7 +47,7 @@ the host is put together is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick start
 
-Install a release from npm, in a folder of its own. You need [Bun](https://bun.sh/) 1.4.3+ and credentials for one provider, or none for the offline run. The package carries the rest, the Web UI built.
+Install a release from npm, in a folder of its own. You need [Bun](https://bun.sh/) 1.4.3 or later, the host's own floor. Setup needs 1.4.4. You also need credentials for one provider, or none for the offline run. The package carries the rest, with the Web UI built.
 
 ```bash
 mkdir my-agent && cd my-agent
@@ -165,7 +179,8 @@ number to change. Set a `strategy` block only to tune windows/budgets, to pin
 `foldingStrategy: "kv-stable"` for a resident whose store was built under it,
 or to opt into a different strategy type (`frontdesk`
 for channel-staffing agents, `passthrough` for none) — see
-`docs/AGENT-ONBOARDING.md` for sizing guidance on long-lived agents and
+`docs/DEPLOYMENTS.md`'s "A resident's memory: sizing, folding and repair" for
+sizing guidance on long-lived agents and
 [`docs/AGENT-MEMORY-GUIDE.md`](docs/AGENT-MEMORY-GUIDE.md) for how it works.
 
 `maintenanceIntervalMs`, at the recipe's top level, is how often
@@ -200,6 +215,17 @@ agent-framework's README, which its package ships
 doesn't know, or a value that isn't a finite number above 0, stops the load,
 naming it.
 
+`toolResultInlineMaxChars`, at the recipe's top level, is the residence's
+inline cap for tool results, in characters, passed to agent-framework as its
+`FrameworkConfig.toolResultInlineMaxChars`. Left out, agent-framework's
+default stands. A resident's own `agent_settings` value
+`tool_result_inline_max_chars` wins over it for that agent. The default,
+what becomes of a result over the cap and how the cap in effect is reached
+are in that option's doc in agent-framework's types, which its package ships
+(`node_modules/@animalabs/agent-framework/dist/src/types/framework.d.ts` in
+an install). A value that isn't a finite number of at least 1000,
+agent-framework's own minimum, stops the load, naming it.
+
 ### Prose routing
 
 Plain assistant text (anything the model writes that is not a tool call) is
@@ -207,10 +233,11 @@ delivered by Agent Framework according to `agent.proseRouting`:
 
 | Mode | Behavior |
 |------|----------|
-| `"locus"` (default) | Text is auto-published to the turn's locus: the channel of the delivery that woke the turn, a conversation fork's home channel, or a channel the agent opened during the turn (`speech.locus: "delivery"`, the default). A turn with none of these keeps its text private, unless an open all-except tune-out names a channel (a heartbeat's turn takes no fallback). Text emitted in a tool-call round is delivered live, as narration, unless that round also calls `skip_reply` or an explicit send tool. |
+| `"locus"` (default) | Text is auto-published to the turn's locus: the channel of the delivery that woke the turn, a conversation fork's home channel, or a channel the agent opened during the turn (`speech.locus: "delivery"`, the default). A turn with none of these keeps its text private, unless an open all-except tune-out names a channel (a heartbeat's turn takes no fallback). Text emitted in a tool-call round is delivered live, as narration, unless that round also calls `skip_reply`, or, with `agent.sendSilencing` on (below), an explicit send tool. |
 | `"hybrid"` | Like `locus`, but a leading `>>>destination` envelope routes that segment elsewhere through the authorized channel resolver. |
 | `"explicit"` | Text must start with `>>#channel` / `>>@person` / `>>skip_reply`; unprefixed text is never delivered and bounces to a clipboard for a prefixed resend. |
 | `"disabled"` | Text is never auto-published. The only way anything reaches a channel is an explicit send tool (`send_message`, `channel_publish`, `reply_message`, `send_dm`, ...). Authored text stays in Chronicle and the turn-end `[delivered] nothing` receipt tells the agent how many segments were withheld. |
+| `"locked"` | Text goes to one destination the agent chose, on every turn, heartbeats included. Nothing moves it automatically: not the channel a message comes from, an addressed message, or `channel_open`. The agent's `prose_locus` tool moves it, to a channel or to `"drafts"` (held, posted nowhere unless resent). An `allowedTools` list must name `prose_locus` for the agent to move it, and `drafts` for it to resend drafts; without `agent.proseLock`, a list that doesn't name `prose_locus` is refused at load. The choice survives restarts. Subagents it launches run `"disabled"`. `agent.proseLock` (`"#channel"`, `"@person"`, an id or `"drafts"`) is the destination until the agent first chooses; without it, text is held as drafts, and a `proseLock` that doesn't resolve holds text as drafts and logs why at each turn's start. Once the agent has chosen, editing `agent.proseLock` changes nothing, even when it chose the recipe's own default, and the choice survives leaving `"locked"` and coming back; an operator's `/puppet prose_locus {"to": …}` moves it for later turns, unless an `allowedTools` list leaves `prose_locus` out. Refused beside `conversations`: per-channel conversation forks speak in their own channel, as in `"locus"`. |
 
 From agent-framework 0.29.0, a turn the heartbeat opens (a tick or a reminder) takes no fallback to the channel that last had a message for its plain speech; an explicit send reaches someone from it. agent-framework's notes say where such text goes in each mode.
 
@@ -220,7 +247,10 @@ channel: in `locus` mode a stray one-line narration between two tool calls
 the only mitigation is behavioral (never narrate in tool rounds, always end
 tool-only turns with `skip_reply`). With `"disabled"` the agent replies by
 calling a send tool, and nothing else leaks. Ephemeral subagents inherit the
-caller's mode.
+caller's mode, except that subagents a `"locked"` resident launches run `"disabled"`:
+a subagent has no lock of its own, so it publishes no plain text, and its
+result still reaches its parent (through `subagent--return`, or its final
+text).
 
 `agent.sameRoundThinkTextPolicy` (`"public"` default, or `"private"`) governs
 only text emitted **beside a `think()` call** in the same round. It does not
@@ -231,6 +261,15 @@ if its `allowedTools` doesn't permit both `toolsets--open` and `toolsets--act`)
 and the web UI; `proseRouting` is fixed for the
 process lifetime.
 
+`agent.sendSilencing` (`false` default) decides whether an explicit send
+(`send_message`, `channel_publish`, a `drafts` resend and the like) holds
+back, as drafts, the plain text the agent writes in the same round and in the
+turn's later rounds, where that text would land where the send may have
+posted. With `false`, text beside a send is posted like any other. The agent
+can switch it for itself through `agent_settings` (`send_silencing`), and its
+choice persists across restarts. The setting came in Agent Framework
+0.35.0.
+
 ```json
 {
   "agent": {
@@ -240,9 +279,27 @@ process lifetime.
 }
 ```
 
+`agent.sameRoundSkipReplyTextPolicy` is `"private"` by default, or `"ask"`. It
+covers plain text that the agent writes beside a `skip_reply` call. Under
+`"private"`, that text stays private and isn't held. Under `"ask"`, it is held
+as a draft. With native tools, the framework may refuse the turn's first such
+`skip_reply` once. It refuses only if some of that text would otherwise have
+been posted or bounced. The refusal names the drafts and asks where they
+should go. Calling `skip_reply` again ends the turn and keeps the drafts. With
+the XML formatter, the framework refuses nothing, and it holds all of the
+turn's unsent text when the turn ends. That formatter runs when `formatter` is
+`"anthropic-xml"` and the provider is neither `openai-responses` nor
+`openai-codex`. `"ask"` holds nothing while `proseRouting` is `"disabled"`.
+With native tools and `sameRoundThinkTextPolicy: "private"`, text beside a
+`think` call stays private. The recipe sets the policy's starting value. The
+agent can see and change its own value through `agent_settings`
+(`same_round_skip_reply_text_policy`), and its choice persists across
+restarts. Both features came in Agent Framework 0.35.1, and this host's
+dependency range starts there.
+
 See Agent Framework's `docs/disabled-prose-routing.md`,
-`docs/explicit-prose-routing.md`, and `docs/hybrid-prose-routing.md` for the
-full semantics of each mode.
+`docs/explicit-prose-routing.md`, `docs/hybrid-prose-routing.md`, and
+`docs/locked-prose-routing.md` for the full semantics of each mode.
 
 `agent.autoContinue` (off when omitted) keeps an agent going until it says
 it's done: a turn the model ends itself, with prose or with nothing, is
@@ -258,7 +315,7 @@ channel that last had a message either),
 so keep the cap low. Ephemeral subagents don't inherit it: their streams run
 with it off, and a fork's or spawn's orientation lists `auto-continue` beside
 the parent's. It rests on `AgentConfig.autoContinue` (agent-framework#744),
-which agent-framework 0.29.0, this host's floor, has. See Agent Framework's
+which every agent-framework this host can install has. See Agent Framework's
 `docs/auto-continue.md`.
 
 ```json
@@ -319,15 +376,63 @@ or a fleet child's own, `mcpl-servers.agent.child.json`, in its data directory
 the recipe. Their relative `./` args resolve against the working directory.
 
 Per server, `requestTimeoutMs` raises the framework's JSON-RPC timeout (60 s
-by default) for slow tools. `agent.retry` sets a Membrane retry policy for
-the host's own provider calls, such as compression and retrieval; an agent's
-turns are retried by agent-framework itself.
+by default) for slow tools. For provider failures, see [`agent.retry`](#provider-retries-agentretry).
 
 Stdio servers do **not** inherit the host environment. A child gets agent-framework's allowlist (`CHILD_ENV_ALLOWLIST`: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `LANG`, `LC_*`, `TZ`, temp and XDG dirs, `DISPLAY`/`WAYLAND_DISPLAY`, TLS CA bundles, `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` in either case, and the Windows system variables), then the entry's `env`, then the host's `AGENT_TIMEZONE`. agent-framework then adds its derived `DISCORD_SUPPRESSED_REACTIONS_BASELINE` when the child spawns, unless the entry's `env` sets one with tokens, or, for an `inheritEnv` entry, the host's own environment does. A server that needs a value from `.env` must declare it, e.g. `"DISCORD_GUILD_ID": "${DISCORD_GUILD_ID}"`; a variable left only in `.env` is unset for the server.
 
 Operator-owned recipe/file entries can set `inheritEnv: true` to pass the full host environment, including credentials. Prefer explicit `env` entries for needed variables. Explicit recipe `false` overrides file `true`; omission preserves the file's policy. Agent-owned `mcpl-servers.agent.json` overlays strip `inheritEnv`, including when replacing an operator-defined server, as they strip `allowHostCommands`, `enabledCapabilities` and `toolLifecycle`, and the startup warnings name each one an overlay entry sets. Put `inheritEnv` or `toolLifecycle` in the recipe, or in `mcpl-servers.json` for a server the recipe names, instead, and `allowHostCommands` or `enabledCapabilities` in a server the recipe defines itself, with its own command or url and an id `mcpl-servers.json` doesn't define, since neither `mcpl-servers.json` nor a recipe's override of a server from it passes those two on.
 
 Check legacy configuration variables before enabling full inheritance. For Discord MCPL, an inherited `DISCORD_SUPPRESS_REACTION_EMOJIS=""` seeds an explicit empty suppression list when its configured filters file does not yet exist; that durable file then overrides the protective baseline. Remove an unintended stale variable before the first startup, or configure the intended suppression in the filters file. Likewise, a `DISCORD_SUPPRESSED_REACTIONS_BASELINE` with tokens in the host's environment becomes an inheriting child's whole baseline, in place of agent-framework's protective default. The framework logs when it does.
+
+### Provider retries (`agent.retry`)
+
+`agent.retry` governs framework **turns** as well as Membrane's other calls
+(compression and merging, retrieval, session naming and the TUI status line).
+Omitted or `{}` leaves the framework's default turn policy untouched. A non-empty
+object installs a framework-wide policy, preserving the framework's turn defaults
+for omitted fields, including nested `overloaded` fields. Recipe validation still
+runs first; unknown keys, negative values and non-finite numbers are rejected.
+
+The policy applies to the resident, conversation forks and subagents, not just
+the named recipe agent. Fleet children each load their own recipe and get their
+own framework policy; they do not inherit the parent's policy.
+
+Despite its name, `maxRetries` counts **total sends including the first**, not
+additional retries, in the pinned Membrane API. For example,
+`"agent": { "retry": { "maxRetries": 4 } }` allows 4 sends and 3 waits for an
+ordinary retryable failure (1 s, 2 s, 4 s by default). The base default is 3
+sends; retryable rate limits get at least 5 sends even with `maxRetries: 0`.
+Zero stops ordinary resends, not the initial send, nor the class-specific floors.
+
+Turn policies retain the framework's 529 schedule: 13 sends unless
+`overloaded.maxRetries` is specified, with `retryDelayMs: 10000`,
+`backoffMultiplier: 2` and `maxRetryDelayMs: 300000` by default. The send limit
+is the larger of the base and overloaded counts; waits use equal jitter
+(half to just below the exponential step). Setting `overloaded.maxRetries: 0`
+disables that special schedule: 529s then use the base schedule without jitter.
+Non-turn calls retain the existing default of `overloaded.maxRetries: 0`,
+unless the recipe overrides it. Their behavior is unchanged by this wiring fix;
+explicit recipe fields still reach those calls too.
+
+These backoff schedules assume the provider states no wait. Turn schedules keep
+stated-wait ceilings of at least 10 minutes (or their maximum delay if longer),
+including for partial recipe overrides. These policy ceilings apply to
+**subagents**, which run as ephemeral bounded jobs without a home channel.
+A subagent can wait and retry inside the same run for stated waits up to the
+framework's separate 10-minute ephemeral cap; longer waits end its run with a
+provider-wait error. Residents and conversation forks instead hold for the
+provider's full stated wait **before** the error policy runs, so this ceiling
+does not shorten their holds. Retry fields do not configure provider holds or
+admission rules. No maximum-delay workaround is needed to retain turn patience.
+
+Non-retryable errors stop immediately. Stream deadline cuts retain the
+framework's separate schedule: one fresh call after 1 s; a second consecutive
+cut ends that cycle, regardless of `agent.retry` (including `maxRetries: 0`).
+Provider quota holds and other framework admission rules are unchanged.
+
+Send counts above are per policy cycle, not lifetime totals. Exhausted resident
+turns can be re-armed independently by `exhaustedTurnRearmMs` (by default after
+2, 8 and 32 minutes); these re-arms apply under either policy.
 
 ### Feature sets and tool names
 
@@ -425,6 +530,16 @@ Each MCPL server can also be presented as a tab. `presentation` on its entry set
 
 Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) with `mcpl-admin--mcpl_deploy`'s `presentation`. A value other than those three stops the load, or in the agent's own overlay is left out, named in a startup line.
 
+### Code execution (`codeExecution`)
+
+`"codeExecution": { "enabled": true }`, at the top level beside `modules`, gives the agent agent-framework's `code_execution` tool. The agent writes JavaScript that calls its own tools by name, such as `await tools["module--tool"]({...})`. Only what the script writes or returns comes back, with how each call ended. The calls, and the results between them, stay out of the context. So reading ten files, querying every channel or paging through a log takes one tool round instead of ten. The window keeps the answer, not the haystack.
+
+A script that runs long yields and keeps going. The agent can wait on it, stop it, or leave it running past its turn. A script can wake the agent with `wake_agent(payload)`. The agent is also woken if the script fails or reaches its lifetime.
+
+Each script starts fresh, and reaches nothing but the agent's tools: no network, files, timers or packages. So by design it adds no authority: anything a script does, the agent could already do one call at a time. That holds as far as the engine holds. The script runs in QuickJS's WebAssembly sandbox, inside a child process of the host, as the host's user. No operating-system sandbox is around it. agent-framework claims no containment beyond its engine and its glue (see the security note on `RecipeCodeExecution` in `src/recipe.ts`). A resident that already has a shell tool can already do far more than a script can. For a resident without one, weigh that before you turn code execution on.
+
+There is nothing to install. The engine, QuickJS in a child process, ships with agent-framework 0.24 and later. Releases before that ran Python and took other keys (`pythonPath`, `idleReclaimMs`, `env`, `scriptTimeoutMs` …). In a block with `"enabled": true`, current hosts refuse those keys, with a message that says what replaced each. Every limit has a default (`yieldMs`, `maxYieldMs`, `scriptLifetimeMs`, `maxRunningScripts`, `maxScriptChildren`, `toolCallTimeoutMs`, `wakeMinIntervalMs`, `maxWakesPerScript`, `memoryMaxBytes`). So `{ "enabled": true }` is the whole setting. Code execution is off unless the recipe turns it on. The host's built-in default recipe leaves it off, so an agent started with no recipe has none. Turning it on for a running resident adds one tool. So the resident's first turn after the restart is one full cache write.
+
 ### Included recipes
 
 | Recipe | What it is |
@@ -439,7 +554,8 @@ Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) wi
 | [`recipes/mcpl-editor-test.json`](recipes/mcpl-editor-test.json), [`webui-test.json`](recipes/webui-test.json), [`webui-fleet-test.json`](recipes/webui-fleet-test.json) | Development test recipes |
 
 The production residents' recipes live in their own install directories, not
-here; [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md) shows the shape.
+here; [`docs/AGENT-ONBOARDING.md`](docs/AGENT-ONBOARDING.md)'s "The recipe" and
+"The recipe's servers" show the shape of a new one.
 
 ### Claude subscription provider
 
@@ -470,6 +586,10 @@ action is pasting a new token. A credentials file with a refresh token
 30 minutes before expiry. See the credential-alerts note under the ChatGPT
 provider and [docs/subscription-transport.md](docs/subscription-transport.md).
 
+### Anthropic effort
+
+For Anthropic streaming turns, `agent.thinking.effort` sets the recipe's baseline effort. It does so whether or not `agent.thinking.enabled` is on. `enabled` is still required, and can be `false`. An effort set explicitly with `agent_settings` overrides the recipe's effort until reset, from the point where it was set. `agent_settings` is in the agent's built-in `settings` toolset, or in its tool list if its `allowedTools` doesn't permit both `toolsets--open` and `toolsets--act`. A model that doesn't take the effort level gets none, and the model's default applies. Then stderr says so once for each model and level, in a line that begins `[reasoning-effort] <model> does not accept effort=<level> — not sent`. Compression calls are unaffected. Other providers ignore the field: OpenAI recipes use `agent.responses.reasoningEffort`, below.
+
 ### OpenAI reasoning
 
 For `openai-responses` and `openai-codex`, primary-agent reasoning is configured
@@ -493,7 +613,7 @@ The host accepts `none`, `low`, `medium`, `high`, `xhigh`, or `max` for
 selected model must support the requested effort. These settings apply to the
 primary agent; `modules.retrieval` has its own reasoning setting described below.
 Memory sizing and compression-model settings are covered in
-`docs/AGENT-ONBOARDING.md`.
+`docs/DEPLOYMENTS.md`'s "A resident's memory: sizing, folding and repair".
 
 ### ChatGPT subscription provider
 
@@ -587,7 +707,7 @@ depend on what the endpoint reports.
 |---|---|---|
 | `bedrock` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` (default `us-west-2`) | Claude on AWS — including models retired from the first-party API. `BEDROCK_BASE_URL` routes through an inference gateway. Prompt caching is enabled per model where Bedrock supports it; `agent.promptCaching` overrides. |
 | `openai-responses` | `OPENAI_API_KEY` (`OPENAI_BASE_URL` optional) | OpenAI Platform, Responses API. |
-| `openrouter` | `OPENROUTER_API_KEY` | |
+| `openrouter` | `OPENROUTER_API_KEY` (`OPENROUTER_BASE_URL` optional) | |
 | `mock` | none | Echoes the last user message by default; scripted replies and timing are set under `agent.mock` ([below](#mock-provider)). Calls are still logged. |
 
 Every provider's calls are logged to `$DATA_DIR/llm-calls.<iso>.jsonl`.
@@ -653,10 +773,14 @@ unknown-key warning, like those at the other levels.
   Chronicle: the agent's durable, verbatim notes. Default mounts `input`
   (read-only `./input`) and `products` (read-write `./output`). A mount with
   `"backend": "direct"` reads disk as it is, and writes it as it is if it's
-  writable, with no store, undo or watcher: it names its mode, `"read-only"`,
-  or `"read-write"` from agent-framework 0.27.0, and a mount whose changes
-  should wake the agent, or whose writes should be undoable, leaves `backend`
-  out. A direct mount that names no `ignore` passes over `node_modules`,
+  writable, with no store or watcher, so a branch switch or a rollback
+  (`/checkout`, `/restore`, `/branchto`) leaves its files as they are: it
+  names its mode, `"read-only"`, or `"read-write"` from agent-framework
+  0.27.0, and a mount whose changes should wake the agent, or whose writes a
+  branch switch or a rollback should take back, leaves `backend` out.
+  `/undo` moves no branch, so it takes back no mount's writes, a
+  Chronicle-backed mount's included. A direct mount that names no `ignore`
+  passes over `node_modules`,
   `.git`, `dist`, `build`, `coverage`, `target`, `__pycache__` and `.venv`,
   and one that names any passes over only what it names. While its store
   holds changes from when it ran as Chronicle, it runs as Chronicle, taking no
@@ -698,7 +822,7 @@ unknown-key warning, like those at the other levels.
   `tune_out` channels; **code execution** (top-level `codeExecution`) —
   JavaScript scripts that call the agent's tools, in a QuickJS engine
   (agent-framework 0.24); recommended for every resident, and off unless a
-  recipe turns it on (see docs/AGENT-ONBOARDING.md)
+  recipe turns it on (see "Code execution (`codeExecution`)" above)
 - **Activity** (`modules.activity`) typing indicators and a **TTS relay**
   (`modules.ttsRelay`) for voice clients
 - **Extensions** (top-level `extensions`) — local modules that register
@@ -710,7 +834,8 @@ unknown-key warning, like those at the other levels.
 - **TUI, readline and batch modes** — OpenTUI interactive terminal, `--no-tui` for a plain prompt, or piped stdin for a one-shot batch run
 - **Headless mode** — `--headless`: no terminal, JSONL over a Unix socket; how residents run under a supervisor
 - **Self-restart** (opt-in, `modules.selfRestart`) — `lifecycle--restart`: the agent restarts its own host, for an edited recipe or rebuilt code. It happens once the asking turn has ended; the host exits with code 75 for its supervisor to start it again, so enable it only under one that does (launchd `KeepAlive`, systemd `Restart=on-failure`, a fleet parent's `autoRestart`, which is off unless the child's entry sets it, and which counts a self-restart toward its cap of 3 restarts in 60 s). A fleet parent's own self-restart stops its children as any shutdown does, and the restarted parent starts again only its `autoStart` children. `cooldownMinutes` (default 10) spaces restarts out
-- **Time-travel** — Chronicle-backed undo/redo, checkpoints, branch exploration; in the web UI, rolling back to a message and suppressing messages
+- **Self-update** (opt-in, `modules.selfUpdate`) — `lifecycle--update`: the agent's own `/update`. It checks what's out, installs a release beside the running one, and arms a restart onto it for the host's first quiet moment. A restart arms only on a headless host that started with `CONNECTOME_SUPERVISED=1`. `connectome service install` sets that only for a service that restarts the host when it exits with 75 and when it exits with 1. Anywhere else, the restart refuses and says why. The changelog's entry has the rest
+- **Time-travel** — undo/redo on the agent's window; Chronicle-backed checkpoints, rollback and branch exploration; in the web UI, rolling back to a message and suppressing messages
 - **Session management** — isolated sessions with auto-naming
 - **Ops alerts** — compression quarantine, refusal streaks, inference exhaustion and more surface as `ops:alert` traces, `logs/failures.log` records, and an optional webhook (`CONNECTOME_OPS_WEBHOOK`)
 - **Importers** — claude.ai exports, Claude Code transcripts and Codex rollouts become sessions ([guides above](#what-people-run-on-it))
@@ -720,6 +845,7 @@ unknown-key warning, like those at the other levels.
 - **Fleets** (opt-in, `modules.fleet`) — a conductor launches and supervises other recipes as headless child processes; one agent tree across processes in both UIs ([`docs/fleet-protocol.md`](docs/fleet-protocol.md))
 - **Subagent forking** (opt-in, `modules.subagents`) — spawn/fork parallel in-process agents, shown in the fleet tree (Tab)
 - **Persistent lessons** (opt-in, `modules.lessons`) — knowledge store with confidence scores and tags. Automatic retrieval-injection of lessons into context (`modules.retrieval`) is a separate opt-in — it adds per-turn context churn and retrieval-model calls, so enable it only for agents that actually curate a lesson library
+- **Fetch** (opt-in, `modules.fetch`) — `fetch--fetch` reads a web page as text, with HTML turned into markdown, whole or through a small model that answers a prompt. Set `local: true` to let it read workspace files too, within what the mounts allow. See [below](#the-fetch-tool)
 
 For `openai-responses` and `openai-codex`, an object-valued
 `modules.retrieval` can set `reasoningEffort` (`none`, `minimal`, `low`,
@@ -737,6 +863,108 @@ sets it, none for `passthrough`), and with `modules.subagents` on, a subagent's
 or a fork's 10,000. For a strategy an extension registers, retrieval knows only
 the recipe's `agent.strategy.maxMessageTokens`, so set it there if that strategy
 cuts long messages, or its cut can fall mid-lesson.
+
+### The fetch tool
+
+`modules.fetch` gives the agent one tool, `fetch--fetch`, which reads a document
+as text. Its `source` is an `http://` or `https://` address, or with `local` on,
+a workspace path too:
+
+```json
+{ "modules": { "fetch": { "local": true } } }
+```
+
+Without a `prompt` the tool returns the text itself, 20,000 characters at a
+time, or fewer where the agent's inline result limit
+(`toolResultInlineMaxChars`) is lower: the part is shortened, down to one
+character, so that the result fits and the note that says how to read on
+arrives with the text. With one, a separate small model reads up to 100,000 characters
+and answers, so a long document stays out of the agent's context. Every result
+says which part was read and gives the `offset` to read on from.
+
+| Option | Default | What it does |
+|---|---|---|
+| `model` | `claude-haiku-4-5-20251001` | The model that answers `prompt`. A recipe whose `agent.provider` is neither `anthropic` nor `mock` must set it, and is refused at load without it |
+| `local` | `false` | Lets `source` be a workspace path. The file is read with the workspace's own `read`, so the agent gets the copy `workspace--read` shows, a write not yet on disk included, under the same mounts, includes, symlink policy and size limit. Needs `modules.workspace`. It makes fetch a reader of those files in its own right: an agent whose `allowedTools` lists `fetch--fetch` reads them with it, whether or not `workspace--read` is on that list |
+| `allowPrivateNetwork` | `false` | Lets web addresses reach private and local addresses, such as loopback, the LAN or a tailnet |
+| `images` | `false` | Lets the model that answers `prompt` look at a web page's images. See [below](#looking-at-images) |
+| `maxBytes` | 5 MiB | Most bytes of one document to read, up to 64 MiB. Past it, the tool reads the start and says the rest is out of reach. A workspace file is read whole by the workspace, up to its mount's `maxFileSize`, and the tool keeps the first `maxBytes` of it |
+
+The module's tools are named `fetch--…`. A server in `mcpServers` named `fetch`
+doesn't clash with them, since its tools are `mcpl--fetch--…`, but one that sets
+`toolPrefix` to `fetch` does, and the host then stops at start saying so.
+
+On the network, the tool decides what it may reach by the address it would
+connect to, on every redirect, so a public name that resolves to a private
+address is refused like the address itself. What it refuses is private and
+local address ranges, the host's own addresses, and cloud platforms' metadata
+addresses. It can't tell an internal service on a publicly routable address,
+or a NAT router's public address, from the internet, so keep such services
+behind their own authentication. It sends no credentials and doesn't run
+JavaScript.
+
+HTML is converted in a separate process, which is killed once it passes 15
+seconds or 1 GiB, refusing the page; two convert at once and sixteen more may
+wait. The separate process is there for those limits. It starts with an empty
+environment, so code in it that reads its own environment finds no
+credentials, but it runs as the host's user and isn't a sandbox.
+
+In a result, the document's text, or the small model's answer, comes between
+tags that carry a code new to each call (`<document-…>`, `<answer-…>`), so text
+a page wrote can't pass for one of the tool's own lines.
+
+A first read
+is always fresh. Only reads with an `offset` use a copy of the page, kept for
+the agent that fetched it for up to 15 minutes, so the parts read from one copy
+fit together; where no copy is
+kept any more, the part comes from a fresh fetch and its result says the parts
+may not line up. A workspace file is read as the workspace has it on each
+call, with no copy kept. The tool reads text only, and reports a binary
+document's type instead.
+
+#### Looking at images
+
+By default the tool is text only: an image comes through as its alt text and
+address, `![alt](address)`, and one with no alt text is left out. With
+`images` on, the model that answers a `prompt` can look:
+
+```json
+{ "modules": { "fetch": { "images": true } } }
+```
+
+- The page keeps the address of an image with no alt text too, unless its own
+  `width` or `height` is a number of pixels under 50, an icon or a tracking
+  pixel. An image with alt text is kept whatever its size, as it is without
+  this option. Where an image has a `data-src` that is a web address, as one
+  loaded late has, that is its address, before its `src`. A page's first 64
+  different images are the ones that can be looked at, and only a page served
+  as HTML has any: one served as markdown or plain text is read as text.
+- The answering model gets one tool, `view_image`, and is told to use it only
+  where the request needs what an image shows.
+- It may ask for four images in one call, shown or not, each at most 3.5 MB,
+  PNG, JPEG, GIF or WebP by their bytes. The result's note names the ones it
+  looked at.
+- Only an image the page's conversion wrote, in the part of the page the model
+  was given, is fetched. The model asks for it as the page writes its address,
+  and what is requested is the address the image had, which differs where a
+  bracket or a bar in it was encoded for the markdown. Each request, with any
+  redirect its server answers with, is held to the address guard its page is.
+  So a page can't have the model request an address the page didn't already
+  point at as an image, and an image in a hidden part of the page isn't one
+  it can ask for. Which of a page's
+  images it asks for, and in what order, is the model's choice, and the page's
+  server sees it: a page that sets out to, by naming many images, could learn
+  some tens of bits of the request a call that way.
+- Set `model` to one that takes images. A workspace file's images are not
+  looked at, and a direct read (no `prompt`) returns addresses, not pictures.
+
+Text an element marks as not shown is left out of the markdown: the `hidden`
+attribute, `aria-hidden="true"`, and a `style` attribute's `display: none` or
+`visibility: hidden` or `collapse`. That removes the commonest hiding place for instructions
+aimed at a model, and no more: a stylesheet's rules aren't read, and text kept
+from the eye another way (opacity, size, colour, position) comes through. The
+model that answers a `prompt` is told to treat the document as data and to
+report instructions it finds there.
 
 ### Shared instructions
 
@@ -770,10 +998,24 @@ reached through a linked directory), and on any mount one whose canonical
 path lies outside it isn't either, a link that leads out included: either
 raises the alert instead.
 
-**Cache note**: at `position: "system"` the block lives in every agent's
-prompt-cache prefix, so each edit is a fleet-wide cache cold start on the next
-turn — curate in batches, or use `afterUser` for cache-cheap, lower-salience
-injection. Compared to **lessons** (`modules.lessons`): lessons are a
+**Where the block lands, and what that costs**:
+
+- `"system"`, the default, puts it in every agent's system prompt. An edit to
+  the file misses the cache from the system prompt on, for every agent, at its
+  next turn, so curate in batches.
+- `"afterUser"` places it after the newest user message at each start, so it
+  stays near the end. Unlike another module's `afterUser` block, which
+  agent-framework stores where it lands, it isn't stored. It moves: a request
+  misses the cache from its old place on, and on a model that binds a reply's
+  thinking to everything before it, every reply after its old place loses its
+  thinking.
+- `"beforeUser"` is deprecated
+  ([agent-framework#171](https://github.com/anima-research/agent-framework/issues/171)).
+  It's spliced in again before the newest user message at every compile, so
+  it moves, at `afterUser`'s cost, and it can split a tool call from its
+  result. Use `"afterUser"` or `"system"`.
+
+Compared to **lessons** (`modules.lessons`): lessons are a
 structured, confidence-scored store with model-driven retrieval; instructions
 are one free-form curated document, always present verbatim.
 
@@ -802,6 +1044,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL` | — | `openai-responses` recipes |
 | `OPENAI_COMPATIBLE_API_KEY` | — | Key for `openai-compatible` recipes (no `OPENAI_API_KEY` fallback by design); omit for local servers |
 | `OPENROUTER_API_KEY` | — | `openrouter` recipes |
+| `OPENROUTER_BASE_URL` | OpenRouter API (`https://openrouter.ai/api/v1`) | Route OpenRouter calls through a gateway |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | region `us-west-2` | `bedrock` recipes |
 | `BEDROCK_BASE_URL` | — | Route Bedrock calls through a gateway |
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |
@@ -819,7 +1062,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `CONNECTOME_OPS_WEBHOOK` | — | Webhook for ops alerts |
 | `COUNT_TOKENS_MODEL` | the agent's model | Override the model used for exact token counts in the context-makeup panel |
 | `LLM_CALLS_FULL_PAYLOADS` | off | `1`/`true`: keep the full request on every llm-calls log entry (large; a line over 16 MiB drops it) |
-| `THINKING_BINDING_PROBE` | on | `off`: skip the start-up check of what the account does with a signed thinking block whose earlier conversation changed (see `docs/AGENT-ONBOARDING.md` §11.10); agents on a model whose thinking binds then leave such thinking out, as on an account that refuses it |
+| `THINKING_BINDING_PROBE` | on | `off`: skip the start-up check of what the account does with a signed thinking block whose earlier conversation changed (see `docs/DEPLOYMENTS.md`'s "Refusals and signed thinking"); agents on a model whose thinking binds then leave such thinking out, as on an account that refuses it |
 | `GATE_TELEMETRY` | off | `1`: send `x-gate-*` telemetry headers — only when `ANTHROPIC_BASE_URL` is also set |
 
 Recipes may reference any further variables they need as `${VAR}` (for
@@ -907,7 +1150,7 @@ headless socket.
 
 | Command | Effect |
 |---------|--------|
-| `/help` | List all commands |
+| `/help` | List all commands (in `connectome setup`'s conversation, the three setup uses: `/quit`, `/session new` and `/help`) |
 | `/quit`, `/q` | Exit (exports lessons if the lessons module is loaded; asks first if fleet children are running) |
 | `/recipe` | Show current recipe info |
 | `/status` | Show agent state, branch, queue depth |
@@ -918,13 +1161,13 @@ headless socket.
 | `/newtopic [context]` | Reset the head window for a new topic |
 | `/nudge [agent]` | Run inference on the current context without a new event |
 | `/puppet <tool> [json]` | Admin: execute a tool as the agent and store the call/result pair |
-| `/undo` | Revert to state before last agent turn |
-| `/redo` | Re-apply undone action |
-| `/checkpoint [name]` | Save current state (no name: list checkpoints; held for this session) |
-| `/restore [name]` | Restore to checkpoint |
+| `/undo` | Take the agent's last turn out of its window; the record keeps it and no branch moves (`/branchto` reverts the record) |
+| `/redo` | Put the turn `/undo` took out back in the agent's window |
+| `/checkpoint [name]` | Save the record's position: its last row, an undone one included (no name: list checkpoints; held for this session) |
+| `/restore [name]` | Roll the record back to a checkpoint, on a new branch. A checkpoint with no message (taken on an empty branch), or whose message isn't on the current branch, switches to its branch's head; at the checkpoint already, nothing moves, also when its last row is out of the agent's window after `/undo` (`/redo` puts back the agent's latest undo, which holds that turn only if that undo took it out); once a row is stored after the checkpoint, the rollback puts its last row's turn in the window, one undone when the checkpoint was taken included |
 | `/branches` | List Chronicle branches and checkpoints |
 | `/checkout <name>` | Switch to branch |
-| `/branchto <msgId>` | Branch from a specific message |
+| `/branchto <msgId>` | Roll the record back to a message, on a new branch; the old branch keeps the rest |
 | `/history [n]` | Show the last n messages (20 by default) |
 | `/find <text>` | Search messages for text |
 | `/mcp list` | List servers in `mcpl-servers.json` |
@@ -939,25 +1182,55 @@ headless socket.
 | `/fleet [list\|status\|view\|peek\|stop\|restart]` | Fleet children (see [`docs/fleet-protocol.md`](docs/fleet-protocol.md)) |
 | `/update [check\|install\|restart [wait\|now\|resume\|<version>]\|back [(keep\|restore) [<version>]]]` | Whether a newer release is out and what it costs (`check`, or `/update` alone); on an install set up to update itself, install it, restart onto it, or go back. A version, as the Web UI sends it, makes Restart or Go back refuse unless that's still the release it would act on ("Updating an install" in [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md)) |
 
-Commands that move the head are refused while a turn is in flight: `/undo`,
-`/redo`, `/checkout`, `/restore` and `/branchto` while any agent sharing the
-store is mid-turn, the subconscious included, and `/newtopic` while the main
-agent is.
+The commands that move the head (`/checkout`, `/restore`, `/branchto`) and
+those that change the agent's window (`/undo`, `/redo`, `/newtopic`) are
+refused while a turn is in flight: `/checkout`, `/restore` and `/branchto`
+while any agent sharing the store is mid-turn, the subconscious included, and
+`/undo`, `/redo` and `/newtopic` while the agent the command acts for is.
+`/newtopic` stores its transition only while the agent has no turn alive, and
+is refused while a continuation or a retry of the agent's turn is on its way.
+A bare `/newtopic` writes its summary first. If the branch or the strategy
+changes meanwhile, the summary can't be written: it stores nothing, and its
+answer says why. If a turn of the agent starts, rows enter or leave the
+agent's window (a whole turn, another `/newtopic`'s transition, an undo, a
+redo or a shed), or the session is switched or the host stops, meanwhile, it
+stores nothing. Its answer says which: rows entered the window, left it,
+both, or entered it and left it, or left it and entered it again, which
+leave it holding what it held. It gives the
+summary it wrote back as a `/newtopic …` to run: in the TUI, the Web UI and
+headless mode as written, line breaks included, and in the readline and
+piped modes, which read each line as its own input, as one line, its line
+breaks folded to spaces. A `/newtopic <text>` on several lines needs the
+TUI or the Web UI, which send a pasted text whole, or headless mode's
+`command`, which carries its text whole.
+`/checkout`, `/restore` and `/branchto` go through agent-framework's branch
+switch and rollback, which are refused unless every agent sharing the store is
+idle, take every agent's context to the new branch, and are written to the
+operator log (as a `checkout` or a `rollback`). A rollback says which rows
+after its message it kept: rows one write showed the agent together with the
+message stay in its window after it (suppress or hide them to take them out),
+and rows stored before the message was shown and shown after it stay in the
+record and enter the window at the agent's next turn, or at a restart of the
+host before then. `/undo` and `/redo` are
+its undo and redo on the agent's window; the TUI's history and the Web UI's
+transcript mark an undone turn's rows, and the Web UI's context panels read
+the window again.
 
 While a session switch is under way, these are refused, each saying
 nothing changed: `/undo`, `/redo`, `/checkout`, `/branchto`, `/newtopic`,
-`/nudge`, `/puppet`, `/session rename`, `/session delete`, `/fleet stop` and
-`/fleet restart`, and `/checkpoint`, `/restore` and `/budget` given a name or
+`/nudge`, `/puppet`, `/session new`, `/session switch`, `/session rename`,
+`/session delete`, `/fleet stop` and `/fleet restart`, and `/checkpoint`, `/restore` and `/budget` given a name or
 a value. The forms of those three that only list or show answer as they do
 without a switch. The same goes for the fleet view's stop and restart keys,
 and for the Web UI's rollback, suppress, fleet stop and restart, host
 quiesce and resume, and pin and settings changes. A pin or settings change
-made for a fleet child is passed on to it, and the child refuses it only
-while its own session is switching. Once the switch has stopped the old
+made for a fleet child is passed on to it. The child refuses it while
+its own session is switching, and while it is quiesced for a release
+switch. Once the switch has stopped the old
 session's framework, the Web UI answers "host not ready" until the next one
-is installed, as before. `/session new` and `/session switch` start no
-switch while one is under way, or while one of the commands above, given
-earlier, or one of these actions on this host is still running.
+is installed, as before. `/session new` and `/session switch` also start no
+switch while a command above, given earlier, or one of these actions is
+still running on this host.
 
 ## TUI controls
 

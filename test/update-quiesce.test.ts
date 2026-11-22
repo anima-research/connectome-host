@@ -20,7 +20,7 @@ function fakeFramework(options: {
   let fields: Partial<HostModeStatus> = {};
   const status = (): HostModeStatus => ({
     ...mode, drained: ended || reads >= (options.drainAfter ?? 0), activeTurns: 0, parkedAdmissions: 0, gatedRequests: 0,
-    backgroundScripts: 1, deferredWrites: 2, activeTurnAgents: ended ? [] : options.holders ?? [], ...fields,
+    backgroundScripts: 1, activeTurnAgents: ended ? [] : options.holders ?? [], ...fields,
   } as HostModeStatus);
   const framework: QuiesceFramework = {
     quiesce: async (opts = {}) => {
@@ -417,6 +417,17 @@ describe("a fleet child's answer", () => {
     });
     expect(await answerSwitchRequest(framework, { op: 'resume' })).toEqual({ resumed: true });
     expect(calls).toEqual([`quiesce ${SWITCH} for 0 ms`, 'resume']);
+  });
+
+  test("a child its operator quiesced answers the switch's quiesce with its operator's hold, and keeps it", async () => {
+    for (const reason of ['maintenance', undefined]) {
+      const { framework, mode } = fakeFramework({ quiesced: true, reason, holders: [] });
+      expect(await answerSwitchRequest(framework, { op: 'quiesce', to: '0.14.0', waitMs: 0 })).toEqual({
+        host: 'this host', answered: true, drained: true, activeTurnAgents: [], backgroundScripts: 1,
+        operatorHold: reason === undefined ? {} : { reason },
+      });
+      expect(mode()).toMatchObject({ quiesced: true, reason });
+    }
   });
 
   test("a request it can't read is refused, and changes nothing", async () => {

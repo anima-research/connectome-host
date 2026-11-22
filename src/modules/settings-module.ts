@@ -54,6 +54,12 @@ export class SettingsModule implements Module {
     this.ctx = ctx;
   }
 
+  /**
+   * The current branch's reasoning settings, and the effort the agent chose
+   * there, read from module state at each call: a rollback or a checkout
+   * moves to another branch without restarting modules. An undo moves no
+   * branch (agent-framework #291), so it leaves the settings as they are.
+   */
   private current(): { reasoning: ReasoningSettings; effortOverride: ReasoningEffort | undefined } {
     const saved = this.ctx?.getState<{ reasoning?: unknown }>()?.reasoning;
     const baseline = { ...DEFAULTS.reasoning, effort: this.initialEffort };
@@ -66,6 +72,22 @@ export class SettingsModule implements Module {
 
   getReasoning(): ReasoningSettings {
     return this.current().reasoning;
+  }
+
+  /**
+   * Tell an agent, in its context, that an operator changed its settings
+   * (the panel's opt-in notice, notifyAgentOfSettingsChange). The row is
+   * written through this module's context for that agent (`forAgent`), so
+   * it is stamped for it alone and enters its window as any row for it does
+   * (agent-framework #291): at once while no turn of it is alive, and
+   * otherwise at a point of its turn that can carry it, never between rounds
+   * a request didn't carry. No inference is requested. False when the module
+   * isn't started, as between a session's stop and the next start.
+   */
+  noteForAgent(agentName: string, text: string): boolean {
+    if (!this.ctx) return false;
+    this.ctx.addMessage('Context Manager', [{ type: 'text', text }], { system: true }, { forAgent: agentName });
+    return true;
   }
 
   getTools(): ToolDefinition[] {
@@ -107,9 +129,9 @@ export class SettingsModule implements Module {
             "is recorded alongside the signature) or 'omitted' (signature only, slightly faster " +
             'first token; no readable summary is recorded). Either way, when a thinking block is ' +
             'sent back to you, you get your full reasoning, not the summary: this changes only what ' +
-            'is recorded as readable text. On Fable 5/5.1, Mythos 5.1, Opus 5.5 and Sonnet 5.5, the ' +
-            "notes you write between tool calls come back as thinking blocks, so 'omitted' is sent " +
-            "as 'updates' there: your reasoning stays unrecorded, and those notes are kept as text.",
+            'is recorded as readable text. On a model the host knows returns the notes you write ' +
+            "between tool calls as thinking blocks, 'omitted' is sent as 'updates' through " +
+            "Anthropic's API: your reasoning stays unrecorded, and those notes are kept as text.",
         },
         reasoning_effort: {
           type: 'string',

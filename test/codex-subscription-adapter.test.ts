@@ -623,6 +623,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       expect(state.lastAction).toMatchObject({ id: 'refresh', ok: false });
       expect(state.lastAction!.message).toBe(`refresh failed: ${source.loginDisabledReason}`);
       expect(state.lastAction!.message).toContain('restart the host process');
+      expect(state.lastAction!.said).toBe(state.lastAction!.message);
       expect(state.message).toContain('authentication unavailable:');
       expect(state.actions.map(action => action.id)).toEqual(['recheck']);
       expect(alerts).toHaveLength(1);
