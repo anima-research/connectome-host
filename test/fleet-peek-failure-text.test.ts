@@ -72,7 +72,7 @@ test("fleet--peek shows a child's events without a failure's own text but for a 
   expect(child.buffer()).toEqual(ARRIVED.filter((event) => event.type !== 'panel-response'));
 });
 
-test("no text of a child's failed turn reaches a parent through fleet--peek, its tree's snapshot included", async () => {
+test("no text of a child's failed round reaches a parent through fleet--peek, its tree's snapshot included", async () => {
   const failure = [
     { type: 'inference:started', agentName: 'leaf', ts: 10 },
     { type: 'inference:tokens', agentName: 'leaf', content: SENTINEL, blockType: 'text', ts: 10 },

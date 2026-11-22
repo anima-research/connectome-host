@@ -132,7 +132,21 @@ describe('/auth that a fleet parent sent', () => {
     expect((await said('/auth status', 'host-console')).join('\n').split(SENTINEL)).toHaveLength(3);
   });
 
-  test("an action says whether it worked, in the host's own words without the reason", async () => {
+  test("a token whose check was inconclusive says done, in the host's own words without the error that the check met", async () => {
+    const inconclusive = state({
+      kind: 'auth-rejected',
+      message: `anthropic rejected the credential (${SENTINEL})`,
+      lastAction: { id: 'set-token', at: 0, ok: true, message: `token replaced; verification inconclusive (${SENTINEL})`, said: 'token replaced; verification inconclusive' },
+    });
+    const replaced = { snapshot: () => inconclusive, runAction: async () => inconclusive };
+    const result = handleCommand('/auth token sk-new', app(replaced), { requester: { via: 'fleet' } });
+    const lines = [...result.lines, ...(result.asyncWork ? (await result.asyncWork).lines : [])].map((l) => l.text);
+    expect(lines.slice(0, 2)).toEqual(['/auth set-token: running…', '/auth set-token: done — token replaced; verification inconclusive']);
+    expect(lines).toContain('  last action: set-token ok — token replaced; verification inconclusive');
+    expect(lines.join('\n')).not.toContain(SENTINEL);
+  });
+
+  test("an action says whether it worked, in the host's own words without the error that it met", async () => {
     const lines = await said('/auth refresh', 'fleet');
     expect(lines.slice(0, 2)).toEqual(['/auth refresh: running…', '/auth refresh: FAILED — refresh failed']);
     expect(lines.join('\n')).not.toContain(SENTINEL);

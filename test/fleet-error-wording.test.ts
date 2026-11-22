@@ -754,7 +754,7 @@ describe('fleet refusals name what the agent can do', () => {
   });
 });
 
-test('fleet--command sends each form of /auth on to the child, as it sends /status', async () => {
+test('fleet--command refuses no form of /auth: each reaches the check for its child, as /status does', async () => {
   const { call } = setup();
   for (const command of ['/auth', '/auth status', '/auth login', '/auth refresh', '/auth recheck', '/auth token x', '/status']) {
     const { error } = await call('command', { name: 'any', command });
