@@ -2,16 +2,15 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FleetModule } from '../src/modules/fleet-module.js';
+import { FleetModule, HOST_FORCED_TELEMETRY_EVENTS } from '../src/modules/fleet-module.js';
 import { AgentTreeReducer } from '../src/state/agent-tree-reducer.js';
 
 const SENTINEL = 'sentinel-5d8b provider said: invalid x-api-key';
 const NOTE = "Each event's error and attemptError read \"left out\" in place of their text, but for a failed tool call's own " +
   "error, which shows. An event's stack and providerErrorCode, an alert's message and data, and an errorType of safety are left " +
-  "out. Streamed chunks (inference:tokens) are left out too. " +
-  "The final reply of a child's main agent is in its inference:speech, and the text of each other round is in an " +
-  "inference:round_text; the child sends them where its subscription includes them. A reply that the provider refused at its " +
-  "end can still show in either event.";
+  "out. Streamed chunks (inference:tokens) are not kept. When a round ends, its text shows as an inference:round_text, or, for " +
+  "the final reply of a child's main agent, as the inference:speech that the child sends where its subscription includes it. A " +
+  "reply that the provider refused at its end can still show in either.";
 
 const dirs: string[] = [];
 const fleets: FleetModule[] = [];
@@ -36,7 +35,12 @@ function childWith(events: Event[]) {
   const record = (fleet as unknown as { recordEvent(child: object, event: object): void }).recordEvent.bind(fleet);
   for (const event of events) record(children.get('leaf')!, structuredClone(event));
   const peek = async (lines?: number) => fleet.handleToolCall({ id: 'peek', name: 'peek', input: { name: 'leaf', ...(lines === undefined ? {} : { lines }) } });
-  return { peek, buffer: () => children.get('leaf')!.events, lastSpeech: () => (children.get('leaf') as unknown as { lastCompletedSpeech?: string }).lastCompletedSpeech };
+  const reconnect = () => (fleet as unknown as { attach(child: object, socket: object): void }).attach(children.get('leaf')!, { on: () => {} });
+  const more = (later: Event[]) => { for (const event of later) record(children.get('leaf')!, structuredClone(event)); };
+  return {
+    peek, more, reconnect, buffer: () => children.get('leaf')!.events,
+    lastSpeech: () => (children.get('leaf') as unknown as { lastCompletedSpeech?: string }).lastCompletedSpeech,
+  };
 }
 
 const ARRIVED: Event[] = [
@@ -69,7 +73,7 @@ test("fleet--peek shows a child's events without a failure's own text but for a 
   const peek = await child.peek();
   expect(peek.success).toBe(true);
   expect(peek.data).toEqual({ name: 'leaf', count: SHOWN.length, events: SHOWN, note: NOTE });
-  expect(child.buffer()).toEqual(ARRIVED.filter((event) => event.type !== 'panel-response'));
+  expect(child.buffer()).toEqual(ARRIVED.filter((event) => event.type !== 'panel-response' && event.type !== 'inference:tokens'));
 });
 
 test("no text of a child's failed round reaches a parent through fleet--peek, its tree's snapshot included", async () => {
@@ -101,7 +105,7 @@ test("no text of a child's failed round reaches a parent through fleet--peek, it
   expect(node.attemptError).toBe('left out');
 });
 
-test("fleet--peek's lines counts the events it shows, with streamed chunks left out before the count and no panel answer in the buffer", async () => {
+test("fleet--peek's lines counts the events it shows, and the buffer keeps no streamed chunk and no panel answer", async () => {
   const child = childWith([
     { type: 'inference:speech', agentName: 'leaf', content: 'First reply.', ts: 1 },
     { type: 'inference:tokens', agentName: 'leaf', content: 'Sec', blockType: 'text', ts: 2 },
@@ -117,20 +121,97 @@ test("fleet--peek's lines counts the events it shows, with streamed chunks left 
       { type: 'inference:speech', agentName: 'leaf', content: 'Second reply.', ts: 4 },
     ],
   });
-  expect(child.buffer()).toHaveLength(4);
+  expect(child.buffer()).toHaveLength(2);
 });
 
-test("fleet--peek shows a round's text, and the reply that fleet--relay sends stays the child's last inference:speech", async () => {
+const round = (agentName: string, words: string[], at: number): Event[] =>
+  words.map((content, i) => ({ type: 'inference:tokens', agentName, content, blockType: 'text', ts: at + i }));
+const shownEvents = async (child: ReturnType<typeof childWith>) => ((await child.peek(500)).data as { events: Event[] }).events;
+
+test("fleet--peek shows a tool round's text before its tool calls, and the final reply one time, as the child's inference:speech", async () => {
   const child = childWith([
-    { type: 'inference:speech', agentName: 'leaf', content: 'First reply.', ts: 1 },
-    { type: 'inference:round_text', agentName: 'leaf', content: 'Checking.', ts: 2 },
-    { type: 'inference:round_text', agentName: 'scout-1', content: 'Looking.', ts: 3 },
+    { type: 'inference:started', agentName: 'leaf', ts: 1 },
+    { type: 'inference:tokens', agentName: 'leaf', content: 'weighing it', blockType: 'thinking', ts: 2 },
+    ...round('leaf', ['Check', 'ing.'], 3),
+    { type: 'inference:tool_calls_yielded', agentName: 'leaf', calls: [{ id: 'c1', name: 'files' }], ts: 5 },
+    { type: 'inference:stream_resumed', agentName: 'leaf', ts: 6 },
+    ...round('leaf', ['Done', '.'], 7),
+    { type: 'inference:completed', agentName: 'leaf', ts: 9 },
+    { type: 'inference:speech', agentName: 'leaf', content: 'Done.', ts: 9 },
   ]);
-  const peek = await child.peek();
-  expect((peek.data as { events: unknown[] }).events).toEqual([
-    { type: 'inference:speech', agentName: 'leaf', content: 'First reply.', ts: 1 },
-    { type: 'inference:round_text', agentName: 'leaf', content: 'Checking.', ts: 2 },
-    { type: 'inference:round_text', agentName: 'scout-1', content: 'Looking.', ts: 3 },
+  expect(await shownEvents(child)).toEqual([
+    { type: 'inference:started', agentName: 'leaf', ts: 1 },
+    { type: 'inference:round_text', agentName: 'leaf', content: 'Checking.', ts: 5 },
+    { type: 'inference:tool_calls_yielded', agentName: 'leaf', calls: [{ id: 'c1', name: 'files' }], ts: 5 },
+    { type: 'inference:stream_resumed', agentName: 'leaf', ts: 6 },
+    { type: 'inference:completed', agentName: 'leaf', ts: 9 },
+    { type: 'inference:speech', agentName: 'leaf', content: 'Done.', ts: 9 },
   ]);
-  expect(child.lastSpeech()).toBe('First reply.');
+  expect(child.lastSpeech()).toBe('Done.');
+  expect(child.buffer().some((event) => event.type === 'inference:tokens')).toBe(false);
+});
+
+test("fleet--peek shows the text of a round that no inference:speech carries: a final round without one, a subagent's, a silent start's, and a replayed one", async () => {
+  const child = childWith([
+    { type: 'inference:started', agentName: 'leaf', ts: 1 },
+    { type: 'inference:started', agentName: 'scout-1', ts: 1 },
+    ...round('leaf', ['Done.'], 2),
+    ...round('scout-1', ['Looking.'], 2),
+    { type: 'inference:completed', agentName: 'scout-1', ts: 3 },
+    { type: 'inference:completed', agentName: 'leaf', ts: 4 },
+    { type: 'inference:started', agentName: 'leaf', silent: true, ts: 5 },
+    ...round('leaf', ['Quietly.'], 6),
+    { type: 'inference:completed', agentName: 'leaf', ts: 7 },
+    { type: 'inference:started', agentName: 'leaf', replay: true, ts: 8 },
+    { type: 'inference:tokens', agentName: 'leaf', content: 'Before.', blockType: 'text', replay: true, ts: 8 },
+    { type: 'inference:completed', agentName: 'leaf', replay: true, ts: 8 },
+  ]);
+  expect((await shownEvents(child)).filter((event) => event.type === 'inference:round_text')).toEqual([
+    { type: 'inference:round_text', agentName: 'scout-1', content: 'Looking.', ts: 3 },
+    { type: 'inference:round_text', agentName: 'leaf', content: 'Done.', ts: 4 },
+    { type: 'inference:round_text', agentName: 'leaf', content: 'Quietly.', ts: 7 },
+    { type: 'inference:round_text', agentName: 'leaf', content: 'Before.', replay: true, ts: 8 },
+  ]);
+  expect(child.lastSpeech()).toBeUndefined();
+});
+
+test("fleet--peek shows no text of a refused attempt that an empty chunk discards, of a round whose start this host didn't see, or of a round open across a new connection", async () => {
+  const child = childWith([
+    { type: 'inference:started', agentName: 'leaf', ts: 1 },
+    ...round('leaf', [SENTINEL, '', 'Fresh.'], 2),
+    { type: 'inference:completed', agentName: 'leaf', ts: 5 },
+    ...round('scout-1', ['Unseen start.'], 6),
+    { type: 'inference:completed', agentName: 'scout-1', ts: 7 },
+    { type: 'inference:started', agentName: 'leaf', ts: 8 },
+    ...round('leaf', ['Before the gap.'], 9),
+  ]);
+  child.reconnect();
+  child.more([...round('leaf', ['After.'], 10), { type: 'inference:completed', agentName: 'leaf', ts: 11 }]);
+  expect((await shownEvents(child)).filter((event) => event.type === 'inference:round_text')).toEqual([
+    { type: 'inference:round_text', agentName: 'leaf', content: 'Fresh.', ts: 5 },
+  ]);
+  expect(JSON.stringify(child.buffer())).not.toContain('sentinel-5d8b');
+});
+
+test("a round with more chunks than the buffer holds pushes no other event out, and its text comes whole", async () => {
+  const words = Array.from({ length: 600 }, (_, i) => `w${i} `);
+  const child = childWith([
+    { type: 'command-output', text: 'Topic reset.', style: 'system', ts: 1 },
+    { type: 'inference:started', agentName: 'leaf', ts: 2 },
+    ...round('leaf', words, 3),
+    { type: 'inference:completed', agentName: 'leaf', ts: 700 },
+  ]);
+  expect(child.buffer()).toEqual([
+    { type: 'command-output', text: 'Topic reset.', style: 'system', ts: 1 },
+    { type: 'inference:started', agentName: 'leaf', ts: 2 },
+    { type: 'inference:round_text', agentName: 'leaf', content: words.join(''), ts: 700 },
+    { type: 'inference:completed', agentName: 'leaf', ts: 700 },
+  ]);
+});
+
+test('the host forces into every subscription the events from which it assembles a round\'s text', () => {
+  for (const type of ['inference:started', 'inference:stream_resumed', 'inference:tokens', 'inference:tool_calls_yielded',
+    'inference:completed', 'inference:failed', 'inference:aborted', 'inference:exhausted']) {
+    expect(HOST_FORCED_TELEMETRY_EVENTS).toContain(type);
+  }
 });
