@@ -609,8 +609,8 @@ export interface CredentialStateMessage {
   actions?: Array<{ id: string; label: string; hint?: string }>;
   login?: { verificationUrl: string; userCode: string };
   /** The last operator action. An observer without 'ops' gets its `message`,
-   *  which holds a failed action's reason, empty, and its `said`, the host's
-   *  own sentence about the outcome without the reason, empty too. */
+   *  which can quote the error that the action met, empty, and its `said`,
+   *  the host's own sentence about the outcome without that error, empty too. */
   lastAction?: { id: string; at: number; ok: boolean; message: string; said: string };
   /** While the last write of the credential to its file failed: the alert's
    *  text, which an observer without 'ops' gets empty. */
