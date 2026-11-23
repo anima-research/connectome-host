@@ -8,6 +8,8 @@ import { homeBindingKey, validateNoticeHome, type NoticeHomeConfig } from '../no
 import { SHUTDOWN_BUDGET_EXHAUSTED, ZulipHomeDelivery,
   type HomeBackend, type HomeOutcome } from './notice-home-zulip.js';
 
+export const DEFAULT_HOME_SEND_TIMEOUT_MS = 5000;
+
 const MAX_RECORDS = 128;
 const MAX_ACTIVE = 64;
 const MAX_QUEUED = 64;
@@ -145,7 +147,7 @@ export class NoticeHome {
     validateNoticeHome(binding);
     this.binding = Object.freeze({ ...binding });
     this.runtime = Object.freeze({ ...runtime });
-    this.sendTimeoutMs = runtime.sendTimeoutMs ?? 5000;
+    this.sendTimeoutMs = runtime.sendTimeoutMs ?? DEFAULT_HOME_SEND_TIMEOUT_MS;
     if (!runtime.directory || !runtime.instanceId || runtime.instanceId.length > 256 ||
         /[\x00-\x1f\x7f]/.test(runtime.instanceId)) throw new Error('notice home requires a host directory and current runtime instance identity');
     this.bindingId = digest(homeBindingKey(this.binding));

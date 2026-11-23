@@ -11,10 +11,10 @@
   survive agent turns and ends, even for an agent named `framework`.
   Status reports tracked incidents, including after delayed incident delivery
   or an uncertain status, not routine turns.
-  The host drains accepted work before it stops the framework (shutdown and
-  session switch), while the connector is still open, within a shared send
-  budget, and journals unsent work locally when it expires. Incident tracking and delivery evidence
-  use finite retention windows rather than lifetime failure latches. Host
+  The host gives accepted work a bounded drain before framework teardown, while
+  the connector is still open. Sends share five seconds; if the drain is still
+  pending after six seconds, teardown proceeds. Incident tracking and delivery
+  evidence use finite retention windows rather than lifetime failure latches. Host
   startup and session switch rename existing journal and staging entries aside
   without following symlinks or reading journal contents. Incident IDs start fresh:
   an incident may be reported again, and its later clear may not match.

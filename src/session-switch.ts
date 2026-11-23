@@ -1,5 +1,6 @@
 import type { PanelOp } from './web/panel-data.js';
 import { isSwitchQuiesce } from './update/contract.js';
+import { stopFramework, type StoppableFramework } from './stop-framework.js';
 
 export const SWITCH_UNDER_WAY = 'a session switch is under way, so this one isn\'t started; try again once it has finished';
 export const HOST_STOPPING = 'the host is stopping, so it starts no session switch';
@@ -7,7 +8,7 @@ export const HOST_STOPPING = 'the host is stopping, so it starts no session swit
 /** Resolves true once it has installed the switched-to session's framework, and false when the host began to
  *  stop first, having installed none. While it runs, `app.switchSettled` resolves when it settles, either way,
  *  to whether stopping a framework it had made failed. */
-export async function switchSessionSteps<F extends { stop(): Promise<void> }>(
+export async function switchSessionSteps<F extends StoppableFramework>(
   app: { stopping?: boolean; switching?: boolean; switchSettled?: Promise<{ madeStopFailed: boolean }> },
   steps: {
     stopOld(): Promise<void>;
@@ -39,7 +40,7 @@ export async function switchSessionSteps<F extends { stop(): Promise<void> }>(
     }
     if (app.stopping) {
       try {
-        await next.stop();
+        await stopFramework(next);
       } catch (error) {
         madeStopFailed = true;
         const reason = error instanceof Error ? error.message : String(error);

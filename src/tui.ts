@@ -41,7 +41,7 @@ import { effectiveContextBudgetTokens } from './recipe-fit.js';
 import { audienceOf, storedInjectionMarkOf } from '@animalabs/agent-framework';
 import { storedInjectionLabel } from './stored-injection.js';
 import { speakerOf, type Speaker } from './speaker.js';
-import { drainNoticeHome } from './modules/notices-module.js';
+import { stopFramework } from './stop-framework.js';
 
 export function fmtTokens(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -3112,7 +3112,7 @@ export async function runTui(app: AppContext): Promise<void> {
     // agent-framework's stop() gives a later call the stop under way, or the
     // one that finished, and after a failed stop whose storage is still open it
     // starts the teardown again.
-    Promise.resolve().then(() => drainNoticeHome(app.framework)).then(() => app.framework.stop()).then(async () => {
+    Promise.resolve().then(() => stopFramework(app.framework)).then(async () => {
       await settled();
       resolveExit?.();
     }, async (error) => {

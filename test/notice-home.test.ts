@@ -653,7 +653,7 @@ test('session switch moves both journal files aside and starts new incident IDs 
     },
     make: async () => {
       await h.bindFramework();
-      return h.module;
+      return { stop: () => h.module.stop(), getModule: (name: string) => name === 'notices' ? h.module : undefined };
     },
     install: () => h.settle(),
     stopServer: async () => {},
@@ -1532,6 +1532,34 @@ test('R1-1: a real framework stop through the host path delivers the in-flight a
     expect(j.records.every((r: any) => r.outcome.state === 'sent')).toBe(true);
   } finally { if (!stopped) await framework.stop().catch(() => {}); }
 }, 20000);
+
+test('R2-2: a stalled notice drain cannot hold up framework stop', async () => {
+  const notices = new NoticesModule({});
+  let release!: () => void;
+  const stalled = new Promise<void>(resolve => { release = resolve; });
+  const drain = spyOn(notices, 'drainHome').mockReturnValue(stalled);
+  const log = spyOn(console, 'error').mockImplementation(() => {});
+  let stopped = false;
+  const began = performance.now();
+  const stopping = stopForSessionSwitch({
+    getModule: name => name === 'notices' ? notices : undefined,
+    stop: async () => { stopped = true; },
+  }, 'next-session');
+  let guard: ReturnType<typeof setTimeout> | undefined;
+  try {
+    expect(await Promise.race([
+      stopping.then(() => stopped),
+      new Promise<boolean>(resolve => { guard = setTimeout(() => resolve(false), 9000); }),
+    ])).toBe(true);
+    expect(performance.now() - began).toBeGreaterThanOrEqual(5000);
+    expect(drain).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('drain before stop timed out'));
+  } finally {
+    clearTimeout(guard);
+    release();
+    try { await stopping; } finally { log.mockRestore(); }
+  }
+}, 12000);
 
 test('R1-1: draining twice only waits; the second call admits nothing', async () => {
   const h = await harness();

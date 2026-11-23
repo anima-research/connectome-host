@@ -107,17 +107,19 @@ policy before a pilot. No live qualification/activation is part of this slice.
   framework/component/child subjects, unknown kinds (generic presentation), and
   `refusal`; there is no category/tier censorship in home mode. Coalescing,
   same-observation delivery failure, overload drops and storage disablement mean
-  not every alert gets a remote post. The host drains the home before it
-  stops the framework (on shutdown and on session switch), because
-  agent-framework closes MCP connections in parallel with module stops: a
-  drain that started inside the module stop would find the connector closing.
-  The drain closes admission and waits for accepted observations; the module
-  stop then unsubscribes and only waits. Sends share one five-second budget from the drain;
-  an in-flight send keeps its existing deadline and later sends use only the
-  time remaining. After expiry, work that would otherwise dispatch is recorded
-  locally as `not-dispatched`, subject to the normal coalescing and retention
-  bounds. Stop waits for the journal writes in addition to the delivery budget
-  and does not cancel a remote send. Unrecognized or missing kinds display as
+  not every alert gets a remote post. Before calling the framework's stop,
+  the host closes home admission and gives accepted work a chance to finish
+  while the connector is still open. Agent-framework closes MCP connections
+  in parallel with module stops.
+  Sends share one five-second budget from the drain; an in-flight send keeps
+  its existing deadline and later sends use only the time remaining. After
+  expiry, work that would otherwise dispatch is recorded locally as
+  `not-dispatched` if journal I/O completes, subject to the normal coalescing
+  and retention bounds. The host waits at most six seconds for the pre-stop
+  drain (the send budget plus one second for I/O), then logs a timeout and
+  starts framework teardown if the drain is still pending. This does not
+  cancel journal I/O or a remote send; the framework's bounded module stop
+  still waits on the same work. Unrecognized or missing kinds display as
   `unknown-alert-kind`. Current-boot traces cached by AF are requested with
   `replay: true`; events not emitted, before the cache, or beyond its bounded
   early-trace retention are not reconstructed. There is no failures.log tailer.
@@ -157,8 +159,17 @@ policy before a pilot. No live qualification/activation is part of this slice.
   A closing turn is not evidence of maintenance repair or fidelity.
   Absence of an incident does not prove health.
   A matching server-reconnected or `mcpl:<serverId>` module-added observation
-  closes `mcpl-down`. Other kinds await their clear event; no cause/offending
-  message is guessed from the last inbound item.
+  closes `mcpl-down`. AF 0.35.1 emits a source clear only for
+  `context-refusal`; the host also emits clears for credential alerts,
+  `instructions-unavailable`, and `compression-quarantine`.
+  There is no built-in closer for `provider-wait`, `recovery-sync`,
+  `deferred-import`, `store-held-long`, `store-held-lost`,
+  `stream-cancel-failed`, `thinking-binding-loss`, `presentation-legacy`,
+  `discord-awareness-unresolved`, or `context-reinit-failed`. Unknown kinds
+  have no guaranteed clear either. Without a matching explicit clear or
+  subject end, these stay tracked until eviction, restart, or session switch,
+  even when the alert reports a one-off event. No cause or offending message
+  is guessed from the last inbound item.
 
 The journal, Zulip display and inline JSON attachment contain **no diagnostic
 free text**. They carry fixed labels (including a fixed set of alert kinds),
@@ -306,8 +317,10 @@ This is a **finite observation window, not an audit log**. When making room,
 the least recently observed records leave regardless of outcome, including
 uncertain records; the most recently observed incident record anchoring each
 tracked identity and the current publication are protected. A coalesced repeat
-refreshes its record's position. The fixed schema fits below the byte cap,
-which remains a defensive file-size check.
+refreshes its record's position. Record and incident counts do not guarantee
+that the encoded journal fits below the byte cap: status snapshots repeat
+subject labels, whose encoded lengths vary. A save over the cap disables
+home delivery for the run.
 `retention.evicted` counts removed records. When a 65th unresolved identity
 arrives, the oldest tracked identity is forgotten, **not recovered**;
 `retention.forgottenActive` counts this loss of tracking and is included in
