@@ -87,6 +87,26 @@ test('filters nested extracts only when their archived call is present', () => {
   expect(filterStoredHistoryExtracts(sent)).toBe(sent);
 });
 
+test('withholds an extract cut inside a paired nested result string carrying private thinking', () => {
+  for (const wrap of [(text: string) => text, (text: string) => [{ type: 'text', text }]]) {
+    for (const suffix of ['\n\n[truncated — fixture]', '\\']) {
+      const serialized = JSON.stringify(extract(
+        projected(call),
+        projected({ type: 'tool_result', toolUseId: call.id, content: wrap(exposed) }),
+      ));
+      // Cut in the middle of the outer string, after the escaped private block.
+      const text = serialized.slice(0, serialized.indexOf('fixture-signature') + 'fixture-signature'.length) + suffix;
+      const { request, result } = requestWith(text);
+      const sent = filterStoredHistoryExtracts(request);
+      expect(resultOf(sent)).toEqual({
+        ...result,
+        content: '[history--extract result withheld: malformed JSON contains a private thinking block.]',
+      });
+      expect(result.content).toBe(text);
+    }
+  }
+});
+
 test('does not filter another tool, a missing call, or a call only found later', () => {
   for (const text of [exposed, exposed.slice(0, -5)]) {
     const other = requestWith(text, { ...call, name: 'history--extract-other' }).request;
@@ -131,11 +151,14 @@ test('preserves malformed bodies with markers only in arguments, quoted text, me
   for (const payload of [
     extract(projected(ordinaryCall)),
     extract(projected({ type: 'text', text: exposed })),
+    extract(projected(ordinaryCall, { type: 'tool_result', toolUseId: ordinaryCall.id, content: exposed })),
     extract(projected({ type: 'thinking', signature: 'not enough to recognize a block' })),
     { ...extract(projected(publicText)), metadata: redacted },
     { content: [thinking] },
   ]) {
-    const { request } = requestWith(JSON.stringify(payload).slice(0, -3));
+    const text = JSON.stringify(payload);
+    const cut = text.indexOf('fixture-signature');
+    const { request } = requestWith(text.slice(0, cut < 0 ? -3 : cut + 'fixture-signature'.length));
     expect(filterStoredHistoryExtracts(request)).toBe(request);
   }
 });

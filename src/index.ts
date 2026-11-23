@@ -1077,6 +1077,12 @@ async function main() {
 
   const gateTelemetryDynamicHeaders = gateTelemetryHeaders(process.env, pendingDebtChunks, activeTurnTrigger);
 
+  const formatter = recipeFormatter(recipe, provider, resolveModel(recipe));
+  const filterStoredHistoryExtractThinking = recipe.agent.filterStoredHistoryExtractThinking === true;
+  if (filterStoredHistoryExtractThinking && formatter.name !== 'native') {
+    console.warn(`[history--extract] agent.filterStoredHistoryExtractThinking is inactive with the "${formatter.name}" formatter; it requires native tool blocks.`);
+  }
+
   const adapter = provider === 'openai-responses'
     ? new LoggingProviderAdapter(
         new OpenAIResponsesAPIAdapter({
@@ -1106,7 +1112,7 @@ async function main() {
                   : {}),
               }),
           baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
-          filterStoredHistoryExtractThinking: recipe.agent.filterStoredHistoryExtractThinking,
+          filterStoredHistoryExtractThinking: filterStoredHistoryExtractThinking && formatter.name === 'native',
           // Only with GATE_TELEMETRY=1 and ANTHROPIC_BASE_URL set, so the stamp
           // goes only to a gateway the operator has named, never to the
           // vendor's default endpoint.
@@ -1156,7 +1162,7 @@ async function main() {
 
   const membrane = new Membrane(adapter, {
     retry: hostMembraneRetry(recipe.agent.retry),
-    formatter: recipeFormatter(recipe, provider, resolveModel(recipe)),
+    formatter,
     ...membraneCachingOverride(recipe, resolveModel(recipe)),
     // membrane sends this participant's messages as assistant turns for a
     // request that names no assistant participant ('Claude' otherwise), and the

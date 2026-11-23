@@ -1,4 +1,9 @@
 import { describe, test, expect } from 'bun:test';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AnthropicXmlFormatter, Membrane, NativeFormatter, OpenAIResponsesFormatter } from '@animalabs/membrane';
 import type { NormalizedMessage } from '@animalabs/membrane';
 import { recipeFormatter, xmlToolsInSystem } from '../src/recipe-formatter.js';
@@ -6,6 +11,34 @@ import type { Recipe } from '../src/recipe.js';
 
 const recipe = (agent: Record<string, unknown>) => ({ agent: { systemPrompt: 'You are Rhys.', ...agent } }) as unknown as Recipe;
 const xmlRecipe = (agent: Record<string, unknown> = {}) => recipe({ formatter: 'anthropic-xml', ...agent });
+
+test('startup warns once about the inactive extract guard only when enabled with a non-native formatter', () => {
+  const warn = '[history--extract] agent.filterStoredHistoryExtractThinking is inactive with the "anthropic-xml" formatter; it requires native tool blocks.';
+  for (const [formatter, enabled] of [['anthropic-xml', true], ['anthropic-xml', false], [undefined, true]] as const) {
+    const dir = mkdtempSync(join(tmpdir(), 'extract-formatter-'));
+    try {
+      const path = join(dir, 'recipe.json');
+      writeFileSync(path, JSON.stringify({
+        name: 'Extract formatter fixture',
+        agent: { systemPrompt: 'Test.', provider: 'anthropic', formatter, filterStoredHistoryExtractThinking: enabled },
+        modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+      }));
+      const child = spawnSync(process.execPath, [fileURLToPath(new URL('../src/index.ts', import.meta.url)), path], {
+        cwd: dir, input: '', encoding: 'utf8', timeout: 15_000,
+        env: {
+          ...process.env, DATA_DIR: join(dir, 'data'), MODEL: '',
+          ANTHROPIC_API_KEY: 'fixture', ANTHROPIC_AUTH_TOKEN: '', ANTHROPIC_OAUTH_CREDENTIALS_FILE: '',
+          ANTHROPIC_BASE_URL: 'http://127.0.0.1:1', THINKING_BINDING_PROBE: 'off',
+        },
+      });
+      if (child.status !== 0) throw new Error(`Host failed to start: ${child.error ?? child.stderr}`);
+      const warnings = child.stderr.split('\n').filter((line) => line.includes('agent.filterStoredHistoryExtractThinking'));
+      expect(warnings).toEqual(formatter && enabled ? [warn] : []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+}, 50_000);
 
 describe('recipeFormatter', () => {
   test('anthropic-xml is pinned to XML tool mode, not left to membrane', () => {

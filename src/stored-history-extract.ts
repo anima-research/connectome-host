@@ -15,22 +15,29 @@ function isPrivateBlock(block: unknown): boolean {
 }
 
 /** For detection only, close the readable prefix of a cut-off JSON result.
- *  Treat strings as tokens, never as structure. An unfinished value that
- *  starts with a quote still has a string field marker.
+ *  Treat strings as tokens, never as structure. Keep the readable bytes of
+ *  unfinished content/text values so a paired nested extract can be checked
+ *  separately, without treating arbitrary quoted text as a block.
  *  Parse the prefix normally to validate its structure before trusting it. */
 function parseJsonPrefix(text: string): unknown {
-  const token = /[\t\n\r ]+|"[^"\\\x00-\x1f]*(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})[^"\\\x00-\x1f]*)*"|[{}\[\]:,]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/y;
+  const token = /[\t\n\r ]+|"[^"\\\x00-\x1f]*(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})[^"\\\x00-\x1f]*)*(")?|[{}\[\]:,]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/y;
   const closers: string[] = [];
   let end = 0;
   let previous = '';
+  let key = '';
   let tail = '';
   while (token.lastIndex < text.length) {
     const start = token.lastIndex;
-    const value = token.exec(text)?.[0];
-    if (value === undefined) {
-      if (text[start] === '"' && previous === ':') {
+    const match = token.exec(text);
+    if (!match) break;
+    const value = match[0];
+    if (value[0] === '"' && !match[1]) {
+      if (previous === ':' && key[0] === '"') {
+        const field = JSON.parse(key);
         end = start;
-        tail = '""';
+        // Retain the string-field marker for private block fields without
+        // interpreting unfinished identifiers or block types.
+        tail = field === 'content' || field === 'text' ? value + '"' : '""';
       }
       break;
     }
@@ -47,6 +54,7 @@ function parseJsonPrefix(text: string): unknown {
         !(value[0] === '"' && top === '}' && (previous === '{' || previous === ','))) {
       end = token.lastIndex;
     }
+    if (value === ':') key = previous;
     previous = value;
   }
   try {

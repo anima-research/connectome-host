@@ -781,8 +781,11 @@ unknown-key warning, like those at the other levels.
   to omit copied private thinking from raw `history--extract` results
   when sending turns and background requests. Off by default. This doesn't
   change the saved conversation or native assistant thinking. It only
-  covers structured results that still have their matching tool call;
-  summaries and other providers are not covered.
+  covers structured results that still have their matching native tool call.
+  With a non-native formatter such as `anthropic-xml`, the guard is inactive
+  and the host warns once at startup if the flag is on. Summaries, other
+  providers, and debug context-makeup token counts are not covered.
+  Toggling the flag can rewrite the affected prompt-cache prefix on the next request.
 - **Shared instructions** (opt-in, `modules.instructions`) — see below
 - **Identity** (opt-in, `modules.identity`) — the agent's own key-based
   identity, used to obtain access to services without credentials entering
