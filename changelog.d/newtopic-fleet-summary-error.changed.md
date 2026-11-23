@@ -1,0 +1,1 @@
+- A bare `/newtopic` that a fleet parent sends, and whose transition summary can't be written, says so without the summary's error, which can hold a provider's words. The child writes the error to its own log, in one line. For any other requester, the line still gives the error.

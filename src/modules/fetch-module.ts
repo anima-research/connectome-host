@@ -613,14 +613,12 @@ export class FetchModule implements Module {
       };
       try {
         response = await this.config.membrane.complete(request);
-      } catch (error) {
-        // The provider's own words, without a full stop of theirs before ours.
-        const reason = (error instanceof Error ? error.message : String(error)).replace(/[.\s]+$/, '');
+      } catch {
         // After an image was shown, the image is the likeliest thing its provider wouldn't take.
         const advice = seen.looked.length > 0
           ? 'If an image is what its provider refused, ask again in a way that needs no image.'
           : 'If it keeps failing, whoever runs this host can set modules.fetch.model.';
-        return { ok: false, error: `${leadIn}: ${reason}.${asked()} ${instead} ${advice}` };
+        return { ok: false, error: `${leadIn}: the call failed.${asked()} ${instead} ${advice}` };
       }
       if (response.stopReason === 'refusal') return { ok: false, error: `${leadIn}: it refused.${asked()} ${instead}` };
       last = response.content

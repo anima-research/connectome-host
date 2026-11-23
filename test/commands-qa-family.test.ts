@@ -386,3 +386,34 @@ describe('/newtopic cut short by a stop', () => {
     }
   });
 });
+
+describe('/newtopic sent by a fleet parent', () => {
+  test("a bare one whose summary can't be written leaves the cause out of its line and writes it to the host's log, on one line with its time", async () => {
+    const cause = 'sentinel-7e1a provider said:\n  overloaded';
+    const written: string[] = [];
+    const write = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    try {
+      const lines: Record<string, string> = {};
+      for (const via of ['fleet', 'headless'] as const) {
+        const { cm, app, text } = makeStubWorld('idle');
+        Object.assign(cm, {
+          getStrategy: () => ({}),
+          windowMode: () => 'presented',
+          indexLength: () => 0,
+          getPresentedMessages: () => [],
+          generateTransitionSummary: async () => { throw new Error(cause); },
+        });
+        lines[via] = text(await handleCommand('/newtopic', app, { requester: { via } }).asyncWork!);
+      }
+      expect(lines).toEqual({
+        fleet: "Topic reset failed: the transition summary couldn't be written; nothing was stored",
+        headless: `Topic reset failed: the transition summary couldn't be written (${cause}); nothing was stored`,
+      });
+      expect(written).toHaveLength(1);
+      expect(written[0]).toMatch(/^\[\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\] \[host\] \/newtopic's transition summary couldn't be written: sentinel-7e1a provider said: overloaded\n$/);
+    } finally {
+      process.stderr.write = write;
+    }
+  });
+});
