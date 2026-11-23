@@ -33,7 +33,7 @@ test("/help's /history line says what /history shows: the last n messages, and h
   ]);
 });
 
-test('/history refuses a count that is not a whole number above 0, naming it, and shows at most 500 with a last line only where rows were held back', () => {
+test('/history refuses a count that isn\'t written as a whole number above 0 in decimal digits, naming it, and shows at most 500, with a last line saying how many the store holds where the cap held rows back', () => {
   // "1e309" read as Infinity, and slice(-Infinity) printed every message in the
   // command's result; "abc", "0" and "-5" fell back to 20 without a word.
   // Number()'s wider grammar ("0x10", "0b11", "1e3") is refused; a leading +
