@@ -147,6 +147,60 @@ test('withholds a malformed paired body with a structural private block marker',
   }
 });
 
+test('withholds a paired extract cut after a private row before the truncation notice', () => {
+  const row = projected(thinking);
+  const serialized = JSON.stringify(extract(row, projected(publicText)));
+  const rowJson = JSON.stringify(row);
+  const prefix = serialized.slice(0, serialized.indexOf(rowJson) + rowJson.length);
+  for (const spill of ['', '; full serialized result: workspace file tool-results/extract.json']) {
+    const text = prefix + `\n\n[truncated — original was ${serialized.length} chars${spill}]`;
+    const { request } = requestWith(text);
+    expect(resultOf(filterStoredHistoryExtracts(request)).content).toMatch(/^\[history--extract result withheld:/);
+  }
+});
+
+// AF 0.35.1 spillNotice, spillPageAdvice and noFileMountText.
+const spillRow = projected(thinking);
+const spillExtract = JSON.stringify(extract(spillRow, projected(publicText)));
+const spillRowEnd = spillExtract.indexOf(JSON.stringify(spillRow)) + JSON.stringify(spillRow).length;
+const spillHead = spillExtract.slice(0, spillRowEnd);
+const spillPath = 'work/tool-results/2026-01-01-toolu_extract.txt';
+const showing = `showing ${spillHead.length} of ${spillExtract.length} chars`;
+const original = `original was ${spillExtract.length} chars`;
+const success = `${showing}; full content: workspace file ${spillPath}. Page with workspace--read `
+  + JSON.stringify({ path: spillPath, offsetChars: 0, limitChars: 1 })
+  + '; use nextOffsetChars as offsetChars until null, keeping limitChars.';
+const failure = `${showing}; spill to workspace file ${spillPath} FAILED (write refused); content over the cap was not retained`;
+const noMount = `${original}; no writable workspace mount without an include`;
+
+test.each([
+  ['spill succeeded', success],
+  ['spill succeeded with cap advice', success + ' Or raise the inline cap via agent_settings update tool_result_inline_max_chars.'],
+  ['spill failed', failure],
+  ['spill failed with a multiline error', failure.replace('write refused', 'write refused\nMount quota exceeded')],
+  ['no writable mount', noMount + ', full content not retained'],
+  ['direct-only mount', noMount + ' that keeps its files in the store, full content not retained'],
+])('withholds a paired extract cut after a private row (%s)', (_label, notice) => {
+  const { request, result } = requestWith(spillHead + `\n\n[truncated — ${notice}]`);
+  expect(resultOf(filterStoredHistoryExtracts(request))).toEqual({
+    ...result,
+    content: '[history--extract result withheld: malformed JSON contains a private thinking block.]',
+  });
+});
+
+test('does not strip spill notices with missing text or trailing content', () => {
+  for (const suffix of [
+    `\n\n[truncated — ${showing}; full content: workspace file ${spillPath}]`,
+    `\n\n[truncated — ${failure.replace('; content over the cap was not retained', '')}]`,
+    `\n\n[truncated — ${noMount}]`,
+    `\n\n[truncated — ${success}]\n`,
+    `\n\n[truncated — ${success}]\nmore text`,
+  ]) {
+    const { request } = requestWith(spillHead + suffix);
+    expect(filterStoredHistoryExtracts(request)).toBe(request);
+  }
+});
+
 test('preserves malformed bodies with markers only in arguments, quoted text, metadata or unknown shapes', () => {
   for (const payload of [
     extract(projected(ordinaryCall)),

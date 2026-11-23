@@ -782,6 +782,10 @@ unknown-key warning, like those at the other levels.
   when sending turns and background requests. Off by default. This doesn't
   change the saved conversation or native assistant thinking. It only
   covers structured results that still have their matching native tool call.
+  Recovery from truncated pages is best-effort for the framework's known
+  tool-result truncation notices, including spill success, spill failure, and
+  no writable mount. Other truncation shapes may pass through unchanged, as
+  can pages missing projection metadata.
   With a non-native formatter such as `anthropic-xml`, the guard is inactive
   and the host warns once at startup if the flag is on. Summaries, other
   providers, and debug context-makeup token counts are not covered.

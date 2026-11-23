@@ -3,6 +3,24 @@ import type { ProviderRequest, ProviderRequestOptions } from '@animalabs/membran
 const EXTRACT = 'history--extract';
 const WITHHELD = '[history--extract result withheld: malformed JSON contains a private thinking block.]';
 
+// Tool-result suffixes from AF 0.35.1: nativeContent/truncateForHistory, then
+// spillOrTruncate's spillNotice (written, failed, or no writable mount).
+// The failed write's error may span lines; AF caps it at 200 code units.
+const TOOL_RESULT_NOTICES = [
+  /\n\n\[truncated — original was \d+ chars(?:; full serialized result: workspace file [^\r\n]+)?\]$/,
+  /\n\n\[truncated — showing \d+ of \d+ chars; full content: workspace file [^\r\n]+\. Page with workspace--read \{"path":"(?:[^"\\\r\n]|\\.)+","offsetChars":0,"limitChars":\d+\}; use nextOffsetChars as offsetChars until null, keeping limitChars\.(?: Or raise the inline cap via agent_settings update tool_result_inline_max_chars\.)?\]$/,
+  /\n\n\[truncated — showing \d+ of \d+ chars; spill to workspace file [^\r\n]+ FAILED \([\s\S]{0,200}\); content over the cap was not retained\]$/,
+  /\n\n\[truncated — original was \d+ chars; no writable workspace mount without an include(?: that keeps its files in the store)?, full content not retained\]$/,
+];
+
+function stripToolResultNotice(text: string): string {
+  for (const notice of TOOL_RESULT_NOTICES) {
+    const match = notice.exec(text);
+    if (match) return text.slice(0, match.index);
+  }
+  return text;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -70,7 +88,7 @@ function filterText(text: string): string {
   try {
     payload = JSON.parse(text);
   } catch {
-    return filterExtract(parseJsonPrefix(text)) ? WITHHELD : text;
+    return filterExtract(parseJsonPrefix(stripToolResultNotice(text))) ? WITHHELD : text;
   }
   return filterExtract(payload) ? JSON.stringify(payload) : text;
 }
