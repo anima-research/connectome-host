@@ -1553,7 +1553,10 @@ test('R2-2: a stalled notice drain cannot hold up framework stop', async () => {
     ])).toBe(true);
     expect(performance.now() - began).toBeGreaterThanOrEqual(5000);
     expect(drain).toHaveBeenCalledTimes(1);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('drain before stop timed out'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(
+      'drain before stop timed out after 6000 ms; framework teardown proceeds. ' +
+      'A pending write or send is not cancelled by the timeout and may complete or be lost.',
+    ));
   } finally {
     clearTimeout(guard);
     release();

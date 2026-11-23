@@ -6,22 +6,31 @@
   connector echoes; overload drops only newly arriving work while at capacity.
   Inference completion can close a matching hard-down, off-path refusal or
   context-maintenance failure. An ended agent's tracked incidents close with
-  a `subject-ended` record each, not a recovery; same-named MCP server outages
-  stay open. Framework-wide incidents are keyed apart from every agent and
+  a `subject-ended` record each, not a recovery. Alerts arriving after the
+  agent ends can stay tracked, and an ending child can close a same-named
+  unknown-kind server incident; `mcpl-down` incidents stay open.
+  Framework-wide incidents are keyed apart from every agent and
   survive agent turns and ends, even for an agent named `framework`.
   Status reports tracked incidents, including after delayed incident delivery
   or an uncertain status, not routine turns.
   The host gives accepted work a bounded drain before framework teardown, while
   the connector is still open. Sends share five seconds; if the drain is still
-  pending after six seconds, teardown proceeds. Incident tracking and delivery
-  evidence use finite retention windows rather than lifetime failure latches. Host
+  pending after six seconds, teardown proceeds without cancelling a pending
+  write or send, which may complete or be lost. During a session switch, an
+  old home's pending save after a drain timeout is not fenced from the new
+  home: it can cause the new home's staging write to fail or replace its
+  journal (untested). Incident tracking and delivery evidence use finite
+  retention windows; long subject labels repeated in status snapshots can
+  push a save over the 2 MiB cap and disable home delivery for the run. Host
   startup and session switch rename existing journal and staging entries aside
   without following symlinks or reading journal contents. Incident IDs start fresh:
   an incident may be reported again, and its later clear may not match.
   The journal, Zulip display and attachment use only fixed labels, dates, IDs
   and counts, never diagnostic free text, plus subject labels. The configured
-  host agent name and MCP server IDs are shown verbatim. Framework-wide
-  incidents and a child named `framework` both show as `subject=framework`
+  host agent name and known MCP server IDs can appear verbatim, including
+  agent-deployed server IDs loaded from the runtime MCP overlay after a
+  restart. Framework-wide incidents and a child named `framework` both
+  show as `subject=framework`
   but have distinct incident keys. Missing subjects show as `none`; other
   names show as `unlisted-` and a 12-hex-digit incident-key prefix. Status
   lists each tracked incident's kind and subject. A receipt whose attachment

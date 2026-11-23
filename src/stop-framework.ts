@@ -16,7 +16,7 @@ export async function stopFramework(framework: StoppableFramework): Promise<void
         notices.drainHome().then(() => true),
         new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), DRAIN_TIMEOUT_MS); }),
       ]);
-      if (!drained) console.error(`[notices:home] drain before stop timed out after ${DRAIN_TIMEOUT_MS} ms; stopping anyway.`);
+      if (!drained) console.error(`[notices:home] drain before stop timed out after ${DRAIN_TIMEOUT_MS} ms; framework teardown proceeds. A pending write or send is not cancelled by the timeout and may complete or be lost.`);
     }
   } catch (error) {
     console.error(`[notices:home] drain before stop failed: ${error instanceof Error ? error.message : String(error)}; stopping anyway.`);

@@ -117,9 +117,10 @@ policy before a pilot. No live qualification/activation is part of this slice.
   `not-dispatched` if journal I/O completes, subject to the normal coalescing
   and retention bounds. The host waits at most six seconds for the pre-stop
   drain (the send budget plus one second for I/O), then logs a timeout and
-  starts framework teardown if the drain is still pending. This does not
-  cancel journal I/O or a remote send; the framework's bounded module stop
-  still waits on the same work. Unrecognized or missing kinds display as
+  starts framework teardown if the drain is still pending. The timeout does
+  not cancel a pending write or send; either may complete or be lost during
+  teardown. The framework's bounded module stop still waits on the same
+  work. Unrecognized or missing kinds display as
   `unknown-alert-kind`. Current-boot traces cached by AF are requested with
   `replay: true`; events not emitted, before the cache, or beyond its bounded
   early-trace retention are not reconstructed. There is no failures.log tailer.
@@ -174,8 +175,10 @@ policy before a pilot. No live qualification/activation is part of this slice.
 The journal, Zulip display and inline JSON attachment contain **no diagnostic
 free text**. They carry fixed labels (including a fixed set of alert kinds),
 times, IDs, counts and delivery state, plus each incident's **subject** label.
-The host agent's configured name and configured MCP server IDs are allowed
-verbatim. Framework-wide incidents and incidents for an ordinary subject
+The host agent's configured name and known MCP server IDs can appear
+verbatim. Known IDs are not necessarily operator-chosen: an agent-deployed
+server ID persisted in the runtime MCP overlay can appear as a subject label
+after restart. Framework-wide incidents and incidents for an ordinary subject
 named `framework` (including a child agent) both display as
 `subject=framework`, but their incident keys are distinct. A missing subject
 displays as `none`;
@@ -185,9 +188,10 @@ Each incident post shows
 `<phase>: <kind>; subject=<subject>`, and status lists every tracked incident
 as `<id> <kind> subject=<subject>`. Trace IDs, messages and structured alert
 data are not copied. Diagnostics remain in the existing local
-producer logs; this mode does not add a text forwarding path. Operator routing
-strings go to the connector only as routing arguments, not into the contents
-of these three sinks.
+producer logs; this mode does not forward diagnostic text. The binding
+fingerprint does not store literal routing values, but the bound server ID
+can also appear as a subject label. The journal stores validated receipt IDs
+verbatim, so a connector-chosen tag can also match a routing value.
 
 The attachment is the pre-dispatch record, not a delivery receipt. Its filename
 is the local record ID, and upload uses the connector's existing facility. No
@@ -232,7 +236,7 @@ no cross-rollback deduplication guarantee.
   tag/URL mapping here. Mixed namespaces, malformed IDs, success=false,
   missing ack or observable receipt routing/realm mismatch stay uncertain.
   The journal's binding fingerprint scopes numeric and branded receipts to
-  the configured server without storing the server name in the outcome.
+  the configured server; the outcome has no separate server-name field.
   Old uncertain receipts are never silently upgraded to sent.
 * `not-dispatched`: definitive local preflight refusal, an earlier failed
   delivery for the same observation, a send skipped because the shared
@@ -287,6 +291,10 @@ its earlier incident. Earlier delivery evidence and dedup history are not
 used or replayed. Inspect the archives if needed and manage their retention
 separately.
 
+**A timed-out drain does not fence the old journal writer.** During a session
+switch, an old home's pending save can race the new home, causing its staging
+write to fail or replacing its journal. This case is untested.
+
 Disablement logs include the cause and the journal path on stderr.
 Missing/ambiguous bound server IDs name registered candidates and
 point to recipe and runtime-overlay configuration, unlike a disconnected
@@ -318,9 +326,9 @@ the least recently observed records leave regardless of outcome, including
 uncertain records; the most recently observed incident record anchoring each
 tracked identity and the current publication are protected. A coalesced repeat
 refreshes its record's position. Record and incident counts do not guarantee
-that the encoded journal fits below the byte cap: status snapshots repeat
-subject labels, whose encoded lengths vary. A save over the cap disables
-home delivery for the run.
+that the encoded journal fits below the 2 MiB byte cap: status snapshots
+repeat subject labels, so long labels can put a save over the cap and
+disable home delivery for the run.
 `retention.evicted` counts removed records. When a 65th unresolved identity
 arrives, the oldest tracked identity is forgotten, **not recovered**;
 `retention.forgottenActive` counts this loss of tracking and is included in
@@ -358,6 +366,10 @@ No other connector implementation is claimed.
 
 ### Known limits
 
+* **Agent-end tracking is name-based.** An alert arriving after an agent
+  ends can stay tracked. A child ending can close an unknown-kind server
+  incident with the same name, even though `mcpl-down` incidents are exempt
+  from this name match.
 * **Repeated status sends when the connector reconnects on every send.** An
   uncertain status clears the dedup baseline, and a reconnect or registration
   of the bound server triggers a status check. If the connector reconnects

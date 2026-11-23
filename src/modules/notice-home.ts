@@ -64,8 +64,8 @@ export interface HomeRuntime {
 }
 
 interface SourceRef { type: 'startup' | typeof HOME_TRACES[number]; timestamp: number | null }
-/** Operator-owned subjects are published as configured; any other subject as
- * a fixed label and a prefix of its incident key (see subjectLabel). */
+/** Known subjects can appear verbatim, including MCP server IDs from the
+ * runtime overlay (see subjectLabel). */
 interface TrackedIncident { id: string; kind: AlertKind; subject: string }
 interface Tracking { activeIncidents: TrackedIncident[]; forgottenActive: number }
 interface ActiveIncident {
@@ -139,7 +139,7 @@ export class NoticeHome {
   private dropped = 0;
   private overflowReported = false;
   private observationDeliveryFailed = false;
-  /** Subjects named by operator configuration; only these are published as is. */
+  /** Verbatim labels: framework, the host agent name, and known MCP server IDs. */
   private operatorSubjects = new Set<string>(['framework']);
 
   constructor(private readonly binding: NoticeHomeConfig, private readonly runtime: HomeRuntime,
@@ -156,7 +156,8 @@ export class NoticeHome {
       retention: { evicted: 0, forgottenActive: 0 }, records: [], active: [], lastStatus: null };
   }
 
-  /** `operatorSubjects`: the configured agent name and MCP server ids. */
+  /** `operatorSubjects` includes MCP server IDs loaded from the runtime overlay,
+   * which can come from an agent deployment, not just operator configuration. */
   bind(backend: HomeBackend, operatorSubjects: Iterable<string> = []): void {
     if (this.bound) return;
     this.bound = true;
@@ -242,8 +243,8 @@ export class NoticeHome {
     await this.chain;
   }
 
-  /** Operator-configured names are published as is; any other subject (such as
-   * a child agent's chosen name) only as a fixed label and an incident-key prefix. */
+  /** Publish known names verbatim; label other nonempty subjects with a
+   * fixed prefix and part of the incident key. */
   private subjectLabel(subject: Subject, key: string): string {
     if (subject === FRAMEWORK_SUBJECT) return 'framework';
     if (subject === null) return 'none';
@@ -251,7 +252,7 @@ export class NoticeHome {
   }
 
   /** An ended agent never completes another turn, so its incidents close here
-   * (one `subject-ended` post each). Framework and same-named server outages stay. */
+   * (one `subject-ended` post each). Framework-wide and `mcpl-down` incidents stay. */
   private async endSubject(key: string, source: SourceRef, sourceId: string, at: number): Promise<boolean> {
     const ending = this.journal.active.filter(a => a.subjectKey === key && a.kind !== 'mcpl-down');
     if (!ending.length) return false;
@@ -458,7 +459,9 @@ export class NoticeHome {
       // Suppress only the rest of this observation (e.g. its derived status).
       // Future independent observations may dispatch; old records NEVER replay.
       this.observationDeliveryFailed = true;
-      console.error(`[notices:home] record ${r.id}: ${r.outcome.state}; detail=${r.outcome.detail}; serverId=${this.binding.serverId}; journal=${join(this.runtime.directory, 'journal.json')}; no replay. Agent core continues.`);
+      console.error(`[notices:home] record ${r.id}: ${r.outcome.state}; detail=${r.outcome.detail}; serverId=${this.binding.serverId}; journal=${join(this.runtime.directory, 'journal.json')}; no replay. ` +
+        (this.shutdownDeadline === null ? 'Agent core continues.'
+          : 'Teardown proceeds after the bounded drain. The send deadline does not cancel pending sends; they may complete or be lost.'));
     }
     // An uncertain status may be what Zulip shows, so no baseline is known.
     if (statusKey && r.outcome.state !== 'not-dispatched') this.journal.lastStatus = r.outcome.state === 'sent' ? statusKey : null;

@@ -249,7 +249,8 @@ export class NoticesModule implements Module {
   private owedLines = new Map<string, OwedLine[]>();
   private flushChain: Promise<void> = Promise.resolve();
   private home: NoticeHome | null = null;
-  /** Configured MCP server ids: subjects a home may publish by name. */
+  /** MCP server IDs from config and the runtime overlay: subjects a home may
+   * publish by name, including agent-deployed servers loaded from the overlay. */
   private serverIds: string[] = [];
 
   constructor(private readonly config: NoticesModuleConfig = {}) {
