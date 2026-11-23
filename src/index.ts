@@ -1106,6 +1106,7 @@ async function main() {
                   : {}),
               }),
           baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+          filterStoredHistoryExtractThinking: recipe.agent.filterStoredHistoryExtractThinking,
           // Only with GATE_TELEMETRY=1 and ANTHROPIC_BASE_URL set, so the stamp
           // goes only to a gateway the operator has named, never to the
           // vendor's default endpoint.

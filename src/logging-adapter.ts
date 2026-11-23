@@ -64,6 +64,7 @@ import { appendFileSync } from 'node:fs';
 import { parseLoggedCall, summarizeCacheControls, type ProviderCallRecord } from './call-ledger.js';
 import { describeErrorObject } from './logging-error-fields.js';
 import { MAX_RECORD_BYTES, serializeRecordOutcome, type RecordKept } from './logging-record.js';
+import { filterStoredHistoryExtracts } from './stored-history-extract.js';
 
 export type ReasoningGetter = () => {
   enabled: boolean;
@@ -442,13 +443,16 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   private readonly getReasoning?: ReasoningGetter;
   private readonly onCall?: ProviderCallObserver;
   private readonly oauthMode: boolean;
+  private readonly filterStoredHistoryExtractThinking: boolean;
   /** LLM_CALLS_FULL_PAYLOADS=1 (or true, in any case): retain the full raw
    *  request on EVERY call, not just refusals/errors, within the 16 MiB a log
    *  line may take. Costs disk. */
   private readonly fullPayloads: boolean = envFlag(process.env.LLM_CALLS_FULL_PAYLOADS);
 
   constructor(
-    config: ConstructorParameters<typeof AnthropicAdapter>[0],
+    config: (NonNullable<ConstructorParameters<typeof AnthropicAdapter>[0]> & {
+      filterStoredHistoryExtractThinking?: boolean;
+    }) | undefined,
     logPath: string,
     getReasoning?: ReasoningGetter,
     onCall?: ProviderCallObserver,
@@ -456,11 +460,12 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     // The background replay bypasses complete/stream by design. Observe its
     // terminal receipt instead of rebuilding or re-sending the cached payload.
     let observeKeepalive: ((call: KeepaliveCall) => void) | undefined;
-    const callerOnCall = config?.cacheKeepalive?.onCall;
+    const { filterStoredHistoryExtractThinking, ...anthropicConfig } = config ?? {};
+    const callerOnCall = anthropicConfig.cacheKeepalive?.onCall;
     super({
-      ...config,
+      ...anthropicConfig,
       cacheKeepalive: {
-        ...config?.cacheKeepalive,
+        ...anthropicConfig.cacheKeepalive,
         onCall(call) {
           try { observeKeepalive?.(call); } catch { }
           // Membrane isolates sync errors and returned promise rejections. The
@@ -474,7 +479,8 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     this.logPath = logPath;
     this.getReasoning = getReasoning;
     this.onCall = onCall;
-    this.oauthMode = Boolean(config?.authToken);
+    this.oauthMode = Boolean(anthropicConfig.authToken);
+    this.filterStoredHistoryExtractThinking = filterStoredHistoryExtractThinking === true;
   }
 
   private withOAuthIdentity(request: ProviderRequest): ProviderRequest {
@@ -873,6 +879,12 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     } as ProviderRequestOptions;
   }
 
+  private withStoredExtractGuard(request: ProviderRequest, options: ProviderRequestOptions): ProviderRequest {
+    return this.filterStoredHistoryExtractThinking
+      ? filterStoredHistoryExtracts(request, options.onContentAltered)
+      : request;
+  }
+
   private recordCall(
     kind: 'complete' | 'stream',
     request: ProviderRequest,
@@ -944,7 +956,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     const wrapped = this.captureRawRequest(options, sink);
     let response: ProviderResponse;
     try {
-      response = await super.complete(effective, wrapped);
+      response = await super.complete(this.withStoredExtractGuard(effective, wrapped), wrapped);
     } catch (err) {
       this.recordCall('complete', request, t0, sink.rawRequest, { error: err });
       throw err;
@@ -976,7 +988,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       : callbacks;
     let response: ProviderResponse;
     try {
-      response = await super.stream(effective, watched, wrapped);
+      response = await super.stream(this.withStoredExtractGuard(effective, wrapped), watched, wrapped);
     } catch (err) {
       this.recordCall('stream', request, t0, sink.rawRequest, { error: err });
       // Sent again only when nothing of it reached the caller, as membrane's own retries.
