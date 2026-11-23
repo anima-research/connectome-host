@@ -48,7 +48,7 @@ function harness(config = zulipConfig()) {
     },
   };
   const prepared = prepareRefusalReactions(config, servers(config));
-  const install = () => installRefusalReactions(framework as unknown as Pick<AgentFramework, 'executeToolCall' | 'getAllTools' | 'listMcplServers'>, config, prepared, d => diagnostics.push(d));
+  const install = (duringSessionSwitch = false) => installRefusalReactions(framework as unknown as Pick<AgentFramework, 'executeToolCall' | 'getAllTools' | 'listMcplServers'>, config, prepared, d => diagnostics.push(d), duringSessionSwitch);
   return { config, framework, prepared, tools, serverRows, calls, diagnostics, alerts, install, emit: (r: MainRefusal) => owner?.handler(r),
     setCurrent: (v: boolean) => { current = v; }, setBinding: (v: string | undefined) => { binding = v; }, setEpoch: (v: string | undefined) => { epoch = v; },
     setSuppression: (v: unknown) => { suppression = v; }, setCall: (fn: typeof onCall) => { onCall = fn; } };
@@ -85,7 +85,7 @@ test('Zulip injects names, preserves existing baseline, never writes operator fi
   expect(Object.isFrozen(prepared[0]!.env)).toBe(true);
   const d = discordConfig(); const ds = servers(d); ds[0]!.env = {};
   expect(prepareRefusalReactions(d, ds)[0]!.env).toEqual({});
-  ds[0]!.env = { DISCORD_SUPPRESSED_REACTIONS_BASELINE: '' };
+  ds[0]!.env = { DISCORD_SUPPRESSED_REACTIONS_BASELINE: 'incomplete' };
   expect(() => prepareRefusalReactions(d, ds)).toThrow('s: Discord refusal suppression seed');
   ds[0]!.env.DISCORD_SUPPRESSED_REACTIONS_BASELINE = REFUSAL_REACTION_BASELINE.join(',') + ',custom:123';
   expect(prepareRefusalReactions(d, ds)[0]!.env).toEqual(ds[0]!.env);
@@ -95,11 +95,22 @@ test('Zulip injects names, preserves existing baseline, never writes operator fi
   expect(() => prepareRefusalReactions(c, wrongEnv)).toThrow('ID contract');
 });
 
-for (const mode of ['strict', 'compat', 'legacy'] as const) {
+test.each(['', '  ', ', ,,, '])('Discord seed %j preserves AF’s default', (seed) => {
+  const config = discordConfig();
+  const env = { DISCORD_SUPPRESSED_REACTIONS_BASELINE: seed };
+  expect(prepareRefusalReactions(config, [{ ...servers(config)[0]!, env }])[0]!.env).toEqual(env);
+});
+
+test('Zulip legacy IDs fail preparation rather than taking ownership without a usable ID', () => {
+  const config = zulipConfig('legacy');
+  expect(() => prepareRefusalReactions(config, servers(config))).toThrow('Refusal server s: Zulip idMode "legacy"');
+});
+
+for (const mode of ['strict', 'compat'] as const) {
   for (const id of ['realm:009', '009', 'other:009', 'realm:9007199254740992', ' realm:9', 'realm:0', 'realm:-9']) {
     test(`Zulip ${mode} preserves or refuses opaque ${id}`, async () => {
       const h = harness(zulipConfig(mode)); h.install(); await h.emit(signal(id));
-      const accepted = mode !== 'legacy' && (id === 'realm:009' || (id === '009' && mode === 'compat'));
+      const accepted = id === 'realm:009' || (id === '009' && mode === 'compat');
       expect(h.calls.length).toBe(accepted ? 1 : 0);
       if (accepted) {
         expect(h.calls[0]!.input).toEqual({ message_id: id, emoji_name: 'biohazard' });
@@ -163,6 +174,22 @@ test('Discord never blind-splits unknown channel forms or guesses latest message
   }
 });
 
+test('Discord reports denied, failed and thrown filters_get calls without issuing ADD', async () => {
+  for (const [reason, refused] of [['not permitted by allowedTools', true], ['connector unavailable', false], ['transport closed', undefined]] as const) {
+    const h = harness(discordConfig());
+    h.setCall(async () => {
+      if (refused === undefined) throw new Error(reason);
+      return { success: false, refused, isError: true, error: reason };
+    });
+    h.install();
+    await h.emit(discordSignal());
+    expect(h.calls.map(c => c.name)).toEqual(['p--filters_get']);
+    expect(h.diagnostics[0]).toStartWith(`filters_get-${refused ? 'refused' : 'failed'}:`);
+    expect(h.diagnostics[0]).toContain(reason);
+    expect(h.alerts[0]?.[2]).toContain(reason);
+  }
+});
+
 test('an epoch/instance/prefix replacement during preflight prevents ADD', async () => {
   for (const change of ['epoch', 'instance', 'prefix']) {
     const h = harness(discordConfig());
@@ -180,7 +207,9 @@ test('overlapping old/new turn effects never remove each other; configuration ca
   const h = harness(); let finish!: (r: ToolResult) => void;
   h.setCall(call => call.input && (call.input as any).message_id === 'realm:1' ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({ success: true }));
   h.install();
-  const old = h.emit(signal('realm:1', 1)); await h.emit(signal('realm:2', 2));
+  const old = h.emit(signal('realm:1', 1));
+  if (h.config.servers[0]?.kind === 'zulip') h.config.servers[0].emojis.bio = 'changed';
+  await h.emit(signal('realm:2', 2));
   finish({ success: true }); await old;
   expect(h.calls.map(c => c.input)).toEqual([{ message_id: 'realm:1', emoji_name: 'biohazard' }, { message_id: 'realm:2', emoji_name: 'biohazard' }]);
 });
@@ -229,6 +258,17 @@ for (const state of ['closed-tab', 'failed-connect', 'binding', 'epoch'] as cons
 test('explicit closed-tab config is rejected before connect', () => {
   const c = discordConfig();
   expect(() => prepareRefusalReactions(c, [{ ...servers(c)[0]!, presentation: 'closed-tab' }])).toThrow('s: closed-tab');
+});
+
+test('an unavailable switched-to endpoint stays disabled after reconnect without handing legacy back', async () => {
+  const h = harness(discordConfig());
+  h.serverRows[0]!.connected = false;
+  h.install(true);
+  h.serverRows[0]!.connected = true;
+  expect(h.emit(discordSignal())).toBeInstanceOf(Promise); // Ownership was taken, not left to AF.
+  await h.emit({ ...discordSignal(), turnId: 2 });
+  expect(h.calls).toEqual([]);
+  expect(h.diagnostics).toEqual([expect.stringContaining('marking is off until restart')]);
 });
 
 test('unchanged epoch survives recovery; replacement alerts once with actionable context', async () => {

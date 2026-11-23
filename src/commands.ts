@@ -708,8 +708,10 @@ function handleSessionNew(app: AppContext, name?: string): CommandResult {
   if (app.stopping) return hostStopping;
   const running = stillRunning(app);
   if (running) return running;
-  const session = app.sessionManager.createSession(name);
-  resetBranchState(app.branchState);
+  // An opted-in switch may be refused before the current session stops.
+  const activateNow = app.recipe?.mainRefusalReactions === undefined;
+  const session = app.sessionManager.createSession(name, activateNow);
+  if (activateNow) resetBranchState(app.branchState);
 
   return {
     lines: [{ text: `Switching to new session: ${session.name} [${session.id}]...`, style: 'system' }],
@@ -735,7 +737,7 @@ function handleSessionSwitch(app: AppContext, nameOrId?: string): CommandResult 
 
   const running = stillRunning(app);
   if (running) return running;
-  resetBranchState(app.branchState);
+  if (app.recipe?.mainRefusalReactions === undefined) resetBranchState(app.branchState);
 
   return {
     lines: [{ text: `Switching to session: ${session.name} [${session.id}]...`, style: 'system' }],

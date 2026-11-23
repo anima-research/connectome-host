@@ -33,16 +33,18 @@ policy remains unchanged.
 Each selected server must be a unique configured stdio child with an explicit
 child environment (`inheritEnv: true` and network transports are unsupported).
 It must be connected, non-refused, and have a defined bridge binding and epoch
-at install. Closed-tab selection and failed first connects fail startup rather
+at cold startup. Closed-tab selection and failed first connects fail startup rather
 than silently taking ownership without a working server. This includes tabs
 restored closed from saved state. Recipe shapes are validated at load, then
 connector/environment checks run again during preparation and installation.
 
 Bridge availability and child configuration are checked **before**
 `AgentFramework.create`. Installation runs **after** create has connected startup
-servers. An installation failure stops that framework and its children; it is
-not a pre-handshake check. Each framework instance (including a new session)
-acquires its own owner; teardown calls the disposer from that acquisition.
+servers. A cold-start installation failure stops that framework and its
+children; it is not a pre-handshake check. Each framework instance (including a
+new session) acquires its own owner; teardown calls that acquisition's disposer.
+On a session switch the host validates the effective target configuration
+before stopping the current framework.
 
 ## Discord
 
@@ -51,11 +53,12 @@ the example. `sourceRevision` is an operator assertion, not runtime proof of the
 installed executable. Verify the connector artifact before use.
 
 Prefer omitting `DISCORD_SUPPRESSED_REACTIONS_BASELINE` from the child environment.
-AF then supplies its per-spawn protective default, including refusal markers,
-configured awareness markers and retained outbox markers. An explicitly declared
-value replaces that complete dynamic default: the host checks that it contains
-all AF refusal markers, but cannot guarantee coverage of future awareness
-markers. Do not add a static refusal-only override to enable this feature.
+Omission and blank or comma-only values let AF supply its per-spawn protective
+default, including refusal markers, configured awareness markers and retained
+outbox markers. A value with tokens replaces that complete dynamic default: the
+host checks that it contains all AF refusal markers, but cannot guarantee
+coverage of future awareness markers. Do not add a static refusal-only override
+to enable this feature.
 
 The driver preserves canonical `discord:<guild-snowflake|dm>:<channel-snowflake>`
 channel IDs and numeric message-reference strings. Before each ADD,
@@ -76,8 +79,8 @@ Its server entry requires `kind: "zulip"`, that `sourceRevision`, `realmTag`,
 and `availableEmojiNames` (operator-preflighted names). Explicit child
 `ZULIP_ID_MODE` and `ZULIP_REALM_TAG` must match. Strict/compat modes preserve
 scoped string IDs; compat also accepts positive safe decimal strings. Legacy
-mode currently passes preparation but cannot emit a reaction. No numeric
-coercion or realm stripping is performed.
+mode is rejected during preparation because its tool requires numeric IDs. No
+numeric coercion or realm stripping is performed.
 
 The driver unions configured names into `ZULIP_SUPPRESSED_REACTIONS_BASELINE`,
 preserving entries in **that variable only**. The connector prefers it over
@@ -92,6 +95,12 @@ fail closed and ownership remains held: **there is no legacy fallback or runtime
 rearm**. Restart the whole host through normal preparation and installation to
 recover. An issued ADD cannot be undone.
 
+If a selected connector fails to connect or is restored as a closed tab during
+a session switch, the host completes the switch and logs one warning for that
+connector. As with replacement, reconnecting within that framework instance
+does not rearm marking; restart with a working connector. There is no legacy
+fallback.
+
 An epoch identifies the framework's config and connection objects in this
 process, not the child PID, a transport epoch, or a connector's identity.
 Automatic crash/reconnect in place keeps that epoch; replacing the connection
@@ -102,8 +111,10 @@ Diagnostics include server ID (null for unknown origin), agent name, turn ID and
 category. When a current refusal cannot produce a marker, the first failure per
 server also sends a `refusal-reaction-unavailable` ops alert. Alerts are bounded
 per installation, not a background health monitor: stale state is detected when
-a refusal arrives. Check the status, connector availability, advertised schema,
-capabilities and suppression policy; restart the host after correcting config.
+a refusal arrives. A denied or failed Discord `filters_get` call reports the
+tool error, not an unsupported suppression source. Check the status, connector
+availability, advertised schema, capabilities and suppression policy; restart the
+host after correcting config.
 
 ## Effect guarantees
 

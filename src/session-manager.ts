@@ -59,7 +59,7 @@ export class SessionManager {
     return randomBytes(4).toString('hex');
   }
 
-  createSession(name?: string): SessionMeta {
+  createSession(name?: string, activate = true): SessionMeta {
     const index = this.load();
     const id = this.generateId();
     const now = new Date().toISOString();
@@ -77,7 +77,7 @@ export class SessionManager {
     mkdirSync(this.sessionsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
 
     index.sessions[id] = session;
-    index.activeSessionId = id;
+    if (activate) index.activeSessionId = id;
     this.save(index);
 
     return session;

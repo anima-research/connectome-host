@@ -26,6 +26,6 @@ rl.on('line', line => {
     if (name === 'add_reaction') calls.push(args);
     reply(message.id, { content: [{ type: 'text', text: JSON.stringify(name === 'read_calls' ? calls : name === 'filters_get'
       ? { reactionSuppression: { source: 'baseline-default', status: 'active',
-        protectionActive: Boolean(process.env.DISCORD_SUPPRESSED_REACTIONS_BASELINE) } } : { added: true }) }] });
+        protectionActive: (process.env.DISCORD_SUPPRESSED_REACTIONS_BASELINE ?? '').split(',').includes('☣️') } } : { added: true }) }] });
   } else reply(message.id, { accepted: true });
 });

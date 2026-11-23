@@ -107,19 +107,20 @@ export function prepareRefusalReactions(config: RefusalReactionConfig | undefine
     if (matches.length !== 1 || !server?.command || server.url || server.inheritEnv === true) throw new Error(`Refusal server ${driver.serverId}: requires one known stdio server with explicit child environment`);
     if (server.presentation === 'closed-tab') throw new Error(`Refusal server ${driver.serverId}: closed-tab selection is unsupported`);
     if (driver.kind === 'discord' && driver.sourceRevision === DISCORD_SOURCE) {
-      // Omission preserves AF's per-spawn protective default, including retained
-      // awareness markers. Validate coverage only for an operator replacement.
-      const seed = server.env.DISCORD_SUPPRESSED_REACTIONS_BASELINE;
-      if (seed !== undefined && REFUSAL_REACTION_BASELINE.some(e => !tokens(seed).includes(e))) throw new Error(`Refusal server ${driver.serverId}: Discord refusal suppression seed is incomplete`);
+      // AF treats a seed with no usable tokens as unset and injects its default.
+      const seed = tokens(String(server.env.DISCORD_SUPPRESSED_REACTIONS_BASELINE ?? ''));
+      if (seed.some(e => e.replace(/\uFE0F/g, '').trim().replace(/^:|:$/g, '') !== '')
+        && REFUSAL_REACTION_BASELINE.some(e => !seed.includes(e))) throw new Error(`Refusal server ${serverId}: Discord refusal suppression seed is incomplete`);
     } else if (driver.kind === 'zulip' && driver.sourceRevision === ZULIP_SOURCE) {
-      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(driver.realmTag) || !['strict', 'compat', 'legacy'].includes(driver.idMode)) throw new Error('Invalid Zulip ID contract');
-      if (!driver.emojis?.unknown || Object.values(driver.emojis).some(e => !emojiName(e) || !driver.availableEmojiNames?.includes(e))) throw new Error('Zulip emoji names require explicit realm preflight');
-      if (server.env.ZULIP_ID_MODE !== driver.idMode || server.env.ZULIP_REALM_TAG !== driver.realmTag) throw new Error('Zulip driver does not match the configured child ID contract');
+      if (driver.idMode === 'legacy') throw new Error(`Refusal server ${serverId}: Zulip idMode "legacy" uses numeric IDs; use strict or compat`);
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(driver.realmTag)) throw new Error(`Refusal server ${serverId}: invalid Zulip realmTag`);
+      if (Object.values(driver.emojis).some(e => !emojiName(e) || !driver.availableEmojiNames.includes(e))) throw new Error(`Refusal server ${serverId}: Zulip emojis require explicit realm preflight in availableEmojiNames`);
+      if (server.env.ZULIP_ID_MODE !== driver.idMode || server.env.ZULIP_REALM_TAG !== driver.realmTag) throw new Error(`Refusal server ${serverId}: Zulip idMode and realmTag must match the child ID contract (ZULIP_ID_MODE and ZULIP_REALM_TAG)`);
       // The reviewed fork ALWAYS unions this NAME baseline with operator filters.
       server.env.ZULIP_SUPPRESSED_REACTIONS_BASELINE = [...new Set([
         ...tokens(server.env.ZULIP_SUPPRESSED_REACTIONS_BASELINE), ...Object.values(driver.emojis),
       ])].join(',');
-    } else throw new Error(`Refusal server ${serverId}: unsupported source contract`);
+    } else throw new Error(`Refusal server ${serverId}: unsupported source contract (sourceRevision)`);
     Object.freeze(server.env);
     if (server.args) server.args = Object.freeze([...server.args]) as string[];
     Object.freeze(server);
@@ -149,7 +150,6 @@ function zulipRef(id: string, driver: Zulip): boolean {
   return digits !== undefined && digits.length <= 16 && BigInt(digits) > 0n && BigInt(digits) <= 9007199254740991n;
 }
 function payload(result: ToolResult): Record<string, unknown> | undefined {
-  if (!result.success || result.isError) return undefined;
   if (typeof result.data === 'string') {
     try { return object(JSON.parse(result.data)); } catch { return undefined; }
   }
@@ -170,6 +170,7 @@ function payload(result: ToolResult): Record<string, unknown> | undefined {
  * with ownership retained; the host offers no runtime rearm. */
 export function installRefusalReactions(framework: Surface, config: RefusalReactionConfig, prepared: McplServerConfig[],
   diagnostic: (status: string) => void = status => console.error(`[refusal-reaction] ${status}`),
+  duringSessionSwitch = false,
 ): () => void {
   const bridge = bridgeOf(framework);
   // Revalidate and freeze operator configuration; a later recipe mutation cannot
@@ -183,6 +184,12 @@ export function installRefusalReactions(framework: Surface, config: RefusalReact
     const epoch = bridge.serverEpoch(driver.serverId);
     if (rows.length !== 1 || !rows[0]!.connected || rows[0]!.transport !== 'stdio' || rows[0]!.refused !== null
       || binding === undefined || epoch === undefined) {
+      // The old framework is gone; keep the switch usable, but never arm this
+      // driver even if AF connects it later. Ownership still replaces legacy.
+      if (duringSessionSwitch) {
+        diagnostic(`Refusal server ${driver.serverId}: no supported connection in the new session; marking is off until restart`);
+        continue;
+      }
       throw new Error(`Refusal server ${driver.serverId}: must be connected with a supported binding and epoch before ownership; closed tabs and failed connects are unsupported`);
     }
     endpoints.set(driver.serverId, { binding, epoch });
@@ -210,7 +217,8 @@ export function installRefusalReactions(framework: Surface, config: RefusalReact
     const origin = refusal.origin;
     const driver = drivers.servers.find(d => d.serverId === origin.serverId);
     if (!driver) { report('unsupported-driver'); return; }
-    const endpoint = endpoints.get(origin.serverId)!;
+    const endpoint = endpoints.get(origin.serverId);
+    if (!endpoint) return; // Already warned at install.
     const current = () => active && bridge.isCurrent(refusal)
       && endpoint.binding === origin.binding && bridge.serverBinding(origin.serverId) === origin.binding
       && endpoint.epoch === bridge.serverEpoch(origin.serverId);
@@ -243,7 +251,18 @@ export function installRefusalReactions(framework: Surface, config: RefusalReact
       if (driver.kind === 'discord') {
         const name = `${prefix}--filters_get`;
         if (!schemaAccepts(advertised(name), {})) { report('unsupported-suppression-preflight'); return; }
-        const status = object(payload(await framework.executeToolCall({ id: randomUUID(), name, input: {}, callerAgentName: refusal.agentName }))?.reactionSuppression);
+        let result: ToolResult;
+        try {
+          result = await framework.executeToolCall({ id: randomUUID(), name, input: {}, callerAgentName: refusal.agentName });
+        } catch (error) {
+          result = { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+        if (!result.success || result.isError || result.refused) {
+          const reason = JSON.stringify(result.error?.slice(0, 512) || 'no error details');
+          report(`filters_get-${result.refused ? 'refused' : 'failed'}: ${reason}`);
+          return;
+        }
+        const status = object(payload(result)?.reactionSuppression);
         // Source, not a count/digest: only the known injected baseline is proof.
         // Operator-owned overrides remain opaque and are honestly unsupported.
         if (status?.source !== 'baseline-default' || status.status !== 'active' || status.protectionActive !== true) { report('unsupported-discord-suppression-source'); return; }
@@ -281,6 +300,8 @@ export function refusalReactionLifecycle(config: RefusalReactionConfig, prepared
       async onProcess() { return {}; },
       async handleToolCall() { return { success: false, error: 'No refusal reaction tools' }; },
     } satisfies Module,
-    install(framework: Surface) { dispose = installRefusalReactions(framework, config, prepared, diagnostic); },
+    install(framework: Surface, duringSessionSwitch = false) {
+      dispose = installRefusalReactions(framework, config, prepared, diagnostic, duringSessionSwitch);
+    },
   };
 }

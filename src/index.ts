@@ -259,6 +259,27 @@ let instructionsRef: InstructionsModule | null = null;
 let installHere: ReleaseHere | null = null;
 let terminalAsker: SecretAsker | null = null;
 
+class RefusalSwitchPreflightError extends Error {}
+
+function loadFrameworkServers(recipe: Recipe, timeZone: string) {
+  const allServers = mergeRecipeServers(
+    (recipe.mcpServers ?? {}) as unknown as Record<string, Record<string, unknown>>,
+    loadMcplServers(DEFAULT_CONFIG_PATH) as unknown as Array<{ id: string } & Record<string, unknown>>,
+  );
+  for (const line of overlayWarnings(allServers, DEFAULT_AGENT_OVERLAY_PATH)) console.warn(line);
+  const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH).map(server => ({
+    ...server, env: composeMcplChildEnv(server.env as Record<string, string> | undefined, timeZone),
+  }));
+  // The framework's heartbeat runs without heartbeat-mcpl beside it.
+  const heartbeatOptions = heartbeatOptionsFor(recipe.modules?.heartbeat, config.dataDir);
+  let mcplServers: McplServerConfig[] = heartbeatOptions ? withoutHeartbeatMcpl(finalServers, (line) => console.warn(line)) : finalServers;
+  if (recipe.mainRefusalReactions !== undefined) {
+    assertRefusalBridgeAvailable(AgentFramework.prototype);
+    mcplServers = prepareRefusalReactions(recipe.mainRefusalReactions, mcplServers);
+  }
+  return { allServers, finalServers, mcplServers, heartbeatOptions };
+}
+
 async function createFramework(
   membrane: Membrane,
   storePath: string,
@@ -270,6 +291,7 @@ async function createFramework(
   credentials: CredentialMonitor | null,
   subscriptionUnmetered = false,
   extensions?: ExtensionRegistry,
+  preflightedSwitchServers?: ReturnType<typeof loadFrameworkServers>,
 ): Promise<AgentFramework> {
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
@@ -492,32 +514,21 @@ async function createFramework(
     moduleInstances.push(instance);
   }
 
-  const recipeServers = recipe.mcpServers ?? {};
-  const fileServers = loadMcplServers(DEFAULT_CONFIG_PATH);
-
-  const allServers = mergeRecipeServers(
-    recipeServers as unknown as Record<string, Record<string, unknown>>,
-    fileServers as unknown as Array<{ id: string } & Record<string, unknown>>,
-  );
-
-  for (const line of overlayWarnings(allServers, DEFAULT_AGENT_OVERLAY_PATH)) console.warn(line);
-  const finalServers = applyAgentOverlay(allServers, DEFAULT_AGENT_OVERLAY_PATH).map((server) => {
-    const withEnv: { id: string; command?: string; url?: string; [k: string]: unknown } = {
-      ...server,
-      env: composeMcplChildEnv(server.env as Record<string, string> | undefined, timeZone),
-    };
-    if (typeof withEnv.access === 'string' && withEnv.access) {
+  const { allServers, finalServers, mcplServers, heartbeatOptions } = preflightedSwitchServers ?? loadFrameworkServers(recipe, timeZone);
+  const serversWithAccess = mcplServers.map(server => {
+    const { access } = server as McplServerConfig & { access?: unknown };
+    if (typeof access === 'string' && access) {
       if (identityModule) {
         const identity = identityModule;
-        const audience = withEnv.access as string;
-        withEnv.accessProvider = () => identity.accessFor(audience);
+        const withAccess = { ...server, accessProvider: () => identity.accessFor(access) };
+        return Object.isFrozen(server) ? Object.freeze(withAccess) : withAccess;
       } else {
         console.error(
-          `[mcpl] server "${server.id}": access "${withEnv.access}" declared but the recipe has no identity module — connecting without credentials`,
+          `[mcpl] server "${server.id}": access "${access}" declared but the recipe has no identity module — connecting without credentials`,
         );
       }
     }
-    return withEnv;
+    return server;
   });
 
   const strategy = buildFrameworkStrategy(recipe, model, timeZone, extensionRegistry, agentName);
@@ -527,17 +538,9 @@ async function createFramework(
   for (const notice of deprecatedSurfaceNotices(recipe.modules)) console.warn(`[deprecated] ${notice}`);
   const conversations = buildConversationsConfig(recipe, agentName, model, timeZone, extensionRegistry);
 
-  // The framework's heartbeat (heartbeat-options.ts), with heartbeat-mcpl
-  // left out beside it.
-  const heartbeatOptions = heartbeatOptionsFor(modules.heartbeat, config.dataDir);
-  let mcplServers: McplServerConfig[] = heartbeatOptions ? withoutHeartbeatMcpl(finalServers, (line) => console.warn(line)) : finalServers;
-
-  // Fail before connecting anything when stock AF lacks this optional feature.
   let refusalReactions: ReturnType<typeof refusalReactionLifecycle> | undefined;
   if (recipe.mainRefusalReactions !== undefined) {
-    assertRefusalBridgeAvailable(AgentFramework.prototype);
-    mcplServers = prepareRefusalReactions(recipe.mainRefusalReactions, mcplServers);
-    refusalReactions = refusalReactionLifecycle(recipe.mainRefusalReactions, mcplServers);
+    refusalReactions = refusalReactionLifecycle(recipe.mainRefusalReactions, serversWithAccess);
     moduleInstances.push(refusalReactions.module);
   }
 
@@ -547,7 +550,7 @@ async function createFramework(
     ...frameworkErrorPolicy(recipe.agent.retry),
     agents: [agentConfig],
     modules: moduleInstances,
-    mcplServers,
+    mcplServers: serversWithAccess,
     gate: gateOptions,
     // Passed by spread, so an agent-framework without it reads nothing it
     // doesn't know (and the line after create says so).
@@ -644,7 +647,7 @@ async function createFramework(
   }
 
   if (refusalReactions) {
-    try { refusalReactions.install(framework); }
+    try { refusalReactions.install(framework, preflightedSwitchServers !== undefined); }
     catch (error) { await framework.stop(); throw error; }
   }
   return framework;
@@ -795,7 +798,14 @@ async function runPiped(app: AppContext) {
       if (result.switchToSessionId) {
         const sessionId = result.switchToSessionId;
         turns.switched();
-        const switched = await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
+        let switched: boolean;
+        try {
+          switched = await switchFollowing(traces, () => app.switchSession(sessionId), () => app.framework);
+        } catch (error) {
+          if (!(error instanceof RefusalSwitchPreflightError)) throw error;
+          say(`Session switch refused: ${error.message}`);
+          return false;
+        }
         console.log(switched ? 'Session switched.' : switchLeftForStop(app.sessionManager.getActiveSession()));
         if (switched) await afterSwitch();
       }
@@ -1248,14 +1258,25 @@ async function main() {
 
     async switchSession(id: string) {
       const newStorePath = sessionManager.getStorePath(id);
+      let preflightedSwitchServers: ReturnType<typeof loadFrameworkServers> | undefined;
       return switchSessionSteps(this, {
         stopOld: async () => {
+          // Validate the effective target config while the old framework is
+          // still live. Reuse this snapshot rather than rereading the overlays.
+          if (recipe.mainRefusalReactions !== undefined) {
+            try {
+              preflightedSwitchServers = loadFrameworkServers(recipe, resolveTimeZone(recipe.agent.timezone));
+            } catch (error) {
+              throw new RefusalSwitchPreflightError(error instanceof Error ? error.message : String(error), { cause: error });
+            }
+          }
           handleExport(this);
           await stopForSessionSwitch(this.framework, id);
         },
         make: () => {
           sessionManager.setActiveSession(id);
-          return createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate);
+          return createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, credentials,
+            !!codexGate, undefined, preflightedSwitchServers);
         },
         install: async (next) => {
           this.framework = next;

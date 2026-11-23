@@ -38,7 +38,14 @@ describe.skipIf(!root)('reviewed connector sources, not a deployed qualification
       const ids = new MessageIds('realm', mode);
       const driverConfig: RefusalReactionConfig = { ownership: 'whole-framework', servers: [{ serverId: 's', kind: 'zulip', sourceRevision: ZULIP_SOURCE, idMode: mode, realmTag: 'realm',
         emojis: { bio: 'biohazard', unknown: 'stop_sign' }, availableEmojiNames: ['biohazard', 'stop_sign'] }] };
-      const prepared = prepareRefusalReactions(driverConfig, [{ id: 's', command: 'node', env: { ZULIP_ID_MODE: mode, ZULIP_REALM_TAG: 'realm' } }]);
+      const server = { id: 's', command: 'node', env: { ZULIP_ID_MODE: mode, ZULIP_REALM_TAG: 'realm' } };
+      if (mode === 'legacy') {
+        const add = idToolDefinitions(toolDefinitions, ids).find((t: any) => t.name === 'add_reaction');
+        expect(add.inputSchema.properties.message_id.type).toBe('number');
+        expect(() => prepareRefusalReactions(driverConfig, [server])).toThrow('idMode "legacy"');
+        return;
+      }
+      const prepared = prepareRefusalReactions(driverConfig, [server]);
       // Constructor only: pure suppression logic, no real or fake operator file.
       const plane = new FiltersPlane('/never-read-or-written', prepared[0]!.env);
       const tools = idToolDefinitions(toolDefinitions, ids).map((t: any) => ({ ...t, name: `p--${t.name}` }));
@@ -57,7 +64,7 @@ describe.skipIf(!root)('reviewed connector sources, not a deployed qualification
         },
       } as any, driverConfig, prepared, () => {});
       await handler({ agentName: 'agent', agentInstanceId: 'instance', turnId: 1, category: 'bio', rewind: 'unhandled', origin: { serverId: 's', binding: 'binding', channelId: 'zulip:room', messageRef: 'realm:009' } });
-      expect(calls).toEqual(mode === 'legacy' ? [] : [{ message_id: 'realm:009', emoji_name: 'biohazard' }]);
+      expect(calls).toEqual([{ message_id: 'realm:009', emoji_name: 'biohazard' }]);
       expect(echoes).toEqual([]);
       expect(() => ids.parse('other:009')).toThrow();
       if (mode === 'strict') expect(() => ids.parse(9)).toThrow();
