@@ -624,8 +624,9 @@ describe('setup', () => {
       writeFileSync(join(clone, 'package.json'), JSON.stringify({ version: '0.10.2' }));
       const before = untouched();
       expect(refusal(() => setup(options({ hostRoot: clone })))).toBe(`${seen()} This connectome-host (${clone}) isn't ` +
-        'installed in a node_modules. Setup makes an npm install update itself; a clone keeps the hand procedure in ' +
-        'docs/DEPLOYMENTS.md. If setup didn\'t make it, choose another --root.');
+        'installed in a node_modules. Setup makes an npm install update itself. A clone updates by hand, or moves to ' +
+        `an install as "Moving from a clone to an install" in ${join(clone, 'docs', 'DEPLOYMENTS.md')} says. If setup ` +
+        'didn\'t make it, choose another --root.');
       expect(untouched()).toEqual(before);
     });
 
@@ -700,8 +701,9 @@ describe('setup', () => {
       writeFileSync(join(clone, 'package.json'), JSON.stringify({ version: '0.10.2' }));
       const before = untouched();
       expect(refusal(() => setup(options({ hostRoot: clone })))).toBe(`${seen('journal.jsonl, its update journal,')} This ` +
-        `connectome-host (${clone}) isn't installed in a node_modules. Setup makes an npm install update itself; a clone ` +
-        'keeps the hand procedure in docs/DEPLOYMENTS.md. If setup didn\'t make it, choose another --root.');
+        `connectome-host (${clone}) isn't installed in a node_modules. Setup makes an npm install update itself. A ` +
+        'clone updates by hand, or moves to an install as "Moving from a clone to an install" in ' +
+        `${join(clone, 'docs', 'DEPLOYMENTS.md')} says. If setup didn't make it, choose another --root.`);
       expect(untouched()).toEqual(before);
     });
 
@@ -804,8 +806,9 @@ describe('setup', () => {
       expect(refusal(() => setup(options({ hostRoot: clone })))).toBe(`${seen('journal.jsonl, its update journal,')} ` +
         'Its current names 0.10.2, and its journal\'s last line, an ok commit, names 0.11.0, so setup can\'t tell which ' +
         `release its data last committed on. ${holdStop()} This connectome-host (${clone}) isn't installed in a ` +
-        'node_modules. Setup makes an npm install update itself; a clone keeps the hand procedure in docs/DEPLOYMENTS.md. ' +
-        'If setup didn\'t make it, choose another --root.');
+        'node_modules. Setup makes an npm install update itself. A clone updates by hand, or moves to an install as ' +
+        `"Moving from a clone to an install" in ${join(clone, 'docs', 'DEPLOYMENTS.md')} says. If setup didn't make ` +
+        'it, choose another --root.');
       expect(untouched()).toEqual(before);
     });
 
@@ -847,8 +850,9 @@ describe('setup', () => {
       const before = untouched();
       expect(refusal(() => setup(options({ hostRoot: clone })))).toBe(`${seen()} It has no current that names a ` +
         `release. Nothing setup can read names the release its data last committed on. ${holdStop()} This ` +
-        `connectome-host (${clone}) isn't installed in a node_modules. Setup makes an npm install update itself; a ` +
-        'clone keeps the hand procedure in docs/DEPLOYMENTS.md. If setup didn\'t make it, choose another --root.');
+        `connectome-host (${clone}) isn't installed in a node_modules. Setup makes an npm install update itself. A ` +
+        'clone updates by hand, or moves to an install as "Moving from a clone to an install" in ' +
+        `${join(clone, 'docs', 'DEPLOYMENTS.md')} says. If setup didn't make it, choose another --root.`);
       expect(untouched()).toEqual(before);
     });
 

@@ -136,6 +136,8 @@ test('the package\'s bin, in a directory with no install, says there\'s none', a
     const ran = await run(BIN, args, empty);
     expect(ran.status).toBe(1);
     expect(ran.err).toContain('no connectome-host install here');
+    expect(ran.err).toContain('A resident that runs from a clone moves to an install as "Moving from a clone to an ' +
+      `install" in ${join(REPO, 'docs', 'DEPLOYMENTS.md')} says.`);
   }
   const wrong = await run(BIN, ['frobnicate'], empty);
   expect(wrong.status).toBe(2);
