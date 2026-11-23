@@ -27,6 +27,7 @@
 
 // First, so its warning about an old Bun prints before the modules below run.
 import './bun-floor-check.js';
+import { assertRefusalBridgeAvailable, prepareRefusalReactions, refusalReactionLifecycle } from './refusal-reactions.js';
 import { hostMembraneRetry } from './membrane-retry.js';
 import { frameworkErrorPolicy } from './framework-error-policy.js';
 import {
@@ -50,7 +51,7 @@ import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
 import { CodexSubscriptionAdapter, codexGateAuth } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
-import { AgentFramework, WorkspaceModule, resolveTimeZone, HistoryModule, type Module } from '@animalabs/agent-framework';
+import { AgentFramework, WorkspaceModule, resolveTimeZone, HistoryModule, type McplServerConfig, type Module } from '@animalabs/agent-framework';
 import { resolve, join, basename } from 'node:path';
 import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
@@ -529,13 +530,22 @@ async function createFramework(
   // The framework's heartbeat (heartbeat-options.ts), with heartbeat-mcpl
   // left out beside it.
   const heartbeatOptions = heartbeatOptionsFor(modules.heartbeat, config.dataDir);
-  const mcplServers = heartbeatOptions ? withoutHeartbeatMcpl(finalServers, (line) => console.warn(line)) : finalServers;
+  let mcplServers: McplServerConfig[] = heartbeatOptions ? withoutHeartbeatMcpl(finalServers, (line) => console.warn(line)) : finalServers;
+
+  // Fail before connecting anything when stock AF lacks this optional feature.
+  let refusalReactions: ReturnType<typeof refusalReactionLifecycle> | undefined;
+  if (recipe.mainRefusalReactions !== undefined) {
+    assertRefusalBridgeAvailable(AgentFramework.prototype);
+    mcplServers = prepareRefusalReactions(recipe.mainRefusalReactions, mcplServers);
+    refusalReactions = refusalReactionLifecycle(recipe.mainRefusalReactions, mcplServers);
+    moduleInstances.push(refusalReactions.module);
+  }
 
   const framework = await AgentFramework.create({
     storePath,
     membrane,
     ...frameworkErrorPolicy(recipe.agent.retry),
-agents: [agentConfig],
+    agents: [agentConfig],
     modules: moduleInstances,
     mcplServers,
     gate: gateOptions,
@@ -633,6 +643,10 @@ agents: [agentConfig],
     (framework as unknown as Record<symbol, WebUiModule>)[webUiModuleSymbol] = webUiModule;
   }
 
+  if (refusalReactions) {
+    try { refusalReactions.install(framework); }
+    catch (error) { await framework.stop(); throw error; }
+  }
   return framework;
 }
 
