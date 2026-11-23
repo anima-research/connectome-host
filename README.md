@@ -294,8 +294,7 @@ With native tools and `sameRoundThinkTextPolicy: "private"`, text beside a
 `think` call stays private. The recipe sets the policy's starting value. The
 agent can see and change its own value through `agent_settings`
 (`same_round_skip_reply_text_policy`), and its choice persists across
-restarts. Both features came in Agent Framework 0.35.1, and this host's
-dependency range starts there.
+restarts. Both features came in Agent Framework 0.35.1.
 
 See Agent Framework's `docs/disabled-prose-routing.md`,
 `docs/explicit-prose-routing.md`, `docs/hybrid-prose-routing.md`, and
@@ -805,6 +804,7 @@ unknown-key warning, like those at the other levels.
 - **Headless mode** — `--headless`: no terminal, JSONL over a Unix socket; how residents run under a supervisor
 - **Self-restart** (opt-in, `modules.selfRestart`) — `lifecycle--restart`: the agent restarts its own host, for an edited recipe or rebuilt code. It happens once the asking turn has ended; the host exits with code 75 for its supervisor to start it again, so enable it only under one that does (launchd `KeepAlive`, systemd `Restart=on-failure`, a fleet parent's `autoRestart`, which is off unless the child's entry sets it, and which counts a self-restart toward its cap of 3 restarts in 60 s). A fleet parent's own self-restart stops its children as any shutdown does, and the restarted parent starts again only its `autoStart` children. `cooldownMinutes` (default 10) spaces restarts out
 - **Self-update** (opt-in, `modules.selfUpdate`) — `lifecycle--update`: the agent's own `/update`. It checks what's out, installs a release beside the running one, and arms a restart onto it for the host's first quiet moment. A restart arms only on a headless host that started with `CONNECTOME_SUPERVISED=1`. `connectome service install` sets that only for a service that restarts the host when it exits with 75 and when it exits with 1. Anywhere else, the restart refuses and says why. The changelog's entry has the rest
+- **Versions** — `about--versions`, on every host: the agent reads the host's version and the Connectome packages' versions, as the host started with them, and each MCPL server's own name and version, as the server gave them when it connected. It's a utility of the built-in `settings` toolset, so no agent request's tool list carries it, and an agent reaches it as it reaches any module utility. The servers' names and versions came in Agent Framework 0.35.2, and this host's dependency range starts there
 - **Time-travel** — undo/redo on the agent's window; Chronicle-backed checkpoints, rollback and branch exploration; in the web UI, rolling back to a message and suppressing messages
 - **Session management** — isolated sessions with auto-naming
 - **Ops alerts** — compression quarantine, refusal streaks, inference exhaustion and more surface as `ops:alert` traces, `logs/failures.log` records, and an optional webhook (`CONNECTOME_OPS_WEBHOOK`)
