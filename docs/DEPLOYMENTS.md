@@ -748,15 +748,15 @@ login shell of that user, such as `sudo -iu <user>`. `service install` needs
 that user's own `USER` and `HOME`. Without `XDG_RUNTIME_DIR`, `systemctl
 --user` can't find the user's systemd. If the shell doesn't set it, set it
 first: `export XDG_RUNTIME_DIR=/run/user/$(id -u)`. Where the old service is a
-system unit, run each `systemctl` command for the old unit as root, without
-`--user`.
+system unit, work on the old unit as root. Run each `systemctl` command for it
+without `--user`, and move its files as root too.
 
 1. **Choose the version.** The move needs 0.26.0 or later, the first release
    with `service install` and `doctor`. In the clone, run `git describe --tags`.
    It prints a tag, such as `v0.27.1`, or a tag and how far the clone is past
-   it, such as `v0.27.0-6-ga6047e20`. Run `git status --short` too. A line that
-   starts with `M` names a file that the clone changed. The install doesn't
-   have that change.
+   it, such as `v0.27.0-6-ga6047e20`. Run `git status --short` too. A line with
+   `M` in either of its first two columns names a file that the clone changed.
+   The install doesn't have that change.
    - For a tag alone, install that version. The host then runs the same code
      as now.
    - For a clone past a tag, run `git fetch --tags`, then
@@ -775,17 +775,26 @@ system unit, run each `systemctl` command for the old unit as root, without
    unit's file and its drop-ins. Note three things: its `WorkingDirectory`,
    its `DATA_DIR`, and the recipe in its start command. The install goes into
    the working directory.
-   - With no `DATA_DIR` in the unit, look for one in the working directory's
-     `.env`. With none there either, the data directory is `./data` in the
+   - With no `DATA_DIR` line in the unit, look in the files that its
+     `EnvironmentFile=` lines name. Then look in the working directory's
+     `.env`. With none in those either, the data directory is `./data` in the
      working directory.
    - With no recipe in the start command, the host resumes the recipe that it
-     saved at its last load, `<data directory>/.recipe.json`. The host writes
-     that file again at each start, so give the new service a copy. Copy it
-     into the working directory, such as to `<name>.json`, and take out its
-     `"$unresolved": true` line. Use the copy as `<recipe>` in steps 6 and 9.
-     A saved file without that line is an older one. It holds the values of
-     the recipe's variables, secrets included, so make the copy readable only
-     by its user, with `chmod 600`.
+     saved at its last load, `<data directory>/.recipe.json`. A host that is
+     given a recipe writes it to that file at each start, so give the new
+     service a copy. Copy it into the working directory, such as to
+     `<name>.json`, and take out its `"$unresolved": true` line. Use the copy
+     as `<recipe>` in steps 6 and 9. A saved file without that line is an
+     older one. It holds the values of the recipe's variables, secrets
+     included, so make the copy readable only by its user, with `chmod 600`.
+     In the saved file, the paths to fleet children's recipes and to
+     extensions are full paths. Where such a path leads into the clone, copy
+     that file into the working directory too, and change the path in the
+     copy.
+   - With `--no-recipe` in the start command, or with no `.recipe.json`, the
+     host runs its built-in default recipe. `service install` needs a recipe
+     file, so write one first, as "The recipe" in
+     [AGENT-ONBOARDING.md](./AGENT-ONBOARDING.md) says.
    - If the recipe lies in the clone, and the working directory is elsewhere,
      the new service would still need the clone. So copy the recipe into the
      working directory. Copy each file that it names by a relative path too, in
@@ -820,10 +829,12 @@ system unit, run each `systemctl` command for the old unit as root, without
 5. **Stop the host, and copy.** Choose a moment when the resident is idle,
    since a stop cuts off a turn in progress. Stop the host with
    `systemctl --user stop <unit>`. If fleet children still run, stop them too.
-   If the copy takes the state of an MCPL server that the host reaches by
-   `url`, stop that server too. "Updating checkouts" says how. Then copy the
-   files that "Updating checkouts" lists. Put the copy outside the working directory, such
-   as in `~/pre-move-copy`.
+   Some MCPL servers run apart from the host, which reaches them by `url`. If
+   the copy takes such a server's state, stop that server too. "Updating
+   checkouts" says how. Then copy the files that "Updating checkouts" lists.
+   Copy `.env` too, since step 9 can add the shell daemon's port and token to
+   it. Put the copy outside the working directory, such as in
+   `~/pre-move-copy`.
 6. **Run the store audit from the install,** as "By hand" says. First export
    each variable that the old service sets. Then run
    `bun node_modules/@animalabs/connectome-host/src/index.ts --audit-stores --recipe <recipe> <data directory>`.
@@ -838,12 +849,13 @@ system unit, run each `systemctl` command for the old unit as root, without
    `systemctl --user disable --now <unit>`. Move its unit file and its drop-in
    directory (`<unit>.d`) into the copy. Then run
    `systemctl --user daemon-reload`. `service install` refuses while systemd
-   has loaded another unit that runs from the same directory, since both would
-   start the host at a boot.
+   has loaded another unit whose `WorkingDirectory` is the same directory,
+   since both would start the host at a boot.
 8. **Carry over the old unit's own lines.** The new unit is
    `connectome-<name>.service`. For `<name>`, take the working directory's name
    in lower case. Then replace each run of characters other than `a` to `z` and
-   `0` to `9` with one `-`. The new unit sets the start command,
+   `0` to `9` with one `-`, and drop a `-` at the start or the end. The new
+   unit sets the start command,
    `WorkingDirectory`, `PATH`, `DATA_DIR`, `CONNECTOME_SUPERVISED=1`,
    `Restart=on-failure` and `KillMode=mixed`. Compare that with the old unit's
    file and drop-in files, which are now in the copy. Put each other line that
@@ -865,35 +877,39 @@ system unit, run each `systemctl` command for the old unit as root, without
      start. Its drop-in got `Wants=` and `After=` for the tunnel's and the
      daemon's units, an `ExecStartPre=` that waits for DNS, and
      `RestartSec=10`.
-9. **Install the new service.** Run
-   `connectome-host/connectome service install <recipe>`. It writes the unit
-   and reloads systemd, which reads the drop-in too. Then it starts the unit,
-   and it waits for the host to answer. It prints `Wrote <the unit's file>` and
+9. **Install the new service.** First start the MCPL servers that you stopped
+   in step 5. Then run `connectome-host/connectome service install <recipe>`.
+   It writes the unit and reloads systemd, which reads the drop-in too. Then it
+   starts the unit, and it waits for the host to answer. It prints
    `Its host answers: pid …, recipe …`. Then check that systemd uses the
    drop-in: `systemctl --user cat <new unit>` shows its lines after the
    unit's own. A drop-in under another name is never read.
 10. **Check the move.** `connectome-host/connectome doctor` says
     `Doctor found no problem.` Then
     `connectome-host/connectome send '<a line>'` prints the resident's reply.
-    Start the MCPL servers that you stopped in step 5.
 11. **If you choose, let the resident update itself.** Set
-    `"selfUpdate": true` in the recipe's `modules`. The resident can then
-    update its own host with `lifecycle--update`. This adds a tool, so the
-    resident's next turn writes its whole prompt cache once.
+    `"selfUpdate": true` in the recipe's `modules`, and run step 9's command
+    again, which restarts the host. The resident can then update its own host
+    with `lifecycle--update`. This adds a tool, so the resident's next turn
+    writes its whole prompt cache once.
 12. **To go back:**
     - After step 5 and before step 7, restore the copy, as "By hand" says.
       Then start the old service again with `systemctl --user start <unit>`,
       and the MCPL servers that you stopped with it.
-    - From step 7 on: if step 9 started the new unit, stop and disable it with
-      `systemctl --user disable --now <new unit>`. Do the same for
+    - From step 7 on: if step 9 ran, run
+      `systemctl --user disable --now <new unit>`, which stops and disables
+      the new unit. Do the same for
       `connectome-<name>.shell.service`, the shell daemon's unit, if step 9
       wrote one. Remove the new units' files and the new drop-in directory.
       Then move back from the copy what step 7 moved there. Run
-      `systemctl --user daemon-reload`. Then restore the resident's files from
-      the copy, as "By hand" says.
-      Then run `systemctl --user enable --now <unit>`, since step 7 disabled
-      the old service. Start the MCPL servers that you stopped.
-    - The install's files can stay, since a host that starts from the clone
+      `systemctl --user daemon-reload`. Stop the MCPL servers that you stopped
+      in step 5 again. Then restore the resident's files from the copy, as "By
+      hand" says. Then run `systemctl --user enable --now <unit>`, since step 7
+      disabled the old service. Start the MCPL servers again.
+    - Remove the install root, `connectome-host`, from the working directory.
+      Setup keeps the release that an install root already holds. So a later
+      move would start that release, whatever version npm installs. The
+      install's other files can stay, since a host that starts from the clone
       doesn't use them.
     - The copy holds no workspace directory. So a workspace directory in the
       working directory, such as `output`, keeps what the new host wrote there.
@@ -931,8 +947,9 @@ the steps change in these ways:
   from the clone.
 
 You can keep a service of your own instead. Then do steps 1 to 6. Then change
-the old unit's start command, as "Setting it up, once" says. Skip steps 7
-to 9. To go back, put the old start command back, and restore the copy.
+the old unit's start command, as "Setting it up, once" says. Where the working
+directory moved, change the unit's `WorkingDirectory` too. Skip steps 7 to 9.
+To go back, put the old start command back, and restore the copy.
 `connectome doctor` then reports `No service is installed for this install.`
 With a service of your own, that line is expected.
 
@@ -942,8 +959,8 @@ with `plutil -p <plist>`. Step 5 stops and unloads it with
 so that launchd doesn't load it at the next login. launchd has no drop-ins,
 and `service install` writes the plist again each time it runs. So step 8 puts
 the old agent's environment into `.env`, which the host reads at its start. Only
-the old plist's environment can be carried over.
-Step 9 writes and loads
+the old plist's environment can be carried over, and not its `PATH`: the new
+plist sets its own, which `.env` doesn't change. Step 9 writes and loads
 `~/Library/LaunchAgents/com.animalabs.connectome.<name>.plist`. Step 12 loads
 the old plist with `launchctl bootstrap gui/$(id -u) <plist>`. From step 7 on,
 it first unloads the new agents with `launchctl bootout`, removes their plists
