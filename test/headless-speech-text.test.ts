@@ -15,7 +15,6 @@ async function withHost(body: (dir: string) => Promise<void>, env: Record<string
   const child = spawn(process.execPath, [CHILD], { cwd: dir, env: { ...process.env, ...env, DATA_DIR: dir }, stdio: 'ignore' });
   const closed = new Promise((resolve) => child.once('close', resolve));
   try {
-    // The socket's file appears a moment before the host accepts on it, and `connectome send` connects once.
     (await connectWhenAccepting(join(dir, 'ipc.sock'), { timeoutMs: 20_000 })).destroy();
     await body(dir);
   } finally {
