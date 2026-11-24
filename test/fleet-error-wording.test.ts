@@ -753,3 +753,11 @@ describe('fleet refusals name what the agent can do', () => {
     );
   });
 });
+
+test('fleet--command refuses no form of /auth: each reaches the check for its child, as /status does', async () => {
+  const { call } = setup();
+  for (const command of ['/auth', '/auth status', '/auth login', '/auth refresh', '/auth recheck', '/auth token x', '/status']) {
+    const { error } = await call('command', { name: 'any', command });
+    expect([command, error]).toEqual([command, "There's no child named 'any', so nothing was sent. This host has no children; fleet--launch starts one."]);
+  }
+});
