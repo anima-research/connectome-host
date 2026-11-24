@@ -23,6 +23,8 @@ export async function stopFramework(framework: StoppableFramework): Promise<void
   } finally {
     clearTimeout(timer);
   }
-  // A timed-out drain isn't cancelled. AF's bounded module stop still waits on it.
+  // After the ~6 s pre-stop timeout, AF closes MCP connections in parallel
+  // with module stops. With no stop budget, framework.stop() still waits
+  // for pending journal I/O before shutdown or a session switch can proceed.
   await framework.stop();
 }

@@ -290,7 +290,6 @@ export class NoticesModule implements Module {
     this.unsubscribe = null;
     const ctx = this.ctx;
     await this.drainHome();
-    // A bounded stop can leave this wait pending during a session switch.
     if (this.ctx === ctx) {
       this.framework = null;
       this.ctx = null;

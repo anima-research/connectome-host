@@ -15,12 +15,13 @@
   or an uncertain status, not routine turns.
   The host gives accepted work a bounded drain before framework teardown, while
   the connector is still open. Sends share five seconds; if the drain is still
-  pending after six seconds, teardown proceeds without cancelling a pending
-  write or send, which may complete or be lost. During a session switch, an
-  old home's pending save after a drain timeout is not fenced from the new
-  home: it can cause the new home's staging write to fail or replace its
-  journal (untested). Incident tracking and delivery evidence use finite
-  retention windows; long subject labels repeated in status snapshots can
+  pending after about six seconds, framework teardown starts and closes MCP
+  connections in parallel with module stops. The timeout does not cancel
+  a pending write or send. Shutdown and session switch still wait for pending
+  journal I/O inside `framework.stop()`, so the old home's pending save cannot
+  race the new home's journal move-aside through the host.
+  Incident tracking and delivery evidence use finite retention windows;
+  long subject labels repeated in status snapshots can
   push a save over the 2 MiB cap and disable home delivery for the run. Host
   startup and session switch rename existing journal and staging entries aside
   without following symlinks or reading journal contents. Incident IDs start fresh:
@@ -39,8 +40,10 @@
   `theaspirational/zulip_mcp` fork at `61298a12` (nullable schemas and tagged
   receipt IDs). Legacy notices are unchanged when home is omitted;
   live connector/realm/echo qualification and activation remain operator work.
-  Known limits: a connector that reconnects while handling every home send,
-  with every send uncertain, repeats status sends with no retry limit (the
+  Known limits: on macOS 26, the drain's five-second send budget can exhaust
+  launchd's five-second service exit window, so SIGKILL can land before
+  framework teardown begins. A connector that reconnects while handling every
+  home send, with every send uncertain, repeats status sends with no retry limit (the
   status topic can show repeated posts and stderr logs each uncertain send) until a
   status is acknowledged, the reconnects stop or the host stops. A `refusal` or
   `context-refusal` incident is not closed by `inference:completed` alone, as

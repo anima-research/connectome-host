@@ -461,7 +461,7 @@ export class NoticeHome {
       this.observationDeliveryFailed = true;
       console.error(`[notices:home] record ${r.id}: ${r.outcome.state}; detail=${r.outcome.detail}; serverId=${this.binding.serverId}; journal=${join(this.runtime.directory, 'journal.json')}; no replay. ` +
         (this.shutdownDeadline === null ? 'Agent core continues.'
-          : 'Teardown proceeds after the bounded drain. The send deadline does not cancel pending sends; they may complete or be lost.'));
+          : 'Only the pre-stop wait is bounded; framework.stop() still waits for pending journal I/O. The send deadline does not cancel pending sends; they may complete or be lost.'));
     }
     // An uncertain status may be what Zulip shows, so no baseline is known.
     if (statusKey && r.outcome.state !== 'not-dispatched') this.journal.lastStatus = r.outcome.state === 'sent' ? statusKey : null;

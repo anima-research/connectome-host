@@ -119,8 +119,9 @@ policy before a pilot. No live qualification/activation is part of this slice.
   drain (the send budget plus one second for I/O), then logs a timeout and
   starts framework teardown if the drain is still pending. The timeout does
   not cancel a pending write or send; either may complete or be lost during
-  teardown. The framework's bounded module stop still waits on the same
-  work. Unrecognized or missing kinds display as
+  teardown. If the pre-stop wait times out, MCP connectors close after about
+  six seconds, but shutdown and session switch still wait for pending journal
+  I/O inside `framework.stop()`. Unrecognized or missing kinds display as
   `unknown-alert-kind`. Current-boot traces cached by AF are requested with
   `replay: true`; events not emitted, before the cache, or beyond its bounded
   early-trace retention are not reconstructed. There is no failures.log tailer.
@@ -291,9 +292,9 @@ its earlier incident. Earlier delivery evidence and dedup history are not
 used or replayed. Inspect the archives if needed and manage their retention
 separately.
 
-**A timed-out drain does not fence the old journal writer.** During a session
-switch, an old home's pending save can race the new home, causing its staging
-write to fail or replacing its journal. This case is untested.
+**A timed-out pre-stop drain does not let a session switch skip journal I/O.**
+The host waits for `framework.stop()` to finish the old home's pending save
+before starting the new home, so that save cannot race the new home's move-aside.
 
 Disablement logs include the cause and the journal path on stderr.
 Missing/ambiguous bound server IDs name registered candidates and
@@ -366,6 +367,10 @@ No other connector implementation is claimed.
 
 ### Known limits
 
+* **macOS service shutdown can be cut short.** A slow Zulip send can use the
+  drain's entire five-second send budget, exhausting launchd's five-second
+  exit window on macOS 26 (see [Deployments](DEPLOYMENTS.md)). Launchd can
+  send SIGKILL before framework teardown begins.
 * **Agent-end tracking is name-based.** An alert arriving after an agent
   ends can stay tracked. A child ending can close an unknown-kind server
   incident with the same name, even though `mcpl-down` incidents are exempt
