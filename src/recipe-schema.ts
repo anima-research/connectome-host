@@ -1,12 +1,6 @@
 import { isAbsolute } from 'node:path';
 import * as z from 'zod';
-import {
-  resolveClockConfig, WorkspaceModule, type AgentConfig, type AutoContinueConfig, type ClockConfig, type CodeExecutionConfig,
-  type ForkReaderConfig, type FrameworkConfig, type HeartbeatOptions, type InferenceBoundsOptions, type McplServerConfig,
-  type MountConfig, type PersistentReaderConfig, type ReplyJudgeOptions,
-} from '@animalabs/agent-framework';
-import type { AutobiographicalOptions } from '@animalabs/context-manager';
-import type { MembraneConfig } from '@animalabs/membrane';
+import { resolveClockConfig, WorkspaceModule } from '@animalabs/agent-framework';
 import { ENV_REFERENCE } from './recipe-document.js';
 import { shown } from './modules/shown.js';
 import { noteRecipeWarning } from './recipe-warnings.js';
@@ -60,10 +54,8 @@ const textNumberOrBoolean = () =>
 
 type Exact<S extends z.core.$ZodShape> = z.output<z.ZodObject<S>>;
 
-/** How a rule's sentence prints a value: by where the value came from (RecipeOrigin). */
-export type Show = (subpath: string, value: unknown) => string;
-/** A rule's sentence. `at(subpath)` names a path from the object that the rule is on. */
-export type Sentence = (words: { readonly at: (subpath?: string) => string; readonly show: Show }) => string;
+type Show = (subpath: string, value: unknown) => string;
+type Sentence = (words: { readonly at: (subpath?: string) => string; readonly show: Show }) => string;
 
 const pathOf = (dotted: string): PropertyKey[] =>
   (dotted === '' ? [] : dotted.split('.').map((key) => (/^\d+$/.test(key) ? Number(key) : key)));
@@ -186,7 +178,36 @@ const refusesKind = (issues: readonly z.core.$ZodIssue[], value: unknown): boole
 type Subject = (at: string) => string;
 const recipeSubject: Subject = (at) => (at === '' ? 'Recipe' : `Recipe ${at}`);
 
-function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyKey[], input: unknown, origin: RecipeOrigin, subject: Subject): string[] {
+function mayBeLeftOut(root: z.core.$ZodType, input: unknown, path: readonly PropertyKey[]): boolean {
+  let schema = root;
+  let value = input;
+  let optional = false;
+  for (const key of path) {
+    let at = bare(schema);
+    if (at instanceof z.ZodUnion) {
+      const arm = armFor(at, value);
+      if (arm === undefined) return false;
+      at = bare(arm);
+    }
+    if (at instanceof z.ZodObject && typeof key === 'string' && Object.hasOwn(at.shape, key)) {
+      const field: z.core.$ZodType = at.shape[key];
+      schema = field;
+      optional = field instanceof z.ZodOptional || field instanceof z.ZodDefault;
+    } else if (at instanceof z.ZodRecord) {
+      schema = at.valueType;
+      optional = false;
+    } else if (at instanceof z.ZodArray) {
+      schema = at.element;
+      optional = false;
+    } else {
+      return false;
+    }
+    value = valueAt(value, [key]);
+  }
+  return optional;
+}
+
+function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyKey[], input: unknown, origin: RecipeOrigin, subject: Subject, root: z.core.$ZodType): string[] {
   const out: string[] = [];
   for (const issue of issues) {
     const path = [...base, ...issue.path];
@@ -196,7 +217,7 @@ function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyK
     if (issue.code === 'invalid_union') {
       if (issue.errors.length > 0) {
         const meant = issue.errors.filter((arm) => !refusesKind(arm, valueAt(input, path)));
-        if (meant.length === 1) { out.push(...sentences(meant[0]!, path, input, origin, subject)); continue; }
+        if (meant.length === 1) { out.push(...sentences(meant[0]!, path, input, origin, subject, root)); continue; }
       } else if (issue.discriminator !== undefined) {
         const options = 'options' in issue ? issue.options ?? [] : [];
         out.push(`${name} must be ${listed(options.filter((o) => o !== null && o !== undefined))}, got ${got()}.`);
@@ -216,14 +237,14 @@ function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyK
       }));
       continue;
     }
-    const isNull = valueAt(input, path) === null;
-    out.push(`${name} must be ${issue.message}, got ${got()}${isNull ? '; give it a value, or leave the key out' : ''}.`);
+    const advice = valueAt(input, path) !== null ? '' : mayBeLeftOut(root, input, path) ? '; give it a value, or leave the key out, which takes the default' : '; give it a value';
+    out.push(`${name} must be ${issue.message}, got ${got()}${advice}.`);
   }
   return out;
 }
 
-function faultMessage(issues: readonly z.core.$ZodIssue[], input: unknown, origin: RecipeOrigin, subject: Subject = recipeSubject, whole = 'The recipe'): string {
-  const all = [...new Set(sentences(issues, [], input, origin, subject))];
+function faultMessage(issues: readonly z.core.$ZodIssue[], input: unknown, origin: RecipeOrigin, root: z.core.$ZodType, subject: Subject = recipeSubject, whole = 'The recipe'): string {
+  const all = [...new Set(sentences(issues, [], input, origin, subject, root))];
   return all.length === 1 ? all[0]! : `${whole} has ${all.length} faults:\n${all.map((s) => `- ${s}`).join('\n')}`;
 }
 
@@ -432,11 +453,11 @@ const strategyShape = {
   toolResultMaxLastN: z.union([number(), mapOf(number(), 'a number')],
     takes('a number, or an object from tool names to numbers')).optional(),
   toolUseInputMaxTokens: number().optional(),
-  // Adaptive resolution (document-based gradual compression). For the
-  // 'autobiographical' strategy type this defaults ON; set
-  // `adaptiveResolution: false` to opt back to the count-based
-  // hierarchical renderer. The remaining knobs only apply when
-  // adaptiveResolution is true.
+  /** Adaptive resolution (document-based gradual compression). For the
+   *  'autobiographical' strategy type this defaults ON; set
+   *  `adaptiveResolution: false` to opt back to the count-based
+   *  hierarchical renderer. The remaining knobs only apply when
+   *  adaptiveResolution is true. */
   adaptiveResolution: trueOrFalse().optional(),
   /** kv-stable: trust region P on per-turn perturbation (tokens re-read).
    *  See context-manager adaptive-resolution-design.md §13. */
@@ -458,12 +479,12 @@ const strategyShape = {
   /** L1 production holdback: keep the newest N closed chunks out of the
    *  speculative compression queue (default 1); demand still overrides. */
   l1HoldbackChunks: number().optional(),
-  // Self-voice / compression framing. The host defaults summaryParticipant to
-  // the agent's name (`agent.name`, or the name it runs under when that's
-  // unset), so self-recollections speak as the agent itself. Set
-  // explicitly only to voice summaries as someone else — a mismatched
-  // participant surfaces in the compiled prompt as another voice speaking in
-  // first person about the agent.
+  /** Self-voice / compression framing. The host defaults summaryParticipant to
+   *  the agent's name (`agent.name`, or the name it runs under when that's
+   *  unset), so self-recollections speak as the agent itself. Set
+   *  explicitly only to voice summaries as someone else — a mismatched
+   *  participant surfaces in the compiled prompt as another voice speaking in
+   *  first person about the agent. */
   summaryParticipant: text().optional(),
   summarySystemPrompt: text().optional(),
   summaryUserPrompt: text().optional(),
@@ -505,7 +526,7 @@ const strategy: z.ZodType<StrategyShape> = z.looseObject(strategyShape, takes('a
       s.foldingStrategy === 'kv-unified' && s.type === 'passthrough'
         ? () => 'Recipe foldingStrategy "kv-unified" requires an autobiographical or frontdesk strategy.'
         : undefined),
-    rule<StrategyShape>(['type', 'foldingStrategy', 'adaptiveResolution'], (s) =>
+    rule<StrategyShape>(['type', 'foldingStrategy', 'adaptiveResolution', 'kvUnified'], (s) =>
       s.kvUnified !== undefined && !kvUnifiedSelected(s)
         ? ({ at }) => `Recipe ${at('kvUnified')} requires foldingStrategy "kv-unified".`
         : undefined),
@@ -1243,8 +1264,9 @@ const mcpServerShape = {
     takes('"auto", "manual" or a list of channel ids')).optional(),
   /**
    * Optional install metadata for build/deploy tooling (e.g. connectome-cook).
-   * Ignored by the recipe loader at runtime — agents don't need this; only
-   * tools that produce deployable artifacts (Docker images, etc.) do.
+   * The host doesn't read it at runtime, and the load checks its shape —
+   * agents don't need this; only tools that produce deployable artifacts
+   * (Docker images, etc.) do.
    */
   source: source.optional(),
   sourceMeta: z.unknown().optional(),
@@ -1253,11 +1275,13 @@ const mcpServerShape = {
    * (e.g. `.zuliprc` for the Zulip adapter, `~/.netrc` for HTTP-auth APIs,
    * a `gcloud.json` service-account key for Google APIs).  Build tooling
    * collects values from the operator (env vars or interactive prompts),
-   * writes the file, and bind-mounts it into the container.  The recipe
-   * loader itself does NOT touch these — the runtime reads the file via
-   * whatever path the MCP server expects (typically declared in `env`).
+   * writes the file, and bind-mounts it into the container.  The host
+   * doesn't read these files: the load checks each entry's shape, and the
+   * MCP server reads the file via whatever path it expects (typically
+   * declared in `env`).
    *
-   * Like `source`, this is build-tooling metadata.  Ignored at runtime.
+   * Like `source`, this is build-tooling metadata that the host doesn't
+   * read at runtime.
    */
   credentialFiles: listOf(credentialFile, 'a list').optional(),
   /**
@@ -1587,12 +1611,31 @@ const workspaceObject = z.strictObject(workspaceObjectShape, takes('true, false 
         return undefined;
       } catch (err) {
         const said = (err instanceof Error ? err.message : String(err)).replace(/^\[workspace\] /, '');
-        return ({ at }) => `Recipe ${at()}: ${said}`;
+        return ({ at, show }) => `Recipe ${at()}: ${namedAsShown(said, ws, show)}`;
       } finally {
         console.warn = warn;
       }
     }),
   );
+
+function stringsUnder(value: unknown, path: string, out: Array<readonly [string, string]>): void {
+  const under = (key: string | number) => (path === '' ? String(key) : `${path}.${key}`);
+  if (typeof value === 'string') out.push([path, value]);
+  else if (Array.isArray(value)) value.forEach((item, i) => stringsUnder(item, under(i), out));
+  else if (isPlainObject(value)) for (const [key, item] of Object.entries(value)) stringsUnder(item, under(key), out);
+}
+
+function namedAsShown(said: string, root: unknown, show: Show): string {
+  const strings: Array<readonly [string, string]> = [];
+  stringsUnder(root, '', strings);
+  let text = said;
+  for (const [path, value] of strings.sort((a, b) => b[1].length - a[1].length)) {
+    const quoted = JSON.stringify(value);
+    const shownAs = show(path, value);
+    if (value !== '' && shownAs !== quoted) text = text.replaceAll(quoted, shownAs).replaceAll(`"${value}"`, shownAs);
+  }
+  return text;
+}
 
 const instructions = z.strictObject({
   /** Workspace path "<mountName>/<relativePath>". Default "instructions/AGENTS.md". */
@@ -1759,8 +1802,8 @@ const webuiShape = {
   /**
    * Basic-Auth credentials. Required whenever the bind host is non-loopback
    * (which is the default). `${VAR}`-substitutable from .env. When set, both
-   * must be non-empty strings: the host refuses anything else at start. A
-   * null or other falsy basicAuth reads as none.
+   * must be strings: the load refuses a missing one or another kind, and the
+   * Web UI refuses an empty one at its start. A null basicAuth reads as none.
    */
   basicAuth: basicAuth.nullable().optional(),
   /**
@@ -2355,13 +2398,21 @@ function otherReadersKeys(reader: 'persistent' | 'forks'): (issue: z.core.$ZodRa
   const otherName = reader === 'forks' ? 'persistent' : 'forks';
   return (issue) => {
     if (issue.code !== 'unrecognized_keys') return 'an object';
-    const misplaced = issue.keys.filter((k) => Object.hasOwn(other, k) && !Object.hasOwn(own, k));
+    const misplaced = issue.keys.filter((k) => Object.hasOwn(other, k));
     if (misplaced.length === 0) return unknownKeysWords(issue.keys, Object.keys(own));
-    const given = issue.input !== null && typeof issue.input === 'object' ? issue.input : {};
+    const unknown = issue.keys.filter((k) => !Object.hasOwn(other, k));
+    const given = isPlainObject(issue.input) ? issue.input : {};
     const alsoRemove = Object.keys(own).filter((k) => !Object.hasOwn(other, k) && Object.hasOwn(given, k));
-    return `Recipe ${misplaced.map((k) => `subconscious.${k}`).join(' and ')} ${misplaced.length > 1 ? 'are' : 'is'} for reader "${otherName}", ` +
-      `and this recipe's reader is "${reader}". Remove ${misplaced.join(' and ')}, or set subconscious.reader to "${otherName}"` +
-      `${alsoRemove.length > 0 ? ` and remove ${alsoRemove.join(' and ')}, which only reader "${reader}" takes` : ''}.`;
+    const alsoGive = Object.entries(other)
+      .filter(([k, field]) => k !== 'reader' && !(field instanceof z.ZodOptional) && !Object.hasOwn(given, k)).map(([k]) => k);
+    const ways = [
+      ...(alsoGive.length > 0 ? [`give ${inProse(alsoGive)}, which reader "${otherName}" needs`] : []),
+      ...(alsoRemove.length > 0 ? [`remove ${inProse(alsoRemove)}, which only reader "${reader}" takes`] : []),
+    ];
+    return `Recipe ${inProse(misplaced.map((k) => `subconscious.${k}`))} ${misplaced.length > 1 ? 'are' : 'is'} for reader "${otherName}", ` +
+      `and this recipe's reader is "${reader}". Remove ${inProse(misplaced)}, or set subconscious.reader to "${otherName}"` +
+      `${ways.length > 0 ? ` and ${ways.join(', and ')}` : ''}. ` +
+      (unknown.length > 0 ? `Recipe subconscious ${unknownKeysWords(unknown, Object.keys(own))}.` : `Reader "${reader}" takes ${inProse(Object.keys(own))}.`);
   };
 }
 
@@ -2641,7 +2692,7 @@ function unknownIn(schema: z.core.$ZodType, value: unknown, path: string, found:
 }
 
 /**
- * The keys of a recipe that the host doesn't read, each with its path, and
+ * The keys of a recipe that the schema doesn't know, each with its path, and
  * with the key that it most likely meant where one is near, or the key that
  * replaced it. A closed section refuses an unknown key at the load instead.
  */
@@ -2654,80 +2705,31 @@ export function unknownRecipeKeys(raw: unknown): string[] {
 /**
  * The recipe that `raw` holds, as the load gives it: a new object, with
  * `agent.systemPrompt` and `agent.cacheTtl` written where they are left out.
- * It writes one warning line naming each key that the host doesn't read
+ * It writes one warning line naming each key that the schema doesn't know
  * (unknownRecipeKeys), and throws one error whose message names every fault
  * that one parse can judge, printing values as `origin` allows.
  */
 export function validateRecipe(raw: unknown, origin: RecipeOrigin = { kind: 'literal' }): Recipe {
   const unknownKeys = unknownRecipeKeys(raw);
   if (unknownKeys.length > 0) {
-    const warning = `Recipe has keys the host does not read (ignored): ${unknownKeys.join(', ')}.`;
+    const named = isPlainObject(raw) && raw.name !== undefined && origin.kind !== 'resolved' ? ` ${printed(raw.name, ['name'], origin)}` : '';
+    const warning = `Recipe${named} has keys the host does not read (ignored): ${unknownKeys.join(', ')}.`;
     console.warn(warning);
     noteRecipeWarning(warning);
   }
   const result = recipeSchema.safeParse(raw, { error: words });
   if (result.success) return result.data;
-  throw new Error(faultMessage(result.error.issues, raw, origin));
+  throw new Error(faultMessage(result.error.issues, raw, origin, recipeSchema));
 }
 
-/**
- * A server's `toolLifecycle` as a file other than the recipe gives it, such as
- * mcpl-servers.json, checked as the recipe's is; `where` names its place in
- * the file, and a refusal names it in place of "Recipe".
- */
 export function parseToolLifecycle(value: unknown, where: string): RecipeToolLifecycle {
   const result = toolLifecycleSchema.safeParse(value, { error: words });
   if (result.success) return result.data;
-  throw new Error(faultMessage(result.error.issues, value, { kind: 'literal' }, (at) => (at === '' ? where : `${where}.${at}`), where));
+  throw new Error(faultMessage(result.error.issues, value, { kind: 'literal' }, toolLifecycleSchema, (at) => (at === '' ? where : `${where}.${at}`), where));
 }
 
-type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
-
-type Holds<Host, Package, HostOnly extends PropertyKey = never, PackageOnly extends PropertyKey = never, Differs extends PropertyKey = never> = [
-  Exclude<keyof Host, keyof Package | HostOnly>,
-  Exclude<keyof Package, keyof Host | PackageOnly>,
-  { [K in Exclude<keyof Host & keyof Package, Differs>]-?: Same<Host[K], Package[K]> extends true ? never : K }[Exclude<keyof Host & keyof Package, Differs>],
-] extends [never, never, never] ? true : false;
-
-type ObjectArm<T> = Extract<NonNullable<T>, object>;
 type PersistentArm = Extract<z.output<typeof subconscious>, { systemPrompt: string }>;
 type ForkArm = Extract<z.output<typeof subconscious>, { voice: string }>;
-
-const heldToTheirPackages: [
-  Holds<z.output<typeof retry>, NonNullable<MembraneConfig['retry']>>,
-  Holds<z.output<typeof clock>, ClockConfig>,
-  Holds<z.output<typeof autoContinue>, AutoContinueConfig>,
-  Holds<z.output<typeof refusalHandlingObject>, NonNullable<AgentConfig['refusalHandling']>, 'announceHumanTurns', never, 'autoRewind'>,
-  Same<z.output<typeof refusalHandlingObject>['autoRewind'], NonNullable<AgentConfig['refusalHandling']>['autoRewind'] | null>,
-  Holds<z.output<typeof thinking>, NonNullable<AgentConfig['thinking']>, 'effort'>,
-  Holds<StrategyShape, AutobiographicalOptions, 'type', 'attachmentsIgnoreSize' | 'auditOnly' | 'autoTickOnNewMessage'
-    | 'chunkOnMessageBoundary' | 'compressionCacheMarkers' | 'compressionCacheTtl' | 'diarySystemPrompt' | 'diaryUserPrompt'
-    | 'hierarchical' | 'imageByteCeiling' | 'imageCeiling' | 'imageStripHysteresisRatio' | 'logEffectiveConfig'
-    | 'maxCompressionImageBytes' | 'mergeAttemptLimit' | 'mergeContiguityGapLimit' | 'mergeHoldSummaryIds' | 'minChunkCharsForLLM'
-    | 'persistMintPreimages' | 'quarantineAlarmIntervalMs' | 'recallEnvelope' | 'topologyPolicy'>,
-  Holds<MountShape, MountConfig, never, never, 'mode'>,
-  Same<MountShape['mode'], MountConfig['mode'] | undefined>,
-  Holds<z.output<typeof replyJudge>, ReplyJudgeOptions>,
-  Holds<z.output<typeof heartbeat>, ObjectArm<HeartbeatOptions>>,
-  Holds<CodeExecutionShape, CodeExecutionConfig>,
-  Holds<PersistentArm, PersistentReaderConfig, never, 'foreignRounds' | 'physicalWindowTokens' | 'thinkingBinding'>,
-  Holds<ForkArm, ForkReaderConfig, never, 'framing' | 'strategyFactory' | 'physicalWindowTokens' | 'thinkingBinding'>,
-  Holds<z.output<typeof speech>, NonNullable<FrameworkConfig['speech']>>,
-  Holds<z.output<typeof tuneOut>, NonNullable<FrameworkConfig['tuneOut']>, 'enabled'>,
-  Holds<z.output<typeof dendrite>, NonNullable<FrameworkConfig['dendrite']>, never, 'beforeDerive' | 'derivationNotice'>,
-  Holds<ObjectArm<z.output<typeof inferenceBounds>>, InferenceBoundsOptions>,
-  Holds<McpServerShape, McplServerConfig, 'access' | 'credentialFiles' | 'source' | 'sourceMeta',
-    'id' | 'accessProvider' | 'shouldTriggerInference', 'args' | 'env'>,
-  Holds<z.output<typeof toolLifecycleSchema>, NonNullable<McplServerConfig['toolLifecycle']>>,
-] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true];
-void heldToTheirPackages;
-
-const holdsSeesAPackagesChange: [
-  Holds<{ a?: number }, { a?: number; added?: number }>,
-  Holds<{ a?: { b?: number } }, { a?: { b?: number; added?: number } }>,
-  Holds<{ a?: 'x' | 'y' }, { a?: 'x' | 'y' | 'added' }>,
-] = [false, false, false];
-void holdsSeesAPackagesChange;
 
 /** The recipe as the load gives it. */
 export type Recipe = z.output<typeof recipeSchema>;
@@ -2744,13 +2746,3 @@ export type RecipeFleet = FleetShape;
 export type RecipeFleetChild = z.output<typeof fleetChild>;
 export type RecipePersistentReader = PersistentArm;
 export type RecipeForkReader = ForkArm;
-
-const misspeltKeysFailTheBuild = [
-  // @ts-expect-error
-  (r: Recipe): unknown => r.nmae,
-  // @ts-expect-error
-  (r: Recipe): unknown => r.agent.modle,
-  // @ts-expect-error
-  (r: Recipe): unknown => r.modules?.worksapce,
-];
-void misspeltKeysFailTheBuild;

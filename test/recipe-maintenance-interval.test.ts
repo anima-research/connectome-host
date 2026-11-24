@@ -109,7 +109,7 @@ describe('maintenanceIntervalMs', () => {
     test(`${JSON.stringify(value)} stops the load, naming the key`, () => {
       expect(() => validateRecipe({ ...RECIPE, maintenanceIntervalMs: value })).toThrow(
         `Recipe maintenanceIntervalMs must be a whole number of milliseconds from 0 to 2147483647, got ${JSON.stringify(value)}${
-          value === null ? '; give it a value, or leave the key out' : ''}.`,
+          value === null ? '; give it a value, or leave the key out, which takes the default' : ''}.`,
       );
     });
   }

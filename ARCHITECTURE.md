@@ -126,16 +126,19 @@ A recipe is JSON; the full key set is typed and validated by one schema in
 - **One schema gives the recipe's type and its checks** (`src/recipe-schema.ts`,
   zod). Wrong values, impossible combinations (e.g. an instructions path on a
   mount that can't be written) and partial policies are refused at load,
-  naming the key, and one refusal names each fault that the schema finds. A
-  refusal prints no value that came from the environment: it names the
-  `${VAR}` reference, or the kind of value where a saved recipe no longer
-  holds the reference. Some blocks, such as `subconscious`, the object form
+  naming the key, and one refusal names each fault that the schema finds.
+  The schema's refusal prints no value that came from the environment: it
+  names the `${VAR}` reference, or the kind of value where a recipe that an
+  older release saved no longer holds the reference. Messages after the
+  schema's check, such as a failed fetch of a system prompt, print the
+  values that they name. Some blocks, such as `subconscious`, the object form
   of `modules.history`, `agent.retry`, `agent.clock`, and `modules.workspace`
   and its mounts, refuse an unknown key, naming the keys that they take.
   Elsewhere an unknown key is warned about with its path, and the nearest
   known key when one is near, and the load goes on with the key kept. A
-  custom strategy's own options, the wake gate's rules and an extension's
-  `config` take any key with no warning.
+  custom strategy's own options, the wake gate's rules, an extension's
+  `config`, `source` and `sourceMeta`, and a server's `sourceMeta` take any
+  key with no warning.
 - **Paths.** Fleet child recipes resolve relative to the parent recipe file;
   runtime paths (data dirs, workspace mounts) resolve against the CWD.
 - **Extensions.** `extensions` maps names to local modules that register

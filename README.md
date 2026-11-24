@@ -116,8 +116,9 @@ it and, where one is close, the key it was probably meant to be. Some
 objects refuse a key they don't have, naming it and the keys they take,
 such as `modules.workspace` and each of its mounts, `modules.history`,
 `agent.retry`, `agent.clock` and `agent.toolPresentation`. A custom
-strategy's own options, the wake gate's rules and an extension's `config`
-aren't checked this way. `src/recipe-schema.ts` holds every key.
+strategy's own options, the wake gate's rules, and an extension's `config`,
+`source` and `sourceMeta` and a server's `sourceMeta` aren't checked this
+way. `src/recipe-schema.ts` holds every key.
 
 `agent.timezone` is an IANA zone used only for times rendered to the agent.
 Chronicle and MCPL protocol timestamps remain epoch/UTC. If the recipe omits

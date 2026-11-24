@@ -123,10 +123,10 @@ describe('validateRecipe — subconscious schema', () => {
     const forks = { enabled: true, reader: 'forks', model: 'm', voice: 'v' };
     for (const [key, value] of [['name', 'Reader'], ['reAnchorFraction', 0.5]] as const) {
       expect(() => validateRecipe(baseRecipe({ subconscious: { ...forks, [key]: value } })))
-        .toThrow(`Recipe subconscious.${key} is for reader "persistent", and this recipe's reader is "forks". Remove ${key}, or set subconscious.reader to "persistent" and remove voice, which only reader "forks" takes.`);
+        .toThrow(`Recipe subconscious.${key} is for reader "persistent", and this recipe's reader is "forks". Remove ${key}, or set subconscious.reader to "persistent" and give systemPrompt, which reader "persistent" needs, and remove voice, which only reader "forks" takes. Reader "forks" takes enabled, reader, model, voice, allowChannelSpeech and forkIdleTimeoutMs.`);
     }
     expect(() => validateRecipe(baseRecipe({ subconscious: { ...forks, forkIdleTimeoutMs: 1000, name: 'Reader' } })))
-      .toThrow('Recipe subconscious.name is for reader "persistent", and this recipe\'s reader is "forks". Remove name, or set subconscious.reader to "persistent" and remove voice and forkIdleTimeoutMs, which only reader "forks" takes.');
+      .toThrow('Recipe subconscious.name is for reader "persistent", and this recipe\'s reader is "forks". Remove name, or set subconscious.reader to "persistent" and give systemPrompt, which reader "persistent" needs, and remove voice and forkIdleTimeoutMs, which only reader "forks" takes.');
     expect(() => validateRecipe(baseRecipe({ subconscious: { ...forks, name: 'Reader', systemPrompt: 'p' } })))
       .toThrow('Recipe subconscious.name and subconscious.systemPrompt are for reader "persistent", and this recipe\'s reader is "forks". Remove name and systemPrompt, or set subconscious.reader to "persistent" and remove voice, which only reader "forks" takes.');
     for (const [key, value] of [['strategyFactory', 'x'], ['framing', 'x']] as const) {
@@ -160,7 +160,7 @@ describe('validateRecipe — subconscious schema', () => {
     expect(() => validateRecipe(baseRecipe({ subconscious: { enabled: true, reader: 'persistent', voice: 'v', model: 'm' } })))
       .toThrow('Recipe subconscious.voice is for reader "forks", and this recipe\'s reader is "persistent". Remove voice, or set subconscious.reader to "forks".');
     expect(() => validateRecipe(baseRecipe({ subconscious: { enabled: true, systemPrompt: MODE, forkIdleTimeoutMs: 1000 } })))
-      .toThrow('Recipe subconscious.forkIdleTimeoutMs is for reader "forks", and this recipe\'s reader is "persistent". Remove forkIdleTimeoutMs, or set subconscious.reader to "forks" and remove systemPrompt, which only reader "persistent" takes.');
+      .toThrow('Recipe subconscious.forkIdleTimeoutMs is for reader "forks", and this recipe\'s reader is "persistent". Remove forkIdleTimeoutMs, or set subconscious.reader to "forks" and give model and voice, which reader "forks" needs, and remove systemPrompt, which only reader "persistent" takes.');
   });
 
   test('reader "persistent", stated: the value rules are the same as when it is implied', () => {

@@ -8,6 +8,7 @@ import { loadMcplServers } from '../src/mcpl-config.js';
 import {
   loadRecipeDocument, loadSavedRecipe, readRecipeDocument, saveRecipe, unknownRecipeKeys, validateRecipe,
 } from '../src/recipe.js';
+import { DELETE, everySetting, variants } from './fixtures/recipe-schema/every-setting.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -59,6 +60,23 @@ describe('one message for every fault that one parse can judge', () => {
     expect(message).toContain('- Recipe dendrite.announceOrphans must be true or false, got "no".');
   });
 
+  test('a rule that reads a setting with a fault of shape adds no sentence of its own', () => {
+    const message = refusal(() => validateRecipe(base({}, { strategy: { type: 'passthrough', kvUnified: null } })));
+    expect(message).toStartWith('Recipe agent.strategy.kvUnified must be ');
+    expect(message).not.toContain('\n');
+  });
+
+  test('a key of the other subconscious reader and a misspelt key are both named, with what switching readers needs', () => {
+    const forks = refusal(() => validateRecipe(base({ subconscious: { enabled: true, reader: 'forks', model: 'm', voice: 'v', systemPrompt: 'p', voise: 'v' } })));
+    expect(forks).toContain('Recipe subconscious.systemPrompt is for reader "persistent", and this recipe\'s reader is "forks".');
+    expect(forks).toContain('Recipe subconscious has unknown key "voise" (did you mean "voice"?); it takes ');
+    const persistent = refusal(() => validateRecipe(base({ subconscious: { enabled: true, systemPrompt: 'p', forkIdleTimeoutMs: 1000 } })));
+    expect(persistent).toBe('Recipe subconscious.forkIdleTimeoutMs is for reader "forks", and this recipe\'s reader is "persistent". ' +
+      'Remove forkIdleTimeoutMs, or set subconscious.reader to "forks" and give model and voice, which reader "forks" needs, ' +
+      'and remove systemPrompt, which only reader "persistent" takes. ' +
+      'Reader "persistent" takes enabled, reader, name, model, systemPrompt, allowChannelSpeech and reAnchorFraction.');
+  });
+
   test('a rule runs where the settings it reads have their shape, whatever else has a fault', () => {
     const message = refusal(() => validateRecipe(base({}, {
       proseLock: '#lounge', strategy: { kvUnified: { policy: { alpha: 'high' } } },
@@ -80,6 +98,31 @@ describe('a message prints no value that came from the environment', () => {
     expect(message).toContain('Recipe modules.history must be true, false or an object, got "${TOKEN}".');
     expect(message).not.toContain('s3cret');
     expect(message).not.toContain('many');
+  });
+
+  test('a rule\'s sentence names a reference as written, and so does a sentence that agent-framework gives a rule', async () => {
+    const env2 = { SEM: 'http://s3cret.example/x', MOUNT: 's3cret-mount' };
+    const semantic = await loadsFrom(base({ modules: { history: { semantic: { url: '${SEM}' } } } }), env2);
+    expect(semantic).toStartWith('Recipe modules.history.semantic.url "${SEM}" is plaintext http');
+    const mount = { name: '${MOUNT}', path: './m', backend: 'direct', mode: 'read-only', watch: 'always' };
+    const workspace = await loadsFrom(base({ modules: { workspace: { mounts: [mount] } } }), env2);
+    expect(workspace).toStartWith('Recipe modules.workspace: Mount "${MOUNT}" is direct');
+    for (const message of [semantic, workspace]) expect(message).not.toContain('s3cret');
+  });
+
+  test('the warning names the recipe as its author wrote the name, and a legacy snapshot by no name', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await loadsFrom({ ...base({}, { bogusAgentKey: 1 }), name: '${NAME}' }, { NAME: 's3cret-name' })).toBe('');
+      expect(warn).toHaveBeenCalledWith('Recipe "${NAME}" has keys the host does not read (ignored): agent.bogusAgentKey.');
+      warn.mockClear();
+      const dataDir = tempDir();
+      writeFileSync(join(dataDir, '.recipe.json'), JSON.stringify(base({}, { bogusAgentKey: 1 })));
+      await loadSavedRecipe(dataDir, { fetchSystemPrompt: false });
+      expect(warn).toHaveBeenCalledWith('Recipe has keys the host does not read (ignored): agent.bogusAgentKey.');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test('a saved document with its references does the same', async () => {
@@ -139,9 +182,12 @@ describe('null, where the code gives it a meaning, and where it doesn\'t', () =>
     expect(parsed.modules?.ttsRelay).toBe(false);
   });
 
-  test('a null elsewhere is refused, and the message says to give a value or leave the key out', () => {
+  test('a null at a setting that the code gives no meaning is refused, and the message says to leave the key out only where it may be left out', () => {
     expect(refusal(() => validateRecipe(base({ mcpServers: { x: { command: 'node', toolPrefix: null } } }))))
-      .toBe('Recipe mcpServers.x.toolPrefix must be a string, got null; give it a value, or leave the key out.');
+      .toBe('Recipe mcpServers.x.toolPrefix must be a string, got null; give it a value, or leave the key out, which takes the default.');
+    expect(refusal(() => validateRecipe({ name: null, agent: {} }))).toEndWith(', got null; give it a value.');
+    expect(refusal(() => validateRecipe(base({}, { thinking: { enabled: null } })))).toEndWith(', got null; give it a value.');
+    expect(refusal(() => validateRecipe(base({ mcpServers: { x: null } })))).toEndWith(', got null; give it a value.');
   });
 
   test('the five loose checks of before refuse what they let through', () => {
@@ -162,8 +208,40 @@ describe('null, where the code gives it a meaning, and where it doesn\'t', () =>
   });
 });
 
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function withEdits(recipe: Record<string, unknown>, edits: readonly (readonly [string, unknown])[]): Record<string, unknown> {
+  const copy = structuredClone(recipe);
+  for (const [dotted, value] of edits) {
+    const keys = dotted.split('.');
+    const last = keys.pop()!;
+    let parent: unknown = copy;
+    for (const key of keys) parent = Array.isArray(parent) ? parent[Number(key)] : isObject(parent) ? parent[key] : undefined;
+    if (!isObject(parent)) throw new Error(`the fixture has no object at ${keys.join('.')}`);
+    if (value === DELETE) delete parent[last];
+    else parent[last] = structuredClone(value);
+  }
+  return copy;
+}
+
 describe('the parsed recipe', () => {
-  test('a left-out agent gets the two values the load writes, and nothing else', () => {
+  test('a recipe that sets every setting, in each variant, parses to itself with the two values that the load writes', () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const [variant, edits] of Object.entries(variants)) {
+        const input = withEdits(everySetting, edits);
+        const agent = input.agent;
+        if (!isObject(agent)) throw new Error(`the ${variant} variant has no agent`);
+        const expected = { ...input, agent: { ...agent, systemPrompt: agent.systemPrompt ?? '', cacheTtl: agent.cacheTtl ?? '1h' } };
+        expect({ variant, parsed: validateRecipe(structuredClone(input)) }).toEqual({ variant, parsed: expected });
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('an agent that sets neither gets the two values that the load writes, and nothing else', () => {
     expect(validateRecipe(base()).agent).toEqual({ systemPrompt: 'sys', cacheTtl: '1h' });
     expect(validateRecipe({ name: 'schema', agent: {} }).agent).toEqual({ systemPrompt: '', cacheTtl: '1h' });
   });
@@ -193,7 +271,7 @@ describe('the parsed recipe', () => {
     const server = { command: 'node', args: ['--port', 8080, true], env: { PORT: 8080, DEBUG: true, NAME: 'x' } };
     expect(validateRecipe(base({ mcpServers: { x: server } })).mcpServers?.x).toEqual(server);
     expect(refusal(() => validateRecipe(base({ mcpServers: { x: { command: 'node', args: [null] } } }))))
-      .toBe('Recipe mcpServers.x.args[0] must be a string, a number, true or false, got null; give it a value, or leave the key out.');
+      .toBe('Recipe mcpServers.x.args[0] must be a string, a number, true or false, got null; give it a value.');
   });
 
   test('a server entry takes agent-framework\'s settings that a recipe can write, with no warning', () => {
@@ -222,6 +300,7 @@ describe('unknown keys', () => {
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     try {
       expect(validateRecipe(recipe).modules?.webui).toEqual({ host: '127.0.0.1', hostt: 'x' });
+      expect(warn).toHaveBeenCalledWith('Recipe "schema" has keys the host does not read (ignored): modules.webui.hostt (did you mean modules.webui.host?).');
     } finally {
       warn.mockRestore();
     }
@@ -320,7 +399,7 @@ describe('unknown keys', () => {
 });
 
 describe('the saved document', () => {
-  test('a load, a save and a load from it: the file holds the author\'s document with two paths resolved, and no default', async () => {
+  test('a load, a save and a load from it: the file holds the author\'s document with the extension\'s path resolved and no default, and loads as the first load did', async () => {
     const dir = tempDir();
     const file = join(dir, 'recipe.json');
     const authored = base({ description: '${LABEL}', extensions: { chart: { kind: 'module', path: '${ASSETS}/chart.js' } } });
@@ -332,6 +411,14 @@ describe('the saved document', () => {
     saveRecipe(dataDir, persistable);
     const expected = { $unresolved: true, ...authored, extensions: { chart: { kind: 'module', path: '/opt/assets/chart.js' } } };
     expect(readFileSync(join(dataDir, '.recipe.json'), 'utf8')).toBe(`${JSON.stringify(expected, null, 2)}\n`);
+    const label = process.env.LABEL;
+    process.env.LABEL = env.LABEL;
+    try {
+      expect(await loadSavedRecipe(dataDir, { fetchSystemPrompt: false })).toEqual(recipe);
+    } finally {
+      if (label === undefined) delete process.env.LABEL;
+      else process.env.LABEL = label;
+    }
   });
 });
 

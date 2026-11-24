@@ -107,7 +107,7 @@ describe('validateRecipe and unknown keys', () => {
     expect(recipe.name).toBe('Test');
     expect(warn).toHaveBeenCalledTimes(1);
     const message = String(warn.mock.calls[0]![0]);
-    expect(message).toContain('Recipe has keys the host does not read (ignored)');
+    expect(message).toContain('Recipe "Test" has keys the host does not read (ignored)');
     for (const key of ['bogusTop', 'mcplServers (did you mean mcpServers?)', 'agent.bogusAgentKey', 'modules.files (replaced by modules.workspace)']) {
       expect(message).toContain(key);
     }

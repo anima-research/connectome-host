@@ -1,9 +1,14 @@
 - **Recipe authors:** one schema now gives the recipe's type and its checks,
-  so the load checks every setting, and a recipe that loaded before can be
-  refused at its next load. To migrate, give each setting that the refusal
-  names the value that it asks for, or leave the key out. One refusal names
-  every fault that the schema finds. Newly refused:
-  - A value of the wrong kind, or `null`, at a setting that had no check:
+  so the load checks every setting that the host reads itself, and a recipe
+  that loaded before can be refused at its next load. This holds for the
+  recipe that a host saved in its data directory too: a host whose saved
+  recipe holds such a value stops at its next start, with the refusal. To
+  migrate, give each setting that the refusal names the value that it asks
+  for, or, where the refusal says so, leave the key out, which takes the
+  default. One refusal names every fault that the schema finds. Newly
+  refused:
+  - A value of the wrong kind, a word outside a setting's list of words, or
+    `null`, at a setting that had no check:
     - at the top level: `description`, `version`, and `mcpServers` itself.
       A list there loaded, and its servers took the names `0`, `1` and so
       on, so give each server a name;
@@ -12,7 +17,7 @@
       `strategy` itself;
     - in `agent.strategy`: `headWindowTokens`, `recentWindowTokens`,
       `compressionModel`, `compressionMaxTokens`, `maxMessageTokens`,
-      `overBudgetGraceRatio` (the fit check read a `null` there as `0`),
+      `overBudgetGraceRatio`,
       `enforceBudget`, `maxSpeculativeL1s`, `positionedRecallPairs`,
       `recallHeaderTemplate`, `targetChunkTokens`, `mergeThreshold`,
       `mergeMaxSourceSpanMessages`, `summaryTargetTokens`,
@@ -23,7 +28,10 @@
       `summaryParticipant`, `summarySystemPrompt`, `summaryUserPrompt`,
       `summaryContextLabel`, `witnessedBeforeSequence`,
       `witnessedInstruction`, `identityReminder` and
-      `witnessedIdentityReminder`, under every strategy type;
+      `witnessedIdentityReminder`, under every strategy type. A `null`
+      that the host passed on reached context-manager in place of its
+      default, so leaving the key out can change what runs: a `null`
+      `overBudgetGraceRatio` ran as `0`, where the default is `0.02`;
     - in `agent.refusalHandling`: `retries`, `maxRewinds` and
       `announceHumanTurns`;
     - in an `mcpServers` entry: `env`, `transport`, `token`, `access`,
@@ -62,6 +70,8 @@
     `agent.contextBudgetTokens`, `modules.webui.basicAuth` and
     `modules.webui.allowedOrigins`.
   - `agent`, `agent.cacheKeepalive` or an `mcpServers` entry as a list;
+    `agent.responses.reasoningEffort` as a list, such as `["low"]`, which
+    loaded because its text was a word of the list;
     `agent.strategy.type` as `0`, `""` or `false`, or as a number, `true`,
     a list or an object beside a strategy extension; `agent.refusalHandling`
     as `0` or `""`.
@@ -75,9 +85,9 @@
   - `modules.webui.basicAuth` without `username` or `password`, which the
     Web UI refused at its start.
   - A number that isn't finite, such as `1e400`.
-  - A number or `true`/`false` that comes from the environment, such as
-    `"port": "${PORT}"`, at a setting that takes a number or `true`/`false`,
-    since substitution gives text.
+  - At a setting that had no check, this includes a number or `true`/`false`
+    that comes from the environment, such as `"port": "${PORT}"`, since
+    substitution gives text.
 
   Unchanged: a recipe that loads gets the same parsed recipe as before.
   `null` keeps its meaning at `agent.systemPrompt`,

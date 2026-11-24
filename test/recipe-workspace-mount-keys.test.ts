@@ -33,7 +33,7 @@ describe('workspace outsideMounts', () => {
   });
 
   test('refuses any other value', () => {
-    for (const [value, got] of [[true, 'true'], ['anywhere', '"anywhere"'], [null, 'null; give it a value, or leave the key out']] as const) {
+    for (const [value, got] of [[true, 'true'], ['anywhere', '"anywhere"'], [null, 'null; give it a value, or leave the key out, which takes the default']] as const) {
       expect(() => validateRecipe(recipe({ mounts: [mount()], outsideMounts: value })))
         .toThrow(`Recipe modules.workspace.outsideMounts must be "read-only" or "read-write", got ${got}.`);
     }
@@ -228,14 +228,14 @@ describe('workspace mount keys', () => {
   test('refuses a value of the wrong kind, null included', () => {
     const refused: Array<[Record<string, unknown>, RegExp]> = [
       [{ watch: 'allways' }, /\.watch must be "always", "on-agent-action" or "never", got "allways"\.$/],
-      [{ watch: null }, /\.watch must be "always", "on-agent-action" or "never", got null; give it a value, or leave the key out\.$/],
+      [{ watch: null }, /\.watch must be "always", "on-agent-action" or "never", got null; give it a value, or leave the key out, which takes the default\.$/],
       [{ mode: 'readonly' }, /\.mode must be "read-write" or "read-only", got "readonly"\.$/],
       [{ backend: 'disk' }, /\.backend must be "chronicle" or "direct", got "disk"\.$/],
-      [{ backend: null }, /\.backend must be "chronicle" or "direct", got null; give it a value, or leave the key out\.$/],
+      [{ backend: null }, /\.backend must be "chronicle" or "direct", got null; give it a value, or leave the key out, which takes the default\.$/],
       [{ include: [] }, /\.include must be a non-empty list of strings, got a list\.$/],
       [{ include: '*.md' }, /\.include must be a non-empty list of strings, got "\*\.md"\.$/],
       [{ include: ['*.md', 1] }, /\.include\[1\] must be a string, got 1\.$/],
-      [{ include: null }, /\.include must be a non-empty list of strings, got null; give it a value, or leave the key out\.$/],
+      [{ include: null }, /\.include must be a non-empty list of strings, got null; give it a value, or leave the key out, which takes the default\.$/],
       [{ name: '' }, /\.name must be a non-empty string, got ""\.$/],
       // A timer runs a delay above 2147483647 ms, or below 0, at once, and truncates a fraction.
       [{ watchDebounceMs: -1 }, /\.watchDebounceMs must be a whole number of milliseconds from 0 to 2147483647, got /],

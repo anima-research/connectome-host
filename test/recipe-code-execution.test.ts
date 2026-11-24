@@ -45,7 +45,7 @@ describe('recipe codeExecution (agent-framework 0.24)', () => {
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     try {
       expect(() => validateRecipe(recipe({ enabled: false, pythonPath: 'python3' }))).not.toThrow();
-      expect(warn).toHaveBeenCalledWith('Recipe has keys the host does not read (ignored): codeExecution.pythonPath.');
+      expect(warn).toHaveBeenCalledWith('Recipe "code-execution-test" has keys the host does not read (ignored): codeExecution.pythonPath.');
     } finally {
       warn.mockRestore();
     }

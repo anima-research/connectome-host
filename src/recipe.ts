@@ -79,7 +79,6 @@ export const DEFAULT_RECIPE: Recipe = {
   },
 };
 
-/** A child's environment as the recipe gives it, each value as its text, which is what a spawned process gets. */
 export function envText(env: Readonly<Record<string, string | number | boolean>>): Record<string, string> {
   return Object.fromEntries(Object.entries(env).map(([name, value]) => [name, String(value)]));
 }

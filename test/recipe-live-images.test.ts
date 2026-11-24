@@ -69,7 +69,7 @@ describe('live-image recipe limits', () => {
     const faults = [
       'Recipe agent.strategy.maxLiveImages must be a non-negative safe integer, got -1.',
       'Recipe agent.strategy.imageStripDepthTokens must be a non-negative safe integer, got "all".',
-      'Recipe agent.strategy.maxLiveImageBytes must be a non-negative safe integer, got null; give it a value, or leave the key out.',
+      'Recipe agent.strategy.maxLiveImageBytes must be a non-negative safe integer, got null; give it a value, or leave the key out, which takes the default.',
     ];
     const message = `The recipe has 3 faults:\n${faults.map((f) => `- ${f}`).join('\n')}`;
     expect(() => recipe({ type: 'passthrough', ...wrong })).toThrow(message);
