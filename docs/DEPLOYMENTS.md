@@ -788,12 +788,12 @@ without `--user`, and move its files as root too.
      says. Check that the name is free:
      `systemctl --user cat connectome-<name>.service` prints
      `No files found for …`. If it shows a unit other than the old one,
-     another resident has the name. Then keep a service of your own instead,
-     as the end of this section says.
+     another resident has the name. Then keep a service of your own instead:
+     see "A service of your own", below.
    - The new unit starts the host with the recipe and `--headless` alone. If
      the old start command gives the host other options, such as
-     `--socket-path`, keep a service of your own instead, as the end of this
-     section says.
+     `--socket-path`, keep a service of your own instead: see
+     "A service of your own", below.
    - With no recipe in the start command, the host resumes the recipe that it
      saved at its last load, `<data directory>/.recipe.json`. A host that is
      given a recipe writes it to that file at each start, so give the new
@@ -910,10 +910,10 @@ without `--user`, and move its files as root too.
     `Doctor found no problem.` Then
     `connectome-host/connectome send '<a line>'` prints the resident's reply.
 11. **If you choose, let the resident update itself.** Set
-    `"selfUpdate": true` in the recipe's `modules`. Then restart the host: run
-    step 9's command again, or restart a service of your own. The resident can
-    then update its own host with `lifecycle--update`. This adds a tool, so the
-    resident's next turn writes its whole prompt cache once.
+    `"selfUpdate": true` in the recipe's `modules`. Then run step 9's command
+    again, which restarts the host. The resident can then update its own host
+    with `lifecycle--update`. This adds a tool, so the resident's next turn
+    writes its whole prompt cache once.
 12. **To go back:**
     - After step 5 and before step 7, restore the copy, as "By hand" says.
       Start the MCPL servers that you stopped in step 5. Then start the old
@@ -973,18 +973,10 @@ the steps change in these ways:
   clone. Then move the new directory aside, such as to `~/resident.moved`, so
   that a later move starts in an empty one.
 
-You can keep a service of your own instead. Then do steps 1 to 6. Then change
-the old unit's start command, as "Setting it up, once" says. Where the working
-directory moved, change its `WorkingDirectory` to the new directory. If its
-`DATA_DIR` names a place in the clone, change that to the new place too. Skip
-steps 7 to 9. Instead, start the MCPL servers that you stopped in step 5. Then
-run `systemctl --user daemon-reload`, and start the service.
-`connectome doctor` then reports `No service is installed for this install.`
-With a service of your own, that line is expected. For step 11, the service
-needs what "A resident's own update" says. Its start command must also name
-the recipe that step 11 edits. To go back, stop the service, put its old lines
-back, and run `systemctl --user daemon-reload`. Then do what step 12 says for a
-move stopped before step 7, and remove the install root as step 12 says.
+**A service of your own.** This section covers the service that
+`connectome service install` writes. With a service of your own, steps 1 to 6
+give you the install. Then change your unit so that it starts the new host.
+"Setting it up, once" says how. This section gives no steps for that.
 
 On a Mac, the old service is a launch agent. Step 2 reads its plist, such as
 with `plutil -p <plist>`. It finds the data directory with
