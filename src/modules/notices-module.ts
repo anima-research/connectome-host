@@ -160,7 +160,7 @@ const STATUS_WORDS: Readonly<Record<string, string>> = Object.freeze({
   'quota-unreadable': "its subscription quota couldn't be read, so no spent-quota hold is possible; an operator's Re-read quota reads it again",
   'auth-expiring': 'its provider credential expires soon',
   'credential-unsaved': "its provider credential couldn't be saved to its file, so a restart may not find the credential in use; an operator's Re-check writes it again",
-  'refusal-offpath': "a request outside its own turns, such as for a summary, couldn't be completed",
+  'refusal-offpath': "an auxiliary model call, such as for a summary, couldn't be completed; see failures.log for details",
   'refusal': "a request couldn't be completed",
   'context-maintenance-failed': "its context maintenance didn't finish; failures.log says why",
   'compression-quarantine': 'part of its history is held back from summaries and stays whole, which in time fills its context budget; an operator can inspect what is held, then branch, pin or clear it',

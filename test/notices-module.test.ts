@@ -1341,7 +1341,7 @@ describe('process off-path refusal notices', () => {
     expect(h.posts.length).toBe(4);
     for (const post of h.posts) {
       expect(post.text).not.toMatch(/model-monday|model-friday|cyber|reasoning_extraction|48k|250k/);
-      expect(post.text).toContain("a request outside its own turns, such as for a summary, couldn't be completed");
+      expect(post.text).toContain("an auxiliary model call, such as for a summary, couldn't be completed; see failures.log for details");
     }
     expect(h.module.episodeState()).toEqual([]);
     expect(h.module.owedState()).toEqual({});
@@ -1676,7 +1676,7 @@ describe("an alert's message stays with the operator", () => {
     ['quota-unreadable', "⚠ [host notice] clerk — quota-unreadable: its subscription quota couldn't be read, so no spent-quota hold is possible; an operator's Re-read quota reads it again."],
     ['auth-expiring', '⚠ [host notice] clerk — auth-expiring: its provider credential expires soon.'],
     ['credential-unsaved', "⚠ [host notice] clerk — credential-unsaved: its provider credential couldn't be saved to its file, so a restart may not find the credential in use; an operator's Re-check writes it again."],
-    ['refusal-offpath', "⚠ [host notice] clerk — refusal-offpath: a request outside its own turns, such as for a summary, couldn't be completed."],
+    ['refusal-offpath', "⚠ [host notice] clerk — refusal-offpath: an auxiliary model call, such as for a summary, couldn't be completed; see failures.log for details."],
     ['refusal', "⚠ [host notice] clerk — refusal: a request couldn't be completed."],
     ['context-maintenance-failed', "⚠ [host notice] clerk — context-maintenance-failed: its context maintenance didn't finish; failures.log says why."],
     ['compression-quarantine', '⚠ [host notice] clerk — compression-quarantine: part of its history is held back from summaries and stays whole, which in time fills its context budget; an operator can inspect what is held, then branch, pin or clear it.'],

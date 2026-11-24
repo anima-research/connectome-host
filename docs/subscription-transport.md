@@ -133,7 +133,7 @@ stream, and decides where and how loudly each alert kind is told.
   the TUI's alert line, the Web UI, failures.log and the webhook, as before.
 
 Off-path refusals with subject `host` are process notices about individual calls.
-They use the same fixed wording as other status notices. Model, category,
+Like other status notices, they post the kind and its fixed line. Model, category,
 message count, input-token count, and provider text stay with the existing alert
 observers and logs. A burst shares one `quietMs` window. Each configured
 status channel also has a `renotifyMs` floor (30 minutes by default) between
