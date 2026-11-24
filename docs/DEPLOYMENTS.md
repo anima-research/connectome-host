@@ -742,16 +742,15 @@ keeps its data, its recipe, `.env` and its MCPL servers. The resident is down
 from step 5, where it stops, to step 9, where it starts again. A clone runs
 the library versions in its lockfile. An install runs the versions that npm
 chooses for it, which can be newer. So the move can update the libraries too.
-This section doesn't cover a host with fleet children. It doesn't cover an MCPL
-server that runs apart from the host either.
+It gives steps for Linux with a systemd user unit. It doesn't cover a Mac, an
+old service that is a system unit, a host with fleet children, or an MCPL server
+that runs apart from the host.
 
 Run each step as the user that runs the resident. From another account, use a
 login shell of that user, such as `sudo -iu <user>`. `service install` needs
 that user's own `USER` and `HOME`. Without `XDG_RUNTIME_DIR`, `systemctl
 --user` can't find the user's systemd. If the shell doesn't set it, set it
-first: `export XDG_RUNTIME_DIR=/run/user/$(id -u)`. Where the old service is a
-system unit, work on the old unit as root. Run each `systemctl` command for it
-without `--user`, and move its files as root too.
+first: `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
 
 1. **Choose the version.** The move needs 0.26.0 or later, the first release
    with `service install` and `doctor`. In the clone, run `git describe --tags`.
@@ -759,8 +758,8 @@ without `--user`, and move its files as root too.
    it, such as `v0.27.0-6-ga6047e20`. Run `git status --short` too. Each line
    that it prints names a file that the clone changed, deleted or added. A
    change to the host's own code won't be in the install.
-   - For a tag alone, install that version. The host then runs the same code
-     as now.
+   - For a tag alone, install that version. The host then runs the same host
+     code as now. Its libraries can be newer, as step 3 checks.
    - For a clone past a tag, run `git fetch --tags`, then
      `git tag --contains HEAD --sort=v:refname`. It lists the tags that hold
      the clone's code, oldest first. `npm view @animalabs/connectome-host
@@ -778,6 +777,12 @@ without `--user`, and move its files as root too.
    start command gives the host. The install goes into the working directory.
    Note too whether the unit is enabled, which
    `systemctl --user is-enabled <unit>` prints. Step 12 needs that.
+   - This section doesn't cover an old unit that sets no `WorkingDirectory`. It
+     doesn't cover a working directory whose `package.json` or `node_modules`
+     serves something else, such as an MCPL server, either.
+   - `service install` needs linger, which runs the user's units without a
+     login. Check that `/var/lib/systemd/linger/<user>` exists. If it doesn't,
+     have root run `loginctl enable-linger <user>` before step 5.
    - The data directory is the one that the running host uses. Its `DATA_DIR`
      can come from the unit, from its environment files or from a `.env`
      file, so read it from the host. This prints the `headless.log` that the
@@ -805,9 +810,9 @@ without `--user`, and move its files as root too.
      older one. It holds the values of the recipe's variables, secrets
      included, so make the copy readable only by its user, with `chmod 600`.
      In the saved file, the paths to extensions are full paths. A path can
-     lead into the clone. Then copy
-     that file into the working directory too, with the files beside it that
-     it uses. Change the path in the copy to name the new file.
+     lead into the clone. Then copy that file into the working directory too,
+     with the files beside it that it uses. Change the path in the copy to
+     name the new file.
    - With `--no-recipe` in the start command, or with no `.recipe.json`, the
      host runs its built-in default recipe. `service install` needs a recipe
      file, so write one first, with the same contents as `DEFAULT_RECIPE` in
@@ -827,10 +832,7 @@ without `--user`, and move its files as root too.
    ```
    `--prefix` makes npm install here, and not into a project in a directory
    above. Use npm here. With Bun 1.4.3, `bun add` gives the folder's `.env` to
-   install scripts, as "By hand" says. If the working directory already has a
-   `node_modules`, run `npm ls --prefix "$PWD"` first. npm's install removes
-   each package that `npm ls` marks `extraneous`. If something there uses such a
-   package, add it to `package.json` first. After the install, check that
+   install scripts, as "By hand" says. After the install, check that
    `node_modules/@animalabs/connectome-host/package.json` names the version.
    Then run
    `npm ls @animalabs/agent-framework @animalabs/context-manager @animalabs/chronicle`
@@ -915,10 +917,12 @@ without `--user`, and move its files as root too.
     `Doctor found no problem.` Then
     `connectome-host/connectome send '<a line>'` prints the resident's reply.
 11. **If you choose, let the resident update itself.** Set
-    `"selfUpdate": true` in the recipe's `modules`. Then run step 9's command
-    again, which restarts the host. The resident can then update its own host
-    with `lifecycle--update`. This adds a tool, so the resident's next turn
-    writes its whole prompt cache once.
+    `"selfUpdate": true` in the recipe's `modules`. If the recipe's
+    `agent.allowedTools` is a list, add `lifecycle--update` to it. Then run
+    step 9's command again, which restarts the host. The resident can then
+    update its own host with `lifecycle--update`. This adds a tool. So with
+    prompt caching on, the resident's next turn writes its whole prompt cache
+    once.
 12. **To go back:**
     - After step 5 and before step 7, restore the copy, as "By hand" says.
       Then start the old service again with `systemctl --user start <unit>`.
@@ -980,25 +984,6 @@ the steps change in these ways:
 `connectome service install` writes. With a service of your own, steps 1 to 6
 give you the install. Then change your unit so that it starts the new host.
 "Setting it up, once" says how. This section gives no steps for that.
-
-On a Mac, the old service is a launch agent. Step 2 reads its plist, such as
-with `plutil -p <plist>`. It finds the data directory with
-`lsof -p <pid> | grep headless.log`, where `launchctl list` shows the agent's
-pid. For an agent that runs a script, use the host's pid, which
-`pgrep -P <pid>` lists. Its name check looks for
-`~/Library/LaunchAgents/com.animalabs.connectome.<name>.plist` and
-`com.animalabs.connectome.<name>.shell.plist` there. Step 5 stops and unloads
-it with `launchctl bootout gui/$(id -u) <plist>`. Step 7 moves
-its plist into the copy, so that launchd doesn't load it at the next login.
-launchd has no drop-ins, and `service install` writes the plist again each time
-it runs. So step 8 puts the old agent's environment into `.env`, which the host
-reads at its start. Only the old plist's environment can be carried over, and
-not its `PATH`: the new plist sets its own, which `.env` doesn't change. Step 9
-writes and loads `~/Library/LaunchAgents/com.animalabs.connectome.<name>.plist`.
-Step 12 loads the old plist with `launchctl bootstrap gui/$(id -u) <plist>`.
-From step 7 on, it first unloads the new agents with `launchctl bootout`,
-removes their plists from `~/Library/LaunchAgents`, and moves the old plist
-back.
 
 ---
 
