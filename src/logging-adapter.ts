@@ -176,9 +176,9 @@ const MODEL_THINKING_PATTERNS = MODEL_THINKING.map(
   ([name, facts]) => [new RegExp(`claude-${name}(?!\\d|-\\d{1,2}(?!\\d))`), facts] as const,
 );
 
-export function modelThinking(model: string): ModelThinking {
+export function modelThinking(model: string, nonClaudeFallback = NEITHER): ModelThinking {
   const id = model.toLowerCase().replace(/(\d)\.(\d)/g, '$1-$2');
-  if (!/(^|[/.:])claude-/.test(id)) return NEITHER;
+  if (!/(^|[/.:])claude-/.test(id)) return nonClaudeFallback;
   // Before Claude 4, Anthropic's ids named the version before the family
   // (claude-3-5-sonnet, claude-2-1, Bedrock's claude-v2), or were Instant.
   if (/(^|[/.:])claude-([1-3]|v[12]|instant)(?!\d)/.test(id)) return NEITHER;
@@ -880,9 +880,9 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   }
 
   private withStoredExtractGuard(request: ProviderRequest, options: ProviderRequestOptions): ProviderRequest {
-    // Keep the wire request independent of this flag on binding models.
-    // Rewriting even the newest extract could invalidate thinking on replay.
-    return this.filterStoredHistoryExtractThinking && !modelThinking(request.model).binds
+    // Unknown IDs may route to binding models. Rewriting even the newest
+    // extract could invalidate thinking on replay, so require a known non-binding model.
+    return this.filterStoredHistoryExtractThinking && !modelThinking(request.model, UNREACHED).binds
       ? filterStoredHistoryExtracts(request, options.onContentAltered)
       : request;
   }

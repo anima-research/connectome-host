@@ -785,19 +785,20 @@ unknown-key warning, like those at the other levels.
   `toolsets--act`). Within an extract page, a nested result named
   `history--extract` is covered even if its call is off-page; unnamed and
   `toolsets--act` results still need a matching call on that page.
-  The guard applies only to models the host does not treat as binding thinking
-  to the request prefix. For binding models, rely on the Agent Framework
-  fix for new extracts ([#1041](https://github.com/anima-research/agent-framework/pull/1041));
-  the host guard leaves all requests unchanged, even if older extracts
-  still contain copies.
+  The guard applies only to models the host knows do not bind thinking to
+  the request prefix. It treats unknown IDs (including unrecognized gateway
+  aliases) as binding and leaves their requests unchanged. For binding or
+  unknown models, rely on the Agent Framework fix for new extracts
+  ([#1041](https://github.com/anima-research/agent-framework/pull/1041));
+  older extracts can still contain copies.
   Truncation recovery is best-effort; it needs a recognizable extract
   prefix. The host warns if the flag is enabled with a non-Anthropic
   provider, where it has no effect, or with `anthropic-xml`, where XML main
   turns are not covered but native background requests such as compression
   can be filtered on non-binding models. Summaries and debug context-makeup
   token counts are not covered.
-  Turning the flag on or off is safe for binding models: it does not change
-  their requests. On other models, toggling it changes eligible earlier
+  Turning the flag on or off does not change requests on binding or unknown
+  models. On known non-binding models, toggling it changes eligible earlier
   extracts sent on the next request and can rewrite the prompt-cache prefix.
   Remove the flag once stored extracts have aged out after upgrading to
   the Agent Framework release that includes #1041.

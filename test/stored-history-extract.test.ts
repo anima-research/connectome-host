@@ -303,7 +303,8 @@ for (const lane of ['complete', 'stream'] as const) {
     ['unbound thinking', 'claude-opus-4-6', thinking, false],
     ['bound signed thinking without drop control', 'claude-mythos-5-1', thinking, true],
     ['bound redacted thinking with drop control support', 'claude-fable-5-2', redacted, true],
-  ] as const)(`${lane} filters only when enabled on a non-binding model (%s)`, async (_label, model, laterThinking, bound) => {
+    ['unknown gateway alias', 'resident-model', thinking, true],
+  ] as const)(`${lane} filters only when enabled on a known non-binding model (%s)`, async (_label, model, laterThinking, treatedAsBinding) => {
     const { request: base, result } = requestWith(exposed, lane === 'stream' ? act : call);
     const suffixCall = { ...call, id: 'toolu_suffix' };
     const suffixResult = { ...result, tool_use_id: suffixCall.id };
@@ -351,10 +352,10 @@ for (const lane of ['complete', 'stream'] as const) {
       server.stop(true);
     }
     expect(bodies).toHaveLength(4);
-    if (!bound) expect(bodies[1]).toBe(bodies[0]);
+    if (!treatedAsBinding) expect(bodies[1]).toBe(bodies[0]);
     expect(bodies[2]).toBe(bodies[1]);
     expect(resultOf(JSON.parse(bodies[1]!))).toEqual(result);
-    if (bound) {
+    if (treatedAsBinding) {
       // Even the result after the last signed or redacted block is unchanged.
       expect(bodies[3]).toBe(bodies[2]);
     } else {
