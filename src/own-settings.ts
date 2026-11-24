@@ -1,0 +1,467 @@
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { resolveTimeZone } from '@animalabs/agent-framework';
+import { ENV_REFERENCE } from './recipe-document.js';
+import { DEFAULT_RECIPE_CLOCK, type Recipe, type RecipeOrigin } from './recipe.js';
+import { checkRecipe, nearestKey, settingFault, settingTakes } from './recipe-schema.js';
+import { strategyMessageCap } from './framework-strategy.js';
+import { shown } from './modules/shown.js';
+import { settingsRoute } from './modules/unknown-tool.js';
+import { PRIVATE_DIR_MODE } from './update/data-swap.js';
+import {
+  AVAILABILITY, OWN_SETTING_NAMES, OWN_SETTINGS, OWN_SETTINGS_FILE, OWN_SETTINGS_MAX_BYTES, OWN_SETTINGS_MOUNT,
+  OWN_SETTINGS_SET_ASIDE, OWN_SETTINGS_TOOL, ownSettingsDir, type OwnSetting, type OwnSettingName,
+} from './own-settings-table.js';
+
+type Grant = Recipe['ownSettings'];
+
+const settingNamed = (name: string): OwnSetting | undefined => OWN_SETTINGS.find((setting) => setting.name === name);
+
+const errorCode = (err: unknown): string | undefined =>
+  typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'string' ? err.code : undefined;
+const errorText = (err: unknown): string => errorCode(err) ?? (err instanceof Error ? err.message : String(err));
+
+const mayRead = (grant: Grant, name: OwnSettingName): boolean =>
+  grant === 'all' || grant === 'read' || (Array.isArray(grant) && grant.includes(name));
+const mayChange = (grant: Grant, name: OwnSettingName): boolean =>
+  grant === 'all' || (Array.isArray(grant) && grant.includes(name));
+/** Whether the grant lets the resident change a setting: `"all"`, or a list. */
+export const changesSettings = (grant: Grant): boolean => grant === 'all' || Array.isArray(grant);
+
+const isAvailable = (setting: OwnSetting, recipe: Recipe): boolean => AVAILABILITY[setting.available].on(recipe);
+
+const exists = (path: string): boolean => lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+
+function fileForStart(dir: string, grant: Grant): string {
+  const own = join(dir, OWN_SETTINGS_FILE);
+  const parked = join(dir, OWN_SETTINGS_SET_ASIDE);
+  return changesSettings(grant) && !exists(own) && exists(parked) ? parked : own;
+}
+
+/** The resident's file as the host reads it. */
+export type OwnFile =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'unread'; readonly why: string }
+  | { readonly kind: 'not-an-object'; readonly why: string }
+  | { readonly kind: 'entries'; readonly entries: ReadonlyArray<readonly [string, unknown]> };
+
+function readOwnFile(path: string): OwnFile {
+  let fd: number;
+  try {
+    // Without O_NONBLOCK, opening a pipe waits for a writer.
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (err) {
+    const code = errorCode(err);
+    if (code === 'ENOENT') return { kind: 'none' };
+    if (code === 'ELOOP') return { kind: 'unread', why: 'it is a link, and the host follows no link there' };
+    return { kind: 'unread', why: `it can't be read (${errorText(err)})` };
+  }
+  let text: string;
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return { kind: 'unread', why: 'it is not a plain file' };
+    const tooLarge = `it is larger than ${OWN_SETTINGS_MAX_BYTES} bytes`;
+    if (stat.size > OWN_SETTINGS_MAX_BYTES) return { kind: 'unread', why: tooLarge };
+    const buffer = Buffer.alloc(OWN_SETTINGS_MAX_BYTES + 1);
+    let length = 0;
+    for (let n = -1; n !== 0 && length < buffer.length;) {
+      n = readSync(fd, buffer, length, buffer.length - length, null);
+      length += n;
+    }
+    if (length > OWN_SETTINGS_MAX_BYTES) return { kind: 'unread', why: tooLarge };
+    text = buffer.subarray(0, length).toString('utf-8');
+  } catch (err) {
+    return { kind: 'unread', why: `it can't be read (${errorText(err)})` };
+  } finally {
+    closeSync(fd);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return { kind: 'not-an-object', why: `it is not JSON: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const holds = parsed === null ? 'null' : Array.isArray(parsed) ? 'a list' : `a ${typeof parsed}`;
+    return { kind: 'not-an-object', why: `it holds ${holds}, not a JSON object` };
+  }
+  return { kind: 'entries', entries: Object.entries(parsed) };
+}
+
+/** Why the host does not use an entry of the resident's file. */
+export type NotUsed =
+  | { readonly kind: 'unknown'; readonly near: string | null }
+  | { readonly kind: 'not-granted' }
+  | { readonly kind: 'not-available'; readonly when: string }
+  | { readonly kind: 'value'; readonly fault: string }
+  | { readonly kind: 'check'; readonly fault: string };
+
+export type OwnEntry = {
+  readonly name: string;
+  readonly value: unknown;
+  readonly notUsed: NotUsed | null;
+};
+
+export interface OwnSettingsCheck {
+  /** The recipe with each entry that is in force. */
+  readonly recipe: Recipe;
+  readonly file: OwnFile;
+  readonly entries: readonly OwnEntry[];
+}
+
+/** The operator's recipe as the start resolved it, with the origin that its load had. */
+export interface OperatorRecipe {
+  readonly recipe: Recipe;
+  readonly origin: RecipeOrigin;
+}
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function placed(document: unknown, path: readonly string[], value: unknown): unknown {
+  const [key, ...rest] = path;
+  if (key === undefined) return value;
+  const section = isPlainObject(document) ? document : {};
+  return { ...section, [key]: placed(section[key], rest, value) };
+}
+
+export function valueAt(document: unknown, name: string): unknown {
+  let value = document;
+  for (const key of name.split('.')) {
+    if (!isPlainObject(value)) return undefined;
+    value = value[key];
+  }
+  return value;
+}
+
+/**
+ * What a start does with the resident's file in `dataDir` on top of the
+ * operator's recipe. It writes nothing. Without a grant to change a setting it
+ * applies nothing. Otherwise it judges each entry alone, in the file's order,
+ * and then adds each remaining entry to the recipe one by one, keeping it
+ * when the recipe with it passes the load's checks. The fit check reads none
+ * of the table's settings, so the recipe fits with each entry as it fits
+ * without it.
+ */
+export function checkOwnSettings(operator: OperatorRecipe, dataDir: string): OwnSettingsCheck {
+  const { recipe } = operator;
+  const grant = recipe.ownSettings;
+  const file = readOwnFile(fileForStart(ownSettingsDir(dataDir), grant));
+  if (!changesSettings(grant) || file.kind !== 'entries') return { recipe, file, entries: [] };
+
+  const judged = file.entries.map(([name, value]): OwnEntry => {
+    const setting = settingNamed(name);
+    if (setting === undefined) return { name, value, notUsed: { kind: 'unknown', near: nearestKey(name, OWN_SETTING_NAMES) } };
+    if (!mayChange(grant, setting.name)) return { name, value, notUsed: { kind: 'not-granted' } };
+    if (!isAvailable(setting, recipe)) return { name, value, notUsed: { kind: 'not-available', when: AVAILABILITY[setting.available].when } };
+    const fault = settingFault(name, value);
+    return { name, value, notUsed: fault === undefined ? null : { kind: 'value', fault } };
+  });
+
+  let current = recipe;
+  let origin = operator.origin;
+  const entries = judged.map((entry): OwnEntry => {
+    if (entry.notUsed !== null) return entry;
+    const path = entry.name.split('.');
+    const nextOrigin: RecipeOrigin = origin.kind === 'authored'
+      ? { kind: 'authored', document: placed(origin.document, path, entry.value) }
+      : origin;
+    const checked = checkRecipe(placed(current, path, entry.value), nextOrigin);
+    if (!checked.ok) return { ...entry, notUsed: { kind: 'check', fault: checked.fault } };
+    current = checked.recipe;
+    origin = nextOrigin;
+    return entry;
+  });
+  return { recipe: current, file, entries };
+}
+
+const ended = (text: string): string => (text.endsWith('.') ? text : `${text}.`);
+
+const quoted = (sentence: string): string =>
+  sentence.includes('\n') ? `\n${sentence.split('\n').map((line) => `    ${line}`).join('\n')}` : ` '${sentence}'`;
+
+function residentReason(entry: OwnEntry): string {
+  const name = `\`${entry.name}\``;
+  const reason = entry.notUsed;
+  if (reason === null) return `${name} is ${shown(entry.value)}.`;
+  switch (reason.kind) {
+    case 'unknown':
+      return `${name} is not used: it is not a setting that you can manage${reason.near ? ` (did you mean \`${reason.near}\`?)` : ''}.`;
+    case 'not-granted':
+      return `${name} is not used: your operator's recipe does not let you change it.`;
+    case 'not-available':
+      return `${name} is not used: it does nothing on this host, since it takes effect only ${reason.when}.`;
+    case 'value':
+      return `${name} is not used: ${shown(entry.value)} is not a value that this setting takes. The host's check says:${quoted(reason.fault)}`;
+    case 'check':
+      return `${name} is not used. With your value ${shown(entry.value)}, your operator's recipe fails a check of the host:` +
+        `${quoted(reason.fault)}\n  That check reads settings that your operator holds. Choose a value that passes, or ask your operator.`;
+    default: {
+      const _exhaustive: never = reason;
+      return _exhaustive;
+    }
+  }
+}
+
+function operatorReason(reason: NotUsed): string {
+  switch (reason.kind) {
+    case 'unknown':
+      return `it is not a setting of the table${reason.near ? ` (did you mean ${reason.near}?)` : ''}`;
+    case 'not-granted':
+      return 'the recipe\'s ownSettings does not name it';
+    case 'not-available':
+      return `it takes effect only ${reason.when}`;
+    case 'value':
+      return reason.fault;
+    case 'check':
+      return `the recipe fails a check with it: ${reason.fault}`;
+    default: {
+      const _exhaustive: never = reason;
+      return _exhaustive;
+    }
+  }
+}
+
+function recipeValueShown(operator: OperatorRecipe, name: string): string {
+  const value = valueAt(operator.recipe, name);
+  if (value === undefined) return 'nothing';
+  if (operator.origin.kind === 'authored') {
+    const written = valueAt(operator.origin.document, name);
+    if (typeof written === 'string' && new RegExp(ENV_REFERENCE).test(written)) {
+      return `${JSON.stringify(written)}, which the host fills from its environment`;
+    }
+  }
+  if (operator.origin.kind === 'resolved' && typeof value === 'string') return 'a string from the saved recipe';
+  return shown(value);
+}
+
+const recipeOwn = (operator: OperatorRecipe, name: string): string =>
+  valueAt(operator.recipe, name) === undefined ? 'the recipe sets none' : `the recipe's own value is ${recipeValueShown(operator, name)}`;
+
+function filePlace(dataDir: string, recipe: Recipe, file: string): string {
+  return changesSettings(recipe.ownSettings) && recipe.modules?.workspace !== false
+    ? `${OWN_SETTINGS_MOUNT}/${file}`
+    : resolve(ownSettingsDir(dataDir), file);
+}
+
+/** What a start did with the file before it checked it. */
+export type OwnFileMove = 'parked' | 'put-back' | null;
+
+export interface OwnSettingsStart {
+  readonly check: OwnSettingsCheck;
+  readonly moved: OwnFileMove;
+  /** The start's log lines for the operator. */
+  readonly log: readonly string[];
+  /** The host note for the resident, where the file did not take effect as written or the host moved it. */
+  readonly note: string | undefined;
+}
+
+/**
+ * The start's part: it makes the directory for a grant that changes a
+ * setting, parks the resident's file where the grant changes none, puts a
+ * parked file back where it changes one again, and applies the file
+ * (checkOwnSettings).
+ */
+export function startOwnSettings(operator: OperatorRecipe, dataDir: string): OwnSettingsStart {
+  const grant = operator.recipe.ownSettings;
+  const dir = ownSettingsDir(dataDir);
+  const own = join(dir, OWN_SETTINGS_FILE);
+  const parked = join(dir, OWN_SETTINGS_SET_ASIDE);
+  const log: string[] = [];
+  let moved: OwnFileMove = null;
+  try {
+    if (changesSettings(grant)) {
+      mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+      if (!exists(own) && exists(parked)) {
+        renameSync(parked, own);
+        moved = 'put-back';
+        log.push(`[own-settings] The recipe lets the resident change settings again, so the host put ${parked} back as ${own}.`);
+      }
+    } else if (exists(own)) {
+      renameSync(own, parked);
+      moved = 'parked';
+      log.push(`[own-settings] The recipe lets the resident change no setting, so the host parked ${own} as ${parked}.`);
+    }
+  } catch (err) {
+    log.push(`[own-settings] The host could not prepare ${dir}: ${errorText(err)}.`);
+  }
+  const check = checkOwnSettings(operator, dataDir);
+  if (check.file.kind === 'unread' || check.file.kind === 'not-an-object') {
+    log.push(`[own-settings] The host did not use ${own}: ${check.file.why}.`);
+  }
+  for (const entry of check.entries) {
+    log.push(entry.notUsed === null
+      ? `[own-settings] ${entry.name} is ${shown(entry.value)} from the resident's file; ${recipeOwn(operator, entry.name)}.`
+      : `[own-settings] ${entry.name} in the resident's file is not used: ${ended(operatorReason(entry.notUsed))}`);
+  }
+  return { check, moved, log, note: startNote(operator.recipe, dataDir, check, moved) };
+}
+
+function startNote(recipe: Recipe, dataDir: string, check: OwnSettingsCheck, moved: OwnFileMove): string | undefined {
+  const place = filePlace(dataDir, recipe, OWN_SETTINGS_FILE);
+  const notUsed = check.entries.filter((entry) => entry.notUsed !== null);
+  const parts: string[] = [];
+  if (moved === 'parked') {
+    parts.push('Your operator\'s recipe no longer lets you change your own settings, so the host parked your settings file: it is ' +
+      `${resolve(ownSettingsDir(dataDir), OWN_SETTINGS_SET_ASIDE)} now, and the recipe's values are in force. ` +
+      'The host puts it back when the recipe lets you change a setting again.');
+  }
+  const inForce = check.entries.filter((entry) => entry.notUsed === null);
+  if (moved === 'put-back') {
+    parts.push(`Your operator's recipe lets you change your own settings again, so the host put your parked settings file back as ${place}.` +
+      (inForce.length > 0 ? ` In force from it:\n${inForce.map((entry) => `- ${residentReason(entry)}`).join('\n')}` : ' Nothing of it is in force.'));
+  }
+  if (check.file.kind === 'unread' || check.file.kind === 'not-an-object') {
+    parts.push(`The host did not use your settings file ${place} at this start: ${check.file.why}. The recipe's values are in force.`);
+  }
+  if (notUsed.length > 0) {
+    parts.push(`Your settings file ${place} did not take effect as written at this start.` +
+      `${inForce.length > 0 ? ' Each other entry of it is in force.' : ''}\n` +
+      notUsed.map((entry) => `- ${residentReason(entry)}`).join('\n'));
+  }
+  if (parts.length === 0) return undefined;
+  if (recipe.ownSettings !== undefined) {
+    parts.push(`${OWN_SETTINGS_TOOL} shows your own settings and checks your file: ${settingsRoute(OWN_SETTINGS_TOOL)}.`);
+  }
+  return parts.join('\n\n');
+}
+
+/** What the tool needs from the running host. */
+export interface RunningAgent {
+  readonly name: string;
+  readonly proseRouting: string | undefined;
+  readonly restartOffered: boolean;
+}
+
+const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+function hostValue(name: OwnSettingName, recipe: Recipe, running: RunningAgent): string | undefined {
+  switch (name) {
+    case 'agent.clock': return shown(DEFAULT_RECIPE_CLOCK);
+    case 'agent.timezone': return shown(resolveTimeZone(undefined));
+    case 'agent.strategy.maxMessageTokens': return shown(strategyMessageCap(recipe));
+    case 'agent.strategy.summaryParticipant': return shown(running.name);
+    default: return undefined;
+  }
+}
+
+/**
+ * The answer of OWN_SETTINGS_TOOL: what is pending in the file, each setting
+ * that the resident may read with its value in force and where that comes
+ * from, how to change them, and the file as the next start would apply it.
+ * It writes nothing.
+ */
+export function ownSettingsAnswer(input: {
+  readonly operator: OperatorRecipe;
+  readonly start: OwnSettingsCheck;
+  readonly dataDir: string;
+  readonly running: RunningAgent;
+}): string {
+  const { operator, start, dataDir, running } = input;
+  const grant = operator.recipe.ownSettings;
+  const next = checkOwnSettings(operator, dataDir);
+  const readable = OWN_SETTINGS.filter((setting) => mayRead(grant, setting.name));
+  const fromFile = (name: string): boolean => start.entries.some((entry) => entry.name === name && entry.notUsed === null);
+  const sections: string[] = [];
+
+  const pending = readable.filter((setting) => !sameValue(valueAt(start.recipe, setting.name), valueAt(next.recipe, setting.name)));
+  if (pending.length > 0) {
+    sections.push('Pending: your file changes these at the next start, and they are not in force in this run.\n' +
+      pending.map((setting) => {
+        const later = valueAt(next.recipe, setting.name);
+        const fromNextFile = next.entries.some((entry) => entry.name === setting.name && entry.notUsed === null);
+        const value = fromNextFile ? shown(later)
+          : valueAt(operator.recipe, setting.name) !== undefined ? `the recipe's own value, ${recipeValueShown(operator, setting.name)}`
+          : 'not set by the recipe or your file';
+        return `- ${setting.name}: ${value} at the next start`;
+      }).join('\n'));
+  }
+
+  sections.push(readable.map((setting) => {
+    const available = isAvailable(setting, operator.recipe);
+    const inForce = valueAt(start.recipe, setting.name);
+    const now = !available ? `not available on this host: it takes effect only ${AVAILABILITY[setting.available].when}`
+      : setting.name === 'agent.proseRouting' && running.proseRouting !== undefined
+        ? `${shown(running.proseRouting)}, ${fromFile(setting.name) ? 'from your file' : inForce !== undefined ? 'from the recipe' : 'the agent\'s default'}`
+      : fromFile(setting.name)
+        ? `${shown(inForce)}, from your file, and ${recipeOwn(operator, setting.name)}`
+      : inForce !== undefined ? `${recipeValueShown(operator, setting.name)}, from the recipe`
+      : hostValue(setting.name, start.recipe, running) !== undefined
+        ? `${hostValue(setting.name, start.recipe, running)}, which the host sets, since neither the recipe nor your file sets it`
+        : 'not set: the package\'s default applies';
+    const may = mayChange(grant, setting.name) ? 'You may change it.' : 'You may read it, and your operator\'s recipe does not let you change it.';
+    return `${setting.name}: ${now}. ${may}\n  ${setting.words}\n  It takes ${settingTakes(setting.name) ?? 'what the recipe takes there'}.`;
+  }).join('\n\n'));
+
+  const place = filePlace(dataDir, operator.recipe, OWN_SETTINGS_FILE);
+  if (changesSettings(grant)) {
+    const valueNow = (name: OwnSettingName): unknown =>
+      valueAt(start.recipe, name) ?? (name === 'agent.proseRouting' ? running.proseRouting : name === 'agent.clock' ? DEFAULT_RECIPE_CLOCK : undefined);
+    const example = OWN_SETTINGS.find((setting) =>
+      mayChange(grant, setting.name) && isAvailable(setting, operator.recipe) && valueNow(setting.name) !== undefined);
+    sections.push(`To change a setting, write it into ${place}: one JSON object, each key a setting's name, and each value what the ` +
+      'recipe would hold at that place, whole, such as ' +
+      (example === undefined ? '{"<setting name>": <value>}' : `{${JSON.stringify(example.name)}: ${shown(valueNow(example.name))}}`) + '. ' +
+      'A change takes effect when the host next starts. A key that you remove from the file follows the recipe again. ' +
+      (running.restartOffered
+        ? 'You can restart the host with lifecycle--restart.'
+        : 'This host does not offer you lifecycle--restart, so a change waits until your operator restarts the host.'));
+  } else {
+    sections.push('Your operator\'s recipe lets you read these settings, and it lets you change none of them.');
+  }
+
+  const parked = resolve(ownSettingsDir(dataDir), OWN_SETTINGS_SET_ASIDE);
+  const ownThere = exists(join(ownSettingsDir(dataDir), OWN_SETTINGS_FILE));
+  const parkedThere = exists(parked);
+  if (!changesSettings(grant)) {
+    if (ownThere) sections.push(`Your file ${place} is there, and the next start parks it, since the recipe lets you change no setting.`);
+  } else if (next.file.kind === 'none') {
+    sections.push(`There is no file ${place} now.`);
+  } else if (next.file.kind !== 'entries') {
+    sections.push(`The next start does not use your file ${place}: ${next.file.why}.`);
+  } else {
+    sections.push(`Your file ${place} now, as the next start applies it:\n` +
+      (next.entries.length === 0 ? 'It holds no entry.' : next.entries.map((entry) => `- ${residentReason(entry)}`).join('\n')));
+  }
+  if (parkedThere) {
+    sections.push(`Your parked file ${parked} is there: the host parked it when the recipe let you change no setting, and it puts it back ` +
+      `when the recipe lets you change a setting again${ownThere ? ` and there is no ${OWN_SETTINGS_FILE}` : ''}.`);
+  }
+  return sections.join('\n\n');
+}
+
+/**
+ * What the next start does with the resident's file, for the operator
+ * (`connectome doctor`): each entry that would be in force with its value,
+ * each that would not with its reason, and the parked file where it is
+ * there. Empty where the recipe has no ownSettings and the directory holds
+ * neither file.
+ */
+export function ownSettingsLines(operator: OperatorRecipe, dataDir: string): string[] {
+  const grant = operator.recipe.ownSettings;
+  const dir = ownSettingsDir(dataDir);
+  const own = resolve(dir, OWN_SETTINGS_FILE);
+  const parked = resolve(dir, OWN_SETTINGS_SET_ASIDE);
+  const ownThere = exists(own);
+  const parkedThere = exists(parked);
+  if (grant === undefined && !ownThere && !parkedThere) return [];
+  const lines: string[] = [];
+  if (!changesSettings(grant)) {
+    lines.push(grant === undefined ? 'The recipe has no ownSettings.' : 'The recipe\'s ownSettings is "read", so the resident changes no setting.');
+    if (ownThere) lines.push(`${own} is there, and the next start parks it as ${OWN_SETTINGS_SET_ASIDE}.`);
+    if (parkedThere) lines.push(`${parked} is there: the resident's file, parked while the recipe lets it change no setting.`);
+    return lines;
+  }
+  if (!ownThere && parkedThere) lines.push(`The next start puts ${parked} back as ${OWN_SETTINGS_FILE}, and applies it.`);
+  const check = checkOwnSettings(operator, dataDir);
+  if (check.file.kind === 'none') lines.push(`There is no ${own}.`);
+  else if (check.file.kind !== 'entries') lines.push(`The next start does not use the resident's file: ${check.file.why}.`);
+  else if (check.entries.length === 0) lines.push('The resident\'s file holds no entry.');
+  for (const entry of check.entries) {
+    lines.push(entry.notUsed === null
+      ? `${entry.name} would be ${shown(entry.value)} from the resident's file; ${recipeOwn(operator, entry.name)}.`
+      : `${entry.name} in the resident's file would not be used: ${ended(operatorReason(entry.notUsed))}`);
+  }
+  if (ownThere && parkedThere) lines.push(`${parked} is there too, and the start uses ${OWN_SETTINGS_FILE}.`);
+  return lines;
+}

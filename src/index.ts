@@ -105,7 +105,7 @@ import {
   envText,
   loadRecipeDetailed,
   saveRecipe,
-  loadSavedRecipe,
+  loadSavedRecipeDetailed,
   SavedRecipeDirectoryError,
   savedRecipeDirectory,
   savedRecipePath,
@@ -123,7 +123,8 @@ import { probeAccountBinding } from './thinking-binding-probe.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
-import { workspaceConfig } from './workspace-mounts.js';
+import { ownSettingsMount, workspaceConfig } from './workspace-mounts.js';
+import { changesSettings, ownSettingsAnswer, startOwnSettings, type OperatorRecipe } from './own-settings.js';
 import { quarantineAlarm, type QuarantineStatus } from './web/quarantine-alert.js';
 import { wireLoadRepairAlert } from './web/load-repair-alert.js';
 import { logKeepaliveEvent } from './cache-keepalive-log.js';
@@ -188,7 +189,7 @@ interface AppContext {
   switchSession(id: string): Promise<boolean>;
 }
 
-async function resolveRecipe(): Promise<Recipe> {
+async function resolveRecipe(): Promise<OperatorRecipe> {
   const { source, noRecipe } = parseRecipeArg(process.argv);
 
   if (noRecipe) {
@@ -198,7 +199,7 @@ async function resolveRecipe(): Promise<Recipe> {
       stopAtSavedRecipe('clear the saved recipe', err);
     }
     console.log('Starting with default recipe.');
-    return DEFAULT_RECIPE;
+    return { recipe: DEFAULT_RECIPE, origin: { kind: 'literal' } };
   }
 
   if (source) {
@@ -216,13 +217,13 @@ async function resolveRecipe(): Promise<Recipe> {
     }
     const { recipe } = loaded;
     console.log(`Loaded recipe: ${recipe.name}${recipe.description ? ` — ${recipe.description}` : ''}`);
-    return recipe;
+    return { recipe, origin: { kind: 'authored', document: loaded.persistable } };
   }
 
   try {
-    const saved = await loadSavedRecipe(config.dataDir);
+    const saved = await loadSavedRecipeDetailed(config.dataDir);
     if (saved) {
-      console.log(`Resuming recipe: ${saved.name}`);
+      console.log(`Resuming recipe: ${saved.recipe.name}`);
       return saved;
     }
   } catch (err) {
@@ -236,7 +237,7 @@ async function resolveRecipe(): Promise<Recipe> {
     process.exit(1);
   }
 
-  return DEFAULT_RECIPE;
+  return { recipe: DEFAULT_RECIPE, origin: { kind: 'literal' } };
 }
 
 const SAVED_RECIPE_DIRECTORY_LINE =
@@ -357,6 +358,7 @@ async function createFramework(
 
   let workspaceModule: WorkspaceModule | null = null;
   const workspaceSettings = workspaceConfig(modules.workspace, storePath);
+  if (workspaceSettings && changesSettings(recipe.ownSettings)) workspaceSettings.mounts.push(ownSettingsMount(config.dataDir));
   if (workspaceSettings) {
     workspaceModule = new WorkspaceModule(workspaceSettings);
     moduleInstances.push(workspaceModule);
@@ -937,7 +939,10 @@ async function main() {
     console.error('Set DATA_DIR to a path where this user has or can make a directory, or fix what the error names.');
     process.exit(1);
   }
-  const recipe = await resolveRecipe();
+  const operator = await resolveRecipe();
+  const own = startOwnSettings(operator, config.dataDir);
+  for (const line of own.log) console.log(line);
+  const recipe = own.check.recipe;
   const provider = resolveProvider(recipe);
   const fit = runningFit(recipe, config.model);
   if (!fit.checked) console.log(fit.line);
@@ -963,7 +968,24 @@ async function main() {
     process.exit(1);
   }
 
-  const settingsModule = new SettingsModule(recipe.agent.thinking?.effort);
+  const settingsModule = new SettingsModule(recipe.agent.thinking?.effort, {
+    note: own.note,
+    answer: operator.recipe.ownSettings === undefined ? null : () => {
+      const framework = appRefForDebt?.framework;
+      const agent = framework?.getAgent(agentName);
+      return ownSettingsAnswer({
+        operator,
+        start: own.check,
+        dataDir: config.dataDir,
+        running: {
+          name: agentName,
+          proseRouting: agent?.proseRouting,
+          restartOffered: (framework?.getAllTools().some((tool) => tool.name === 'lifecycle--restart') ?? false)
+            && (agent?.canUseTool('lifecycle--restart') ?? false),
+        },
+      });
+    },
+  });
 
   // One JSONL call log per process lifetime.
   const llmLogPath = join(

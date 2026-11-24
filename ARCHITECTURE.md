@@ -234,7 +234,7 @@ Built in `createFramework()`. Tools are exposed as `<module>--<tool>`.
 |---|---|---|---|
 | `TuiModule` | — | always | Turns external input (TUI, readline, WebUI, headless) into user messages. |
 | `TimeModule` | — | always | `time--now`; session-start timestamp in the agent's timezone. |
-| `SettingsModule` | — | always | Adds reasoning controls to `agent_settings`. |
+| `SettingsModule` | — | always | Adds reasoning controls to `agent_settings`; with `ownSettings`, the utility `settings--own` and the start's note about the resident's file. |
 | EventGate (framework) | `wake` | **on** | Per-session `config/gate.json`; `sleep`/`wake`, `wake_add_rule`/`wake_remove_rule`, `gate_status`, `event_tags`. See [`docs/ATTENTION-AND-GATING.md`](docs/ATTENTION-AND-GATING.md). |
 | `WorkspaceModule` (framework) | `workspace` | **on** | Mounted filesystem backed by Chronicle (`workspace--read/write/edit/ls/glob/grep/…`). Defaults: `input` (read-only `./input`), `products` (read-write `./output`). |
 | `SubscriptionGcModule` | `subscriptionGc` | **on** | Auto-closes channels whose ambient traffic since the agent last ran exceeds a limit (20k chars). |
@@ -452,6 +452,7 @@ Claude Code transcripts are ingested by the procedure in
 | `src/index.ts` | Entry point, provider selection, `createFramework()`, session switching, runtime dispatch. |
 | `src/recipe-schema.ts` | The recipe's schema: its types with their doc comments, and its checks. |
 | `src/recipe.ts` | Recipe defaults, substitution, loading, persistence, CLI parsing. |
+| `src/own-settings-table.ts`, `src/own-settings.ts` | The settings that a recipe's `ownSettings` lets a resident manage; the start's part with the resident's file, the `settings--own` answer and doctor's lines. |
 | `src/framework-strategy.ts`, `src/framework-agent-config.ts` | Recipe → memory strategy / agent config. |
 | `src/extensions.ts`, `src/workspace-mounts.ts`, `src/retrieval-config.ts`, `src/agent-name.ts` | Recipe helpers shared by runtime and validation. |
 | `src/mcpl-config.ts` | Server registry, agent overlay, child env. |

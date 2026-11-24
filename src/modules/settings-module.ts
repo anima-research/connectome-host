@@ -10,6 +10,20 @@ import type {
 } from '@animalabs/agent-framework';
 import { settingsRoute, unknownToolResult } from './unknown-tool.js';
 import { shown } from './shown.js';
+import { hostNoteMetadata } from '../speaker.js';
+
+/** What the host's start gives the module about the resident's own settings (own-settings.ts). */
+export interface OwnSettingsHook {
+  /** The host note for the resident at the start, given at the module's first start in the process. */
+  readonly note: string | undefined;
+  /** The answer of the utility `own`, where the recipe has ownSettings. */
+  readonly answer: (() => string) | null;
+}
+
+const OWN_TOOL_DESCRIPTION =
+  'Your own settings, as your operator\'s recipe lets you read and change them: each one\'s value in force and where it ' +
+  'comes from, what it takes, how to change it in your settings file, and what your file changes at the host\'s next ' +
+  'start. It changes nothing.';
 
 export interface ReasoningSettings {
   enabled: boolean;
@@ -47,11 +61,21 @@ export class SettingsModule implements Module {
 
   private ctx: ModuleContext | null = null;
   private readonly warned = new Set<string>();
+  private ownNote: string | undefined;
 
-  constructor(private readonly initialEffort: ReasoningEffort = 'default') {}
+  constructor(
+    private readonly initialEffort: ReasoningEffort = 'default',
+    private readonly own: OwnSettingsHook = { note: undefined, answer: null },
+  ) {
+    this.ownNote = own.note;
+  }
 
   async start(ctx: ModuleContext): Promise<void> {
     this.ctx = ctx;
+    if (this.ownNote !== undefined) {
+      ctx.addMessage('user', [{ type: 'text', text: this.ownNote }], hostNoteMetadata('own-settings'));
+      this.ownNote = undefined;
+    }
   }
 
   /**
@@ -94,7 +118,14 @@ export class SettingsModule implements Module {
     return [];
   }
 
+  getUtilities(): ToolDefinition[] {
+    return this.own.answer
+      ? [{ name: 'own', description: OWN_TOOL_DESCRIPTION, inputSchema: { type: 'object', properties: {} } }]
+      : [];
+  }
+
   async handleToolCall(call: ToolCall): Promise<ToolResult> {
+    if (call.name === 'own' && this.own.answer) return { success: true, data: this.own.answer() };
     return unknownToolResult(
       this,
       call.name,

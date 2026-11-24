@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadRecipeDocument, readRecipeDocument } from '../recipe.js';
+import { ownSettingsLines, type OperatorRecipe } from '../own-settings.js';
+import { ownSettingsDir } from '../own-settings-table.js';
 import { checkDiscordToken } from '../setup/discord-token.js';
 import { DISCORD_TOKEN, readEnvFile, shownByName, storedSecrets, type Secret } from '../setup/secrets.js';
 import { installPaths } from '../update/contract.js';
@@ -100,7 +102,8 @@ export async function doctor(
   const commands = units === null ? null : serviceCommands(root, sys);
   const runs = checkService(report, sys, typed, units, commands);
   const host = await reachHost(report, parts, root, typed, units !== null, commands, runs);
-  await checkRecipe(report, parts, root, host, units, commands, dotenv);
+  const loaded = await checkRecipe(report, parts, root, host, units, commands, dotenv);
+  await checkOwnSettingsFile(report, parts, root, host, units, commands, dotenv, loaded);
   await checkCalls(report, parts, host, units, commands);
   if (host !== null) host.close();
   await checkToken(report, parts, dotenv, typed, work);
@@ -204,29 +207,26 @@ async function reachHost(report: Report, parts: DoctorParts, root: string, typed
   return null;
 }
 
-async function checkRecipe(report: Report, parts: DoctorParts, root: string, host: HostClient | null,
-  units: ServiceUnits | null, commands: ServiceCommands | null, dotenv: Map<string, string>): Promise<void> {
-  if (host !== null) {
-    report.check('✓', `The host loaded ${host.ready.recipe} when it started.`);
-    return;
-  }
-  if (units === null || commands === null) {
-    report.check('–', 'Not checked: the service\'s unit names the recipe, and no service is installed.');
-    return;
-  }
+type ServiceRecipe =
+  | { readonly recipe: string; readonly dataDir: string; readonly env: Record<string, string | undefined>; readonly start: string }
+  | { readonly why: string };
+
+function serviceRecipe(parts: DoctorParts, root: string, units: ServiceUnits | null, commands: ServiceCommands | null,
+  dotenv: Map<string, string>): ServiceRecipe {
+  if (units === null || commands === null) return { why: 'the service\'s unit names the recipe, and no service is installed' };
   let text: string;
   try {
     text = readFileSync(units.host.file, 'utf-8');
   } catch (error) {
-    report.check('–', `Not checked: the service's unit isn't one that doctor can read the recipe from: ${errorText(error)}.`);
-    return;
+    return { why: `the service's unit isn't one that doctor can read the recipe from: ${errorText(error)}` };
   }
   const read = readUnit(units.manager, text);
   const named = 'why' in read ? undefined : read.argv[2];
   if ('why' in read || named === undefined) {
-    report.check('–', 'Not checked: the service\'s unit isn\'t one that doctor can read the recipe from: ' +
-      `${'why' in read ? read.why : 'it names no recipe after start.js'}.`);
-    return;
+    return {
+      why: 'the service\'s unit isn\'t one that doctor can read the recipe from: ' +
+        `${'why' in read ? read.why : 'it names no recipe after start.js'}`,
+    };
   }
   const recipe = /^https?:\/\//.test(named) ? named
     : resolve(read.workingDirectory === '~' ? parts.sys.home : read.workingDirectory, named);
@@ -234,26 +234,73 @@ async function checkRecipe(report: Report, parts: DoctorParts, root: string, hos
   try {
     dataDir = dataDirOf(root);
   } catch {
-    report.check('–', 'Not checked: the install record can\'t be read, as the host\'s line says, so doctor doesn\'t know ' +
-      'which data directory the service starts the host with.');
-    return;
+    return {
+      why: 'the install record can\'t be read, as the host\'s line says, so doctor doesn\'t know ' +
+        'which data directory the service starts the host with',
+    };
   }
-  const env = { ...Object.fromEntries(dotenv), ...parts.sys.env, DATA_DIR: dataDir };
+  return { recipe, dataDir, env: { ...Object.fromEntries(dotenv), ...parts.sys.env, DATA_DIR: dataDir }, start: commands.start };
+}
+
+type LoadedService = { readonly operator: OperatorRecipe; readonly dataDir: string };
+
+async function loadService(service: Exclude<ServiceRecipe, { why: string }>, fetchSystemPrompt: boolean): Promise<LoadedService> {
+  const document = await readRecipeDocument(service.recipe);
+  const loaded = await loadRecipeDocument(document, service.recipe, { env: service.env, fetchSystemPrompt });
+  return {
+    operator: { recipe: loaded.recipe, origin: { kind: 'authored', document: loaded.persistable } },
+    dataDir: service.dataDir,
+  };
+}
+
+async function checkRecipe(report: Report, parts: DoctorParts, root: string, host: HostClient | null,
+  units: ServiceUnits | null, commands: ServiceCommands | null, dotenv: Map<string, string>): Promise<LoadedService | null> {
+  if (host !== null) {
+    report.check('✓', `The host loaded ${host.ready.recipe} when it started.`);
+    return null;
+  }
+  const service = serviceRecipe(parts, root, units, commands, dotenv);
+  if ('why' in service) {
+    report.check('–', `Not checked: ${service.why}.`);
+    return null;
+  }
   try {
-    await within(parts.recipeLimitMs, (async () => {
-      const document = await readRecipeDocument(recipe);
-      await loadRecipeDocument(document, recipe, { env });
-    })());
-    report.check('✓', `${recipe} loads.`);
+    const loaded = await within(parts.recipeLimitMs, loadService(service, true));
+    report.check('✓', `${service.recipe} loads.`);
+    return loaded;
   } catch (error) {
     if (error instanceof TooLong) {
-      report.check('–', `Not checked: ${recipe} ${error.message}, so doctor can't tell whether it loads.`,
+      report.check('–', `Not checked: ${service.recipe} ${error.message}, so doctor can't tell whether it loads.`,
         'run doctor again, since the recipe, or a system prompt that it names by URL, may be slow to answer.');
+      return null;
+    }
+    report.check('✗', `${service.recipe} doesn't load: ${errorText(error)}.`,
+      `correct it, then start the service with \`${service.start}\`.`);
+    return null;
+  }
+}
+
+async function checkOwnSettingsFile(report: Report, parts: DoctorParts, root: string, host: HostClient | null,
+  units: ServiceUnits | null, commands: ServiceCommands | null, dotenv: Map<string, string>,
+  loaded: LoadedService | null): Promise<void> {
+  let service = loaded;
+  if (service === null) {
+    if (host === null) return;
+    const named = serviceRecipe(parts, root, units, commands, dotenv);
+    if ('why' in named) return;
+    try {
+      service = await within(parts.recipeLimitMs, loadService(named, false));
+    } catch (error) {
+      if (existsSync(ownSettingsDir(named.dataDir))) {
+        report.check('–', `Not checked: the resident's own settings, since ${named.recipe} doesn't load here: ${errorText(error)}.`);
+      }
       return;
     }
-    report.check('✗', `${recipe} doesn't load: ${errorText(error)}.`,
-      `correct it, then start the service with \`${commands.start}\`.`);
   }
+  const lines = ownSettingsLines(service.operator, service.dataDir);
+  if (lines.length === 0) return;
+  report.line(`The resident's own settings, in ${ownSettingsDir(service.dataDir)}:`);
+  for (const line of lines) report.line(`  ${line}`);
 }
 
 interface AgentCounts {

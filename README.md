@@ -529,6 +529,40 @@ Each MCPL server can also be presented as a tab. `presentation` on its entry set
 
 Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) with `mcpl-admin--mcpl_deploy`'s `presentation`. A value other than those three stops the load, or in the agent's own overlay is left out, named in a startup line.
 
+### A resident's own settings (`ownSettings`)
+
+`ownSettings`, at the top level, lets the resident read and change some of its own settings, in a file of its own that the host applies at each start. It takes one of three forms:
+
+- **A list of setting names**, such as `["agent.proseRouting", "agent.timezone"]`: the resident may read and change those settings, and no others.
+- **`"all"`**: the resident may read and change every setting of the table below. A release that adds a setting to the table adds it to `"all"`.
+- **`"read"`**: the resident may read every setting of the table, and change none.
+
+Left out, nothing changes: the host adds no mount, offers no tool and applies no file.
+
+The resident's file is `own-settings/own.json` in the data directory: one JSON object, each key a setting's name, and each value what the recipe would hold at that path, whole, such as `{"agent.proseRouting": "explicit"}`. Where the grant lets the resident change a setting and the workspace is on, the host adds the mount `_settings` over that directory, so the resident writes `_settings/own.json` with its file tools. The mount is direct and holds that file and `own.not-used.json`, and nothing else. A recipe that has `ownSettings` can't name a mount of its own `_settings`. Without a workspace, the resident's tool gives the file's path on disk.
+
+At each start the host checks each entry: its name is in the table and in the grant, its setting is available on this host, and its value is one that the setting takes. Then it adds the entries to the recipe one by one, and keeps each one with which the recipe still passes the load's checks and the fit check. An entry that fails costs that entry alone, and the start goes on. A value of the file gets no `${VAR}` substitution. The recipe file and the saved recipe never hold a resident's value. A change takes effect at the next start. While the grant names a setting, the resident's value wins over the recipe's.
+
+The resident's tool is `settings--own`, a utility in the built-in `settings` toolset. It shows each setting that the resident may read, its value in force and where that comes from, what it takes, and what the file changes at the next start, and it changes nothing. The host adds a note to the resident's conversation at a start only when the file did not take effect as written, or when the host moved it. Where the recipe gives a setting by a `${VAR}` reference, the tool and the start's log show the reference as written, and not the value.
+
+When the recipe stops letting the resident change settings (the key left out, or `"read"`), the host parks `own.json` as `own.not-used.json`, and tells the resident once. When a later start's recipe lets it change a setting again, and there is no `own.json`, the host puts the parked file back and applies it, and tells the resident once.
+
+The operator sees the resident's values in the file, in the start's log (a line for each entry in force, with the recipe's own value, and one for each entry not used), and in `connectome doctor`, which prints what the next start would do with the file, against the recipe that the service's unit names, with the host up or down.
+
+The load warns of a listed setting that does nothing on this host, and of an `agent.allowedTools` list that leaves out `settings--own`, or `workspace--write` where the grant lets the resident change a setting. A list naming a setting that is not in the table stops the load.
+
+| Setting | Available |
+| --- | --- |
+| `agent.proseRouting`, `agent.timezone`, `agent.autoContinue`, `agent.clock`, `agent.refusalHandling.autoRewind`, `speech.locus` | on every host |
+| `agent.strategy.maxLiveImages`, `imageStripDepthTokens`, `toolResultMaxLastN`, `toolUseInputMaxTokens`, `maxMessageTokens`, `summaryTargetTokens`, `targetChunkTokens`, `summaryParticipant`, `summaryContextLabel`, `identityReminder`, `witnessedInstruction`, `witnessedIdentityReminder` | with the strategy `autobiographical` (the default) or `frontdesk` |
+| `tuneOut.announce` | with a reader (`subconscious`) |
+| `modules.retrieval.maxInjected` | with `modules.retrieval` and `modules.lessons` on |
+| `modules.subagents.orientation` | with `modules.subagents` on |
+| `modules.ttsRelay.notifyOnInterruption` | with the voice relay on |
+| `modules.wake.judge.onError` | with the gate on and its reply judge not switched off |
+
+An entry never switches a module on. The words that the resident reads about each setting are in `src/own-settings-table.ts`. Two settings can leave a resident unable to read its tools' results: `agent.strategy.toolResultMaxLastN: 0`, and a small `agent.strategy.maxMessageTokens`. The resident's words for each say so.
+
 ### Code execution (`codeExecution`)
 
 `"codeExecution": { "enabled": true }`, at the top level beside `modules`, gives the agent agent-framework's `code_execution` tool. The agent writes JavaScript that calls its own tools by name, such as `await tools["module--tool"]({...})`. Only what the script writes or returns comes back, with how each call ended. The calls, and the results between them, stay out of the context. So reading ten files, querying every channel or paging through a log takes one tool round instead of ten. The window keeps the answer, not the haystack.
