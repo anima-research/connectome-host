@@ -171,8 +171,10 @@ async function fromPackage(argv: string[]): Promise<number> {
       `start.js. ${setupAgain(root)}`);
     return 1;
   }
+  const guide = join(import.meta.dir, '..', '..', 'docs', 'DEPLOYMENTS.md');
   io.err(`connectome: there's no connectome-host install here (${process.cwd()}). \`${firstLine()}\` sets one up: ` +
-    'in this directory if it is empty or already setup\'s, and in ~/resident otherwise.');
+    'in this directory if it is empty or already setup\'s, and in ~/resident otherwise. A resident that runs from a ' +
+    `clone moves to an install as "Moving from a clone to an install" in ${guide} says.`);
   return 1;
 }
 

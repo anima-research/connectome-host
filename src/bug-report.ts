@@ -89,7 +89,7 @@ const BUILT_IN_MODULES = [
   'selfRestart', 'setup', 'fetch', 'selfUpdate',
 ];
 const LIVE_MODULE_NAMES = new Set([
-  'activity', 'api', 'channel-mode', 'discord', 'fetch', 'fleet', 'health', 'history', 'identity', 'instructions',
+  'about', 'activity', 'api', 'channel-mode', 'discord', 'fetch', 'fleet', 'health', 'history', 'identity', 'instructions',
   'lessons', 'lifecycle', 'mcpl-admin', 'notices', 'observers', 'openai-codex', 'retrieval', 'settings', 'setup',
   'subagent', 'subscription-gc', 'time', 'tts-relay', 'tui', 'webui', 'workspace',
 ]);
@@ -151,11 +151,14 @@ const OUR_PACKAGES = ['agent-framework', 'membrane', 'context-manager', 'mcpl-co
 
 export type RuntimeMode = 'tui' | 'headless' | 'readline' | 'batch';
 
-export interface BugReportFacts {
-  now: Date;
-  mode: RuntimeMode;
+export interface HostVersions {
   host: { version: string | null; commit: { sha: string; modified: boolean | null } | null };
   packages: Array<{ name: string; version: string | null }>;
+}
+
+export interface BugReportFacts extends HostVersions {
+  now: Date;
+  mode: RuntimeMode;
   runtime: { os: string; release: string | null; arch: string; bun: string | null; node: string | null };
   setup: {
     provider: string | null;
@@ -628,11 +631,8 @@ export function formatBugReport(text: string, facts: BugReportFacts, detail: Det
   lines.push('This part was assembled by /bug. "What happened" is the reporter\'s own words.');
   lines.push('');
   lines.push('Environment');
-  const commit = facts.host.commit
-    ? ` (commit ${facts.host.commit.sha.slice(0, 12)}, modified: ${facts.host.commit.modified === null ? 'unknown' : facts.host.commit.modified ? 'yes' : 'no'})`
-    : '';
-  lines.push(`  connectome-host ${facts.host.version ?? 'unknown'}${commit} · mode: ${facts.mode}`);
-  lines.push(`  ${facts.packages.map((p) => `${p.name.replace('@animalabs/', '')} ${p.version ?? 'unknown'}`).join(' · ')}`);
+  lines.push(`  ${hostVersionLine(facts.host)} · mode: ${facts.mode}`);
+  lines.push(`  ${packageVersionsLine(facts.packages)}`);
   const rt = facts.runtime;
   lines.push(`  ${rt.bun ? `bun ${rt.bun}` : 'no bun'}${rt.node ? ` (node ${rt.node})` : ''} · ${rt.os}${rt.release ? ` ${rt.release}` : ''} ${rt.arch}`);
   lines.push('');
@@ -782,6 +782,26 @@ function dependencyVersion(name: string, from: string): string | null {
   return root ? version(readJson(join(root, 'package.json'))?.version) : null;
 }
 
+const STACK_PACKAGES = ['@animalabs/agent-framework', '@animalabs/membrane', '@animalabs/context-manager', '@animalabs/chronicle'];
+
+export function readHostVersions(root: string = ROOT): HostVersions {
+  return {
+    host: { version: version(readJson(join(root, 'package.json'))?.version), commit: hostCommit(root) },
+    packages: STACK_PACKAGES.map((name) => ({ name, version: dependencyVersion(name, root) })),
+  };
+}
+
+export function hostVersionLine(host: HostVersions['host']): string {
+  const commit = host.commit
+    ? ` (commit ${host.commit.sha.slice(0, 12)}, modified: ${host.commit.modified === null ? 'unknown' : host.commit.modified ? 'yes' : 'no'})`
+    : '';
+  return `connectome-host ${host.version ?? 'unknown'}${commit}`;
+}
+
+export function packageVersionsLine(packages: HostVersions['packages']): string {
+  return packages.map((p) => `${p.name.replace('@animalabs/', '')} ${p.version ?? 'unknown'}`).join(' · ');
+}
+
 function hostCommit(root: string): BugReportFacts['host']['commit'] {
   if (!existsSync(join(root, '.git'))) return null;
   const head = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 1000 });
@@ -827,9 +847,7 @@ export interface GatherOptions {
 export function gatherBugReportFacts(opts: GatherOptions): BugReportFacts {
   const now = opts.now ?? new Date();
   const root = opts.root ?? ROOT;
-  const pkg = readJson(join(root, 'package.json'));
-  const packages = ['@animalabs/agent-framework', '@animalabs/membrane', '@animalabs/context-manager', '@animalabs/chronicle']
-    .map((name) => ({ name, version: dependencyVersion(name, root) }));
+  const versions = readHostVersions(root);
   const setup = setupFacts(opts.recipe, opts.live);
   const callLog = opts.callLog === undefined ? callLogPath : opts.callLog;
   let providerCalls: ProviderCallSummary | null = null;
@@ -868,8 +886,7 @@ export function gatherBugReportFacts(opts: GatherOptions): BugReportFacts {
   return {
     now,
     mode: opts.mode,
-    host: { version: version(pkg?.version), commit: hostCommit(root) },
-    packages,
+    ...versions,
     runtime: {
       os: platform(),
       release: version(release()),

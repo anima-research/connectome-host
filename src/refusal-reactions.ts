@@ -106,12 +106,14 @@ export function prepareRefusalReactions(config: RefusalReactionConfig | undefine
     const server = matches[0];
     if (matches.length !== 1 || !server?.command || server.url || server.inheritEnv === true) throw new Error(`Refusal server ${driver.serverId}: requires one known stdio server with explicit child environment`);
     if (server.presentation === 'closed-tab') throw new Error(`Refusal server ${driver.serverId}: closed-tab selection is unsupported`);
-    if (driver.kind === 'discord' && driver.sourceRevision === DISCORD_SOURCE) {
+    const supportedRevision = driver.kind === 'discord' ? DISCORD_SOURCE : ZULIP_SOURCE;
+    if (driver.sourceRevision !== supportedRevision) throw new Error(`Refusal server ${serverId}: unsupported source contract (sourceRevision); use ${supportedRevision} for the reviewed connector build`);
+    if (driver.kind === 'discord') {
       // AF treats a seed with no usable tokens as unset and injects its default.
       const seed = tokens(String(server.env.DISCORD_SUPPRESSED_REACTIONS_BASELINE ?? ''));
       if (seed.some(e => e.replace(/\uFE0F/g, '').trim().replace(/^:|:$/g, '') !== '')
         && REFUSAL_REACTION_BASELINE.some(e => !seed.includes(e))) throw new Error(`Refusal server ${serverId}: Discord refusal suppression seed is incomplete; omit DISCORD_SUPPRESSED_REACTIONS_BASELINE to use the framework default`);
-    } else if (driver.kind === 'zulip' && driver.sourceRevision === ZULIP_SOURCE) {
+    } else {
       if (driver.idMode === 'legacy') throw new Error(`Refusal server ${serverId}: Zulip idMode "legacy" uses numeric IDs; use strict or compat`);
       if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(driver.realmTag)) throw new Error(`Refusal server ${serverId}: invalid Zulip realmTag`);
       if (Object.values(driver.emojis).some(e => !emojiName(e) || !driver.availableEmojiNames.includes(e))) throw new Error(`Refusal server ${serverId}: Zulip emojis require explicit realm preflight in availableEmojiNames`);
@@ -120,7 +122,7 @@ export function prepareRefusalReactions(config: RefusalReactionConfig | undefine
       server.env.ZULIP_SUPPRESSED_REACTIONS_BASELINE = [...new Set([
         ...tokens(server.env.ZULIP_SUPPRESSED_REACTIONS_BASELINE), ...Object.values(driver.emojis),
       ])].join(',');
-    } else throw new Error(`Refusal server ${serverId}: unsupported source contract (sourceRevision); use ${driver.kind === 'discord' ? DISCORD_SOURCE : ZULIP_SOURCE} for the reviewed ${driver.kind} build`);
+    }
     Object.freeze(server.env);
     if (server.args) server.args = Object.freeze([...server.args]) as string[];
     Object.freeze(server);

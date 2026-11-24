@@ -73,7 +73,7 @@ bun run build:web     # the Web UI; the host runs without it
 bun src/index.ts      # and the rest as above, with the clone's own paths
 ```
 
-A clone updates by hand, as [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md), "Updating an install", says under "By hand", and builds the Web UI again after each update. The rest of this README writes commands as they run in a clone: from an npm install, put `node_modules/@animalabs/connectome-host/` before `src/`, `recipes/` and `scripts/`.
+A clone updates by hand, as [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md), "Updating an install", says under "By hand", and builds the Web UI again after each update. A clone that runs a resident can also move to an install, as ["Moving from a clone to an install"](docs/DEPLOYMENTS.md#moving-from-a-clone-to-an-install) says. The rest of this README writes commands as they run in a clone: from an npm install, put `node_modules/@animalabs/connectome-host/` before `src/`, `recipes/` and `scripts/`.
 
 ## Recipes
 
@@ -294,8 +294,7 @@ With native tools and `sameRoundThinkTextPolicy: "private"`, text beside a
 `think` call stays private. The recipe sets the policy's starting value. The
 agent can see and change its own value through `agent_settings`
 (`same_round_skip_reply_text_policy`), and its choice persists across
-restarts. Both features came in Agent Framework 0.35.1, and this host's
-dependency range starts there.
+restarts. Both features came in Agent Framework 0.35.1.
 
 See Agent Framework's `docs/disabled-prose-routing.md`,
 `docs/explicit-prose-routing.md`, `docs/hybrid-prose-routing.md`, and
@@ -761,7 +760,22 @@ unknown-key warning, like those at the other levels.
   `gate.json`, `gate.js` or `gate.recipe.json`, the names of the gate's
   files, anywhere in the session's config directory, subdirectories
   included. `_config` is
-  the host's mount's name, so no mount of the recipe's own takes it. See
+  the host's mount's name, so no mount of the recipe's own takes it.
+  `"outsideMounts": "read-only"` lets `read` and `read_image` take an
+  absolute path, or one from the home directory (`~/…`), for a file outside
+  every mount, and `"read-write"` lets `write` take one too; left out, every
+  path is a mount's. Such a file is reached as the host's own user, through
+  no mount's boundary, so the setting gives the agent every file that user
+  reaches: this process's own `.env` and keys, and under `"read-write"` the
+  Web UI's files and the host's checkout. The workspace keeps no copy of it,
+  so an undo leaves a write on disk; what the agent reads of it is in its
+  history, and in whatever shows its tool results, as any tool result is.
+  `fetch` with `local` reads through the same `read`, so it takes those paths
+  too. The file viewers (the Web UI's and the control socket's) don't: they
+  show the mounts' files only. An absolute path that lies
+  in a mount is that mount's file, so a read-only mount stays read-only. The
+  tools' descriptions say what the setting allows, so setting it changes
+  them. The setting came in Agent Framework 0.35.3. See
   `RecipeWorkspaceMount` in
   `src/recipe.ts`
 - **History** (opt-in, `modules.history`) — the agent searches and extracts
@@ -805,6 +819,7 @@ unknown-key warning, like those at the other levels.
 - **Headless mode** — `--headless`: no terminal, JSONL over a Unix socket; how residents run under a supervisor
 - **Self-restart** (opt-in, `modules.selfRestart`) — `lifecycle--restart`: the agent restarts its own host, for an edited recipe or rebuilt code. It happens once the asking turn has ended; the host exits with code 75 for its supervisor to start it again, so enable it only under one that does (launchd `KeepAlive`, systemd `Restart=on-failure`, a fleet parent's `autoRestart`, which is off unless the child's entry sets it, and which counts a self-restart toward its cap of 3 restarts in 60 s). A fleet parent's own self-restart stops its children as any shutdown does, and the restarted parent starts again only its `autoStart` children. `cooldownMinutes` (default 10) spaces restarts out
 - **Self-update** (opt-in, `modules.selfUpdate`) — `lifecycle--update`: the agent's own `/update`. It checks what's out, installs a release beside the running one, and arms a restart onto it for the host's first quiet moment. A restart arms only on a headless host that started with `CONNECTOME_SUPERVISED=1`. `connectome service install` sets that only for a service that restarts the host when it exits with 75 and when it exits with 1. Anywhere else, the restart refuses and says why. The changelog's entry has the rest
+- **Versions** — `about--versions`, on every host: the agent reads the host's version and the Connectome packages' versions, as the host started with them, and each MCPL server's own name and version, as the server gave them when it connected. It's a utility of the built-in `settings` toolset, so no agent request's tool list carries it, and an agent reaches it as it reaches any module utility. The servers' names and versions came in Agent Framework 0.35.2
 - **Time-travel** — undo/redo on the agent's window; Chronicle-backed checkpoints, rollback and branch exploration; in the web UI, rolling back to a message and suppressing messages
 - **Session management** — isolated sessions with auto-naming
 - **Ops alerts** — compression quarantine, refusal streaks, inference exhaustion and more surface as `ops:alert` traces, `logs/failures.log` records, and an optional webhook (`CONNECTOME_OPS_WEBHOOK`)
@@ -815,7 +830,7 @@ unknown-key warning, like those at the other levels.
 - **Fleets** (opt-in, `modules.fleet`) — a conductor launches and supervises other recipes as headless child processes; one agent tree across processes in both UIs ([`docs/fleet-protocol.md`](docs/fleet-protocol.md))
 - **Subagent forking** (opt-in, `modules.subagents`) — spawn/fork parallel in-process agents, shown in the fleet tree (Tab)
 - **Persistent lessons** (opt-in, `modules.lessons`) — knowledge store with confidence scores and tags. Automatic retrieval-injection of lessons into context (`modules.retrieval`) is a separate opt-in — it adds per-turn context churn and retrieval-model calls, so enable it only for agents that actually curate a lesson library
-- **Fetch** (opt-in, `modules.fetch`) — `fetch--fetch` reads a web page as text, with HTML turned into markdown, whole or through a small model that answers a prompt. Set `local: true` to let it read workspace files too, within what the mounts allow. See [below](#the-fetch-tool)
+- **Fetch** (opt-in, `modules.fetch`) — `fetch--fetch` reads a web page as text, with HTML turned into markdown, whole or through a small model that answers a prompt. Set `local: true` to let it read workspace files too, within what the workspace's own `read` takes. See [below](#the-fetch-tool)
 
 For `openai-responses` and `openai-codex`, an object-valued
 `modules.retrieval` can set `reasoningEffort` (`none`, `minimal`, `low`,
@@ -855,7 +870,7 @@ says which part was read and gives the `offset` to read on from.
 | Option | Default | What it does |
 |---|---|---|
 | `model` | `claude-haiku-4-5-20251001` | The model that answers `prompt`. A recipe whose `agent.provider` is neither `anthropic` nor `mock` must set it, and is refused at load without it |
-| `local` | `false` | Lets `source` be a workspace path. The file is read with the workspace's own `read`, so the agent gets the copy `workspace--read` shows, a write not yet on disk included, under the same mounts, includes, symlink policy and size limit. Needs `modules.workspace`. It makes fetch a reader of those files in its own right: an agent whose `allowedTools` lists `fetch--fetch` reads them with it, whether or not `workspace--read` is on that list |
+| `local` | `false` | Lets `source` be a workspace path. The file is read with the workspace's own `read`, so the agent gets the copy `workspace--read` shows, a write not yet on disk included, under the same mounts, includes, symlink policy and size limit, and where `modules.workspace.outsideMounts` is set, a file outside the mounts by its absolute path, as `read` takes one. Needs `modules.workspace`. It makes fetch a reader of those files in its own right: an agent whose `allowedTools` lists `fetch--fetch` reads them with it, whether or not `workspace--read` is on that list |
 | `allowPrivateNetwork` | `false` | Lets web addresses reach private and local addresses, such as loopback, the LAN or a tailnet |
 | `images` | `false` | Lets the model that answers `prompt` look at a web page's images. See [below](#looking-at-images) |
 | `maxBytes` | 5 MiB | Most bytes of one document to read, up to 64 MiB. Past it, the tool reads the start and says the rest is out of reach. A workspace file is read whole by the workspace, up to its mount's `maxFileSize`, and the tool keeps the first `maxBytes` of it |

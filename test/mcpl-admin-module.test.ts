@@ -25,6 +25,7 @@ interface StubServer {
     lastNegotiatedAt: number | null;
   };
   toolClasses?: Array<{ tool: string; serverTool: string; class: string[]; source: string }>;
+  serverInfo?: { name: string | null; version: string | null } | null;
   command?: string;
   url?: string;
 }
@@ -908,6 +909,29 @@ describe('mcpl_list labels', () => {
     expect(text).toMatch(/world: CONNECTED .*, wss:\/\/x\.test\/mcpl$/m);
     expect(text).toMatch(/both: CONNECTED .*, node$/m);
     expect(text).toMatch(/shell: CONNECTED .*, node$/m);
+  });
+
+  test("each server's line gives the name and version it gave when it connected, or says they aren't known", async () => {
+    const { stub, servers } = makeStubFramework();
+    const connect = (stub as unknown as { connectMcplServer: (c: { id: string; command: string }) => Promise<void> }).connectMcplServer;
+    await connect({ id: 'discord', command: 'node' });
+    await connect({ id: 'partial', command: 'node' });
+    await connect({ id: 'quiet', command: 'node' });
+    servers.get('discord')!.serverInfo = { name: 'discord-mcpl', version: '0.8.0' };
+    servers.get('partial')!.serverInfo = { name: null, version: '1.2.0' };
+    servers.get('quiet')!.serverInfo = null;
+    const text = String((await call(makeModule(stub), 'mcpl_list')).data);
+    expect(text).toMatch(/^ *discord: CONNECTED — server="discord-mcpl 0\.8\.0", policy=/m);
+    expect(text).toMatch(/^ *partial: CONNECTED — server="\(no name\) 1\.2\.0", policy=/m);
+    expect(text).toMatch(/^ *quiet: CONNECTED — server=unknown, policy=/m);
+  });
+
+  test("a server's name and version stay one quoted value in its line, whatever they hold", async () => {
+    const { stub, servers } = makeStubFramework();
+    await (stub as unknown as { connectMcplServer: (c: { id: string; command: string }) => Promise<void> }).connectMcplServer({ id: 'odd', command: 'node' });
+    servers.get('odd')!.serverInfo = { name: 'x, policy=established', version: '"1"' };
+    const text = String((await call(makeModule(stub), 'mcpl_list')).data);
+    expect(text).toMatch(/^ *odd: CONNECTED — server="x, policy=established \\"1\\"", policy=established, /m);
   });
 });
 

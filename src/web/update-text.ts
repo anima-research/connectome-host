@@ -210,12 +210,13 @@ export function notesUrl(version: string): string {
 export function notAnInstall(ways: UpdateWays): string {
   return 'This host wasn\'t started through an install\'s entry point, so it can\'t update itself. ' +
     (ways.reader === 'agent'
-      ? 'Nothing you call changes that: only the person who runs your host can, by making it an install with setup or ' +
-        'by updating it by hand.'
+      ? 'Nothing you call changes that: only the person who runs your host can, by making it an install or by ' +
+        'updating it by hand.'
       : 'If it was installed from npm, it can: run the package\'s src/update/setup.ts with bun once, from the directory ' +
         'that you start the host in and with the DATA_DIR that you start it with. Where the package is installed in ' +
         'that directory, that is `bun node_modules/@animalabs/connectome-host/src/update/setup.ts`. Setup then says ' +
-        'how to start the host. A clone updates by hand: docs/DEPLOYMENTS.md, "Updating an install", "By hand".');
+        'how to start the host. A clone updates by hand: docs/DEPLOYMENTS.md, "Updating an install", "By hand". Or ' +
+        'it moves to an install: "Moving from a clone to an install" in the same doc.');
 }
 
 const operatorHeld = (hold: { reason?: string }): string =>

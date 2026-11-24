@@ -346,7 +346,7 @@ test('on a host with no install, the update tool says nothing the agent calls ch
   for (const input of [{ action: 'check' }, { action: 'notes' }, { action: 'install' }]) {
     const said = text(await host.call(input));
     expect(said).toContain('started through an install\'s entry point, so it can\'t update itself. Nothing you call ' +
-      'changes that: only the person who runs your host can, by making it an install with setup or by updating it by hand.');
+      'changes that: only the person who runs your host can, by making it an install or by updating it by hand.');
     expect(said).not.toContain('src/update/setup.ts');
   }
   expect((await host.update.install()).lines.join('\n')).toContain('src/update/setup.ts');
@@ -939,7 +939,8 @@ test('a host with no install of its own, such as a fleet child, refuses restart'
   const answer = await host.call({ action: 'restart' });
   expect(answer.success).toBe(false);
   expect(text(answer)).toContain('A fleet child is updated with its parent\'s install, where its parent has one. Any ' +
-    'other host, or a child whose parent has no install, is updated by hand');
+    'other host, or a child whose parent has no install, is updated by hand (docs/DEPLOYMENTS.md, "Updating an ' +
+    'install"). A clone can move to an install instead, as that part of the doc says.');
   expect(text(answer)).toContain('Asking again');
   expect(host.update.armedSwitch()).toBeNull();
 });

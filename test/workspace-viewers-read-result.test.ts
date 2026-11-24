@@ -48,6 +48,26 @@ describe("the web UI's file viewer", () => {
   }
 });
 
+describe("the web UI's file viewer and a path outside the mounts", () => {
+  test("refuses an absolute path, or one from the home directory, before the workspace reads it", async () => {
+    const viewer = new WebUiModule({ port: 0 }) as unknown as {
+      workspaceMod(): Promise<unknown>;
+      send(client: unknown, message: unknown): void;
+      sendWorkspaceFileRead(client: unknown, path: string): Promise<void>;
+    };
+    const asked: unknown[] = [];
+    const sent: unknown[] = [];
+    viewer.workspaceMod = async () => ({ handleToolCall: async (call: unknown) => { asked.push(call); return readResultShapes[shapes[0]!]; } });
+    viewer.send = (_client, message) => { sent.push(message); };
+    for (const path of ['/etc/hosts', '~/.ssh/config']) await viewer.sendWorkspaceFileRead({}, path);
+    expect(asked).toEqual([]);
+    expect(sent).toEqual(['/etc/hosts', '~/.ssh/config'].map((path) => ({
+      type: 'error',
+      message: `read ${path} failed: the file viewer shows the mounts' files, and a path there starts with its mount's name`,
+    })));
+  });
+});
+
 describe("a fleet child's file viewer", () => {
   for (const shape of shapes) {
     test(`answers request-workspace-file with the page when the read's fields are in ${shape}`, async () => {

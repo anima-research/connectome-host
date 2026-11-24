@@ -30,7 +30,7 @@
     "relock:web": "rm -rf web/node_modules web/package-lock.json && npm --prefix web install"
   },
   "dependencies": {
-    "@animalabs/agent-framework": "^0.35.1",
+    "@animalabs/agent-framework": "^0.35.3",
     "@animalabs/chronicle": "^0.7.0",
     "@animalabs/context-manager": "^0.28.0",
     "@animalabs/membrane": "^0.10.4",

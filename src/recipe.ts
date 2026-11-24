@@ -15,7 +15,7 @@ import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type ForkReaderConfig, type FrameworkConfig, type MountConfig, type PersistentReaderConfig } from '@animalabs/agent-framework';
 import { validateRefusalReactionConfig, type RefusalReactionConfig } from './refusal-reactions.js';
-import { buildWorkspaceMounts } from './workspace-mounts.js';
+import { buildWorkspaceMounts, workspaceConfig } from './workspace-mounts.js';
 import { ENV_REFERENCE, readRecipeDocument, substituteEnvVars, type RecipeDocument, type RecipeSourceBase } from './recipe-document.js';
 export { readRecipeDocument, substituteEnvVars, type RecipeDocument } from './recipe-document.js';
 import { noteRecipeWarning } from './recipe-warnings.js';
@@ -1064,9 +1064,10 @@ export interface RecipeModules {
     /** The model that answers `prompt`. Defaults to a Claude Haiku, so a recipe on another provider sets this. */
     model?: string;
     /**
-     * Let the tool read local files too. It reads them through the workspace,
-     * so it reaches what the workspace's mounts allow and nothing more, and
-     * needs `modules.workspace`. Off by default. On, fetch is a reader of
+     * Let the tool read local files too. It reads them through the workspace's
+     * `read`, so it reaches what that reaches and nothing more: what the
+     * mounts allow, and a file outside them where the workspace's
+     * `outsideMounts` is set. It needs `modules.workspace`. Off by default. On, fetch is a reader of
      * those files in its own right: an agent whose `allowedTools` holds
      * fetch--fetch reads them with it, whether or not workspace--read is on
      * that list.
@@ -1119,8 +1120,23 @@ export interface RecipeModules {
    * keeps no over-cap tool result, saved payload or fetched reference in a
    * file. No mount of the recipe's own is named `_config`, and no two of
    * them share a name, compared exactly.
+   *
+   * `outsideMounts` lets the workspace's `read` and `read_image` take an
+   * absolute path, or one from the home directory (`~/…`), for a file
+   * outside every mount (`"read-only"`), and `write` too (`"read-write"`).
+   * Left out, every path is a mount's. Such a file is read and written as
+   * this process's own user, through no mount's boundary, so it gives the
+   * agent every file that user reaches. The workspace keeps no copy of it,
+   * so an undo leaves a write to it on disk; what the agent reads of it is
+   * in its history, as any tool result is. `fetch.local` reads through the
+   * workspace's `read`, so it takes such a path too; the file viewers, the
+   * web UI's and the control socket's, show the mounts' files only
+   * (namesOutsideMounts). An absolute path that lies in a mount is
+   * that mount's file, so a read-only mount stays read-only. The tools'
+   * descriptions say what the setting allows (agent-framework's
+   * `WorkspaceConfig.outsideMounts`), so setting it changes them.
    */
-  workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
+  workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean; outsideMounts?: 'read-only' | 'read-write' };
   /**
    * Shared operating instructions. OPT-IN — off by default. Reads a living
    * instructions document (a CLAUDE.md analogue maintained in a workspace
@@ -2164,7 +2180,7 @@ const recipeKeyListsInStep: [
 ] = [true, true, true, true, true, true, true, true, true, true, true];
 void recipeKeyListsInStep;
 
-const RECIPE_WORKSPACE_KEYS = ['mounts', 'configMount'] as const;
+const RECIPE_WORKSPACE_KEYS = ['mounts', 'configMount', 'outsideMounts'] as const;
 const MOUNT_MODES = ['read-write', 'read-only'] as const;
 const MOUNT_BACKENDS = ['chronicle', 'direct'] as const;
 const MOUNT_WATCH_VALUES = ['always', 'on-agent-action', 'never'] as const;
@@ -3187,7 +3203,8 @@ export function validateRecipe(raw: unknown): Recipe {
           throw new Error(`${where} is direct, so it must say its mode: add "mode": "read-only", or "read-write" for one the agent writes on disk directly, with no undo`);
         }
       }
-      // agent-framework's WorkspaceModule constructor checks each mount and does
+      // agent-framework's WorkspaceModule constructor checks each mount, and
+      // outsideMounts, whose refusal of a wrong value is the recipe's, and does
       // nothing else: it reads no file, opens no store and starts no timer. It
       // also warns on stderr of a mount nested in another, from paths resolved
       // against this process's working directory, which may not be where the
@@ -3195,7 +3212,7 @@ export function validateRecipe(raw: unknown): Recipe {
       const warn = console.warn;
       console.warn = () => {};
       try {
-        new WorkspaceModule({ mounts: buildWorkspaceMounts(ws as RecipeModules['workspace'], '.')! });
+        new WorkspaceModule(workspaceConfig(ws as RecipeModules['workspace'], '.')!);
       } catch (err) {
         throw new Error(`modules.workspace: ${(err instanceof Error ? err.message : String(err)).replace(/^\[workspace\] /, '')}`);
       } finally {
