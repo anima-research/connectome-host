@@ -12,7 +12,7 @@ import type { Recipe } from '../src/recipe.js';
 const recipe = (agent: Record<string, unknown>) => ({ agent: { systemPrompt: 'You are Rhys.', ...agent } }) as unknown as Recipe;
 const xmlRecipe = (agent: Record<string, unknown> = {}) => recipe({ formatter: 'anthropic-xml', ...agent });
 
-const xmlWarning = '[history--extract] agent.filterStoredHistoryExtractThinking with "anthropic-xml": main turns are not covered; native background requests such as compression are covered.';
+const xmlWarning = '[history--extract] agent.filterStoredHistoryExtractThinking with "anthropic-xml": main turns are not covered; native background requests such as compression can be filtered on non-binding models.';
 test.each([
   ['Anthropic XML, enabled', 'anthropic', 'anthropic-xml', true, [xmlWarning]],
   ['Anthropic XML, disabled', 'anthropic', 'anthropic-xml', false, []],

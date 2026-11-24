@@ -880,8 +880,10 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   }
 
   private withStoredExtractGuard(request: ProviderRequest, options: ProviderRequestOptions): ProviderRequest {
-    return this.filterStoredHistoryExtractThinking
-      ? filterStoredHistoryExtracts(request, options.onContentAltered, modelThinking(request.model).binds)
+    // Keep the wire request independent of this flag on binding models.
+    // Rewriting even the newest extract could invalidate thinking on replay.
+    return this.filterStoredHistoryExtractThinking && !modelThinking(request.model).binds
+      ? filterStoredHistoryExtracts(request, options.onContentAltered)
       : request;
   }
 

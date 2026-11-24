@@ -785,16 +785,22 @@ unknown-key warning, like those at the other levels.
   `toolsets--act`). Within an extract page, a nested result named
   `history--extract` is covered even if its call is off-page; unnamed and
   `toolsets--act` results still need a matching call on that page.
-  On models that bind thinking to its request prefix, the guard leaves extracts
-  before the last native signed or redacted thinking block unchanged.
+  The guard applies only to models the host does not treat as binding thinking
+  to the request prefix. For binding models, rely on the Agent Framework
+  fix for new extracts ([#1041](https://github.com/anima-research/agent-framework/pull/1041));
+  the host guard leaves all requests unchanged, even if older extracts
+  still contain copies.
   Truncation recovery is best-effort; it needs a recognizable extract
   prefix. The host warns if the flag is enabled with a non-Anthropic
   provider, where it has no effect, or with `anthropic-xml`, where XML main
   turns are not covered but native background requests such as compression
-  are. Summaries and debug context-makeup token counts are not covered.
-  Toggling the flag can rewrite the affected prompt-cache prefix on the next request.
+  can be filtered on non-binding models. Summaries and debug context-makeup
+  token counts are not covered.
+  Turning the flag on or off is safe for binding models: it does not change
+  their requests. On other models, toggling it changes eligible earlier
+  extracts sent on the next request and can rewrite the prompt-cache prefix.
   Remove the flag once stored extracts have aged out after upgrading to
-  the Agent Framework release that includes [#1041](https://github.com/anima-research/agent-framework/pull/1041).
+  the Agent Framework release that includes #1041.
 - **Shared instructions** (opt-in, `modules.instructions`) — see below
 - **Identity** (opt-in, `modules.identity`) — the agent's own key-based
   identity, used to obtain access to services without credentials entering
