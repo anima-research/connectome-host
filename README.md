@@ -760,7 +760,16 @@ unknown-key warning, like those at the other levels.
   `gate.json`, `gate.js` or `gate.recipe.json`, the names of the gate's
   files, anywhere in the session's config directory, subdirectories
   included. `_config` is
-  the host's mount's name, so no mount of the recipe's own takes it. See
+  the host's mount's name, so no mount of the recipe's own takes it.
+  `"outsideMounts": "read-only"` lets `read` and `read_image` take an
+  absolute path, or one from the home directory (`~/…`), for a file outside
+  every mount, and `"read-write"` lets `write` take one too; left out, every
+  path is a mount's. Such a file is reached as the host's own user, through
+  no mount's boundary, so the setting gives the agent every file that user
+  reaches, and nothing of it is stored or undone. An absolute path that lies
+  in a mount is that mount's file, so a read-only mount stays read-only. The
+  tools' descriptions say what the setting allows, so setting it changes
+  them (needs an agent-framework with `WorkspaceConfig.outsideMounts`). See
   `RecipeWorkspaceMount` in
   `src/recipe.ts`
 - **History** (opt-in, `modules.history`) — the agent searches and extracts

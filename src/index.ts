@@ -122,7 +122,7 @@ import { probeAccountBinding } from './thinking-binding-probe.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
-import { buildWorkspaceMounts } from './workspace-mounts.js';
+import { workspaceConfig } from './workspace-mounts.js';
 import { quarantineAlarm, type QuarantineStatus } from './web/quarantine-alert.js';
 import { wireLoadRepairAlert } from './web/load-repair-alert.js';
 import { logKeepaliveEvent } from './cache-keepalive-log.js';
@@ -354,9 +354,9 @@ async function createFramework(
   const gateOptions = gateOptionsFor(modules.wake, storePath);
 
   let workspaceModule: WorkspaceModule | null = null;
-  const workspaceMounts = buildWorkspaceMounts(modules.workspace, storePath);
-  if (workspaceMounts) {
-    workspaceModule = new WorkspaceModule({ mounts: workspaceMounts });
+  const workspaceSettings = workspaceConfig(modules.workspace, storePath);
+  if (workspaceSettings) {
+    workspaceModule = new WorkspaceModule(workspaceSettings);
     moduleInstances.push(workspaceModule);
   }
 

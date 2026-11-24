@@ -14,7 +14,7 @@
 import { readFileSync, writeFileSync, existsSync, lstatSync, statSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { resolveClockConfig, WorkspaceModule, type ClockConfig, type CodeExecutionConfig, type ForkReaderConfig, type FrameworkConfig, type MountConfig, type PersistentReaderConfig } from '@animalabs/agent-framework';
-import { buildWorkspaceMounts } from './workspace-mounts.js';
+import { buildWorkspaceMounts, workspaceConfig } from './workspace-mounts.js';
 import { ENV_REFERENCE, readRecipeDocument, substituteEnvVars, type RecipeDocument, type RecipeSourceBase } from './recipe-document.js';
 export { readRecipeDocument, substituteEnvVars, type RecipeDocument } from './recipe-document.js';
 import { noteRecipeWarning } from './recipe-warnings.js';
@@ -1118,8 +1118,19 @@ export interface RecipeModules {
    * keeps no over-cap tool result, saved payload or fetched reference in a
    * file. No mount of the recipe's own is named `_config`, and no two of
    * them share a name, compared exactly.
+   *
+   * `outsideMounts` lets the workspace's `read` and `read_image` take an
+   * absolute path, or one from the home directory (`~/…`), for a file
+   * outside every mount (`"read-only"`), and `write` too (`"read-write"`).
+   * Left out, every path is a mount's. Such a file is read and written as
+   * this process's own user, through no mount's boundary, so it gives the
+   * agent every file that user reaches; nothing of it is stored, and an undo
+   * leaves a write to it on disk. An absolute path that lies in a mount is
+   * that mount's file, so a read-only mount stays read-only. The tools'
+   * descriptions say what the setting allows (agent-framework's
+   * `WorkspaceConfig.outsideMounts`), so setting it changes them.
    */
-  workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
+  workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean; outsideMounts?: 'read-only' | 'read-write' };
   /**
    * Shared operating instructions. OPT-IN — off by default. Reads a living
    * instructions document (a CLAUDE.md analogue maintained in a workspace
@@ -2161,7 +2172,7 @@ const recipeKeyListsInStep: [
 ] = [true, true, true, true, true, true, true, true, true, true, true];
 void recipeKeyListsInStep;
 
-const RECIPE_WORKSPACE_KEYS = ['mounts', 'configMount'] as const;
+const RECIPE_WORKSPACE_KEYS = ['mounts', 'configMount', 'outsideMounts'] as const;
 const MOUNT_MODES = ['read-write', 'read-only'] as const;
 const MOUNT_BACKENDS = ['chronicle', 'direct'] as const;
 const MOUNT_WATCH_VALUES = ['always', 'on-agent-action', 'never'] as const;
@@ -3182,7 +3193,7 @@ export function validateRecipe(raw: unknown): Recipe {
       const warn = console.warn;
       console.warn = () => {};
       try {
-        new WorkspaceModule({ mounts: buildWorkspaceMounts(ws as RecipeModules['workspace'], '.')! });
+        new WorkspaceModule(workspaceConfig(ws as RecipeModules['workspace'], '.')!);
       } catch (err) {
         throw new Error(`modules.workspace: ${(err instanceof Error ? err.message : String(err)).replace(/^\[workspace\] /, '')}`);
       } finally {

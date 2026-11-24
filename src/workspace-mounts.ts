@@ -1,5 +1,5 @@
 import { join, resolve } from 'node:path';
-import type { MountConfig } from '@animalabs/agent-framework';
+import type { MountConfig, WorkspaceConfig } from '@animalabs/agent-framework';
 import type { RecipeModules, RecipeWorkspaceMount } from './recipe.js';
 
 export function buildWorkspaceMounts(
@@ -46,4 +46,12 @@ export function buildWorkspaceMounts(
   }
 
   return mounts;
+}
+
+/** The workspace module's settings as a recipe gives them: its mounts (buildWorkspaceMounts), and what its tools may reach outside them. */
+export function workspaceConfig(workspace: RecipeModules['workspace'], storePath: string): WorkspaceConfig | null {
+  const mounts = buildWorkspaceMounts(workspace, storePath);
+  if (!mounts) return null;
+  const outsideMounts = typeof workspace === 'object' ? workspace.outsideMounts : undefined;
+  return { mounts, ...(outsideMounts !== undefined ? { outsideMounts } : {}) };
 }
