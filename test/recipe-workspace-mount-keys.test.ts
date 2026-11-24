@@ -6,7 +6,7 @@ import { JsStore } from '@animalabs/chronicle';
 import { WorkspaceModule, type ModuleContext } from '@animalabs/agent-framework';
 import { InstructionsModule } from '../src/modules/instructions-module.js';
 import { loadRecipeDetailed, validateRecipe } from '../src/recipe.js';
-import { buildWorkspaceMounts, workspaceConfig } from '../src/workspace-mounts.js';
+import { buildWorkspaceMounts, namesOutsideMounts, workspaceConfig } from '../src/workspace-mounts.js';
 
 function recipe(workspace: unknown) {
   return { name: 'mount-keys-test', agent: { systemPrompt: 'test' }, modules: { workspace } };
@@ -25,6 +25,11 @@ describe('workspace outsideMounts', () => {
     expect(Object.keys(workspaceConfig({ mounts: [mount()] }, '/store')!)).toEqual(['mounts']);
     expect(Object.keys(workspaceConfig(true, '/store')!)).toEqual(['mounts']);
     expect(workspaceConfig(false, '/store')).toBeNull();
+  });
+
+  test("a file viewer's path is outside the mounts where it's absolute or from the home directory, and a mount's own path isn't", () => {
+    expect(['/etc/hosts', '~/.ssh/config'].map(namesOutsideMounts)).toEqual([true, true]);
+    expect(['notes/log.txt', 'notes', '~notes/x', 'a/~/b'].map(namesOutsideMounts)).toEqual([false, false, false, false]);
   });
 
   test("refuses any other value, in agent-framework's words", () => {

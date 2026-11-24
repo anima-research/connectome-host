@@ -1,4 +1,4 @@
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import type { MountConfig, WorkspaceConfig } from '@animalabs/agent-framework';
 import type { RecipeModules, RecipeWorkspaceMount } from './recipe.js';
 
@@ -47,6 +47,21 @@ export function buildWorkspaceMounts(
 
   return mounts;
 }
+
+/**
+ * Whether a path is one the workspace's `read` takes for a file outside the
+ * mounts where a recipe sets `outsideMounts`: absolute, or from the home
+ * directory. The setting is for the agent's own tools. The file viewers (the
+ * web UI's and the control socket's) call that `read` too, for whoever is
+ * connected, and show the mounts' files only, so they refuse such a path
+ * before the workspace reads it.
+ */
+export function namesOutsideMounts(path: string): boolean {
+  return isAbsolute(path) || path.startsWith('~/');
+}
+
+/** What a file viewer says of a path it doesn't take (namesOutsideMounts). */
+export const VIEWER_SHOWS_MOUNTS = "the file viewer shows the mounts' files, and a path there starts with its mount's name";
 
 /** The workspace module's settings as a recipe gives them: its mounts (buildWorkspaceMounts), and what its tools may reach outside them. */
 export function workspaceConfig(workspace: RecipeModules['workspace'], storePath: string): WorkspaceConfig | null {

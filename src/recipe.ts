@@ -1063,9 +1063,10 @@ export interface RecipeModules {
     /** The model that answers `prompt`. Defaults to a Claude Haiku, so a recipe on another provider sets this. */
     model?: string;
     /**
-     * Let the tool read local files too. It reads them through the workspace,
-     * so it reaches what the workspace's mounts allow and nothing more, and
-     * needs `modules.workspace`. Off by default. On, fetch is a reader of
+     * Let the tool read local files too. It reads them through the workspace's
+     * `read`, so it reaches what that reaches and nothing more: what the
+     * mounts allow, and a file outside them where the workspace's
+     * `outsideMounts` is set. It needs `modules.workspace`. Off by default. On, fetch is a reader of
      * those files in its own right: an agent whose `allowedTools` holds
      * fetch--fetch reads them with it, whether or not workspace--read is on
      * that list.
@@ -1124,8 +1125,12 @@ export interface RecipeModules {
    * outside every mount (`"read-only"`), and `write` too (`"read-write"`).
    * Left out, every path is a mount's. Such a file is read and written as
    * this process's own user, through no mount's boundary, so it gives the
-   * agent every file that user reaches; nothing of it is stored, and an undo
-   * leaves a write to it on disk. An absolute path that lies in a mount is
+   * agent every file that user reaches. The workspace keeps no copy of it,
+   * so an undo leaves a write to it on disk; what the agent reads of it is
+   * in its history, as any tool result is. `fetch.local` reads through the
+   * workspace's `read`, so it takes such a path too; the file viewers, the
+   * web UI's and the control socket's, show the mounts' files only
+   * (namesOutsideMounts). An absolute path that lies in a mount is
    * that mount's file, so a read-only mount stays read-only. The tools'
    * descriptions say what the setting allows (agent-framework's
    * `WorkspaceConfig.outsideMounts`), so setting it changes them.
@@ -3185,7 +3190,8 @@ export function validateRecipe(raw: unknown): Recipe {
           throw new Error(`${where} is direct, so it must say its mode: add "mode": "read-only", or "read-write" for one the agent writes on disk directly, with no undo`);
         }
       }
-      // agent-framework's WorkspaceModule constructor checks each mount and does
+      // agent-framework's WorkspaceModule constructor checks each mount, and
+      // outsideMounts, whose refusal of a wrong value is the recipe's, and does
       // nothing else: it reads no file, opens no store and starts no timer. It
       // also warns on stderr of a mount nested in another, from paths resolved
       // against this process's working directory, which may not be where the
