@@ -4,6 +4,8 @@
   driver remains pending its upstream connector contract and currently targets a
   fork-only contract (strict or compat IDs), not a supported upstream release.
   While enabled, session switches (including `/session new`) are refused
-  without changing the current session; restart with the desired session selected.
+  without changing the current session. To change sessions, start the host
+  without the option, use `/session switch` or `/session new`, then re-enable
+  the option and restart the host.
   Omit the option to retain built-in Discord refusal reactions and normal session
   switching (#665).

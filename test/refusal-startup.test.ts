@@ -57,7 +57,9 @@ test.each(['/session switch later', '/session sw later', '/session new third', '
       expect(result.switchToSessionId).toBeUndefined();
       expect(result.asyncWork).toBeUndefined();
       expect(result.refused).toBe(true);
-      expect(result.lines.map(line => line.text).join(' ')).toMatch(/current session is still running.*restart the host/i);
+      expect(result.lines.map(line => line.text).join(' ')).toContain(
+        'The current session is still running. Start the host without mainRefusalReactions, use /session switch or /session new, then re-enable the option and restart the host.',
+      );
       expect(sessionManager.load()).toEqual(before);
       expect(branchState.checkpoints.get('saved')).toEqual({ branchName: 'main' });
     } finally { rmSync(dir, { recursive: true, force: true }); }

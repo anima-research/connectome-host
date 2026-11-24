@@ -95,10 +95,12 @@ recover. An issued ADD cannot be undone.
 
 With `mainRefusalReactions` enabled, the host refuses `/session switch` and
 `/session new` before changing the current session or touching its framework.
-The current session keeps running, and no new session is created. Restart the
-host with the desired session selected. To select or create a session using the
-usual commands, start with the option unset, make the change, then enable the
-option and restart. At startup with the option enabled, selected connectors
+The current session keeps running, and no new session is created. Startup
+reopens the active session; there is no session-selection flag. To change
+sessions, start the host with the option removed from the recipe and the same
+data directory. Use `/session switch <name-or-id>` or `/session new [name]`,
+then restore the option and restart the host after the switch completes.
+At startup with the option enabled, selected connectors
 must be connected and supported; fix any connector or closed-tab configuration
 before restarting.
 

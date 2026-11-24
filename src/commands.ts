@@ -709,7 +709,7 @@ const hostStopping: CommandResult = {
 const refusalReactionsSwitchRefused: CommandResult = {
   refused: true,
   lines: [{
-    text: 'Session switch refused: mainRefusalReactions is enabled. The current session is still running. Restart the host with the desired session selected.',
+    text: 'Session switch refused: mainRefusalReactions is enabled. The current session is still running. Start the host without mainRefusalReactions, use /session switch or /session new, then re-enable the option and restart the host.',
     style: 'system',
   }],
 };
