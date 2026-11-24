@@ -10,9 +10,11 @@ export const OWN_SETTINGS_SET_ASIDE = 'own.not-used.json';
 /** The workspace mount of ownSettingsDir that the host adds. */
 export const OWN_SETTINGS_MOUNT = '_settings';
 /**
- * The most bytes of OWN_SETTINGS_FILE that the host reads, and the mount's
- * limit for one file: agent-framework's default limit for one file of a
- * mount, which it doesn't export.
+ * The most bytes of OWN_SETTINGS_FILE that the host reads, so that a start
+ * never waits on an unbounded read, and the mount's limit for one file, so
+ * that the workspace refuses a write that a start would not read: the
+ * default limit for one file of a mount in agent-framework, which doesn't
+ * export it.
  */
 export const OWN_SETTINGS_MAX_BYTES = 5 * 1024 * 1024;
 
@@ -35,7 +37,7 @@ export const AVAILABILITY: Readonly<Record<AvailabilityKind, Availability>> = {
       return type === 'autobiographical' || type === 'frontdesk';
     },
   },
-  reader: { when: 'with a reader (subconscious)', on: (recipe) => recipe.subconscious !== undefined },
+  reader: { when: 'with a reader (subconscious) on', on: (recipe) => recipe.subconscious?.enabled === true },
   retrieval: {
     when: 'with modules.retrieval and modules.lessons on',
     on: (recipe) => Boolean(recipe.modules?.retrieval) && Boolean(recipe.modules?.lessons),
@@ -60,6 +62,7 @@ export const OWN_SETTINGS = [
   {
     name: 'agent.proseRouting',
     available: 'always',
+    example: 'explicit',
     words: 'The mode of your plain speech: where a line goes that you write without a send tool.' +
       ' `locus`: the host posts each plain line to the turn\'s channel, where the turn has one.' +
       ' `explicit`: a line is posted only where you put a destination before it, such as `>>#channel`.' +
@@ -72,14 +75,16 @@ export const OWN_SETTINGS = [
   {
     name: 'agent.timezone',
     available: 'always',
+    example: 'Europe/Berlin',
     words: 'Your local time zone, for your clock rows and the times that the host shows you.' +
       ' Rows that are already written keep the old zone.' +
-      ' With the strategy `frontdesk`, each message\'s time is shown in the zone, so a change there writes your prompt cache again, one time.' +
+      ' With the strategy `frontdesk`, the times shown with channel messages are in the zone, so a change there writes your prompt cache again, one time.' +
       ' Your MCPL servers are given the zone too, and so is a fleet child whose recipe sets none.',
   },
   {
     name: 'agent.autoContinue',
     available: 'always',
+    example: { maxConsecutive: 2 },
     words: 'Whether you get another turn after a turn that you end yourself, and how many in a row.' +
       ' You end the row with `skip_reply`: the tool, or in the modes `explicit` and `hybrid` an envelope.' +
       ' If your host offers you no way to end the row, no turn continues.' +
@@ -88,12 +93,14 @@ export const OWN_SETTINGS = [
   {
     name: 'agent.clock',
     available: 'always',
+    example: { intervalMinutes: 30 },
     words: 'Your clock rows: how often one comes, or `false` for none.' +
       ' On some models, a clock row in the middle of a turn drops the turn\'s earlier thinking.',
   },
   {
     name: 'agent.refusalHandling.autoRewind',
     available: 'always',
+    example: true,
     words: 'Whether the host sets your newest turn aside after the provider refuses a request, and then tries again: one turn for each refusal in a row, up to a limit.' +
       ' A row then tells you how many turns were set aside.' +
       ' Their content is not shown to you, and it stays in the stored record.',
@@ -101,6 +108,7 @@ export const OWN_SETTINGS = [
   {
     name: 'agent.strategy.maxLiveImages',
     available: 'strategy',
+    example: 3,
     words: 'How many pictures stay in your view as pictures, counted from the newest.' +
       ' An older one is replaced by a line of text. 0 sets no limit of your own.' +
       ' With a limit, each new picture past it turns the oldest picture into text.' +
@@ -109,6 +117,7 @@ export const OWN_SETTINGS = [
   {
     name: 'agent.strategy.imageStripDepthTokens',
     available: 'strategy',
+    example: 50_000,
     words: 'How deep in your history a picture stays a picture, in tokens from the newest message.' +
       ' 0 means that depth turns no picture into text.' +
       ' Each picture that passes the depth turns into text, at the same cost each time.',
@@ -116,6 +125,7 @@ export const OWN_SETTINGS = [
   {
     name: 'agent.strategy.toolResultMaxLastN',
     available: 'strategy',
+    example: 5,
     words: 'How many of a tool\'s last results you are sent in full: one number for every tool, or a number for each tool by its name.' +
       ' An older result is replaced by a short marker. The stored result stays.' +
       ' With a limit, each new result past it turns the oldest shown result into the marker, and that writes your prompt cache again from there, each time.' +
@@ -124,6 +134,7 @@ export const OWN_SETTINGS = [
   {
     name: 'agent.strategy.toolUseInputMaxTokens',
     available: 'strategy',
+    example: 2_000,
     words: 'The longest that the arguments of one tool call in your view may be.' +
       ' Longer arguments are replaced whole by a short marker, which gives their size and their first five keys.' +
       ' The stored call stays. 0 sets no limit.',
@@ -131,23 +142,27 @@ export const OWN_SETTINGS = [
   {
     name: 'agent.strategy.maxMessageTokens',
     available: 'strategy',
+    example: 8_000,
     words: 'The longest that one message in your view may be. A longer one is cut. 0 sets no limit.' +
       ' A small value cuts every longer message, also the results of your tools.' +
-      ' The same number caps the message of lessons that the host retrieves.',
+      ' Where it is above 0, it also caps the message of lessons that the host retrieves, unless a smaller cap of the host\'s applies.',
   },
   {
     name: 'agent.strategy.summaryTargetTokens',
     available: 'strategy',
+    example: 600,
     words: 'How long each summary of your memory is. A summary that was written stays as it was written.',
   },
   {
     name: 'agent.strategy.targetChunkTokens',
     available: 'strategy',
+    example: 3_000,
     words: 'The size of one chunk of your history. Each chunk gets a summary. A summary that was written stays.',
   },
   {
     name: 'agent.strategy.summaryParticipant',
     available: 'strategy',
+    example: 'Ember',
     words: 'The name under which your summaries speak.' +
       ' With another name than yours, your memories read as someone else\'s words about you.' +
       ' A change writes your prompt cache again from your first summary, one time.',
@@ -155,27 +170,32 @@ export const OWN_SETTINGS = [
   {
     name: 'agent.strategy.summaryContextLabel',
     available: 'strategy',
+    example: 'Earlier, in summary:',
     words: 'The line that you read before a summary in your context.' +
       ' A change writes your prompt cache again from your first summary, one time.',
   },
   {
     name: 'agent.strategy.identityReminder',
     available: 'strategy',
+    example: 'Write as me.',
     words: 'A reminder that is added to each instruction to your summarizer, so that a summary is written in your voice and not in another speaker\'s.',
   },
   {
     name: 'agent.strategy.witnessedInstruction',
     available: 'strategy',
+    example: 'Write what you saw.',
     words: 'The words that tell your summarizer how to write witnessed history.',
   },
   {
     name: 'agent.strategy.witnessedIdentityReminder',
     available: 'strategy',
+    example: 'Still me.',
     words: 'The reminder for history that is witnessed as a whole.',
   },
   {
     name: 'speech.locus',
     available: 'always',
+    example: 'latest-inbound',
     words: 'Where a plain line goes when nothing names a channel.' +
       ' `delivery`: to the channel that woke the turn, or to one that you opened in the turn.' +
       ' Past those, it goes to the channel of an open tune-out hold, or to the channel that your operator set for turns that your own timer starts.' +
@@ -186,30 +206,35 @@ export const OWN_SETTINGS = [
   {
     name: 'tuneOut.announce',
     available: 'reader',
+    example: true,
     words: 'Whether the channel that stays open is told when you tune out, and again when that ends: one line under your name each time.',
   },
   {
     name: 'modules.retrieval.maxInjected',
     available: 'retrieval',
+    example: 4,
     words: 'The most lessons that the host puts into your context for one turn. Each costs tokens.',
   },
   {
     name: 'modules.subagents.orientation',
     available: 'subagents',
+    example: 'none',
     words: 'What a fork or a subagent of yours is told at its start: `full` or `none`.',
   },
   {
     name: 'modules.ttsRelay.notifyOnInterruption',
     available: 'ttsRelay',
+    example: false,
     words: 'Whether you are told when your voice was interrupted: one row of context each time.' +
       ' With `false`, the posted message is still cut to what was spoken, and you are not told.',
   },
   {
     name: 'modules.wake.judge.onError',
     available: 'replyJudge',
+    example: 'skip',
     words: 'What happens when the reply judge fails: you are woken (`wake`) or not (`skip`).',
   },
-] as const satisfies ReadonlyArray<{ readonly name: string; readonly available: AvailabilityKind; readonly words: string }>;
+] as const satisfies ReadonlyArray<{ readonly name: string; readonly available: AvailabilityKind; readonly example: unknown; readonly words: string }>;
 
 export type OwnSettingName = (typeof OWN_SETTINGS)[number]['name'];
 export type OwnSetting = (typeof OWN_SETTINGS)[number];
@@ -218,7 +243,6 @@ export const OWN_SETTING_NAMES: readonly OwnSettingName[] = OWN_SETTINGS.map((se
 
 /** The settings tool, as agent-framework names a utility of the host's `settings` module. */
 export const OWN_SETTINGS_TOOL = 'settings--own';
-/** The workspace tool that makes the resident's file. */
 const WRITE_TOOL = 'workspace--write';
 
 /**

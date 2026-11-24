@@ -11,7 +11,7 @@ import { isBuiltinStrategyType } from './extensions.js';
 import { TOOL_CLASSES } from './tool-lifecycle-config.js';
 import { SERVER_PRESENTATIONS } from './server-presentation.js';
 import { buildWorkspaceMounts, workspaceConfig } from './workspace-mounts.js';
-import { OWN_SETTING_NAMES, OWN_SETTINGS_MOUNT, ownSettingsWarnings } from './own-settings-table.js';
+import { OWN_SETTING_NAMES, OWN_SETTINGS_MOUNT } from './own-settings-table.js';
 
 const takes = (phrase: string) => ({
   error: (issue: { readonly code?: string }) => (issue.code === 'unrecognized_keys' ? undefined : phrase),
@@ -105,6 +105,7 @@ function editDistance(a: string, b: string): number {
 
 /** The name in `known` nearest to `key` by edit distance, when it is near enough to be what `key` meant. */
 export function nearestKey(key: string, known: readonly string[]): string | null {
+  if (key.length > 2 * Math.max(0, ...known.map((name) => name.length))) return null;
   let best: string | null = null;
   let bestDistance = Infinity;
   for (const candidate of known) {
@@ -2805,8 +2806,7 @@ export function unknownRecipeKeys(raw: unknown): string[] {
  * It writes one warning line naming the keys that unknownRecipeKeys gives,
  * if it gives any, and notes it for the session's log only where the recipe
  * loads. It throws one error whose message names every fault that one parse
- * can judge, printing values as `origin` allows. A recipe that loads also
- * gets a warning line for each that ownSettingsWarnings gives.
+ * can judge, printing values as `origin` allows.
  */
 export function validateRecipe(raw: unknown, origin: RecipeOrigin = { kind: 'literal' }): Recipe {
   const unknownKeys = unknownRecipeKeys(raw);
@@ -2816,10 +2816,6 @@ export function validateRecipe(raw: unknown, origin: RecipeOrigin = { kind: 'lit
   const checked = checkRecipe(raw, origin);
   if (!checked.ok) throw new Error(checked.fault);
   if (warning !== undefined) noteRecipeWarning(warning);
-  for (const ownWarning of ownSettingsWarnings(checked.recipe)) {
-    console.warn(ownWarning);
-    noteRecipeWarning(ownWarning);
-  }
   return checked.recipe;
 }
 

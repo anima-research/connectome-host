@@ -1,15 +1,18 @@
-- A recipe's `ownSettings` lets the resident read and change some of its own
-  settings, from the 23 of a table in `src/own-settings-table.ts`: `"all"`,
-  `"read"`, or a list of setting names. The resident writes them into
-  `own-settings/own.json` in the data directory, through a mount `_settings`
-  where the grant lets it change a setting and the workspace is on, and the
-  host applies the file at each start. Each entry is checked alone, and then
-  with the recipe's own checks, and an entry that fails costs that entry
-  alone. A value of the file gets no `${VAR}` substitution, and the saved
+- A recipe's new key `ownSettings` lets the resident read some of its own
+  settings, and change some of them. It takes `"all"`, `"read"`, or a list
+  of names from the table of 23 settings in `src/own-settings-table.ts`. The
+  resident writes its settings into `own-settings/own.json` in the data
+  directory. If it may change a setting and the workspace is on, it reaches
+  the file through the mount `_settings`. The host applies the file at each
+  start. It checks each entry alone first, and then checks the recipe with
+  the entry in it. An entry that fails is left out, and the others still
+  apply. A value in the file gets no `${VAR}` substitution, and the saved
   recipe never holds one. The utility `settings--own` shows the resident its
-  settings and what its file changes at the next start, and a note at a start
-  says when the file did not take effect as written. When the recipe stops
-  letting the resident change settings, the host parks the file as
-  `own.not-used.json`, and puts it back when a later recipe lets it again.
-  `connectome doctor` prints what the next start would do with the file. A
-  recipe without `ownSettings` runs as before.
+  settings, and what its file changes at the next start. The host tells the
+  resident when its file doesn't take effect as written. The host parks the
+  file as `own.not-used.json` when the recipe stops letting the resident
+  change settings. A later grant of a change brings the file back, if there
+  is no `own.json`. `connectome doctor` prints what the next start would do
+  with the file. A recipe without `ownSettings` runs as before, with one
+  exception: a start parks an `own.json` that an earlier grant left, and
+  tells the resident.

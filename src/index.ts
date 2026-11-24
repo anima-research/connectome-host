@@ -970,6 +970,7 @@ async function main() {
 
   const settingsModule = new SettingsModule(recipe.agent.thinking?.effort, {
     note: own.note,
+    resident: () => agentName,
     answer: operator.recipe.ownSettings === undefined ? null : () => {
       const framework = appRefForDebt?.framework;
       const agent = framework?.getAgent(agentName);
@@ -1312,6 +1313,7 @@ async function main() {
     extensions,
     places: () => placesForTrial ?? (installHere === null ? null : trialPlaces(installHere.root)),
   });
+  for (const line of own.moveFile()) console.log(line);
   setupSynesthete(app);
   setupMcplStderrLog(app, storePath);
   hostUpdate.configure({

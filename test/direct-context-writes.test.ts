@@ -164,14 +164,6 @@ const ALLOWED: Array<{ file: string; call: string; count: number; why: string }>
     why: 'The note after a self-restart, saying who asked, when, why and when the host came back: meant for every resident.',
   },
   {
-    file: 'src/modules/settings-module.ts',
-    call: 'ctx.addMessage (untargeted)',
-    count: 1,
-    why: "The note at a start that the resident's own settings file did not take effect as written, or that the host moved " +
-      "it (own-settings.ts), once in a process, written where the restart's note is: the file is the data directory's, " +
-      'as the recipe is, so it is meant for every resident.',
-  },
-  {
     file: 'src/modules/tui-module.ts',
     call: 'EventResponse.addMessages',
     count: 1,

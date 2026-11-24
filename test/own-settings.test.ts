@@ -4,14 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ModuleContext } from '@animalabs/agent-framework';
 import { runningFit, substituteEnvVars, validateRecipe } from '../src/recipe.js';
-import { isRecipeSetting, settingTakes } from '../src/recipe-schema.js';
+import { isRecipeSetting, nearestKey, settingFault, settingTakes } from '../src/recipe-schema.js';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
 import { dendriteCreateOptions } from '../src/framework-strategy.js';
 import { SettingsModule } from '../src/modules/settings-module.js';
 import {
   checkOwnSettings, ownSettingsAnswer, ownSettingsLines, startOwnSettings, valueAt, type OperatorRecipe, type RunningAgent,
 } from '../src/own-settings.js';
-import { OWN_SETTING_NAMES, OWN_SETTINGS_MAX_BYTES, ownSettingsWarnings } from '../src/own-settings-table.js';
+import { OWN_SETTING_NAMES, OWN_SETTINGS, OWN_SETTINGS_MAX_BYTES, ownSettingsWarnings } from '../src/own-settings-table.js';
 import { everySetting } from './fixtures/recipe-schema/every-setting.js';
 
 const dirs: string[] = [];
@@ -30,7 +30,6 @@ function dataDir(files: { own?: unknown; parked?: unknown } = {}): string {
 
 const ownFile = (dir: string, name = 'own.json'): string => join(dir, 'own-settings', name);
 
-/** The operator's recipe as a start loads it from a file that its author wrote, with `env` for its references. */
 function operator(document: Record<string, unknown>, env: Record<string, string> = {}): OperatorRecipe {
   const written = { name: 'Ember', ...document, agent: { name: 'ember', model: 'claude-opus-4-6', systemPrompt: 'hi', ...(document.agent as object) } };
   const persistable = structuredClone(written);
@@ -51,32 +50,14 @@ const quietly = <T>(work: () => T): T => {
   }
 };
 
-/** A value that the schema takes, for each setting of the table. */
-const GOOD: Record<string, unknown> = {
-  'agent.proseRouting': 'explicit',
-  'agent.timezone': 'Europe/Berlin',
-  'agent.autoContinue': { maxConsecutive: 2 },
-  'agent.clock': { intervalMinutes: 30 },
-  'agent.refusalHandling.autoRewind': true,
-  'agent.strategy.maxLiveImages': 3,
-  'agent.strategy.imageStripDepthTokens': 50_000,
-  'agent.strategy.toolResultMaxLastN': 5,
-  'agent.strategy.toolUseInputMaxTokens': 2_000,
-  'agent.strategy.maxMessageTokens': 8_000,
-  'agent.strategy.summaryTargetTokens': 600,
-  'agent.strategy.targetChunkTokens': 3_000,
-  'agent.strategy.summaryParticipant': 'Ember',
-  'agent.strategy.summaryContextLabel': 'Earlier, in summary:',
-  'agent.strategy.identityReminder': 'Write as me.',
-  'agent.strategy.witnessedInstruction': 'Write what you saw.',
-  'agent.strategy.witnessedIdentityReminder': 'Still me.',
-  'speech.locus': 'latest-inbound',
-  'tuneOut.announce': true,
-  'modules.retrieval.maxInjected': 4,
-  'modules.subagents.orientation': 'none',
-  'modules.ttsRelay.notifyOnInterruption': false,
-  'modules.wake.judge.onError': 'skip',
-};
+const GOOD: Readonly<Record<string, unknown>> = Object.fromEntries(OWN_SETTINGS.map((setting) => [setting.name, setting.example]));
+
+function withValue(document: unknown, path: readonly string[], value: unknown): unknown {
+  const [key, ...rest] = path;
+  if (key === undefined) return value;
+  const section: Record<string, unknown> = typeof document === 'object' && document !== null ? { ...document } : {};
+  return { ...section, [key]: withValue(section[key], rest, value) };
+}
 
 const EVERY_MODULE = {
   subconscious: { enabled: true, reader: 'persistent', systemPrompt: 'read' },
@@ -84,12 +65,12 @@ const EVERY_MODULE = {
 };
 
 describe('the table', () => {
-  test('each name of the table is a path of the recipe schema, and the schema says what it takes', () => {
+  test('each name of the table is a path of the recipe schema, the schema says what it takes, and its example passes', () => {
     expect(OWN_SETTING_NAMES).toHaveLength(23);
-    expect(Object.keys(GOOD).sort()).toEqual([...OWN_SETTING_NAMES].sort());
-    for (const name of OWN_SETTING_NAMES) {
-      expect(isRecipeSetting(name)).toBe(true);
-      expect(settingTakes(name)).toEqual(expect.any(String));
+    for (const setting of OWN_SETTINGS) {
+      expect(isRecipeSetting(setting.name)).toBe(true);
+      expect(settingTakes(setting.name)).toEqual(expect.any(String));
+      expect([setting.name, settingFault(setting.name, setting.example)]).toEqual([setting.name, undefined]);
     }
     expect(settingTakes('agent.proseRouting')).toBe('"locus", "explicit", "hybrid", "disabled" or "locked"');
   });
@@ -100,12 +81,6 @@ describe('the fit check', () => {
     const base = { ...EVERY_MODULE, agent: { contextBudgetTokens: 150_000 } };
     const fitOf = (document: Record<string, unknown>) => runningFit(operator(document).recipe, undefined);
     expect(fitOf(base).checked).toBe(true);
-    const withValue = (document: unknown, path: readonly string[], value: unknown): unknown => {
-      const [key, ...rest] = path;
-      if (key === undefined) return value;
-      const section: Record<string, unknown> = typeof document === 'object' && document !== null ? { ...document } : {};
-      return { ...section, [key]: withValue(section[key], rest, value) };
-    };
     for (const [name, value] of Object.entries(GOOD)) {
       const [key = '', ...rest] = name.split('.');
       const document = { ...base, [key]: withValue(Object.entries(base).find(([k]) => k === key)?.[1], rest, value) };
@@ -140,15 +115,23 @@ describe('the recipe key', () => {
     expect(ownSettingsWarnings(operator({ ...passthrough, ownSettings: 'read' }).recipe)).toEqual([]);
   });
 
-  test('the load writes those warnings', () => {
+  test('the start\'s log gives those warnings, and the load writes none of them', () => {
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      operator({ ownSettings: ['tuneOut.announce'] });
-      expect(warn.mock.calls.map((call) => call[0])).toContain(
-        'Recipe ownSettings names tuneOut.announce, which does nothing on this host: it takes effect only with a reader (subconscious).');
+      const op = operator({ ownSettings: ['tuneOut.announce'] });
+      expect(warn.mock.calls).toEqual([]);
+      expect(startOwnSettings(op, dataDir()).log).toEqual(['[own-settings] Recipe ownSettings names tuneOut.announce, which does nothing ' +
+        'on this host: it takes effect only with a reader (subconscious) on.']);
     } finally {
       warn.mockRestore();
     }
+  });
+
+  test('a reader that is switched off makes tuneOut.announce not available', () => {
+    const subconscious = { ...EVERY_MODULE.subconscious, enabled: false };
+    const start = startOwnSettings(operator({ ownSettings: 'all', subconscious }), dataDir({ own: { 'tuneOut.announce': true } }));
+    expect(start.check.entries[0]!.notUsed?.kind).toBe('not-available');
+    expect(start.check.recipe.tuneOut).toBeUndefined();
   });
 
   test('an allowlist that leaves out what the grant needs draws a warning naming each tool (case 26)', () => {
@@ -165,17 +148,33 @@ describe('the recipe key', () => {
 });
 
 describe('what a start does with the file', () => {
-  test('no key: the recipe in force is the operator\'s, and a file there is parked with one note (case 1, 16)', () => {
+  test('no key: the recipe in force is the operator\'s, and a file there is parked after its note (case 1, 16, 30)', () => {
     const op = operator({ agent: { proseRouting: 'locus' } });
     const dir = dataDir({ own: { 'agent.proseRouting': 'explicit' } });
     const start = startOwnSettings(op, dir);
     expect(start.check.recipe.agent.proseRouting).toBe('locus');
-    expect(existsSync(ownFile(dir))).toBe(false);
-    expect(JSON.parse(readFileSync(ownFile(dir, 'own.not-used.json'), 'utf-8'))).toEqual({ 'agent.proseRouting': 'explicit' });
-    expect(start.note).toStartWith('Your operator\'s recipe no longer lets you change your own settings, so the host parked your settings file');
+    expect(start.note).toStartWith('Your operator\'s recipe no longer lets you change your own settings, so the recipe\'s values are in ' +
+      'force, and the host parks your settings file');
     expect(start.note).not.toContain('settings--own');
+    expect(readdirSync(join(dir, 'own-settings'))).toEqual(['own.json']);
+    const failedBefore = startOwnSettings(op, dir);
+    expect([failedBefore.move, failedBefore.note]).toEqual([start.move, start.note]);
+    expect(start.moveFile()).toEqual([`[own-settings] The host moved ${ownFile(dir)} to ${ownFile(dir, 'own.not-used.json')}.`]);
+    expect(JSON.parse(readFileSync(ownFile(dir, 'own.not-used.json'), 'utf-8'))).toEqual({ 'agent.proseRouting': 'explicit' });
     const again = startOwnSettings(op, dir);
-    expect([again.moved, again.note]).toEqual([null, undefined]);
+    expect([again.move, again.note, again.moveFile()]).toEqual([null, undefined, []]);
+  });
+
+  test('an own-settings that is a file stops no start, and the tool and doctor say why', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chost-own-settings-'));
+    dirs.push(dir);
+    writeFileSync(join(dir, 'own-settings'), 'not a directory');
+    const op = operator({ ownSettings: 'all' });
+    const start = startOwnSettings(op, dir);
+    expect(start.check.recipe).toEqual(op.recipe);
+    expect(start.note).toStartWith('The host did not use your settings file _settings/own.json at this start: it can\'t be read (ENOTDIR).');
+    expect(answer(op, dir)).toContain('The next start does not use it: it can\'t be read (ENOTDIR).');
+    expect(ownSettingsLines(op, dir)).toContain('The next start does not use the resident\'s file: it can\'t be read (ENOTDIR).');
   });
 
   test('"read": a file there is parked and not used, and the start makes no directory for a mount (case 4, 16)', () => {
@@ -186,7 +185,7 @@ describe('what a start does with the file', () => {
     expect(existsSync(join(bare, 'own-settings'))).toBe(false);
     const dir = dataDir({ own: { 'agent.timezone': 'Europe/Berlin' } });
     const start = startOwnSettings(op, dir);
-    expect(start.moved).toBe('parked');
+    expect(start.move).toBe('park');
     expect(start.check.recipe.agent.timezone).toBeUndefined();
     expect(start.note).toContain('settings--own shows your own settings');
   });
@@ -202,10 +201,29 @@ describe('what a start does with the file', () => {
     expect(start.log).toEqual(['[own-settings] agent.proseRouting is "explicit" from the resident\'s file; the recipe\'s own value is "locus".']);
   });
 
-  test('an entry changes its own path of the recipe and nothing else, on a recipe that sets every setting', () => {
-    const op = quietly(() => operator({ ...everySetting, ownSettings: ['agent.timezone'] }));
-    const start = startOwnSettings(op, dataDir({ own: { 'agent.timezone': 'Asia/Tokyo' } }));
-    expect(start.check.recipe).toEqual({ ...op.recipe, agent: { ...op.recipe.agent, timezone: 'Asia/Tokyo' } });
+  test('each entry changes its own path of the recipe and nothing else, on a recipe that sets every setting', () => {
+    const { proseLock: _lock, ...agent } = everySetting.agent;
+    const op = quietly(() => operator({ ...everySetting, agent, ownSettings: 'all' }));
+    for (const setting of OWN_SETTINGS) {
+      const start = startOwnSettings(op, dataDir({ own: { [setting.name]: setting.example } }));
+      expect([setting.name, start.check.entries[0]!.notUsed]).toEqual([setting.name, null]);
+      expect(start.check.recipe).toEqual(withValue(op.recipe, setting.name.split('.'), setting.example));
+    }
+  });
+
+  test('an unknown name in the file is not used, with the nearest name, and a later entry is in force', () => {
+    const start = startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own: { 'agent.timezon': 'UTC', 'agent.clock': false } }));
+    expect(start.check.entries[0]!.notUsed).toEqual({ kind: 'unknown', near: 'agent.timezone' });
+    expect(start.check.recipe.agent.clock).toBe(false);
+    expect(start.note).toContain('- `agent.timezon` is not used: it is not a setting that you can manage (did you mean `agent.timezone`?).');
+    expect(nearestKey('x'.repeat(5_000_000), OWN_SETTING_NAMES)).toBeNull();
+  });
+
+  test('the note names settings--own only where the tool list lets the resident call it', () => {
+    const own = { 'agent.timezone': 'Nowhere/Zone' };
+    expect(startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own })).note).toContain('settings--own shows your own settings');
+    const blocked = quietly(() => operator({ ownSettings: 'all', agent: { allowedTools: ['workspace--write'] } }));
+    expect(startOwnSettings(blocked, dataDir({ own })).note).not.toContain('settings--own');
   });
 
   test('an entry outside the list is not used, and the note names it; the others are in force (case 3)', () => {
@@ -314,16 +332,27 @@ describe('what a start does with the file', () => {
   });
 
   test('a parked file comes back when the grant does, and the note says so at that start alone (case 14)', () => {
-    const dir = dataDir({ own: { 'agent.proseRouting': 'explicit' } });
-    startOwnSettings(operator({}), dir);
-    expect(existsSync(ownFile(dir, 'own.not-used.json'))).toBe(true);
+    const dir = dataDir({ parked: { 'agent.proseRouting': 'explicit' } });
     const granted = operator({ ownSettings: ['agent.proseRouting'] });
     const back = startOwnSettings(granted, dir);
-    expect([back.moved, back.check.recipe.agent.proseRouting]).toEqual(['put-back', 'explicit']);
-    expect(readdirSync(join(dir, 'own-settings'))).toEqual(['own.json']);
-    expect(back.note).toStartWith('Your operator\'s recipe lets you change your own settings again, so the host put your parked settings ' +
+    expect([back.move, back.check.recipe.agent.proseRouting]).toEqual(['put-back', 'explicit']);
+    expect(back.note).toStartWith('Your operator\'s recipe lets you change your own settings again, so the host puts your parked settings ' +
       'file back as _settings/own.json. In force from it:\n- `agent.proseRouting` is "explicit".');
+    back.moveFile();
+    expect(readdirSync(join(dir, 'own-settings'))).toEqual(['own.json']);
     expect(startOwnSettings(granted, dir).note).toBeUndefined();
+  });
+
+  test('with both files there, a start uses own.json and moves nothing; a dangling own.json link is not read, and moves nothing', () => {
+    const op = operator({ ownSettings: 'all' });
+    const both = dataDir({ own: { 'agent.timezone': 'Europe/Berlin' }, parked: { 'agent.timezone': 'Asia/Tokyo' } });
+    const start = startOwnSettings(op, both);
+    expect([start.move, start.check.recipe.agent.timezone]).toEqual([null, 'Europe/Berlin']);
+    const dangling = dataDir({ parked: { 'agent.timezone': 'Asia/Tokyo' } });
+    symlinkSync(join(dangling, 'nowhere.json'), ownFile(dangling));
+    const linked = startOwnSettings(op, dangling);
+    expect([linked.move, linked.check.recipe.agent.timezone]).toEqual([null, undefined]);
+    expect(linked.note).toStartWith('The host did not use your settings file _settings/own.json at this start: it is a link');
   });
 
   test('a value that names a variable gets no substitution (case 15)', () => {
@@ -371,7 +400,8 @@ describe('what a start does with the file', () => {
     const op = operator({ ownSettings: 'all', modules: { workspace: false } });
     const dir = dataDir({ own: { 'agent.timezone': 'Europe/Berlin' } });
     expect(startOwnSettings(op, dir).check.recipe.agent.timezone).toBe('Europe/Berlin');
-    expect(answer(op, dir)).toContain(`To change a setting, write it into ${ownFile(dir)}:`);
+    expect(answer(op, dir)).toContain(`To change a setting, write it into ${ownFile(dir)}, on the host's disk: this host has no ` +
+      'workspace, so a shell tool of yours can write it there, or your operator can:');
   });
 
   test('a recipe value from the environment shows as written, in the tool and in the log (case 28)', () => {
@@ -383,6 +413,26 @@ describe('what a start does with the file', () => {
       '"${TZ}", which the host fills from its environment.']);
     const tool = answer(op, dir, start.check);
     expect(tool).toContain('"${TZ}", which the host fills from its environment');
+    expect(tool).not.toContain('Asia/Tokyo');
+  });
+
+  test('a reference inside a recipe value, and the tool\'s example, show no value from the environment', () => {
+    const env = { P: 'seconds', NAME: 'Secret-Name' };
+    const op = operator({ ownSettings: ['agent.strategy.summaryParticipant', 'agent.clock'], agent: {
+      clock: { intervalSeconds: 30, precision: '${P}' }, strategy: { summaryParticipant: '${NAME}' },
+    } }, env);
+    const tool = answer(op, dataDir());
+    expect(tool).toContain('agent.clock: {"intervalSeconds":30,"precision":"${P}"}, which the host fills from its environment, from the recipe');
+    expect(tool).toContain('such as {"agent.clock": {"intervalMinutes":30}}');
+    expect(tool).not.toContain('Secret-Name');
+    expect(tool).not.toContain('"seconds"');
+  });
+
+  test('a legacy saved recipe\'s strings show as values of the saved recipe', () => {
+    const recipe = validateRecipe({ name: 'Ember', agent: { systemPrompt: 'hi', timezone: 'Asia/Tokyo' }, ownSettings: 'read' }, { kind: 'resolved' });
+    const op: OperatorRecipe = { recipe, origin: { kind: 'resolved' } };
+    const tool = answer(op, dataDir());
+    expect(tool).toContain('agent.timezone: a value of the saved recipe, from the recipe.');
     expect(tool).not.toContain('Asia/Tokyo');
   });
 });
@@ -422,30 +472,36 @@ describe('the tool', () => {
 
 describe('the settings module', () => {
   const ctx = () => {
-    const added: string[] = [];
+    const added: Array<{ text: string; forAgent: string | undefined }> = [];
     const context = {
       getState: () => undefined,
       setState: () => {},
-      addMessage: (_who: string, content: Array<{ text: string }>) => { added.push(content[0]!.text); },
+      addMessage: (_who: string, content: Array<{ text: string }>, _metadata: unknown, target?: { forAgent?: string }) => {
+        added.push({ text: content[0]!.text, forAgent: target?.forAgent });
+      },
     } as unknown as ModuleContext;
     return { added, context };
   };
 
-  test('without the key, it offers no utility; with it, settings--own answers', async () => {
+  test('without the key, it offers no utility; with it, settings--own answers the resident, and refuses another caller (case 31)', async () => {
     expect(new SettingsModule().getUtilities()).toEqual([]);
-    const mod = new SettingsModule('default', { note: undefined, answer: () => 'the answer' });
+    const mod = new SettingsModule('default', { note: undefined, resident: () => 'ember', answer: () => 'the answer' });
     expect(mod.getUtilities().map((tool) => tool.name)).toEqual(['own']);
-    expect(await mod.handleToolCall({ id: 'call-1', name: 'own', input: {} })).toEqual({ success: true, data: 'the answer' });
+    expect(await mod.handleToolCall({ id: 'call-1', name: 'own', input: {}, callerAgentName: 'ember' }))
+      .toEqual({ success: true, data: 'the answer' });
+    expect(await mod.handleToolCall({ id: 'call-2', name: 'own', input: {}, callerAgentName: 'ember-fork-1' })).toEqual({
+      success: false, isError: true, error: 'settings--own shows ember\'s own settings, and answers ember alone, so nothing ran.',
+    });
   });
 
-  test('the note comes at the first start in the process, and not at a session switch\'s start', async () => {
-    const mod = new SettingsModule('default', { note: 'a note', answer: null });
+  test('the note comes to the resident alone, at the first start in the process, and not at a session switch\'s start', async () => {
+    const mod = new SettingsModule('default', { note: 'a note', resident: () => 'ember', answer: null });
     const first = ctx();
     await mod.start(first.context);
     await mod.stop();
     const second = ctx();
     await mod.start(second.context);
-    expect([first.added, second.added]).toEqual([['a note'], []]);
+    expect([first.added, second.added]).toEqual([[{ text: 'a note', forAgent: 'ember' }], []]);
   });
 });
 

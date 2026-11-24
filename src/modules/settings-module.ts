@@ -16,6 +16,8 @@ import { hostNoteMetadata } from '../speaker.js';
 export interface OwnSettingsHook {
   /** The host note for the resident at the start, given at the module's first start in the process. */
   readonly note: string | undefined;
+  /** The recipe's agent, whose settings these are: the note is for it, and the utility answers it alone. */
+  readonly resident: () => string;
   /** The answer of the utility `own`, where the recipe has ownSettings. */
   readonly answer: (() => string) | null;
 }
@@ -65,7 +67,7 @@ export class SettingsModule implements Module {
 
   constructor(
     private readonly initialEffort: ReasoningEffort = 'default',
-    private readonly own: OwnSettingsHook = { note: undefined, answer: null },
+    private readonly own: OwnSettingsHook = { note: undefined, resident: () => '', answer: null },
   ) {
     this.ownNote = own.note;
   }
@@ -73,7 +75,7 @@ export class SettingsModule implements Module {
   async start(ctx: ModuleContext): Promise<void> {
     this.ctx = ctx;
     if (this.ownNote !== undefined) {
-      ctx.addMessage('user', [{ type: 'text', text: this.ownNote }], hostNoteMetadata('own-settings'));
+      ctx.addMessage('user', [{ type: 'text', text: this.ownNote }], hostNoteMetadata('own-settings'), { forAgent: this.own.resident() });
       this.ownNote = undefined;
     }
   }
@@ -125,7 +127,17 @@ export class SettingsModule implements Module {
   }
 
   async handleToolCall(call: ToolCall): Promise<ToolResult> {
-    if (call.name === 'own' && this.own.answer) return { success: true, data: this.own.answer() };
+    if (call.name === 'own' && this.own.answer) {
+      const resident = this.own.resident();
+      if (call.callerAgentName !== undefined && call.callerAgentName !== resident) {
+        return {
+          success: false,
+          isError: true,
+          error: `settings--own shows ${resident}'s own settings, and answers ${resident} alone, so nothing ran.`,
+        };
+      }
+      return { success: true, data: this.own.answer() };
+    }
     return unknownToolResult(
       this,
       call.name,

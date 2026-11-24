@@ -246,7 +246,14 @@ type LoadedService = { readonly operator: OperatorRecipe; readonly dataDir: stri
 
 async function loadService(service: Exclude<ServiceRecipe, { why: string }>, fetchSystemPrompt: boolean): Promise<LoadedService> {
   const document = await readRecipeDocument(service.recipe);
-  const loaded = await loadRecipeDocument(document, service.recipe, { env: service.env, fetchSystemPrompt });
+  const warn = console.warn;
+  if (!fetchSystemPrompt) console.warn = () => {};
+  let loaded: Awaited<ReturnType<typeof loadRecipeDocument>>;
+  try {
+    loaded = await loadRecipeDocument(document, service.recipe, { env: service.env, fetchSystemPrompt });
+  } finally {
+    console.warn = warn;
+  }
   return {
     operator: { recipe: loaded.recipe, origin: { kind: 'authored', document: loaded.persistable } },
     dataDir: service.dataDir,
@@ -287,12 +294,21 @@ async function checkOwnSettingsFile(report: Report, parts: DoctorParts, root: st
   if (service === null) {
     if (host === null) return;
     const named = serviceRecipe(parts, root, units, commands, dotenv);
-    if ('why' in named) return;
+    if ('why' in named) {
+      const dataDir = movedDataDir(root, dirname(root)) ?? join(dirname(root), 'data');
+      if (existsSync(ownSettingsDir(dataDir))) report.check('–', `Not checked: the resident's own settings, since ${named.why}.`);
+      return;
+    }
+    if (!existsSync(ownSettingsDir(named.dataDir))) return;
     try {
       service = await within(parts.recipeLimitMs, loadService(named, false));
     } catch (error) {
-      if (existsSync(ownSettingsDir(named.dataDir))) {
-        report.check('–', `Not checked: the resident's own settings, since ${named.recipe} doesn't load here: ${errorText(error)}.`);
+      if (error instanceof TooLong) {
+        report.check('–', `Not checked: the resident's own settings, since ${named.recipe} ${error.message}.`,
+          'run doctor again, since the recipe may be slow to answer.');
+      } else {
+        report.check('✗', `The resident's own settings aren't checked, since ${named.recipe} doesn't load: ${errorText(error)}.`,
+          'correct it before the host next starts.');
       }
       return;
     }
