@@ -390,10 +390,10 @@ describe('a recipe load refuses what Anthropic refuses', () => {
       expect(recipeFit(validateRecipe({ name: 'fit', agent: { systemPrompt: '', ...agent } }), HAIKU)).toMatchObject({ checked: true, fits: false });
     }
     for (const [agent, message] of [
-      [{ strategy: { type: 'autobiographical', overBudgetGraceRatio: Infinity } }, 'Recipe agent.strategy.overBudgetGraceRatio must be a number, got Infinity.'],
-      [{ maxTokens: Infinity }, 'Recipe agent.maxTokens must be a number, got Infinity.'],
-      [{ contextBudgetTokens: Infinity }, 'Recipe agent.contextBudgetTokens must be a number, got Infinity.'],
-      [{ strategy: { type: 'autobiographical', headWindowTokens: -Infinity } }, 'Recipe agent.strategy.headWindowTokens must be a number, got -Infinity.'],
+      [{ strategy: { type: 'autobiographical', overBudgetGraceRatio: Infinity } }, 'Recipe agent.strategy.overBudgetGraceRatio must be a finite number, got Infinity.'],
+      [{ maxTokens: Infinity }, 'Recipe agent.maxTokens must be a finite number, got Infinity.'],
+      [{ contextBudgetTokens: Infinity }, 'Recipe agent.contextBudgetTokens must be a finite number, got Infinity.'],
+      [{ strategy: { type: 'autobiographical', headWindowTokens: -Infinity } }, 'Recipe agent.strategy.headWindowTokens must be a finite number, got -Infinity.'],
     ] as const) {
       expect(() => validateRecipe({ name: 'fit', agent: { systemPrompt: '', ...agent } })).toThrow(message);
     }

@@ -35,7 +35,10 @@ const textWhere = (phrase: string, holds: (s: string) => boolean) => z.string(ta
 const trueOrFalse = (phrase = 'true or false') => z.boolean(takes(phrase));
 const oneOf = <const T extends readonly [string, ...string[]]>(values: T, phrase = listed(values)) =>
   z.enum(values, takes(phrase));
-const number = (phrase = 'a number') => z.number(takes(phrase));
+// JSON's 1e400 parses as Infinity, which zod's number refuses: "a number" alone would not say why.
+const number = (phrase?: string) => z.number({
+  error: (issue) => phrase ?? (typeof issue.input === 'number' ? 'a finite number' : 'a number'),
+});
 const numberWhere = (phrase: string, holds: (n: number) => boolean) =>
   z.number(takes(phrase)).refine(holds, takes(phrase));
 const timerMs = (min: number) =>
@@ -72,11 +75,13 @@ const isRuleFault = (issue: { readonly code?: string; readonly params?: Record<s
 const faultOfShape = (issue: { readonly code?: string; readonly params?: Record<string, unknown> }): boolean =>
   issue.code !== 'unrecognized_keys' && !isRuleFault(issue);
 
-function rule<T>(reads: readonly [string, ...string[]], test: (value: T) => Sentence | undefined) {
+function rule<T>(reads: readonly [string, ...string[]], test: (value: T) => Sentence | readonly Sentence[] | undefined) {
   const paths = reads.map(pathOf);
   return z.superRefine<T>((value, ctx) => {
-    const sentence = test(value);
-    if (sentence) ctx.addIssue({ code: 'custom', message: 'rule', params: { sentence, reads: paths }, input: value });
+    const said = test(value);
+    for (const sentence of typeof said === 'function' ? [said] : said ?? []) {
+      ctx.addIssue({ code: 'custom', message: 'rule', params: { sentence, reads: paths }, input: value });
+    }
   }, {
     when: (payload) => !payload.issues.some((issue) =>
       faultOfShape(issue) && paths.some((p) => overlaps(issue.path ?? [], p))),
@@ -506,7 +511,8 @@ const strategyShape = {
    * block (standardKvUnifiedConfig), with cache prices matched to the
    * provider, cacheTtl and model. Written out, it must be complete: there is
    * no per-field merging, so a load refuses a block that lacks a required
-   * field, and warns of a key that it doesn't know. */
+   * field, and, under a built-in strategy type, warns of a key that it
+   * doesn't know. */
   kvUnified: kvUnified.optional(),
   speculativeProduction: trueOrFalse().optional(),
   /** L1 production holdback: keep the newest N closed chunks out of the
@@ -523,9 +529,8 @@ const strategyShape = {
   summaryUserPrompt: text().optional(),
   /** The `Context Manager` turn before a summary in the compiled context,
    *  under adaptive resolution (the default) or `positionedRecallPairs:
-   *  false`. The host defaults it to a sentence saying that a summary
-   *  follows, standing in for earlier conversation, tool calls and results
-   *  included, and that the exact text it replaces isn't shown. */
+   *  false`. The host sets no default: left out, context-manager's own
+   *  wording applies (see buildFrameworkStrategy). */
   summaryContextLabel: text().optional(),
   /** As-of perspective pin: chunks wholly below this message sequence are
    *  compressed as inherited/witnessed record, not first-person memory.
@@ -1350,13 +1355,10 @@ const mcpServer: z.ZodType<McpServerShape> = z.looseObject(mcpServerShape, takes
 const givesAnotherId = (entry: Readonly<Record<string, unknown>>, name: string): boolean =>
   Object.hasOwn(entry, 'id') && entry.id !== name;
 const mcpServers = mapOf(mcpServer, 'an object that gives each server a name')
-  .check(rule<Readonly<Record<string, McpServerShape>>>([''], (servers) => {
-    const name = Object.keys(servers).find((key) => givesAnotherId(servers[key]!, key));
-    return name === undefined
-      ? undefined
-      : ({ at }) => `Recipe ${at(`${name}.id`)} is not a setting: a server's id is its name in mcpServers. ` +
-        'Remove id, or rename the entry if the server should have that name.';
-  }));
+  .check(rule<Readonly<Record<string, McpServerShape>>>([''], (servers) =>
+    Object.keys(servers).filter((key) => givesAnotherId(servers[key]!, key)).map((name): Sentence => ({ at }) =>
+      `Recipe ${at(`${name}.id`)} is not a setting: a server's id is its name in mcpServers. ` +
+      'Remove id, or rename the entry if the server should have that name.')));
 
 const bool = (phrase: string) => trueOrFalse(phrase);
 const either = <T extends z.ZodType>(object: T, phrase: string) => z.union([bool(phrase), object], takes(phrase));
@@ -1859,12 +1861,13 @@ const webuiShape = {
    * Origin (scheme, host and any non-default port, with no path or trailing
    * slash); without `basicAuth`, only on 127.0.0.1, localhost or [::1], any
    * port. With `basicAuth`, add your reverse proxy's origin (e.g.
-   * `https://admin.example.com`) if it rewrites `Host`. The host refuses at
-   * start an empty list, a value that isn't a list, and an entry that isn't
-   * an `http` or `https` URL (without `basicAuth`, one on those three
-   * names); a null list reads as absent. Beyond that it doesn't check how an
-   * entry is written, so one with, say, a path, a trailing slash, a default
-   * port or capital letters starts and never matches.
+   * `https://admin.example.com`) if it rewrites `Host`. The load refuses a
+   * value that isn't a list of strings or `null`. The host refuses at start an empty
+   * list and an entry that isn't an `http` or `https` URL (without
+   * `basicAuth`, one on those three names); a null list reads as absent.
+   * Beyond that it doesn't check how an entry is written, so one with, say,
+   * a path, a trailing slash, a default port or capital letters starts and
+   * never matches.
    */
   allowedOrigins: textList().nullable().optional(),
 };
@@ -2370,12 +2373,9 @@ type CodeExecutionShape = Exact<typeof codeExecutionShape>;
  */
 export type RecipeCodeExecution = z.output<typeof codeExecution>;
 const codeExecution: z.ZodType<CodeExecutionShape> = z.looseObject(codeExecutionShape, takes('an object'))
-  .check(rule<CodeExecutionShape>(['enabled'], (ce) => {
-    const key = retiredCodeExecutionKeys(ce)[0];
-    return key === undefined
-      ? undefined
-      : ({ at }) => `Recipe ${at(key)} is no longer read (agent-framework 0.24): ${RETIRED_CODE_EXECUTION_KEYS[key]}.`;
-  }));
+  .check(rule<CodeExecutionShape>(['enabled', ...Object.keys(RETIRED_CODE_EXECUTION_KEYS)], (ce) =>
+    retiredCodeExecutionKeys(ce).map((key): Sentence => ({ at }) =>
+      `Recipe ${at(key)} is no longer read (agent-framework 0.24): ${RETIRED_CODE_EXECUTION_KEYS[key]}.`)));
 
 const channelKinds = <const T extends readonly [string, ...string[]]>(rules: T) => z.strictObject({
   dm: oneOf(rules).optional(),

@@ -2,7 +2,9 @@
   so the load checks every setting that the host reads itself, and a recipe
   that loaded before can be refused at its next load. This holds for the
   recipe that a host saved in its data directory too: a host whose saved
-  recipe holds such a value stops at its next start, with the refusal. To
+  recipe holds such a value stops at its next start, with the refusal. A
+  release that an update starts on trial stops so before its commit, and
+  the next start goes back to the release before, with its data. To
   migrate, give each setting that the refusal names the value that it asks
   for, or, where the refusal says so, leave the key out, which takes the
   default. One refusal names every fault that the schema finds. Newly
@@ -28,7 +30,9 @@
       `summaryParticipant`, `summarySystemPrompt`, `summaryUserPrompt`,
       `summaryContextLabel`, `witnessedBeforeSequence`,
       `witnessedInstruction`, `identityReminder` and
-      `witnessedIdentityReminder`, under every strategy type. A `null`
+      `witnessedIdentityReminder`, under every strategy type, a custom one
+      too, so an extension that reads one of these keys gets it only with
+      the host's kind. A `null`
       that the host passed on reached context-manager in place of its
       default, so leaving the key out can change what runs: a `null`
       `overBudgetGraceRatio` ran as `0`, where the default is `0.02`;
@@ -88,7 +92,8 @@
     replaced the server's name where `mcpl-servers.json` has no server of
     the entry's name, and did nothing where it has one. Remove `id`, or
     rename the entry.
-  - A number that isn't finite, such as `1e400`.
+  - A number that isn't finite, such as `1e400`, at a setting that takes a
+    number.
   - At a setting that had no check, this includes a number or `true`/`false`
     that comes from the environment, such as `"port": "${PORT}"`, since
     substitution gives text.
@@ -109,5 +114,13 @@
   `true`/`false` in an `mcpServers` entry's `args` and `env` and a fleet
   child's `env`, `"http"` as an entry's `transport`, the map form of
   `agent.strategy.toolResultMaxLastN`, and `false` at `modules.ttsRelay`.
-  Code that builds a `Recipe` by hand, or reads one of these settings as
-  its old type, may need a change.
+  `RecipeWake`'s `policies` and `default` are `unknown`, since the load
+  doesn't check the wake gate's rules. Code that builds a `Recipe` by hand,
+  or reads one of these settings as its old type, may need a change.
+  `validateRecipe` returns a new object and leaves its argument as it was,
+  where it wrote `agent.systemPrompt` and `agent.cacheTtl` into its
+  argument and returned that. `src/tool-lifecycle-config.ts` no longer
+  exports `validateToolLifecycle` and `validateToolClassTable`: the schema
+  checks a recipe's `toolLifecycle` and `toolClassOverrides`, and
+  `parseToolLifecycle` checks a `toolLifecycle` value from elsewhere and
+  returns it.

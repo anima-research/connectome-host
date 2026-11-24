@@ -61,9 +61,8 @@ describe('one message for every fault that one parse can judge', () => {
   });
 
   test('a rule that reads a setting with a fault of shape adds no sentence of its own', () => {
-    const message = refusal(() => validateRecipe(base({}, { strategy: { type: 'passthrough', kvUnified: null } })));
-    expect(message).toStartWith('Recipe agent.strategy.kvUnified must be ');
-    expect(message).not.toContain('\n');
+    expect(refusal(() => validateRecipe(base({}, { strategy: { type: 'passthrough', kvUnified: null } })))).toBe(
+      'Recipe agent.strategy.kvUnified must be a complete object (omit it for the standard block), got null; give it a value, or leave the key out, which takes the default.');
   });
 
   test('a key of the other subconscious reader and a misspelt key are both named, with what switching readers needs', () => {
@@ -122,6 +121,12 @@ describe('a message prints no value that came from the environment', () => {
     expect(message).not.toContain('s3cret');
     expect(refusal(() => validateRecipe(base({ modules: { ...modules, instructions: { path: 'gone/AGENTS.md' } } }))))
       .toStartWith('Recipe modules.instructions.path "gone/AGENTS.md" names workspace mount "gone", but the declared mounts are: "notes". ');
+    const named = { workspace: { mounts: [{ name: '${MOUNT}', path: './n' }] } };
+    const declared = await loadsFrom(base({ modules: { ...named, instructions: { path: 'gone/AGENTS.md' } } }), { MOUNT: 's3cret' });
+    expect(declared).toStartWith('Recipe modules.instructions.path "gone/AGENTS.md" names workspace mount "gone", but the declared mounts are: "${MOUNT}". ');
+    const used = await loadsFrom(base({ modules: { ...named, instructions: { path: '${MOUNT}/AGENTS.md' } } }), { MOUNT: 's3cret' });
+    expect(used).toStartWith('Recipe modules.instructions.path "${MOUNT}/AGENTS.md" uses a read-write mount without autoMaterialize. ');
+    for (const said of [declared, used]) expect(said).not.toContain('s3cret');
   });
 
   test('the warning names the recipe as its author wrote the name, and a legacy snapshot by no name', async () => {
@@ -199,22 +204,24 @@ describe('null, where the code gives it a meaning, and where it doesn\'t', () =>
   test('a null at a setting that the code gives no meaning is refused, and the message says to leave the key out only where it may be left out', () => {
     expect(refusal(() => validateRecipe(base({ mcpServers: { x: { command: 'node', toolPrefix: null } } }))))
       .toBe('Recipe mcpServers.x.toolPrefix must be a string, got null; give it a value, or leave the key out, which takes the default.');
-    expect(refusal(() => validateRecipe({ name: null, agent: {} }))).toEndWith(', got null; give it a value.');
-    expect(refusal(() => validateRecipe(base({}, { thinking: { enabled: null } })))).toEndWith(', got null; give it a value.');
-    expect(refusal(() => validateRecipe(base({ mcpServers: { x: null } })))).toEndWith(', got null; give it a value.');
+    expect(refusal(() => validateRecipe({ name: null, agent: {} }))).toBe('Recipe name must be a non-empty string, got null; give it a value.');
+    expect(refusal(() => validateRecipe(base({}, { thinking: { enabled: null } }))))
+      .toBe('Recipe agent.thinking.enabled must be true or false, got null; give it a value.');
+    expect(refusal(() => validateRecipe(base({ mcpServers: { x: null } })))).toBe('Recipe mcpServers.x must be an object, got null; give it a value.');
   });
 
   test('a null that a rule would refuse if it were left out is told only to take a value', () => {
     const compatible = { provider: 'openai-compatible', model: 'm', baseUrl: 'http://localhost:11434/v1' };
     expect(refusal(() => validateRecipe(base({}, { ...compatible, baseUrl: null }))))
       .toBe('Recipe agent.baseUrl must be an absolute http(s) URL, got null; give it a value.');
-    expect(refusal(() => validateRecipe(base({}, { ...compatible, model: null })))).toEndWith(', got null; give it a value.');
+    expect(refusal(() => validateRecipe(base({}, { ...compatible, model: null })))).toBe('Recipe agent.model must be a string, got null; give it a value.');
     const direct = { name: 'm', path: './m', backend: 'direct', mode: null };
-    expect(refusal(() => validateRecipe(base({ modules: { workspace: { mounts: [direct] } } })))).toEndWith(', got null; give it a value.');
+    const mode = 'Recipe modules.workspace.mounts[0].mode must be "read-write" or "read-only", got null';
+    expect(refusal(() => validateRecipe(base({ modules: { workspace: { mounts: [direct] } } })))).toBe(`${mode}; give it a value.`);
     expect(refusal(() => validateRecipe(base({}, { baseUrl: null }))))
       .toBe('Recipe agent.baseUrl must be an absolute http(s) URL, got null; give it a value, or leave the key out, which takes the default.');
     expect(refusal(() => validateRecipe(base({ modules: { workspace: { mounts: [{ ...direct, backend: 'chronicle' }] } } }))))
-      .toEndWith(', got null; give it a value, or leave the key out, which takes the default.');
+      .toBe(`${mode}; give it a value, or leave the key out, which takes the default.`);
   });
 
   test('the five loose checks of before refuse what they let through', () => {
@@ -241,6 +248,8 @@ describe('null, where the code gives it a meaning, and where it doesn\'t', () =>
     expect(refusal(() => validateRecipe(other))).toBe(refused);
     expect(unknownRecipeKeys(other)).toEqual([]);
     expect(refusal(() => validateRecipe(base({ mcpServers: { alpha: { command: 'node', id: 7 } } })))).toBe(refused);
+    expect(refusal(() => validateRecipe(base({ mcpServers: { alpha: { command: 'node', id: 'beta' }, gamma: { command: 'node', id: 'delta' } } }))))
+      .toBe(`The recipe has 2 faults:\n- ${refused}\n- ${refused.replace('alpha', 'gamma')}`);
     const own = base({ mcpServers: { alpha: { command: 'node', id: 'alpha' } } });
     expect(unknownRecipeKeys(own)).toEqual(['mcpServers.alpha.id']);
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
@@ -284,6 +293,8 @@ describe('the parsed recipe', () => {
         if (!isObject(agent)) throw new Error(`the ${variant} variant has no agent`);
         const expected = { ...input, agent: { ...agent, systemPrompt: agent.systemPrompt ?? '', cacheTtl: agent.cacheTtl ?? '1h' } };
         expect({ variant, parsed: validateRecipe(structuredClone(input)) }).toStrictEqual({ variant, parsed: expected });
+        // A loose object keeps a key that its schema lost, so the parse alone can't see a dropped setting: the warning can.
+        expect({ variant, unknown: unknownRecipeKeys(input) }).toEqual({ variant, unknown: [] });
       }
     } finally {
       warn.mockRestore();
@@ -391,8 +402,11 @@ describe('unknown keys', () => {
       expect(refusal(() => validateRecipe(base({ modules: { retrieval: { reasoningContext: 'all_turns' } } }))))
         .toStartWith('Recipe modules.retrieval.reasoningContext is not supported: ');
       expect(refusal(() => validateRecipe(base({ codeExecution: { enabled: true, scriptTimeoutMs: 1000, idleReclaimMs: 1 } }))))
-        .toBe('Recipe codeExecution.idleReclaimMs is no longer read (agent-framework 0.24): ' +
-          'each script starts fresh and keeps nothing after it ends, so there is nothing to reclaim; leave it out.');
+        .toBe('The recipe has 2 faults:\n' +
+          '- Recipe codeExecution.idleReclaimMs is no longer read (agent-framework 0.24): ' +
+          'each script starts fresh and keeps nothing after it ends, so there is nothing to reclaim; leave it out.\n' +
+          '- Recipe codeExecution.scriptTimeoutMs is no longer read (agent-framework 0.24): ' +
+          'a script now yields at its bound and keeps running: set yieldMs for the bound.');
       expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();

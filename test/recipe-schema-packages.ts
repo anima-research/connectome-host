@@ -15,7 +15,7 @@ type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ?
 type Holds<Host, Package, HostOnly extends PropertyKey = never, PackageOnly extends PropertyKey = never, Differs extends PropertyKey = never> = [
   Exclude<keyof Host, keyof Package | HostOnly>,
   Exclude<keyof Package, keyof Host | PackageOnly>,
-  { [K in Exclude<keyof Host & keyof Package, Differs>]-?: Same<Host[K], Package[K]> extends true ? never : K }[Exclude<keyof Host & keyof Package, Differs>],
+  { [K in Exclude<keyof Host & keyof Package, Differs>]-?: Same<Pick<Host, K>, Pick<Package, K>> extends true ? never : K }[Exclude<keyof Host & keyof Package, Differs>],
 ] extends [never, never, never] ? true : false;
 
 type ObjectArm<T> = Extract<NonNullable<T>, object>;
@@ -54,7 +54,8 @@ const holdsSeesAPackagesChange: [
   Holds<{ a?: number }, { a?: number; added?: number }>,
   Holds<{ a?: { b?: number } }, { a?: { b?: number; added?: number } }>,
   Holds<{ a?: 'x' | 'y' }, { a?: 'x' | 'y' | 'added' }>,
-] = [false, false, false];
+  Holds<{ a?: number }, { a: number | undefined }>,
+] = [false, false, false, false];
 void holdsSeesAPackagesChange;
 
 const misspeltKeysFailTheBuild = [
