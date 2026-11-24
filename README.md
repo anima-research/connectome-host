@@ -769,7 +769,7 @@ unknown-key warning, like those at the other levels.
   reaches, and nothing of it is stored or undone. An absolute path that lies
   in a mount is that mount's file, so a read-only mount stays read-only. The
   tools' descriptions say what the setting allows, so setting it changes
-  them (needs an agent-framework with `WorkspaceConfig.outsideMounts`). See
+  them. The setting came in Agent Framework 0.35.3. See
   `RecipeWorkspaceMount` in
   `src/recipe.ts`
 - **History** (opt-in, `modules.history`) — the agent searches and extracts
