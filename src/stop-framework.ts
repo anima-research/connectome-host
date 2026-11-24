@@ -24,7 +24,9 @@ export async function stopFramework(framework: StoppableFramework): Promise<void
     clearTimeout(timer);
   }
   // After the ~6 s pre-stop timeout, AF closes MCP connections in parallel
-  // with module stops. With no stop budget, framework.stop() still waits
-  // for pending journal I/O before shutdown or a session switch can proceed.
+  // with module stops. With no stop budget, framework.stop() still waits for
+  // this framework's journal I/O. An extension's setFramework throwing after
+  // the home is bound can leave an unreturned framework that never reaches
+  // this stop and whose saves race a later home (#714; separate fix in #715).
   await framework.stop();
 }

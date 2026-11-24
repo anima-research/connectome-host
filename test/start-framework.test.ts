@@ -28,6 +28,7 @@ function framework(order: string[], options: {
       if (options.stopFails) throw new Error('the stop failed');
       order.push('framework stop entered');
       await Bun.sleep(20);
+      order.push('framework stop completed');
     },
     getModule: (name: string) => name === 'notices' ? options.notices : (options.fleet && name === options.fleet.name ? options.fleet : null),
     listMcplServers: () => options.servers ?? [],
@@ -140,7 +141,7 @@ describe('startFramework, for a host an install started', () => {
     const servers = [{ id: 'discord', connected: false }, { id: 'heartbeat', connected: true }];
     await expect(startFramework(framework(order, { fleet: watchedFleet(order), notices, servers }), { root, release: '0.11.0' }))
       .rejects.toThrow("The MCPL server discord wasn't connected when this release went to commit, so it starts none of its agents, and the next start goes back to 0.10.2: ");
-    expect(order).toEqual(['notices drained', 'framework stop entered']);
+    expect(order).toEqual(['notices drained', 'framework stop entered', 'framework stop completed']);
     expect(readCurrent(root)).toBe('0.10.2');
   });
 
@@ -191,7 +192,7 @@ describe('startFramework, for a host an install started', () => {
       `This host couldn't record 0.11.0 as the release the install at ${root} runs on, so none of its agents started, ` +
       'and the next start goes back to 0.10.2: ',
     );
-    expect(order).toEqual(['framework stop entered']);
+    expect(order).toEqual(['framework stop entered', 'framework stop completed']);
     expect(readCurrent(root)).toBe('0.10.2');
   });
 

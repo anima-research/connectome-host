@@ -17,9 +17,12 @@
   the connector is still open. Sends share five seconds; if the drain is still
   pending after about six seconds, framework teardown starts and closes MCP
   connections in parallel with module stops. The timeout does not cancel
-  a pending write or send. Shutdown and session switch still wait for pending
-  journal I/O inside `framework.stop()`, so the old home's pending save cannot
-  race the new home's journal move-aside through the host.
+  a pending write or send. `framework.stop()` waits for pending journal I/O in
+  the framework being stopped. If an extension's `setFramework` throws after
+  the new home is bound, that framework is never returned or stopped, so its
+  save can race a later home's journal move-aside
+  ([#714](https://github.com/anima-research/connectome-host/issues/714);
+  separate fix in [#715](https://github.com/anima-research/connectome-host/pull/715)).
   Incident tracking and delivery evidence use finite retention windows;
   long subject labels repeated in status snapshots can
   push a save over the 2 MiB cap and disable home delivery for the run. Host

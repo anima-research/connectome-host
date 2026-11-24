@@ -120,8 +120,9 @@ policy before a pilot. No live qualification/activation is part of this slice.
   starts framework teardown if the drain is still pending. The timeout does
   not cancel a pending write or send; either may complete or be lost during
   teardown. If the pre-stop wait times out, MCP connectors close after about
-  six seconds, but shutdown and session switch still wait for pending journal
-  I/O inside `framework.stop()`. Unrecognized or missing kinds display as
+  six seconds, but `framework.stop()` still waits for pending journal I/O
+  in the framework being stopped (see the failed-construction exception below).
+  Unrecognized or missing kinds display as
   `unknown-alert-kind`. Current-boot traces cached by AF are requested with
   `replay: true`; events not emitted, before the cache, or beyond its bounded
   early-trace retention are not reconstructed. There is no failures.log tailer.
@@ -293,8 +294,12 @@ used or replayed. Inspect the archives if needed and manage their retention
 separately.
 
 **A timed-out pre-stop drain does not let a session switch skip journal I/O.**
-The host waits for `framework.stop()` to finish the old home's pending save
-before starting the new home, so that save cannot race the new home's move-aside.
+The host waits for the installed framework's `framework.stop()` to finish the
+old home's pending save before constructing the next framework. If an extension's
+`setFramework` throws after the new home is bound, that framework is never
+returned or stopped, and its pending save can race a later home's journal
+move-aside. This is an existing construction bug ([#714](https://github.com/anima-research/connectome-host/issues/714)),
+addressed separately in [#715](https://github.com/anima-research/connectome-host/pull/715).
 
 Disablement logs include the cause and the journal path on stderr.
 Missing/ambiguous bound server IDs name registered candidates and
