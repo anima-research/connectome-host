@@ -43,6 +43,7 @@ than reassuring. Point an agent at them, or mount them in its workspace.
 |---|---|
 | [../recipes/SETUP.md](../recipes/SETUP.md) | The knowledge-miner recipe on its own. |
 | [../recipes/TRIUMVIRATE-SETUP.md](../recipes/TRIUMVIRATE-SETUP.md) | Miner, reviewer and clerk as one fleet under a conductor. |
+| [MAIN-REFUSAL-REACTIONS.md](./MAIN-REFUSAL-REACTIONS.md) | Opt-in Discord and experimental Zulip markers for final refusals. |
 | [LIBRARY-PIPELINE.md](./LIBRARY-PIPELINE.md) | How those three agents hand work to each other through files. |
 
 ## Contributing

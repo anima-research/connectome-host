@@ -3,6 +3,7 @@
   bridge; the currently locked dependency does not support the option. The Zulip
   driver remains pending its upstream connector contract and currently targets a
   fork-only contract (strict or compat IDs), not a supported upstream release.
-  During a session switch, a connector that fails its first connection is left
-  unarmed, without falling back to built-in marking. Omit the option to retain
-  built-in Discord refusal reactions (#665).
+  While enabled, session switches (including `/session new`) are refused
+  without changing the current session; restart with the desired session selected.
+  Omit the option to retain built-in Discord refusal reactions and normal session
+  switching (#665).

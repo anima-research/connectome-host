@@ -704,14 +704,23 @@ const hostStopping: CommandResult = {
   lines: [{ text: `${HOST_STOPPING[0]!.toUpperCase()}${HOST_STOPPING.slice(1)}.`, style: 'system' }],
 };
 
+// Refuse at the command boundary, before any client can reset turn tracking
+// or start switching, and before /session new writes to the session index.
+const refusalReactionsSwitchRefused: CommandResult = {
+  refused: true,
+  lines: [{
+    text: 'Session switch refused: mainRefusalReactions is enabled. The current session is still running. Restart the host with the desired session selected.',
+    style: 'system',
+  }],
+};
+
 function handleSessionNew(app: AppContext, name?: string): CommandResult {
   if (app.stopping) return hostStopping;
+  if (app.recipe?.mainRefusalReactions !== undefined) return refusalReactionsSwitchRefused;
   const running = stillRunning(app);
   if (running) return running;
-  // An opted-in switch may be refused before the current session stops.
-  const activateNow = app.recipe?.mainRefusalReactions === undefined;
-  const session = app.sessionManager.createSession(name, activateNow);
-  if (activateNow) resetBranchState(app.branchState);
+  const session = app.sessionManager.createSession(name);
+  resetBranchState(app.branchState);
 
   return {
     lines: [{ text: `Switching to new session: ${session.name} [${session.id}]...`, style: 'system' }],
@@ -735,9 +744,10 @@ function handleSessionSwitch(app: AppContext, nameOrId?: string): CommandResult 
     return { lines: [{ text: `Already on session "${session.name}".`, style: 'system' }] };
   }
 
+  if (app.recipe?.mainRefusalReactions !== undefined) return refusalReactionsSwitchRefused;
   const running = stillRunning(app);
   if (running) return running;
-  if (app.recipe?.mainRefusalReactions === undefined) resetBranchState(app.branchState);
+  resetBranchState(app.branchState);
 
   return {
     lines: [{ text: `Switching to session: ${session.name} [${session.id}]...`, style: 'system' }],

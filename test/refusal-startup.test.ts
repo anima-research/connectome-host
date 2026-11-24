@@ -2,9 +2,9 @@ import { expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { AgentFramework } from '@animalabs/agent-framework';
+import { createBranchState, handleCommand } from '../src/commands.js';
 import { DISCORD_SOURCE } from '../src/refusal-reactions.js';
 import { SessionManager } from '../src/session-manager.js';
 
@@ -33,48 +33,33 @@ test.skipIf(typeof (AgentFramework.prototype as any).getMainRefusalBridge === 'f
   }, 20000,
 );
 
-test.skipIf(typeof (AgentFramework.prototype as any).getMainRefusalBridge !== 'function').each(['failed-connect', 'invalid-overlay'])(
-  'a session switch with %s does not leave a half-switched host', (mode) => {
+// This guard is at the shared command boundary, before clients can drop turn
+// trackers or call switchSession, so it runs even with the locked framework.
+test.each(['/session switch later', '/session sw later', '/session new third', '/session create third'])(
+  '%s refuses before changing any session state with refusal reactions on', (command) => {
     const dir = mkdtempSync(join(tmpdir(), 'refusal-switch-'));
     try {
-      const recipe = join(dir, 'recipe.json');
-      const child = join(dir, 'connector.mjs');
-      const marker = join(dir, 'spawned');
-      const overlay = join(dir, 'mcpl-servers.agent.json');
-      writeFileSync(child, `
-        import { existsSync, writeFileSync } from 'node:fs';
-        const marker = ${JSON.stringify(marker)};
-        if (existsSync(marker)) process.exit(1);
-        writeFileSync(marker, '');
-        ${mode === 'invalid-overlay' ? `writeFileSync(${JSON.stringify(overlay)}, '{"mcplServers":{"s":{"disabled":true}}}');` : ''}
-        await import(${JSON.stringify(pathToFileURL(resolve(import.meta.dir, 'fixtures/main-refusal-server.mjs')).href)});
-      `);
-      writeFileSync(recipe, JSON.stringify({
-        name: 'refusal-switch', agent: { name: 'agent', provider: 'mock', systemPrompt: 'offline test' },
-        mainRefusalReactions: { ownership: 'whole-framework', servers: [{ serverId: 's', kind: 'discord', sourceRevision: DISCORD_SOURCE }] },
-        mcpServers: { s: { command: process.execPath, args: [child], reconnect: false } },
-      }));
-      const run = (input: string) => spawnSync(process.execPath, [resolve(import.meta.dir, '../src/index.ts'), recipe, '--no-tui'], {
-        cwd: dir, encoding: 'utf8', timeout: 15000, input,
-        env: { PATH: process.env.PATH, HOME: dir, DATA_DIR: dir, CONNECTOME_UPDATE_CHECK: '0' },
-      });
-      const result = run('/session new later\n/session list\n');
-      expect(result.error).toBeUndefined();
-      expect(result.stdout).toContain('--- Sessions (2) ---');
-      expect(result.status).toBe(0);
-      if (mode === 'invalid-overlay') {
-        expect(result.stderr).toContain('Session switch refused: Refusal server s: requires one known stdio server');
-        expect(new SessionManager(dir).getActiveSession()?.name).toBe('Session 1');
-        return;
-      }
-      expect(result.stdout + result.stderr).toContain('Session switched.');
-      expect(result.stderr.match(/Refusal server s: .*marking is off until restart/g)).toHaveLength(1);
-      expect(new SessionManager(dir).getActiveSession()?.name).toBe('later');
+      const sessionManager = new SessionManager(dir);
+      sessionManager.createSession('later');
+      sessionManager.createSession('current');
+      const before = sessionManager.load();
+      const branchState = createBranchState();
+      branchState.checkpoints.set('saved', { branchName: 'main' });
+      const app: Parameters<typeof handleCommand>[1] = {
+        framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: ['agent'] }) } as unknown as AgentFramework,
+        recipe: { mainRefusalReactions: { ownership: 'whole-framework', servers: [] } } as never,
+        sessionManager,
+        branchState,
+        async switchSession() { throw new Error('a refused switch must not reach the framework'); },
+      };
 
-      const cold = run('');
-      expect(cold.error).toBeUndefined();
-      expect(cold.status).not.toBe(0);
-      expect(cold.stderr).toContain('Refusal server s: must be connected');
+      const result = handleCommand(command, app);
+      expect(result.switchToSessionId).toBeUndefined();
+      expect(result.asyncWork).toBeUndefined();
+      expect(result.refused).toBe(true);
+      expect(result.lines.map(line => line.text).join(' ')).toMatch(/current session is still running.*restart the host/i);
+      expect(sessionManager.load()).toEqual(before);
+      expect(branchState.checkpoints.get('saved')).toEqual({ branchName: 'main' });
     } finally { rmSync(dir, { recursive: true, force: true }); }
-  }, 35000,
+  },
 );

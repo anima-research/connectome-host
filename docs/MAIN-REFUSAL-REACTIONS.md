@@ -41,10 +41,8 @@ connector/environment checks run again during preparation and installation.
 Bridge availability and child configuration are checked **before**
 `AgentFramework.create`. Installation runs **after** create has connected startup
 servers. A cold-start installation failure stops that framework and its
-children; it is not a pre-handshake check. Each framework instance (including a
-new session) acquires its own owner; teardown calls that acquisition's disposer.
-On a session switch the host validates the effective target configuration
-before stopping the current framework.
+children; it is not a pre-handshake check. The framework acquires one owner at
+startup, and teardown calls that acquisition's disposer.
 
 ## Discord
 
@@ -95,11 +93,14 @@ fail closed and ownership remains held: **there is no legacy fallback or runtime
 rearm**. Restart the whole host through normal preparation and installation to
 recover. An issued ADD cannot be undone.
 
-If a selected connector fails to connect or is restored as a closed tab during
-a session switch, the host completes the switch and logs one warning for that
-connector. As with replacement, reconnecting within that framework instance
-does not rearm marking; restart with a working connector. There is no legacy
-fallback.
+With `mainRefusalReactions` enabled, the host refuses `/session switch` and
+`/session new` before changing the current session or touching its framework.
+The current session keeps running, and no new session is created. Restart the
+host with the desired session selected. To select or create a session using the
+usual commands, start with the option unset, make the change, then enable the
+option and restart. At startup with the option enabled, selected connectors
+must be connected and supported; fix any connector or closed-tab configuration
+before restarting.
 
 An epoch identifies the framework's config and connection objects in this
 process, not the child PID, a transport epoch, or a connector's identity.

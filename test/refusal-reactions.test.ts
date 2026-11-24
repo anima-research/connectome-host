@@ -48,7 +48,7 @@ function harness(config = zulipConfig()) {
     },
   };
   const prepared = prepareRefusalReactions(config, servers(config));
-  const install = (duringSessionSwitch = false) => installRefusalReactions(framework as unknown as Pick<AgentFramework, 'executeToolCall' | 'getAllTools' | 'listMcplServers'>, config, prepared, d => diagnostics.push(d), duringSessionSwitch);
+  const install = () => installRefusalReactions(framework as unknown as Pick<AgentFramework, 'executeToolCall' | 'getAllTools' | 'listMcplServers'>, config, prepared, d => diagnostics.push(d));
   return { config, framework, prepared, tools, serverRows, calls, diagnostics, alerts, install, emit: (r: MainRefusal) => owner?.handler(r),
     setCurrent: (v: boolean) => { current = v; }, setBinding: (v: string | undefined) => { binding = v; }, setEpoch: (v: string | undefined) => { epoch = v; },
     setSuppression: (v: unknown) => { suppression = v; }, setCall: (fn: typeof onCall) => { onCall = fn; } };
@@ -258,17 +258,6 @@ for (const state of ['closed-tab', 'failed-connect', 'binding', 'epoch'] as cons
 test('explicit closed-tab config is rejected before connect', () => {
   const c = discordConfig();
   expect(() => prepareRefusalReactions(c, [{ ...servers(c)[0]!, presentation: 'closed-tab' }])).toThrow('s: closed-tab');
-});
-
-test('an unavailable switched-to endpoint stays disabled after reconnect without handing legacy back', async () => {
-  const h = harness(discordConfig());
-  h.serverRows[0]!.connected = false;
-  h.install(true);
-  h.serverRows[0]!.connected = true;
-  expect(h.emit(discordSignal())).toBeInstanceOf(Promise); // Ownership was taken, not left to AF.
-  await h.emit({ ...discordSignal(), turnId: 2 });
-  expect(h.calls).toEqual([]);
-  expect(h.diagnostics).toEqual([expect.stringContaining('marking is off until restart')]);
 });
 
 test('unchanged epoch survives recovery; replacement alerts once with actionable context', async () => {
