@@ -76,7 +76,7 @@ function rule<T>(reads: readonly [string, ...string[]], test: (value: T) => Sent
   const paths = reads.map(pathOf);
   return z.superRefine<T>((value, ctx) => {
     const sentence = test(value);
-    if (sentence) ctx.addIssue({ code: 'custom', message: 'rule', params: { sentence }, input: value });
+    if (sentence) ctx.addIssue({ code: 'custom', message: 'rule', params: { sentence, reads: paths }, input: value });
   }, {
     when: (payload) => !payload.issues.some((issue) =>
       faultOfShape(issue) && paths.some((p) => overlaps(issue.path ?? [], p))),
@@ -133,7 +133,8 @@ const words: z.core.$ZodErrorMap = (issue) => {
 /**
  * Where the values that a load checks came from, so that its message prints
  * no value that came from the environment.
- * - `literal`: each value is the caller's own, and a message prints it.
+ * - `literal`: each value is the caller's own, and a message prints a string,
+ *   a number, true, false or null as it is, and a list or an object by its kind.
  * - `authored`: `document` is the recipe as its author wrote it, before
  *   environment values went in. A message prints a string that names one as
  *   it is written there, such as `"prefix-${TOKEN}"`.
@@ -160,7 +161,7 @@ function dotted(path: readonly PropertyKey[]): string {
 
 function printed(value: unknown, path: readonly PropertyKey[], origin: RecipeOrigin): string {
   if (value === undefined) return 'nothing';
-  if (Array.isArray(value)) return 'a list';
+  if (Array.isArray(value)) return value.length === 0 ? 'an empty list' : 'a list';
   if (value !== null && typeof value === 'object') return 'an object';
   if (typeof value !== 'string') return shown(value);
   if (origin.kind === 'resolved') return 'a string';
@@ -207,6 +208,34 @@ function mayBeLeftOut(root: z.core.$ZodType, input: unknown, path: readonly Prop
   return optional;
 }
 
+function withoutKey(value: unknown, path: readonly PropertyKey[]): unknown {
+  const [key, ...rest] = path;
+  if (key === undefined) return value;
+  if (Array.isArray(value)) return value.map((item, i) => (i === key ? withoutKey(item, rest) : item));
+  if (!isPlainObject(value) || typeof key !== 'string') return value;
+  if (rest.length > 0) return { ...value, [key]: withoutKey(value[key], rest) };
+  const copy = { ...value };
+  delete copy[key];
+  return copy;
+}
+
+const isPath = (value: unknown): value is PropertyKey[] =>
+  Array.isArray(value) && value.every((key) => typeof key === 'string' || typeof key === 'number');
+
+function pathsRulesRead(issues: readonly z.core.$ZodIssue[], base: readonly PropertyKey[]): PropertyKey[][] {
+  return issues.flatMap((issue) => {
+    const at = [...base, ...issue.path];
+    if (issue.code === 'invalid_union') return issue.errors.flatMap((arm) => pathsRulesRead(arm, at));
+    const reads: unknown = issue.code === 'custom' && isRuleFault(issue) ? issue.params?.reads : undefined;
+    return Array.isArray(reads) ? reads.filter(isPath).map((read) => [...at, ...read]) : [];
+  });
+}
+
+function leavingOutBreaksARule(root: z.core.$ZodType, input: unknown, path: readonly PropertyKey[]): boolean {
+  const result = z.safeParse(root, withoutKey(input, path));
+  return !result.success && pathsRulesRead(result.error.issues, []).some((read) => overlaps(read, path));
+}
+
 function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyKey[], input: unknown, origin: RecipeOrigin, subject: Subject, root: z.core.$ZodType): string[] {
   const out: string[] = [];
   for (const issue of issues) {
@@ -237,7 +266,10 @@ function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyK
       }));
       continue;
     }
-    const advice = valueAt(input, path) !== null ? '' : mayBeLeftOut(root, input, path) ? '; give it a value, or leave the key out, which takes the default' : '; give it a value';
+    const advice = valueAt(input, path) !== null ? ''
+      : mayBeLeftOut(root, input, path) && !leavingOutBreaksARule(root, input, path)
+        ? '; give it a value, or leave the key out, which takes the default'
+        : '; give it a value';
     out.push(`${name} must be ${issue.message}, got ${got()}${advice}.`);
   }
   return out;
@@ -473,7 +505,8 @@ const strategyShape = {
   /** Policy for the kv-unified solver. Omitted, the host supplies its standard
    * block (standardKvUnifiedConfig), with cache prices matched to the
    * provider, cacheTtl and model. Written out, it must be complete: there is
-   * no per-field merging, so a missing or misspelled field fails at load. */
+   * no per-field merging, so a load refuses a block that lacks a required
+   * field, and warns of a key that it doesn't know. */
   kvUnified: kvUnified.optional(),
   speculativeProduction: trueOrFalse().optional(),
   /** L1 production holdback: keep the newest N closed chunks out of the
@@ -780,7 +813,8 @@ const agentShape = {
    *  for (on Anthropic's API, recipe-fit.ts), with a maxTokens that is unset
    *  or a positive number, the smaller of 300k and the window less the system
    *  prompt and 32k for the tools; otherwise 300k. Where the host knows the
-   *  window, a load that resolves the system prompt refuses a budget that
+   *  window and maxTokens is unset or a positive number, a load that
+   *  resolves the system prompt refuses a budget that
    *  leaves too little room for the head and the verbatim tail once
    *  maxTokens is kept for the reply, or one whose prompt (the budget less
    *  maxTokens, or the head and tail where they come to more, plus the
@@ -923,9 +957,10 @@ const agentShape = {
    * RecipeMockConfig. */
   mock: mock.optional(),
   /**
-   * Content-refusal handling, handed whole to agent-framework's
-   * AgentConfig.refusalHandling, where agent-framework
-   * documents `retries`, `autoRewind` and `maxRewinds`.
+   * Content-refusal handling. The host hands an object to agent-framework's
+   * AgentConfig.refusalHandling as written, except that it leaves out a null
+   * `autoRewind`, and hands false or null nothing. agent-framework documents
+   * `retries`, `autoRewind` and `maxRewinds`.
    */
   refusalHandling: z.union([z.literal(false, takes('an object, such as {"autoRewind": true}, or left out')), refusalHandlingObject],
     takes('an object, such as {"autoRewind": true}, or left out')).nullable().optional(),
@@ -1312,6 +1347,17 @@ const mcpServer: z.ZodType<McpServerShape> = z.looseObject(mcpServerShape, takes
       : undefined;
   }));
 
+const givesAnotherId = (entry: Readonly<Record<string, unknown>>, name: string): boolean =>
+  Object.hasOwn(entry, 'id') && entry.id !== name;
+const mcpServers = mapOf(mcpServer, 'an object that gives each server a name')
+  .check(rule<Readonly<Record<string, McpServerShape>>>([''], (servers) => {
+    const name = Object.keys(servers).find((key) => givesAnotherId(servers[key]!, key));
+    return name === undefined
+      ? undefined
+      : ({ at }) => `Recipe ${at(`${name}.id`)} is not a setting: a server's id is its name in mcpServers. ` +
+        'Remove id, or rename the entry if the server should have that name.';
+  }));
+
 const bool = (phrase: string) => trueOrFalse(phrase);
 const either = <T extends z.ZodType>(object: T, phrase: string) => z.union([bool(phrase), object], takes(phrase));
 
@@ -1632,7 +1678,7 @@ function namedAsShown(said: string, root: unknown, show: Show): string {
   for (const [path, value] of strings.sort((a, b) => b[1].length - a[1].length)) {
     const quoted = JSON.stringify(value);
     const shownAs = show(path, value);
-    if (value !== '' && shownAs !== quoted) text = text.replaceAll(quoted, shownAs).replaceAll(`"${value}"`, shownAs);
+    if (value !== '' && shownAs !== quoted) text = text.replaceAll(quoted, () => shownAs).replaceAll(`"${value}"`, () => shownAs);
   }
   return text;
 }
@@ -2211,9 +2257,12 @@ function instructionsMount(m: ModulesShape): Sentence | undefined {
   if (named.length > 1) return undefined;
   const match = named[0];
   const pathWords = (show: Show) => (ownPath !== undefined ? show('instructions.path', ownPath) : JSON.stringify(path));
-  const nameWords = (show: Show) => (ownPath !== undefined ? show('instructions.path', mountName) : JSON.stringify(mountName));
+  const mountWords = (show: Show, kind: string) => {
+    const shown = ownPath !== undefined ? show('instructions.path', mountName) : JSON.stringify(mountName);
+    return shown === JSON.stringify(mountName) ? `${kind} ${shown}` : `a ${kind}`;
+  };
   if (!match) {
-    return ({ show }) => `Recipe modules.instructions.path ${pathWords(show)} names workspace mount ${nameWords(show)}, but the ${
+    return ({ show }) => `Recipe modules.instructions.path ${pathWords(show)} names ${mountWords(show, 'workspace mount')}, but the ${
       declared > 0 ? 'declared' : 'implicit default'} mounts are: ${
       mounts.map((mount, i) => (i < declared ? show(`workspace.mounts.${i}.name`, mount.name) : JSON.stringify(mount.name))).join(', ')}. ` +
       '(The default path "instructions/AGENTS.md" requires a workspace mount named "instructions" — declare one under modules.workspace.mounts.)';
@@ -2225,7 +2274,7 @@ function instructionsMount(m: ModulesShape): Sentence | undefined {
       'instructions injection would silently serve stale content. Use a dedicated instructions mount instead.';
   }
   if (match.mode !== 'read-only' && match.backend !== 'direct' && match.autoMaterialize !== true) {
-    return ({ show }) => `Recipe modules.instructions.path ${pathWords(show)} uses read-write mount ${nameWords(show)} without autoMaterialize. ` +
+    return ({ show }) => `Recipe modules.instructions.path ${pathWords(show)} uses ${mountWords(show, 'read-write mount')} without autoMaterialize. ` +
       'Its writes are Chronicle-first and reach disk only when the mount materializes, while the ' +
       'instructions injection reads disk — agent edits to the file would silently never ' +
       'take effect. Set autoMaterialize: true on the mount, or configure it ' +
@@ -2293,6 +2342,8 @@ const RETIRED_CODE_EXECUTION_KEYS: Readonly<Record<string, string>> = {
   backgroundMaxLifetimeMs: 'every script now has one limit: set scriptLifetimeMs',
   maxBackgroundScripts: 'set maxRunningScripts, how many scripts an agent may have running at once, yielded ones included',
 };
+const retiredCodeExecutionKeys = (ce: Readonly<Record<string, unknown>>): string[] =>
+  (ce.enabled === true ? Object.keys(RETIRED_CODE_EXECUTION_KEYS).filter((k) => ce[k] !== undefined && ce[k] !== null) : []);
 const scriptCount = () => nonNegativeSafeInteger('a whole number of 0 or more').optional();
 const codeExecutionShape = {
   enabled: trueOrFalse(),
@@ -2320,9 +2371,7 @@ type CodeExecutionShape = Exact<typeof codeExecutionShape>;
 export type RecipeCodeExecution = z.output<typeof codeExecution>;
 const codeExecution: z.ZodType<CodeExecutionShape> = z.looseObject(codeExecutionShape, takes('an object'))
   .check(rule<CodeExecutionShape>(['enabled'], (ce) => {
-    if (!ce.enabled) return undefined;
-    const given: Record<string, unknown> = ce;
-    const key = Object.keys(RETIRED_CODE_EXECUTION_KEYS).find((k) => given[k] !== undefined && given[k] !== null);
+    const key = retiredCodeExecutionKeys(ce)[0];
     return key === undefined
       ? undefined
       : ({ at }) => `Recipe ${at(key)} is no longer read (agent-framework 0.24): ${RETIRED_CODE_EXECUTION_KEYS[key]}.`;
@@ -2504,7 +2553,7 @@ const recipeShape = {
   description: text().optional(),
   version: text().optional(),
   agent,
-  mcpServers: mapOf(mcpServer, 'an object that gives each server a name').optional(),
+  mcpServers: mcpServers.optional(),
   modules: modules.optional(),
   /** Deployment-specific code extensions, keyed by a human-readable name. */
   extensions: extensions.optional(),
@@ -2656,11 +2705,13 @@ function bare(schema: z.core.$ZodType): z.core.$ZodType {
   return schema;
 }
 
-function unknownIn(schema: z.core.$ZodType, value: unknown, path: string, found: string[]): void {
+const same = (a: z.core.$ZodType, b: z.core.$ZodType): boolean => a === b;
+
+function unknownIn(schema: z.core.$ZodType, value: unknown, path: string, found: string[], name?: string): void {
   const at = bare(schema);
   if (at instanceof z.ZodUnion) {
     const arm = armFor(at, value);
-    if (arm) unknownIn(arm, value, path, found);
+    if (arm) unknownIn(arm, value, path, found, name);
     return;
   }
   if (at instanceof z.ZodArray && Array.isArray(value)) {
@@ -2669,18 +2720,20 @@ function unknownIn(schema: z.core.$ZodType, value: unknown, path: string, found:
   }
   if (!isPlainObject(value)) return;
   if (at instanceof z.ZodRecord) {
-    for (const [key, item] of Object.entries(value)) unknownIn(at.valueType, item, path === '' ? key : `${path}.${key}`, found);
+    for (const [key, item] of Object.entries(value)) unknownIn(at.valueType, item, path === '' ? key : `${path}.${key}`, found, key);
     return;
   }
   if (!(at instanceof z.ZodObject)) return;
+  if (at === strategy && typeof value.type === 'string' && !isBuiltinStrategyType(value.type)) return;
   const prefix = path === '' ? '' : `${path}.`;
   const shape: Readonly<Record<string, z.core.$ZodType>> = at.shape;
   const known = Object.keys(shape);
-  const warns = !(at.def.catchall instanceof z.ZodNever)
-    && !(at === strategy && typeof value.type === 'string' && !isBuiltinStrategyType(value.type));
+  const warns = !(at.def.catchall instanceof z.ZodNever);
+  const refused = same(at, codeExecution) ? retiredCodeExecutionKeys(value)
+    : same(at, mcpServer) && name !== undefined && givesAnotherId(value, name) ? ['id'] : [];
   for (const key of Object.keys(value)) {
     const where = `${prefix}${key}`;
-    if (!warns || Object.hasOwn(shape, key) || REFUSED_RECIPE_KEYS.has(where)) continue;
+    if (!warns || Object.hasOwn(shape, key) || REFUSED_RECIPE_KEYS.has(where) || refused.includes(key)) continue;
     const retired = Object.hasOwn(RETIRED_RECIPE_KEYS, where) ? RETIRED_RECIPE_KEYS[where] : undefined;
     const near = retired === undefined ? nearestKey(key, known) : null;
     found.push(retired !== undefined ? `${where} (replaced by ${retired})` : near ? `${where} (did you mean ${prefix}${near}?)` : where);
@@ -2692,9 +2745,12 @@ function unknownIn(schema: z.core.$ZodType, value: unknown, path: string, found:
 }
 
 /**
- * The keys of a recipe that the schema doesn't know, each with its path, and
- * with the key that it most likely meant where one is near, or the key that
- * replaced it. A closed section refuses an unknown key at the load instead.
+ * The keys in a recipe's open sections that the schema doesn't know, each
+ * with its path, and with the key that it most likely meant where one is
+ * near, or the key that replaced it. It leaves out a key that the load
+ * refuses by name, and everything under a custom strategy, which goes whole
+ * to its extension. A closed section refuses an unknown key at the load
+ * instead.
  */
 export function unknownRecipeKeys(raw: unknown): string[] {
   const found: string[] = [];
@@ -2705,8 +2761,8 @@ export function unknownRecipeKeys(raw: unknown): string[] {
 /**
  * The recipe that `raw` holds, as the load gives it: a new object, with
  * `agent.systemPrompt` and `agent.cacheTtl` written where they are left out.
- * It writes one warning line naming each key that the schema doesn't know
- * (unknownRecipeKeys), and throws one error whose message names every fault
+ * It writes one warning line naming the keys that unknownRecipeKeys gives,
+ * if it gives any, and throws one error whose message names every fault
  * that one parse can judge, printing values as `origin` allows.
  */
 export function validateRecipe(raw: unknown, origin: RecipeOrigin = { kind: 'literal' }): Recipe {

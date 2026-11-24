@@ -27,7 +27,7 @@ const refused: Array<[unknown, string]> = [
   [1, shape('1')],
   [0, shape('0')],
   ['', shape('""')],
-  [[], shape('a list')],
+  [[], shape('an empty list')],
   [{ autoRewind: 'yes' }, autoRewind('"yes"')],
   [{ autoRewind: 1 }, autoRewind('1')],
 ];
@@ -59,8 +59,8 @@ describe('recipe agent.refusalHandling', () => {
   test('passes on what it loads as written, and a null autoRewind as left out', () => {
     const forwarded = (value: unknown) =>
       buildFrameworkAgentConfig(validateRecipe(recipe(value)), 'agent', 'model', { kind: 'strategy' } as never).refusalHandling;
-    expect(forwarded({ retries: 2, maxRewinds: 3, autoRewind: true })).toEqual({ retries: 2, maxRewinds: 3, autoRewind: true });
-    expect(forwarded({ retries: 2, autoRewind: null })).toEqual({ retries: 2 });
+    expect(forwarded({ retries: 2, maxRewinds: 3, autoRewind: true })).toStrictEqual({ retries: 2, maxRewinds: 3, autoRewind: true });
+    expect(forwarded({ retries: 2, autoRewind: null })).toStrictEqual({ retries: 2 });
     expect(forwarded(null)).toBeUndefined();
     expect(forwarded(false)).toBeUndefined();
   });

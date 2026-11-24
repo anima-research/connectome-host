@@ -8,7 +8,7 @@ import type {
   Recipe, RecipeAgent, RecipeAutoContinue, RecipeCodeExecution, RecipeDendrite, RecipeForkReader, RecipeHeartbeat,
   RecipeMcpServer, RecipePersistentReader, RecipeReplyJudge, RecipeSpeech, RecipeStrategy, RecipeToolLifecycle,
   RecipeTuneOut, RecipeWorkspaceMount,
-} from './recipe-schema.js';
+} from '../src/recipe-schema.js';
 
 type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 

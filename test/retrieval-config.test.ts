@@ -46,7 +46,7 @@ describe('retrieval recipe config', () => {
 
   test('rejects malformed retrieval reasoning settings', () => {
     expect(() => validateRecipe(recipe(null))).toThrow(/^Recipe modules\.retrieval must be true, false or an object, got null/);
-    expect(() => validateRecipe(recipe([]))).toThrow(/^Recipe modules\.retrieval must be true, false or an object, got a list/);
+    expect(() => validateRecipe(recipe([]))).toThrow(/^Recipe modules\.retrieval must be true, false or an object, got an empty list/);
     expect(() => validateRecipe(recipe({ reasoningEffort: 'ultra' }))).toThrow(/reasoningEffort/);
     expect(() => validateRecipe(recipe({ reasoningEffort: ['high'] }))).toThrow(/reasoningEffort/);
     expect(() => validateRecipe(recipe({ reasoningContext: 'current_turn' }))).toThrow(

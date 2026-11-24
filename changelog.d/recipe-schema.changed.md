@@ -9,6 +9,6 @@
   that said nothing of one, such as `agent.thinking`, `codeExecution`, an
   `mcpServers` entry and `modules.fleet`, where a misspelt key loaded with
   no word. The key still loads. Some objects stay unchecked, such as the
-  wake gate's rules, an extension's `config` and a custom strategy's own
-  options. The warning names the recipe as its author wrote the name, and a
+  wake gate's rules, an extension's `config`, and everything under a custom
+  strategy, which goes whole to its extension. The warning names the recipe as its author wrote the name, and a
   recipe that an older release saved by no name.

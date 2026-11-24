@@ -1320,7 +1320,7 @@ describe('the recipe', () => {
 
   test.each([
     [{ fetch: 'yes' }, 'Recipe modules.fetch must be true, false or an object, got "yes".'],
-    [{ fetch: [] }, 'Recipe modules.fetch must be true, false or an object, got a list.'],
+    [{ fetch: [] }, 'Recipe modules.fetch must be true, false or an object, got an empty list.'],
     [{ fetch: { model: '' } }, 'modules.fetch.model'],
     [{ fetch: { local: 'yes' } }, 'modules.fetch.local'],
     [{ fetch: { allowPrivateNetwork: 1 } }, 'modules.fetch.allowPrivateNetwork'],

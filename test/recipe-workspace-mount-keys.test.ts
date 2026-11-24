@@ -232,7 +232,7 @@ describe('workspace mount keys', () => {
       [{ mode: 'readonly' }, /\.mode must be "read-write" or "read-only", got "readonly"\.$/],
       [{ backend: 'disk' }, /\.backend must be "chronicle" or "direct", got "disk"\.$/],
       [{ backend: null }, /\.backend must be "chronicle" or "direct", got null; give it a value, or leave the key out, which takes the default\.$/],
-      [{ include: [] }, /\.include must be a non-empty list of strings, got a list\.$/],
+      [{ include: [] }, /\.include must be a non-empty list of strings, got an empty list\.$/],
       [{ include: '*.md' }, /\.include must be a non-empty list of strings, got "\*\.md"\.$/],
       [{ include: ['*.md', 1] }, /\.include\[1\] must be a string, got 1\.$/],
       [{ include: null }, /\.include must be a non-empty list of strings, got null; give it a value, or leave the key out, which takes the default\.$/],

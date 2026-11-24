@@ -203,6 +203,13 @@ export const variants: Readonly<Record<string, readonly Edit[]>> = {
       'selfUpdate'].map((k): Edit => [`modules.${k}`, false]),
     ['agent.toolPresentation', DELETE],
   ],
+  otherForms: [
+    ['agent.strategy.type', 'frontdesk'], ['agent.autoContinue', false], ['agent.clock', { intervalSeconds: 30, precision: 'seconds' }],
+    ['modules.instructions', true], ['modules.setup', true], ['modules.selfUpdate', true],
+    ['mcpServers.srv.args', ['a', 1, true]], ['mcpServers.srv.env', { K: 'v', N: 1, B: false }],
+    ['modules.fleet.children.0.env', { K: 'v', N: 1, B: true }],
+    ['mcpServers.srv.toolLifecycle', { observe: { classes: 'default' }, inputs: { tools: ['t'], classes: ['shell'], conversations: ['c'] } }],
+  ],
   autoRewindNull: [['agent.refusalHandling.autoRewind', null]],
   nulls: [
     ['agent.systemPrompt', null], ['agent.contextBudgetTokens', null], ['agent.refusalHandling', null],

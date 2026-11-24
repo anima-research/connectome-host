@@ -25,7 +25,7 @@ describe('recipe modules.notices validation', () => {
 
   test('rejects malformed shapes with a path-naming error', () => {
     const bad: Array<[unknown, RegExp]> = [
-      [[], /^Recipe modules\.notices must be true, false or an object, got a list\.$/],
+      [[], /^Recipe modules\.notices must be true, false or an object, got an empty list\.$/],
       [null, /^Recipe modules\.notices must be true, false or an object, got null; give it a value, or leave the key out, which takes the default\.$/],
       [{ bogus: 1 }, /modules\.notices has unknown key "bogus"/],
       [{ statusChannels: 'zulip:ops' }, /statusChannels must be a list of non-empty strings, got "zulip:ops"/],

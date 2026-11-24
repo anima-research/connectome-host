@@ -84,6 +84,10 @@
     `enabled` is `false`.
   - `modules.webui.basicAuth` without `username` or `password`, which the
     Web UI refused at its start.
+  - An `mcpServers` entry's `id` other than the entry's own name. It
+    replaced the server's name where `mcpl-servers.json` has no server of
+    the entry's name, and did nothing where it has one. Remove `id`, or
+    rename the entry.
   - A number that isn't finite, such as `1e400`.
   - At a setting that had no check, this includes a number or `true`/`false`
     that comes from the environment, such as `"port": "${PORT}"`, since
@@ -95,3 +99,15 @@
   `autoRewind`, `agent.strategy.type`, and `modules.webui.basicAuth` and
   `allowedOrigins`. A number or `true`/`false` in an `mcpServers` entry's
   `args` or `env`, or in a fleet child's `env`, loads as before.
+- **TypeScript callers:** the exported `Recipe*` types now come from the
+  schema, and say what the load gives. Where 0.27.1's interfaces said
+  otherwise, they changed. For example, `Recipe`'s `agent.cacheTtl` is
+  always present, since the load writes it; `RecipeStrategy.type` may be
+  absent or `null`; and the types take `null` at
+  `agent.contextBudgetTokens`, `agent.refusalHandling`,
+  `modules.webui.basicAuth` and `allowedOrigins`, a number or
+  `true`/`false` in an `mcpServers` entry's `args` and `env` and a fleet
+  child's `env`, `"http"` as an entry's `transport`, the map form of
+  `agent.strategy.toolResultMaxLastN`, and `false` at `modules.ttsRelay`.
+  Code that builds a `Recipe` by hand, or reads one of these settings as
+  its old type, may need a change.

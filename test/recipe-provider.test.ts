@@ -58,7 +58,7 @@ describe('recipe provider validation', () => {
   test('rejects a response queue that is not a list of non-empty strings', () => {
     for (const bad of ['first', { 0: 'first' }, [1], ['ok', null], ['ok', ''], ['  '], [{ text: 'x' }]]) {
       expect(() => validateRecipe(recipe({ mock: { responseQueue: bad } })))
-        .toThrow(/^Recipe agent\.mock\.responseQueue(\[\d\])? must be a /);
+        .toThrow(/^Recipe agent\.mock\.responseQueue( must be a list of non-empty strings|\[\d\] must be a non-empty string), got /);
     }
     expect(validateRecipe(recipe({ mock: { responseQueue: [] } })).agent.mock).toEqual({ responseQueue: [] });
   });

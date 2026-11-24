@@ -107,7 +107,21 @@ describe('a message prints no value that came from the environment', () => {
     const mount = { name: '${MOUNT}', path: './m', backend: 'direct', mode: 'read-only', watch: 'always' };
     const workspace = await loadsFrom(base({ modules: { workspace: { mounts: [mount] } } }), env2);
     expect(workspace).toStartWith('Recipe modules.workspace: Mount "${MOUNT}" is direct');
-    for (const message of [semantic, workspace]) expect(message).not.toContain('s3cret');
+    const patterned = { name: 'm', path: './m', include: ['${PATTERN}'] };
+    const pattern = await loadsFrom(base({ modules: { workspace: { mounts: [patterned] } } }), { ...env2, PATTERN: '!s3cret' });
+    expect(pattern).toStartWith('Recipe modules.workspace: Mount "m": include pattern "${PATTERN}" isn\'t read: ');
+    const replacement = await loadsFrom(base({ modules: { workspace: { mounts: [{ ...mount, name: '${MOUNT:-$&}' }] } } }), env2);
+    expect(replacement).toStartWith('Recipe modules.workspace: Mount "${MOUNT:-$&}" is direct');
+    for (const message of [semantic, workspace, pattern, replacement]) expect(message).not.toContain('s3cret');
+  });
+
+  test('the instructions refusal names no mount that it can only name from the environment', async () => {
+    const modules = { workspace: { mounts: [{ name: 'notes', path: './n' }] }, instructions: { path: '${DIR}/AGENTS.md' } };
+    const message = await loadsFrom(base({ modules }), { DIR: 's3cret' });
+    expect(message).toStartWith('Recipe modules.instructions.path "${DIR}/AGENTS.md" names a workspace mount, but the declared mounts are: "notes". ');
+    expect(message).not.toContain('s3cret');
+    expect(refusal(() => validateRecipe(base({ modules: { ...modules, instructions: { path: 'gone/AGENTS.md' } } }))))
+      .toStartWith('Recipe modules.instructions.path "gone/AGENTS.md" names workspace mount "gone", but the declared mounts are: "notes". ');
   });
 
   test('the warning names the recipe as its author wrote the name, and a legacy snapshot by no name', async () => {
@@ -190,15 +204,50 @@ describe('null, where the code gives it a meaning, and where it doesn\'t', () =>
     expect(refusal(() => validateRecipe(base({ mcpServers: { x: null } })))).toEndWith(', got null; give it a value.');
   });
 
+  test('a null that a rule would refuse if it were left out is told only to take a value', () => {
+    const compatible = { provider: 'openai-compatible', model: 'm', baseUrl: 'http://localhost:11434/v1' };
+    expect(refusal(() => validateRecipe(base({}, { ...compatible, baseUrl: null }))))
+      .toBe('Recipe agent.baseUrl must be an absolute http(s) URL, got null; give it a value.');
+    expect(refusal(() => validateRecipe(base({}, { ...compatible, model: null })))).toEndWith(', got null; give it a value.');
+    const direct = { name: 'm', path: './m', backend: 'direct', mode: null };
+    expect(refusal(() => validateRecipe(base({ modules: { workspace: { mounts: [direct] } } })))).toEndWith(', got null; give it a value.');
+    expect(refusal(() => validateRecipe(base({}, { baseUrl: null }))))
+      .toBe('Recipe agent.baseUrl must be an absolute http(s) URL, got null; give it a value, or leave the key out, which takes the default.');
+    expect(refusal(() => validateRecipe(base({ modules: { workspace: { mounts: [{ ...direct, backend: 'chronicle' }] } } }))))
+      .toEndWith(', got null; give it a value, or leave the key out, which takes the default.');
+  });
+
   test('the five loose checks of before refuse what they let through', () => {
     for (const [recipe, message] of [
-      [base({ agent: [] }), 'Recipe agent must be an object, got a list.'],
-      [base({}, { cacheKeepalive: [] }), 'Recipe agent.cacheKeepalive must be an object, got a list.'],
+      [base({ agent: [] }), 'Recipe agent must be an object, got an empty list.'],
+      [base({}, { cacheKeepalive: [] }), 'Recipe agent.cacheKeepalive must be an object, got an empty list.'],
       [base({}, { strategy: { type: '' } }), 'Recipe agent.strategy.type must be "autobiographical", "passthrough", "frontdesk" or a custom type, got "".'],
       [base({}, { refusalHandling: 0 }), 'Recipe agent.refusalHandling must be an object, such as {"autoRewind": true}, or left out, got 0.'],
       [base({}, { contextBudgetTokens: 'many' }), 'Recipe agent.contextBudgetTokens must be a number, got "many".'],
     ] as const) {
       expect(refusal(() => validateRecipe(recipe))).toBe(message);
+    }
+  });
+
+  test('an empty list is said to be empty', () => {
+    expect(refusal(() => validateRecipe(base({ modules: { workspace: { mounts: [] } } }))))
+      .toBe('Recipe modules.workspace.mounts must be a non-empty list of mounts, got an empty list.');
+  });
+
+  test('an mcpServers entry may give its own name as its id, and any other id is refused, with no warning beside it', () => {
+    const refused = "Recipe mcpServers.alpha.id is not a setting: a server's id is its name in mcpServers. " +
+      'Remove id, or rename the entry if the server should have that name.';
+    const other = base({ mcpServers: { alpha: { command: 'node', id: 'beta' } } });
+    expect(refusal(() => validateRecipe(other))).toBe(refused);
+    expect(unknownRecipeKeys(other)).toEqual([]);
+    expect(refusal(() => validateRecipe(base({ mcpServers: { alpha: { command: 'node', id: 7 } } })))).toBe(refused);
+    const own = base({ mcpServers: { alpha: { command: 'node', id: 'alpha' } } });
+    expect(unknownRecipeKeys(own)).toEqual(['mcpServers.alpha.id']);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(validateRecipe(own).mcpServers?.alpha).toStrictEqual({ command: 'node', id: 'alpha' });
+    } finally {
+      warn.mockRestore();
     }
   });
 
@@ -234,7 +283,7 @@ describe('the parsed recipe', () => {
         const agent = input.agent;
         if (!isObject(agent)) throw new Error(`the ${variant} variant has no agent`);
         const expected = { ...input, agent: { ...agent, systemPrompt: agent.systemPrompt ?? '', cacheTtl: agent.cacheTtl ?? '1h' } };
-        expect({ variant, parsed: validateRecipe(structuredClone(input)) }).toEqual({ variant, parsed: expected });
+        expect({ variant, parsed: validateRecipe(structuredClone(input)) }).toStrictEqual({ variant, parsed: expected });
       }
     } finally {
       warn.mockRestore();
@@ -242,8 +291,8 @@ describe('the parsed recipe', () => {
   });
 
   test('an agent that sets neither gets the two values that the load writes, and nothing else', () => {
-    expect(validateRecipe(base()).agent).toEqual({ systemPrompt: 'sys', cacheTtl: '1h' });
-    expect(validateRecipe({ name: 'schema', agent: {} }).agent).toEqual({ systemPrompt: '', cacheTtl: '1h' });
+    expect(validateRecipe(base()).agent).toStrictEqual({ systemPrompt: 'sys', cacheTtl: '1h' });
+    expect(validateRecipe({ name: 'schema', agent: {} }).agent).toStrictEqual({ systemPrompt: '', cacheTtl: '1h' });
   });
 
   test('the load returns a new object, and leaves its argument as it was', () => {
@@ -294,6 +343,13 @@ describe('unknown keys', () => {
       .toEqual([]);
   });
 
+  test('a custom strategy goes whole to its extension, so a key at any depth under it draws no warning', () => {
+    const strategy = { type: 'mine', foldingStrategy: 'kv-unified', kvUnified: { ...everySetting.agent.strategy.kvUnified, ownPolicy: 1 } };
+    expect(unknownRecipeKeys(base({ extensions: { s: { kind: 'strategy', path: '/s.js' } } }, { strategy }))).toEqual([]);
+    expect(unknownRecipeKeys(base({}, { strategy: { ...strategy, type: 'autobiographical' } })))
+      .toEqual(['agent.strategy.kvUnified.ownPolicy (did you mean agent.strategy.kvUnified.policy?)']);
+  });
+
   test('a section that said nothing of an unknown key now warns, and keeps the key', () => {
     const recipe = base({ modules: { webui: { host: '127.0.0.1', hostt: 'x' } } });
     expect(unknownRecipeKeys(recipe)).toEqual(['modules.webui.hostt (did you mean modules.webui.host?)']);
@@ -334,7 +390,21 @@ describe('unknown keys', () => {
         .toBe('Recipe agent.refusalHandling.primarySummaryFallback was removed and is unsupported.');
       expect(refusal(() => validateRecipe(base({ modules: { retrieval: { reasoningContext: 'all_turns' } } }))))
         .toStartWith('Recipe modules.retrieval.reasoningContext is not supported: ');
+      expect(refusal(() => validateRecipe(base({ codeExecution: { enabled: true, scriptTimeoutMs: 1000, idleReclaimMs: 1 } }))))
+        .toBe('Recipe codeExecution.idleReclaimMs is no longer read (agent-framework 0.24): ' +
+          'each script starts fresh and keeps nothing after it ends, so there is nothing to reclaim; leave it out.');
       expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('a retired code-execution key is warned of as ignored while code execution is off, since only an enabled block refuses it', () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(unknownRecipeKeys(base({ codeExecution: { enabled: false, scriptTimeoutMs: 1000 } })).map((key) => key.replace(/ \(.*$/, '')))
+        .toEqual(['codeExecution.scriptTimeoutMs']);
+      expect(() => validateRecipe(base({ codeExecution: { enabled: false, scriptTimeoutMs: 1000 } }))).not.toThrow();
     } finally {
       warn.mockRestore();
     }
@@ -392,8 +462,12 @@ describe('unknown keys', () => {
       expect(() => validateRecipe(recipe)).not.toThrow();
       const target = at.replace(/\[(\d+)\]/g, '.$1').split('.').reduce<Record<string, unknown>>(
         (value, key) => value[key] as Record<string, unknown>, recipe as Record<string, unknown>);
+      const used = Object.keys(target);
       target.zzUnknown = 1;
-      expect(refusal(() => validateRecipe(recipe))).toMatch(new RegExp(`^Recipe ${at.replace(/[.[\]]/g, '\\$&')} has unknown key "zzUnknown"; it takes `));
+      const message = refusal(() => validateRecipe(recipe));
+      expect(message).toMatch(new RegExp(`^Recipe ${at.replace(/[.[\]]/g, '\\$&')} has unknown key "zzUnknown"; it takes \\w[^;]*\\.$`));
+      const takes = message.slice(message.indexOf('; it takes ') + '; it takes '.length, -1).split(/, | and /);
+      expect({ at, notNamed: used.filter((key) => !takes.includes(key)) }).toEqual({ at, notNamed: [] });
     }
   });
 });

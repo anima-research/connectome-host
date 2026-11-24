@@ -95,7 +95,7 @@ describe('inferenceBounds', () => {
 
   const refused: Array<[string, unknown, string]> = [
     ['true', true, 'Recipe inferenceBounds must be false or an object, got true.'],
-    ['an array', [], 'Recipe inferenceBounds must be false or an object, got a list.'],
+    ['an array', [], 'Recipe inferenceBounds must be false or an object, got an empty list.'],
     ['a misspelt key', { progressbounds: {} }, 'Recipe inferenceBounds has unknown key "progressbounds" (did you mean "progressBounds"?); it takes progressBounds and flatMinimumMs.'],
     ['progressBounds that isn\'t an object', { progressBounds: true }, 'Recipe inferenceBounds.progressBounds must be an object, got true.'],
     ['progressBounds of null', { progressBounds: null }, 'Recipe inferenceBounds.progressBounds must be an object, got null; give it a value, or leave the key out, which takes the default.'],
