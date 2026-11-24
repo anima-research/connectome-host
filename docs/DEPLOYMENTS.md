@@ -742,6 +742,8 @@ keeps its data, its recipe, `.env` and its MCPL servers. The resident is down
 from step 5, where it stops, to step 9, where it starts again. A clone runs
 the library versions in its lockfile. An install runs the versions that npm
 chooses for it, which can be newer. So the move can update the libraries too.
+This section doesn't cover a host with fleet children. It doesn't cover an MCPL
+server that runs apart from the host either.
 
 Run each step as the user that runs the resident. From another account, use a
 login shell of that user, such as `sudo -iu <user>`. `service install` needs
@@ -779,17 +781,17 @@ without `--user`, and move its files as root too.
    - The data directory is the one that the running host uses. Its `DATA_DIR`
      can come from the unit, from its environment files or from a `.env`
      file, so read it from the host. This prints the `headless.log` that the
-     host holds open in its data directory:
+     host holds open in its data directory, unless that file is a link:
      `ls -l /proc/$(systemctl --user show -p MainPID --value <unit>)/fd | grep headless.log`.
      If the start command runs a script, `MainPID` can be the script's. Then
      `systemctl --user status <unit>` lists the unit's processes. Use the
      host's pid from that list.
-   - The new unit is `connectome-<name>.service`, with `<name>` as step 8
-     says. Check that the name is free:
-     `systemctl --user cat connectome-<name>.service` prints
-     `No files found for …`. If it shows a unit other than the old one,
-     another resident has the name. Then keep a service of your own instead:
-     see "A service of your own", below.
+   - The new units are `connectome-<name>.service` and
+     `connectome-<name>.shell.service`, with `<name>` as step 8 says. Check
+     that both names are free:
+     `systemctl --user cat connectome-<name>.service connectome-<name>.shell.service`
+     prints `No files found for …` for each. This section doesn't cover a move
+     where a unit already has one of these names. The old unit counts too.
    - The new unit starts the host with the recipe and `--headless` alone. If
      the old start command gives the host other options, such as
      `--socket-path`, keep a service of your own instead: see
@@ -802,8 +804,8 @@ without `--user`, and move its files as root too.
      as `<recipe>` in steps 6 and 9. A saved file without that line is an
      older one. It holds the values of the recipe's variables, secrets
      included, so make the copy readable only by its user, with `chmod 600`.
-     In the saved file, the paths to fleet children's recipes and to
-     extensions are full paths. A path can lead into the clone. Then copy
+     In the saved file, the paths to extensions are full paths. A path can
+     lead into the clone. Then copy
      that file into the working directory too, with the files beside it that
      it uses. Change the path in the copy to name the new file.
    - With `--no-recipe` in the start command, or with no `.recipe.json`, the
@@ -840,24 +842,24 @@ without `--user`, and move its files as root too.
    `--extra-state` for each such place. Setup leaves a running host as it is. It
    prints `Set up <root> as the install of <version> that serves <data directory>.`
    If it prints `… as before.` instead, the working directory already holds an
-   install root, which keeps its own release. A host that runs from the clone
-   doesn't use it. Remove `connectome-host`, and run setup again.
+   install root, which keeps its own release. If an earlier try of this move
+   made that root, remove `connectome-host`, and run setup again. This section
+   doesn't cover a root from another install.
    Setup and "Setting it up, once" also tell you to change the service's
    start command. Leave the old service as it is. Steps 7 to 9 replace it.
 5. **Stop the host, and copy.** Choose a moment when the resident is idle,
    since a stop cuts off a turn in progress. Stop the host with
-   `systemctl --user stop <unit>`. If fleet children still run, stop them too.
-   Some MCPL servers run apart from the host, which reaches them by `url`. If
-   the copy takes such a server's state, stop that server too. "Updating
-   checkouts" says how. Then copy the files that "Updating checkouts" lists.
+   `systemctl --user stop <unit>`. Then copy the files that "Updating
+   checkouts" lists.
    Copy `.env` too, since step 9 can add the shell daemon's port and token to
    it. Put the copy outside the working directory, such as in
-   `~/pre-move-copy`. Go on only when the copy ends with no error.
+   `~/pre-move-copy`. If the copy ends with an error, start the old service
+   again with `systemctl --user start <unit>`, and stop the move there.
 6. **Run the store audit from the install,** as "By hand" says. First export
    each variable that the old service sets. Then run
    `bun node_modules/@animalabs/connectome-host/src/index.ts --audit-stores --recipe <recipe> <data directory>`.
-   - If a line says `refused` or starts with `Couldn't audit`, go back by
-     step 12.
+   - If the command exits with a status other than 0, go back by step 12. A
+     line that says `refused` or starts with `Couldn't audit` names the cause.
    - A line that says `memory changed at load` means that the store lost
      summaries. The install's version made that repair when it opened the
      store. The first start of that version would make the same repair. The
@@ -879,19 +881,22 @@ without `--user`, and move its files as root too.
    `Restart=on-failure` and `KillMode=mixed`. Compare that with the old unit's
    file and drop-in files, which are now in the copy. Put each other line that
    the machine still needs into a drop-in,
-   `~/.config/systemd/user/connectome-<name>.service.d/<file>.conf`.
+   `~/.config/systemd/user/connectome-<name>.service.d/<file>.conf`. Put each
+   line under its section header from the old unit, such as `[Unit]` or
+   `[Service]`. systemd ignores a line with no header above it.
    - Look for what the host waits for (`Wants=`, `Requires=`, `After=`), a
      command before its start (`ExecStartPre=`), a restart delay
      (`RestartSec=`), and its environment (`Environment=`,
      `EnvironmentFile=`).
-   - A `DATA_DIR` in an environment file wins over the new unit's. A file that
-     you carry over can set `DATA_DIR`. Then make that line name the data
-     directory that setup serves.
+   - A `DATA_DIR` in an environment file wins over the new unit's. This section
+     covers such a file only where its `DATA_DIR` is the data directory that
+     setup serves.
    - Keep a restart delay. Without one, systemd's defaults stop the restarts
      after a few failed starts in a row, such as at a boot before the network
      is up. The unit then stays failed, and the resident stays down.
-   - Leave out `ExecStart=` and `WorkingDirectory=`. Also leave out each line
-     that stops a restart on exit 75 or exit 1. A `SuccessExitStatus=` or a
+   - Leave out `ExecStart=`, `WorkingDirectory=`, and an `Environment=` line
+     that sets `DATA_DIR`. Also leave out each line that stops a restart on
+     exit 75 or exit 1. A `SuccessExitStatus=` or a
      `RestartPreventExitStatus=` line that names 75 or 1 stops such a restart.
      An update of the install needs systemd to restart the host on exit 75 and
      on exit 1, as "A resident's own update" says.
@@ -899,8 +904,8 @@ without `--user`, and move its files as root too.
      start. Its drop-in got `Wants=` and `After=` for the tunnel's and the
      daemon's units, an `ExecStartPre=` that waits for DNS, and
      `RestartSec=10`.
-9. **Install the new service.** First start the MCPL servers that you stopped
-   in step 5. Then run `connectome-host/connectome service install <recipe>`.
+9. **Install the new service.** Run
+   `connectome-host/connectome service install <recipe>`.
    It writes the unit and reloads systemd, which reads the drop-in too. Then it
    starts the unit, and it waits for the host to answer. It prints
    `Its host answers: pid …, recipe …`. Then check that systemd uses the
@@ -916,18 +921,16 @@ without `--user`, and move its files as root too.
     writes its whole prompt cache once.
 12. **To go back:**
     - After step 5 and before step 7, restore the copy, as "By hand" says.
-      Start the MCPL servers that you stopped in step 5. Then start the old
-      service again with `systemctl --user start <unit>`.
+      Then start the old service again with `systemctl --user start <unit>`.
     - From step 7 on: if step 9 ran, run
       `systemctl --user disable --now <new unit>`, which stops and disables
       the new unit. Do the same for
       `connectome-<name>.shell.service`, the shell daemon's unit, if step 9
       wrote one. Remove the new units' files and the new drop-in directory.
       Then move back from the copy what step 7 moved there. Run
-      `systemctl --user daemon-reload`. Stop the MCPL servers that you stopped
-      in step 5 again. Then restore the resident's files from the copy, as "By
-      hand" says. If the copy holds no `.env`, remove the `.env` that step 9
-      made. Start the MCPL servers again. Then start the old unit with
+      `systemctl --user daemon-reload`. Then restore the resident's files from
+      the copy, as "By hand" says. If the copy holds no `.env`, remove the
+      `.env` that step 9 made. Then start the old unit with
       `systemctl --user enable --now <unit>`, since step 7 disabled it. If
       step 2 found it disabled, use `systemctl --user start <unit>`.
     - Remove the install root, `connectome-host`, from the working directory.
@@ -935,8 +938,8 @@ without `--user`, and move its files as root too.
       move would start that release, whatever version npm installs. The
       install's other files can stay, since a host that starts from the clone
       doesn't use them.
-    - The copy holds no workspace directory. So a workspace directory in the
-      working directory, such as `output`, keeps what the new host wrote there.
+    - A workspace directory in the working directory, such as `output`, isn't
+      in the copy. So it keeps what the new host wrote there.
 
 **When the working directory is the clone.** This is the case after the
 README's quick start. The resident then moves to a directory of its own, and
@@ -948,18 +951,18 @@ the steps change in these ways:
   unit's environment, in `mcpl-servers.json` and in the agent overlay. After
   the move, a path relative to the working directory starts from the new
   directory. So what such a path names goes into the new directory too. The
-  bullets below move or copy it after step 5. A fleet child's recipe and an
-  extension's file are relative to the recipe's own file instead. Copy them
-  with the recipe, in the same places beside it, with the files that they use.
+  bullets below move or copy it after step 5. An extension's file is relative
+  to the recipe's own file instead. Copy it with the recipe, to the same place
+  beside it. Copy the files that it uses too.
 - Some files are in the working directory without a path that names them. The
   workspace is on unless the recipe turns it off. When the recipe names no
   mounts, the workspace has two in the working directory: `input` and `output`.
   The `sleep` tool reads its privileged users from `sleep-privileged.json` in
   the working directory, unless `SLEEP_PRIVILEGED_FILE` names another file.
 - Run step 4 after step 5. After the copy in step 5, move these from the
-  clone into the new directory: the data directory, the fleet children's data
-  directories, `mcpl-servers.json`, `mcpl-servers.agent.json` and the agent
-  overlay. A data directory outside the clone stays where it is.
+  clone into the new directory: the data directory, `mcpl-servers.json`,
+  `mcpl-servers.agent.json` and the agent overlay. A data directory outside the
+  clone stays where it is.
 - Then copy these from the clone into the new directory. The clone keeps its
   own copies for step 12.
   - `.env`, the other `.env` files that Bun reads, such as `.env.local`, and
@@ -983,8 +986,9 @@ with `plutil -p <plist>`. It finds the data directory with
 `lsof -p <pid> | grep headless.log`, where `launchctl list` shows the agent's
 pid. For an agent that runs a script, use the host's pid, which
 `pgrep -P <pid>` lists. Its name check looks for
-`~/Library/LaunchAgents/com.animalabs.connectome.<name>.plist`. Step 5
-stops and unloads it with `launchctl bootout gui/$(id -u) <plist>`. Step 7 moves
+`~/Library/LaunchAgents/com.animalabs.connectome.<name>.plist` and
+`com.animalabs.connectome.<name>.shell.plist` there. Step 5 stops and unloads
+it with `launchctl bootout gui/$(id -u) <plist>`. Step 7 moves
 its plist into the copy, so that launchd doesn't load it at the next login.
 launchd has no drop-ins, and `service install` writes the plist again each time
 it runs. So step 8 puts the old agent's environment into `.env`, which the host

@@ -1195,12 +1195,6 @@ describe('setup', () => {
       writeFileSync(join(install, 'data-file'), 'x');
       return { dataDir: join(install, 'data-file') };
     }, /isn't a directory/],
-    ['a host that is not installed in a node_modules', () => {
-      const clone = join(dir, 'clone');
-      mkdirSync(join(clone, 'src'), { recursive: true });
-      writeFileSync(join(clone, 'package.json'), JSON.stringify({ version: '0.10.2' }));
-      return { hostRoot: clone };
-    }, /isn't installed in a node_modules/],
     ['a root inside what it copies', () => ({ root: join(install, 'node_modules', 'connectome-host-root') }), /inside .*node_modules, which setup copies/],
     ['an install that links outside itself', () => {
       mkdirSync(join(dir, 'checkout'));
@@ -1264,6 +1258,18 @@ describe('setup', () => {
       expect(existsSync(installPaths(o.root).releases)).toBe(false);
     });
   }
+  test('refuses a host that is not installed in a node_modules, naming the move\'s part of its own docs, leaving no install', () => {
+    const clone = join(dir, 'clone');
+    mkdirSync(join(clone, 'src'), { recursive: true });
+    writeFileSync(join(clone, 'package.json'), JSON.stringify({ version: '0.10.2' }));
+    const o = options({ hostRoot: clone });
+    expect(() => setup(o)).toThrow(ContractError);
+    expect(refusal(() => setup(o))).toBe(`This connectome-host (${clone}) isn't installed in a node_modules. Setup makes ` +
+      'an npm install update itself. A clone updates by hand, or moves to an install as "Moving from a clone to an ' +
+      `install" in ${join(clone, 'docs', 'DEPLOYMENTS.md')} says.`);
+    expect(existsSync(installPaths(o.root).install)).toBe(false);
+    expect(existsSync(installPaths(o.root).releases)).toBe(false);
+  });
 });
 
 describe("setup's arguments", () => {
