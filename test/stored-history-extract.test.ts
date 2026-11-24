@@ -299,8 +299,23 @@ test('preserves malformed bodies with markers only in arguments, quoted text, me
 });
 
 for (const lane of ['complete', 'stream'] as const) {
-  test(`${lane} sends filtered copies only when explicitly enabled`, async () => {
-    const { request, result } = requestWith(exposed, lane === 'stream' ? act : call);
+  test.each([
+    ['unbound thinking', 'claude-opus-4-6', thinking, false],
+    ['bound signed thinking without drop control', 'claude-mythos-5-1', thinking, true],
+    ['bound redacted thinking with drop control support', 'claude-fable-5-2', redacted, true],
+  ] as const)(`${lane} filters only when enabled and outside the signed prefix (%s)`, async (_label, model, laterThinking, bound) => {
+    const { request: base, result } = requestWith(exposed, lane === 'stream' ? act : call);
+    const suffixCall = { ...call, id: 'toolu_suffix' };
+    const suffixResult = { ...result, tool_use_id: suffixCall.id };
+    const request = {
+      ...base,
+      model,
+      messages: [
+        ...base.messages,
+        { role: 'assistant', content: [laterThinking, suffixCall] },
+        { role: 'user', content: [suffixResult] },
+      ],
+    };
     const original = JSON.stringify(request);
     const bodies: string[] = [];
     const reply = {
@@ -336,11 +351,16 @@ for (const lane of ['complete', 'stream'] as const) {
       server.stop(true);
     }
     expect(bodies).toHaveLength(4);
-    expect(bodies[1]).toBe(bodies[0]);
-    expect(bodies[2]).toBe(bodies[0]);
+    if (!bound) expect(bodies[1]).toBe(bodies[0]);
+    expect(bodies[2]).toBe(bodies[1]);
     expect(resultOf(JSON.parse(bodies[1]!))).toEqual(result);
-    expect(resultOf(JSON.parse(bodies[3]!))).toEqual({ ...result, content: cleaned });
-    expect(JSON.parse(bodies[3]!).messages[1]).toEqual(request.messages[1]);
+    const sent = JSON.parse(bodies[3]!);
+    expect(sent.messages).toEqual([
+      ...request.messages.slice(0, 2),
+      { role: 'user', content: [{ ...result, content: bound ? exposed : cleaned }] },
+      request.messages[3],
+      { role: 'user', content: [{ ...suffixResult, content: cleaned }] },
+    ]);
     expect(JSON.stringify(request)).toBe(original);
   });
 }

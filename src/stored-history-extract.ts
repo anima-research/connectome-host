@@ -110,6 +110,7 @@ function filterWireResult(
   block: unknown,
   calls: Set<string>,
   role: 'assistant' | 'user',
+  mayRewrite: boolean,
 ): unknown {
   if (!isRecord(block)) return block;
   if (role === 'assistant' && block.type === 'tool_use' && typeof block.id === 'string' && block.id !== '') {
@@ -118,6 +119,7 @@ function filterWireResult(
   }
   const id = block.tool_use_id;
   if (role === 'assistant' || block.type !== 'tool_result' || typeof id !== 'string' || !calls.delete(id)) return block;
+  if (!mayRewrite) return block;
   const content = filterResultContent(block.content);
   return content === block.content ? block : { ...block, content };
 }
@@ -195,16 +197,33 @@ function filterExtract(payload: unknown): boolean {
 export function filterStoredHistoryExtracts(
   request: ProviderRequest,
   onContentAltered?: ProviderRequestOptions['onContentAltered'],
+  bindsThinking = false,
 ): ProviderRequest {
+  // On binding models, only rewrite results after the last native signed
+  // thinking block. Still track calls and results in the protected prefix.
+  let protectedThrough = -1;
+  if (bindsThinking) {
+    for (let i = request.messages.length - 1; i >= 0; i--) {
+      const message = request.messages[i];
+      if (isRecord(message) && message.role === 'assistant' && Array.isArray(message.content) &&
+          message.content.some((block: unknown) => isRecord(block) && (
+            (block.type === 'thinking' && typeof block.signature === 'string' && block.signature !== '') ||
+            (block.type === 'redacted_thinking' && typeof block.data === 'string' && block.data !== '')
+          ))) {
+        protectedThrough = i;
+        break;
+      }
+    }
+  }
   const calls = new Set<string>();
   let changed = false;
-  const messages = request.messages.map((message) => {
+  const messages = request.messages.map((message, index) => {
     if (!isRecord(message) || (message.role !== 'user' && message.role !== 'assistant') ||
         !Array.isArray(message.content)) return message;
     const role = message.role;
     let changedMessage = false;
     const content = message.content.map((block: unknown) => {
-      const next = filterWireResult(block, calls, role);
+      const next = filterWireResult(block, calls, role, index > protectedThrough);
       if (next !== block) {
         changedMessage = true;
         onContentAltered?.(block);

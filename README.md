@@ -785,6 +785,8 @@ unknown-key warning, like those at the other levels.
   `toolsets--act`). Within an extract page, a nested result named
   `history--extract` is covered even if its call is off-page; unnamed and
   `toolsets--act` results still need a matching call on that page.
+  On models that bind thinking to its request prefix, the guard leaves extracts
+  before the last native signed or redacted thinking block unchanged.
   Truncation recovery is best-effort; it needs a recognizable extract
   prefix. The host warns if the flag is enabled with a non-Anthropic
   provider, where it has no effect, or with `anthropic-xml`, where XML main

@@ -881,7 +881,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
 
   private withStoredExtractGuard(request: ProviderRequest, options: ProviderRequestOptions): ProviderRequest {
     return this.filterStoredHistoryExtractThinking
-      ? filterStoredHistoryExtracts(request, options.onContentAltered)
+      ? filterStoredHistoryExtracts(request, options.onContentAltered, modelThinking(request.model).binds)
       : request;
   }
 
