@@ -73,7 +73,7 @@ bun run build:web     # the Web UI; the host runs without it
 bun src/index.ts      # and the rest as above, with the clone's own paths
 ```
 
-A clone updates by hand, as [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md), "Updating an install", says under "By hand", and builds the Web UI again after each update. The rest of this README writes commands as they run in a clone: from an npm install, put `node_modules/@animalabs/connectome-host/` before `src/`, `recipes/` and `scripts/`.
+A clone updates by hand, as [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md), "Updating an install", says under "By hand", and builds the Web UI again after each update. A clone that runs a resident can also move to an install, as ["Moving from a clone to an install"](docs/DEPLOYMENTS.md#moving-from-a-clone-to-an-install) says. The rest of this README writes commands as they run in a clone: from an npm install, put `node_modules/@animalabs/connectome-host/` before `src/`, `recipes/` and `scripts/`.
 
 ## Recipes
 

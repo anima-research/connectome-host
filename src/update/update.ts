@@ -766,7 +766,8 @@ const ENDING_SWITCH_QUIESCE = 'A switch\'s quiesce is being ended. Ask again onc
 const ASK_AGAIN = 'Asking again won\'t change that: whoever runs this host can.';
 const NO_INSTALL_OF_ITS_OWN = 'Nothing was armed: this host has no install of its own to restart onto a release. A fleet ' +
   'child is updated with its parent\'s install, where its parent has one. Any other host, or a child whose parent has ' +
-  'no install, is updated by hand (docs/DEPLOYMENTS.md, "Updating an install"). ' +
+  'no install, is updated by hand (docs/DEPLOYMENTS.md, "Updating an install"). A clone can move to an install ' +
+  'instead, as that part of the doc says. ' +
   ASK_AGAIN;
 const WRITES_ONE = '`connectome service install` writes such a service; docs/DEPLOYMENTS.md, "Updating an install", says ' +
   'what one written by hand needs.';
