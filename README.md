@@ -779,17 +779,20 @@ unknown-key warning, like those at the other levels.
 - **Older history extracts on Anthropic** (#717) — set
   `"filterStoredHistoryExtractThinking": true` inside `agent` in the recipe
   to omit copied private thinking from raw `history--extract` results
-  when sending turns and background requests. Off by default. This doesn't
-  change the saved conversation or native assistant thinking. It only
-  covers structured results that still have their matching native tool call.
-  Recovery from truncated pages is best-effort for the framework's known
-  tool-result truncation notices, including spill success, spill failure, and
-  no writable mount. Other truncation shapes may pass through unchanged, as
-  can pages missing projection metadata.
-  With a non-native formatter such as `anthropic-xml`, the guard is inactive
-  and the host warns once at startup if the flag is on. Summaries, other
-  providers, and debug context-makeup token counts are not covered.
+  on native requests sent through the Anthropic adapter. Off by default.
+  This doesn't change the saved conversation or native assistant thinking.
+  The wire result needs its matching native tool call (direct or via
+  `toolsets--act`). Within an extract page, a nested result named
+  `history--extract` is covered even if its call is off-page; unnamed and
+  `toolsets--act` results still need a matching call on that page.
+  Truncation recovery is best-effort; it needs a recognizable extract
+  prefix. The host warns if the flag is enabled with a non-Anthropic
+  provider, where it has no effect, or with `anthropic-xml`, where XML main
+  turns are not covered but native background requests such as compression
+  are. Summaries and debug context-makeup token counts are not covered.
   Toggling the flag can rewrite the affected prompt-cache prefix on the next request.
+  Remove the flag once stored extracts have aged out after upgrading to
+  the Agent Framework release that includes [#1041](https://github.com/anima-research/agent-framework/pull/1041).
 - **Shared instructions** (opt-in, `modules.instructions`) — see below
 - **Identity** (opt-in, `modules.identity`) — the agent's own key-based
   identity, used to obtain access to services without credentials entering

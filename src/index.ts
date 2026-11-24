@@ -1079,8 +1079,12 @@ async function main() {
 
   const formatter = recipeFormatter(recipe, provider, resolveModel(recipe));
   const filterStoredHistoryExtractThinking = recipe.agent.filterStoredHistoryExtractThinking === true;
-  if (filterStoredHistoryExtractThinking && formatter.name !== 'native') {
-    console.warn(`[history--extract] agent.filterStoredHistoryExtractThinking is inactive with the "${formatter.name}" formatter; it requires native tool blocks.`);
+  if (filterStoredHistoryExtractThinking) {
+    if (provider !== 'anthropic') {
+      console.warn(`[history--extract] agent.filterStoredHistoryExtractThinking has no effect with provider "${provider}".`);
+    } else if (formatter.name === 'anthropic-xml') {
+      console.warn('[history--extract] agent.filterStoredHistoryExtractThinking with "anthropic-xml": main turns are not covered; native background requests such as compression are covered.');
+    }
   }
 
   const adapter = provider === 'openai-responses'
@@ -1112,7 +1116,7 @@ async function main() {
                   : {}),
               }),
           baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
-          filterStoredHistoryExtractThinking: filterStoredHistoryExtractThinking && formatter.name === 'native',
+          filterStoredHistoryExtractThinking,
           // Only with GATE_TELEMETRY=1 and ANTHROPIC_BASE_URL set, so the stamp
           // goes only to a gateway the operator has named, never to the
           // vendor's default endpoint.

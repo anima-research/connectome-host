@@ -1,28 +1,21 @@
 import type { ProviderRequest, ProviderRequestOptions } from '@animalabs/membrane';
 
 const EXTRACT = 'history--extract';
+const ACT = 'toolsets--act';
 const WITHHELD = '[history--extract result withheld: malformed JSON contains a private thinking block.]';
-
-// Tool-result suffixes from AF 0.35.1: nativeContent/truncateForHistory, then
-// spillOrTruncate's spillNotice (written, failed, or no writable mount).
-// The failed write's error may span lines; AF caps it at 200 code units.
-const TOOL_RESULT_NOTICES = [
-  /\n\n\[truncated — original was \d+ chars(?:; full serialized result: workspace file [^\r\n]+)?\]$/,
-  /\n\n\[truncated — showing \d+ of \d+ chars; full content: workspace file [^\r\n]+\. Page with workspace--read \{"path":"(?:[^"\\\r\n]|\\.)+","offsetChars":0,"limitChars":\d+\}; use nextOffsetChars as offsetChars until null, keeping limitChars\.(?: Or raise the inline cap via agent_settings update tool_result_inline_max_chars\.)?\]$/,
-  /\n\n\[truncated — showing \d+ of \d+ chars; spill to workspace file [^\r\n]+ FAILED \([\s\S]{0,200}\); content over the cap was not retained\]$/,
-  /\n\n\[truncated — original was \d+ chars; no writable workspace mount without an include(?: that keeps its files in the store)?, full content not retained\]$/,
-];
-
-function stripToolResultNotice(text: string): string {
-  for (const notice of TOOL_RESULT_NOTICES) {
-    const match = notice.exec(text);
-    if (match) return text.slice(0, match.index);
-  }
-  return text;
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+type ExtractCall = 'direct' | 'wrapped';
+
+// AF #1041: only a local host-toolset act can name the history tool.
+function extractCall(block: Record<string, unknown>): ExtractCall | undefined {
+  if (block.name === EXTRACT) return 'direct';
+  if (block.name === ACT && isRecord(block.input) &&
+      typeof block.input.tool === 'string' && block.input.tool.trim() === EXTRACT &&
+      !(typeof block.input.server === 'string' && block.input.server.trim())) return 'wrapped';
 }
 
 function isPrivateBlock(block: unknown): boolean {
@@ -34,7 +27,7 @@ function isPrivateBlock(block: unknown): boolean {
 
 /** For detection only, close the readable prefix of a cut-off JSON result.
  *  Treat strings as tokens, never as structure. Keep the readable bytes of
- *  unfinished content/text values so a paired nested extract can be checked
+ *  unfinished content/text values so a recognized nested extract can be checked
  *  separately, without treating arbitrary quoted text as a block.
  *  Parse the prefix normally to validate its structure before trusting it. */
 function parseJsonPrefix(text: string): unknown {
@@ -88,7 +81,11 @@ function filterText(text: string): string {
   try {
     payload = JSON.parse(text);
   } catch {
-    return filterExtract(parseJsonPrefix(stripToolResultNotice(text))) ? WITHHELD : text;
+    // AF and context-manager append notices to compact JSON, which has no
+    // literal line breaks. Don't let the notice's '[' enter prefix parsing.
+    const notice = text.search(/\r?\n\r?\n\[truncated — /);
+    const prefix = notice < 0 ? text : text.slice(0, notice);
+    return filterExtract(parseJsonPrefix(prefix)) ? WITHHELD : text;
   }
   return filterExtract(payload) ? JSON.stringify(payload) : text;
 }
@@ -102,28 +99,47 @@ function filterResultContent(content: unknown): unknown {
     const text = filterText(part.text);
     if (text === part.text) return part;
     changed = true;
-    return { ...part, text };
+    const { rawItem: _, ...rest } = part;
+    return { ...rest, text };
   });
   return changed ? next : content;
 }
 
-/** Only consider a result with its own preceding, exact-name call. Use the
- *  archive's camelCase ID for nested extracts and the wire ID for requests. */
-function filterPairedResult(
+/** Native wire results don't carry toolName; require a preceding wire call. */
+function filterWireResult(
   block: unknown,
   calls: Set<string>,
-  idKey: 'toolUseId' | 'tool_use_id',
-  role?: 'assistant' | 'user',
+  role: 'assistant' | 'user',
 ): unknown {
   if (!isRecord(block)) return block;
-  if (role !== 'user' && block.type === 'tool_use' && typeof block.id === 'string' && block.id !== '') {
-    if (block.name === EXTRACT) calls.add(block.id);
+  if (role === 'assistant' && block.type === 'tool_use' && typeof block.id === 'string' && block.id !== '') {
+    if (extractCall(block)) calls.add(block.id);
     else calls.delete(block.id);
   }
-  const id = block[idKey];
+  const id = block.tool_use_id;
   if (role === 'assistant' || block.type !== 'tool_result' || typeof id !== 'string' || !calls.delete(id)) return block;
   const content = filterResultContent(block.content);
   return content === block.content ? block : { ...block, content };
+}
+
+type ArchivedRow = Record<string, unknown> & { content: unknown[] };
+
+function isArchivedRow(row: unknown): row is ArchivedRow {
+  return isRecord(row) && typeof row.id === 'string' && typeof row.timestamp === 'string' &&
+    typeof row.participant === 'string' && Array.isArray(row.content);
+}
+
+function archivedExtractCalls(rows: ArchivedRow[]): Map<string, ExtractCall> {
+  const calls = new Map<string, ExtractCall>();
+  for (const { content } of rows) {
+    for (const block of content) {
+      if (!isRecord(block) || block.type !== 'tool_use' || typeof block.id !== 'string') continue;
+      const kind = extractCall(block);
+      // Prefer a wrapped match if archived calls reuse an ID, as in AF #1041.
+      if (kind === 'wrapped' || (kind === 'direct' && !calls.has(block.id))) calls.set(block.id, kind);
+    }
+  }
+  return calls;
 }
 
 /** Only the history--extract projection: result.data is serialized by AF
@@ -132,22 +148,44 @@ function filterPairedResult(
  *  descend into metadata, tool inputs, or other tools' results. */
 function filterExtract(payload: unknown): boolean {
   if (!isRecord(payload) || typeof payload.returned !== 'number' || !Array.isArray(payload.messages)) return false;
-  const calls = new Set<string>();
+  const rows = payload.messages.filter(isArchivedRow);
+  let calls: Map<string, ExtractCall> | undefined;
+  const replacedXml = new Set<string>();
   let changed = false;
-  for (const row of payload.messages as unknown[]) {
-    if (!isRecord(row) || typeof row.id !== 'string' || typeof row.timestamp !== 'string' ||
-        typeof row.participant !== 'string' || !Array.isArray(row.content)) continue;
-    const content: unknown[] = [];
-    for (const block of row.content as unknown[]) {
+  for (const row of rows) {
+    row.content = row.content.flatMap((block) => {
       if (isPrivateBlock(block)) {
         changed = true;
-        continue;
+        return [];
       }
-      const next = filterPairedResult(block, calls, 'toolUseId');
-      if (next !== block) changed = true;
-      content.push(next);
+      if (!isRecord(block) || block.type !== 'tool_result' ||
+          typeof block.toolUseId !== 'string' || !block.toolUseId) return [block];
+      // AF stores toolName before the body. Trust a named direct result
+      // even if paging split the pair. An ACT name alone is ambiguous.
+      if (block.toolName !== EXTRACT) {
+        if (block.toolName !== undefined && block.toolName !== ACT) return [block];
+        const kind = (calls ??= archivedExtractCalls(rows)).get(block.toolUseId);
+        if (!kind || (block.toolName === ACT && kind !== 'wrapped')) return [block];
+      }
+      const content = filterResultContent(block.content);
+      if (content === block.content) return [block];
+      changed = true;
+      if (typeof block.rawXml === 'string') replacedXml.add(block.rawXml);
+      const { rawItem: _, ...result } = block;
+      return [{ ...result, content }];
+    });
+  }
+  // XML replay may copy a whole results batch onto each result. Remove it
+  // from all siblings on this page, including ones whose body didn't change.
+  if (replacedXml.size) {
+    for (const row of rows) {
+      row.content = row.content.map((block) => {
+        if (!isRecord(block) || block.type !== 'tool_result' ||
+            typeof block.rawXml !== 'string' || !replacedXml.has(block.rawXml)) return block;
+        const { rawXml: _, rawXmlImagesAt: _images, ...result } = block;
+        return result;
+      });
     }
-    row.content = content;
   }
   return changed;
 }
@@ -166,7 +204,7 @@ export function filterStoredHistoryExtracts(
     const role = message.role;
     let changedMessage = false;
     const content = message.content.map((block: unknown) => {
-      const next = filterPairedResult(block, calls, 'tool_use_id', role);
+      const next = filterWireResult(block, calls, role);
       if (next !== block) {
         changedMessage = true;
         onContentAltered?.(block);

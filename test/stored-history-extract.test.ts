@@ -6,6 +6,10 @@ import { filterStoredHistoryExtracts } from '../src/stored-history-extract.js';
 
 const extractName = 'history--extract';
 const call = { type: 'tool_use', name: extractName, id: 'toolu_extract', input: { format: 'raw' } };
+const act = { ...call, name: 'toolsets--act', input: { tool: ` ${extractName} `, args: call.input } };
+const remoteAct = { ...act, id: 'toolu_remote', input: { ...act.input, server: ' remote ' } };
+const otherAct = { ...act, id: 'toolu_other', input: { ...act.input, tool: 'fixture--read' } };
+const withheld = '[history--extract result withheld: malformed JSON contains a private thinking block.]';
 const thinking = { type: 'thinking', thinking: 'placeholder', signature: 'fixture-signature' };
 const redacted = { type: 'redacted_thinking', data: 'fixture-data' };
 const ordinaryCall = {
@@ -70,39 +74,105 @@ test('filters JSON in text parts of paired results without replacing other parts
   expect(parts[2]).toBe(image);
 });
 
-test('filters nested extracts only when their archived call is present', () => {
-  const archivedResult = { type: 'tool_result', toolUseId: call.id, content: exposed };
-  const otherTool = { ...ordinaryCall, input: { copied: extract(projected(thinking)) } };
-  const otherResult = { ...archivedResult, toolUseId: otherTool.id, toolName: extractName };
-  const orphan = { ...archivedResult, toolUseId: 'lost', toolName: extractName };
+test('filters wire extracts called through local toolsets--act, not remote or unrelated acts', () => {
+  for (const local of [act, { ...act, input: { ...act.input, server: '  ' } }]) {
+    const { request, result } = requestWith(exposed, local);
+    expect(resultOf(filterStoredHistoryExtracts(request))).toEqual({ ...result, content: cleaned });
+  }
+  for (const other of [remoteAct, otherAct]) {
+    const { request } = requestWith(exposed, other, other.id);
+    expect(filterStoredHistoryExtracts(request)).toBe(request);
+  }
+});
+
+// Archived projection cases ported from AF #1041 (history-module.test.ts).
+function archivedResult(toolUseId: string, content: unknown, toolName?: string) {
+  return { type: 'tool_result', toolUseId, ...(toolName !== undefined ? { toolName } : {}), content, isError: false };
+}
+
+test('filters archived ACT results only when the call wrapped a local extract', () => {
+  const direct = { ...call, id: 'toolu_direct' };
+  const local = archivedResult(act.id, exposed, act.name);
+  const unnamed = archivedResult(act.id, exposed);
+  const unaffected = [
+    archivedResult(remoteAct.id, exposed, act.name),
+    archivedResult(otherAct.id, exposed, act.name),
+    archivedResult(direct.id, exposed, act.name),
+    archivedResult('off-page', exposed, act.name),
+  ];
+  const calls = projected(act, call, remoteAct, otherAct, direct);
+  const { request } = requestWith(JSON.stringify(extract(calls, projected(local, unnamed, ...unaffected))));
+  expect(JSON.parse(resultOf(filterStoredHistoryExtracts(request)).content as string)).toEqual(
+    extract(calls, projected({ ...local, content: cleaned }, { ...unnamed, content: cleaned }, ...unaffected)),
+  );
+});
+
+test('filters named extracts across page boundaries and honors archived provenance with duplicate IDs', () => {
+  const offPage = archivedResult('off-page', [{ type: 'text', text: exposed }, publicText], extractName);
+  const duplicate = { ...ordinaryCall, id: call.id };
+  const named = archivedResult(call.id, exposed, extractName);
+  const unnamed = archivedResult(call.id, exposed);
+  const unrelated = archivedResult(call.id, exposed, ordinaryCall.name);
+  const missing = archivedResult('off-page', exposed);
+  const calls = projected(call, duplicate);
   const { request } = requestWith(JSON.stringify(extract(
-    projected(call, otherTool),
-    projected(archivedResult, otherResult, orphan),
+    projected(offPage), calls, projected(named, unnamed, unrelated, missing),
   )));
   const sent = filterStoredHistoryExtracts(request);
   expect(JSON.parse(resultOf(sent).content as string)).toEqual(extract(
-    projected(call, otherTool),
-    projected({ ...archivedResult, content: cleaned }, otherResult, orphan),
+    projected({ ...offPage, content: [{ type: 'text', text: cleaned }, publicText] }),
+    calls,
+    projected({ ...named, content: cleaned }, { ...unnamed, content: cleaned }, unrelated, missing),
   ));
   expect(filterStoredHistoryExtracts(sent)).toBe(sent);
 });
 
-test('withholds an extract cut inside a paired nested result string carrying private thinking', () => {
+test('drops shared XML replay copies without breaking the archived tool exchange', () => {
+  const rawItem = { type: 'function_call_output', output: exposed };
+  const rawXml = `<function_results><result>${exposed}</result><result>saved</result></function_results>`;
+  const differentXml = '<function_results><result>independent</result></function_results>';
+  const extractResult = archivedResult(call.id, [{ type: 'text', text: exposed, rawItem }], extractName);
+  const ordinaryResult = { ...archivedResult(ordinaryCall.id, 'saved'), rawItem: { output: 'saved' } };
+  const unaffected = { ...archivedResult('independent', 'independent'), rawXml: differentXml, rawXmlImagesAt: 15 };
+  const calls = projected(call, ordinaryCall);
+  // Put the sibling before the rewritten result (and on a different row).
+  const text = JSON.stringify(extract(calls,
+    projected({ ...ordinaryResult, rawXml, rawXmlImagesAt: 15 }, unaffected),
+    projected({ ...extractResult, rawItem, rawXml, rawXmlImagesAt: 15 }),
+  ));
+  const { request, result } = requestWith(text);
+  const sent = filterStoredHistoryExtracts(request);
+  expect(JSON.parse(resultOf(sent).content as string)).toEqual(extract(calls,
+    projected(ordinaryResult, unaffected),
+    projected({ ...extractResult, content: [{ type: 'text', text: cleaned }] }),
+  ));
+  expect(resultOf(sent).content).not.toContain('fixture-data');
+  expect(result.content).toBe(text);
+  expect(filterStoredHistoryExtracts(sent)).toBe(sent);
+});
+
+test('checks unfinished nested result strings using archived provenance, not lookalike contents', () => {
   for (const wrap of [(text: string) => text, (text: string) => [{ type: 'text', text }]]) {
-    for (const suffix of ['\n\n[truncated — fixture]', '\\']) {
+    for (const [calls, nested, recognized] of [
+      [[], archivedResult('off-page', wrap(exposed), extractName), true],
+      [[act], archivedResult(act.id, wrap(exposed), act.name), true],
+      [[call], archivedResult(call.id, wrap(exposed)), true],
+      [[call], archivedResult(call.id, wrap(exposed), ordinaryCall.name), false],
+      [[remoteAct], archivedResult(remoteAct.id, wrap(exposed), act.name), false],
+    ] as const) {
       const serialized = JSON.stringify(extract(
-        projected(call),
-        projected({ type: 'tool_result', toolUseId: call.id, content: wrap(exposed) }),
+        projected(...calls),
+        projected(nested),
       ));
-      // Cut in the middle of the outer string, after the escaped private block.
-      const text = serialized.slice(0, serialized.indexOf('fixture-signature') + 'fixture-signature'.length) + suffix;
-      const { request, result } = requestWith(text);
-      const sent = filterStoredHistoryExtracts(request);
-      expect(resultOf(sent)).toEqual({
-        ...result,
-        content: '[history--extract result withheld: malformed JSON contains a private thinking block.]',
-      });
-      expect(result.content).toBe(text);
+      // Cut inside the private string, before either JSON layer is complete.
+      for (const suffix of ['\n\n[truncated — fixture]', '\\']) {
+        const text = serialized.slice(0, serialized.indexOf('placeholder') + 3) + suffix;
+        const { request, result } = requestWith(text);
+        const sent = filterStoredHistoryExtracts(request);
+        if (recognized) expect(resultOf(sent)).toEqual({ ...result, content: withheld });
+        else expect(sent).toBe(request);
+        expect(result.content).toBe(text);
+      }
     }
   }
 });
@@ -188,15 +258,26 @@ test.each([
   });
 });
 
-test('does not strip spill notices with missing text or trailing content', () => {
+test('recovers at the first truncation marker regardless of notice wording or trailing content', () => {
   for (const suffix of [
     `\n\n[truncated — ${showing}; full content: workspace file ${spillPath}]`,
     `\n\n[truncated — ${failure.replace('; content over the cap was not retained', '')}]`,
     `\n\n[truncated — ${noMount}]`,
     `\n\n[truncated — ${success}]\n`,
     `\n\n[truncated — ${success}]\nmore text`,
+    '\n\n[truncated — original was 101 tokens]',
+    '\r\n\r\n[truncated — original was 101 tokens]',
+    '\n\n[truncated — showing 100\n\n[truncated — original was 101 tokens]',
   ]) {
     const { request } = requestWith(spillHead + suffix);
+    expect(resultOf(filterStoredHistoryExtracts(request)).content).toBe(withheld);
+  }
+  const clean = JSON.stringify(extract(projected(publicText)));
+  for (const text of [
+    clean.slice(0, -3) + '\n\n[truncated — original was 101 tokens]',
+    JSON.stringify(extract(projected({ type: 'text', text: '\n\n[truncated — literal text]' }))),
+  ]) {
+    const { request } = requestWith(text);
     expect(filterStoredHistoryExtracts(request)).toBe(request);
   }
 });
@@ -219,7 +300,7 @@ test('preserves malformed bodies with markers only in arguments, quoted text, me
 
 for (const lane of ['complete', 'stream'] as const) {
   test(`${lane} sends filtered copies only when explicitly enabled`, async () => {
-    const { request, result } = requestWith(exposed);
+    const { request, result } = requestWith(exposed, lane === 'stream' ? act : call);
     const original = JSON.stringify(request);
     const bodies: string[] = [];
     const reply = {
