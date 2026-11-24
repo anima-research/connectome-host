@@ -4,9 +4,9 @@ import {buildFrameworkAgentConfig} from '../src/framework-agent-config.js';
 const config={path:'/tmp/presentation.json',cataloguePath:'board/tools.md'};
 const board={mounts:[{name:'board',path:'/tmp/board',mode:'read-write',autoMaterialize:true}]};
 const recipe=(tp:unknown=config,workspace:unknown=board)=>({name:'test',agent:{systemPrompt:'.',toolPresentation:tp},modules:{workspace}});
-const SHAPE=/agent\.toolPresentation requires absolute path and mount-prefixed cataloguePath/;
-const MOUNT=/toolPresentation cataloguePath requires an existing workspace mount/;
-const DEFAULTS=/toolPresentation defaults require unique component sources and absolute paths/;
+const SHAPE=/Recipe agent\.toolPresentation(\.path|\.cataloguePath)? (must be|has unknown key)/;
+const MOUNT=/Recipe agent\.toolPresentation\.cataloguePath requires an existing workspace mount\./;
+const DEFAULTS=/Recipe agent\.toolPresentation\.defaults/;
 test('presentation config is validated and forwarded unchanged',()=>{
  const parsed=validateRecipe(recipe());
  expect(buildFrameworkAgentConfig(parsed,'ada','test',undefined).toolPresentation).toEqual(config);

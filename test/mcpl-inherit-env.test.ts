@@ -98,12 +98,12 @@ describe('MCPL inheritEnv configuration', () => {
   ] as const) {
     test(`${source} rejects malformed inheritEnv instead of treating it as truthy`, () => {
       for (const value of ['false', 'true', 0, 1, null, {}, []]) {
-        expect(() => load(value)).toThrow(/tools\.inheritEnv must be a boolean/);
+        expect(() => load(value)).toThrow(source === 'recipe' ? /^Recipe mcpServers\.tools\.inheritEnv must be true or false, got / : /tools\.inheritEnv must be a boolean/);
       }
     });
   }
 
   test('recipe references without their own command validate the flag too', () => {
-    expect(() => recipe({ inheritEnv: 'false' })).toThrow(/tools\.inheritEnv must be a boolean/);
+    expect(() => recipe({ inheritEnv: 'false' })).toThrow('Recipe mcpServers.tools.inheritEnv must be true or false, got "false".');
   });
 });

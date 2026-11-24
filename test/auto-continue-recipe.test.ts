@@ -34,7 +34,7 @@ describe('autoContinue recipe wiring', () => {
     for (const value of [{ maxConsecutive: 0 }, { maxConsecutive: 21 }, { maxConsecutive: 1.5 }, { maxConsecutive: '3' }]) {
       expect(() => validateRecipe(base(value))).toThrow(/agent\.autoContinue\.maxConsecutive must be a whole number from 1 to 20/);
     }
-    expect(() => validateRecipe(base({ maxConsecutve: 3 }))).toThrow(/unknown key "maxConsecutve"; it takes maxConsecutive\./);
+    expect(() => validateRecipe(base({ maxConsecutve: 3 }))).toThrow(/unknown key "maxConsecutve" \(did you mean "maxConsecutive"\?\); it takes maxConsecutive\./);
     expect(() => validateRecipe(base({ max: 3, cap: 2 }))).toThrow(/unknown keys "max", "cap"; it takes maxConsecutive\./);
   });
 

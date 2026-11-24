@@ -66,24 +66,16 @@ describe('a recipe load refuses what Anthropic refuses', () => {
     expect((await loadRecipe(recipeFile({ model: OPUS, maxTokens: 128_000 }))).agent.maxTokens).toBe(128_000);
   });
 
-  test('maxTokens over the maximum output is refused even when the budget can\'t be read', async () => {
+  test('a budget that isn\'t a number stops the load before the fit, naming the setting', async () => {
     await expect(loadRecipe(recipeFile({ model: HAIKU, maxTokens: 70_000, contextBudgetTokens: 'lots' }))).rejects.toThrow(
-      'Set it to 64,000 or less. The rest of the fit isn\'t checked: agent.contextBudgetTokens is "lots", not a number of tokens.');
-    await expect(loadRecipe(recipeFile({ model: HAIKU, maxTokens: 70_000, contextBudgetTokens: 'lots', thinking: { enabled: true, budgetTokens: 10_000 } }))).rejects.toThrow(
-      'Set it to between 10,001 and 64,000. The rest of the fit');
-    await expect(loadRecipe(recipeFile({ model: HAIKU, maxTokens: 70_000, contextBudgetTokens: 'lots', thinking: { enabled: true, budgetTokens: 63_999.9999 } }))).rejects.toThrow(
-      'Set it to 64,000. The rest of the fit');
-    expect((await loadRecipe(recipeFile({ model: HAIKU, maxTokens: 64_000, contextBudgetTokens: 'lots', thinking: { enabled: true, budgetTokens: 63_999.9999 } }))).agent.maxTokens).toBe(64_000);
+      'Recipe agent.contextBudgetTokens must be a number, got "lots".');
   });
 
-  test('a thinking budget at or above the maximum output is named as what keeps maxTokens over it, with the budget readable or not', async () => {
+  test('a thinking budget at or above the maximum output is named as what keeps maxTokens over it', async () => {
     for (const budgetTokens of [64_000, 65_000]) {
       const thinking = { enabled: true, budgetTokens };
       const fact = `Recipe agent.thinking.budgetTokens (${budgetTokens.toLocaleString('en-US')}) is at or above that maximum, and the loader requires agent.maxTokens above it, ` +
         'so agent.maxTokens can\'t come within the maximum until the thinking budget is below 64,000.';
-      const unreadable = await loadRecipe(recipeFile({ model: HAIKU, maxTokens: 70_000, contextBudgetTokens: 'lots', thinking })).then(() => '', (error: Error) => error.message);
-      expect(unreadable).toContain(`${fact} The rest of the fit isn't checked`);
-      expect(unreadable).not.toContain('Set it to');
       const readable = await loadRecipe(recipeFile({ model: HAIKU, maxTokens: 70_000, contextBudgetTokens: 100_000, thinking })).then(() => '', (error: Error) => error.message);
       expect(readable).toContain(`${fact} No budget, no lower agent.maxTokens, and no shorter system prompt fits it alone.`);
     }
@@ -141,8 +133,10 @@ describe('a recipe load refuses what Anthropic refuses', () => {
     const error = await loadRecipe(recipeFile({ model: HAIKU, maxTokens: 16_384, contextBudgetTokens: 17_000 })).catch((e: Error) => e);
     expect((error as Error).message).toContain('4,000-token head');
     const floor = await floorNamed({ model: HAIKU, maxTokens: 16_384, contextBudgetTokens: 17_000 });
+    expect(floor).toBeGreaterThan(17_000);
     const nullTail = { model: HAIKU, maxTokens: 16_384, contextBudgetTokens: 17_000, strategy: { type: 'autobiographical', recentWindowTokens: null } };
-    expect(await floorNamed(nullTail)).toBe(floor);
+    await expect(loadRecipe(recipeFile(nullTail))).rejects.toThrow(
+      'Recipe agent.strategy.recentWindowTokens must be a number, got null; give it a value, or leave the key out.');
   });
 
   const ownTail = (strategy: Record<string, unknown>) => ({ model: HAIKU, maxTokens: 16_384, strategy: { type: 'autobiographical', headWindowTokens: 4_000, ...strategy } });
@@ -153,7 +147,7 @@ describe('a recipe load refuses what Anthropic refuses', () => {
 
   test('the head and tail are held to context-manager\'s rule: floor((budget - maxTokens) x (1 + grace)), the grace 0.02 by default', async () => {
     await edge(ownTail({ recentWindowTokens: 6_000 }), 26_188);
-    await edge(ownTail({ recentWindowTokens: 6_000, overBudgetGraceRatio: null }), 26_384);
+    await edge(ownTail({ recentWindowTokens: 6_000, overBudgetGraceRatio: 0 }), 26_384);
     await edge(ownTail({ recentWindowTokens: 6_000, overBudgetGraceRatio: 0.35 }), 23_792);
     await edge(ownTail({ recentWindowTokens: 6_000, overBudgetGraceRatio: -1 }), 26_384);
   });
@@ -205,19 +199,17 @@ describe('a recipe load refuses what Anthropic refuses', () => {
     expect(extension(16_384)).toMatchObject({ checked: true, fits: false });
   });
 
-  test('a head of zero or less is no head, and a head, tail or grace that isn\'t a number leaves the fit unchecked, with the budget the host runs', async () => {
+  test('a head of zero or less is no head, and a head, tail or grace that isn\'t a number stops the load before the fit', async () => {
     const noHead = validateRecipe({ name: 'fit', agent: { systemPrompt: '', maxTokens: 16_384, contextBudgetTokens: 17_000, strategy: { type: 'autobiographical', headWindowTokens: -4_000 } } });
     expect(recipeFit(noHead, HAIKU)).toEqual({ checked: true, fits: true });
-    const lines: Array<[Record<string, unknown>, string]> = [
-      [{ headWindowTokens: '4000' }, 'strategy.headWindowTokens is "4000", not a number of tokens.'],
-      [{ recentWindowTokens: '500' }, 'strategy.recentWindowTokens is "500", not a number of tokens.'],
-      [{ overBudgetGraceRatio: '0.35' }, 'strategy.overBudgetGraceRatio is "0.35", not a number.'],
+    const refusals: Array<[Record<string, unknown>, string]> = [
+      [{ headWindowTokens: '4000' }, 'Recipe agent.strategy.headWindowTokens must be a number, got "4000".'],
+      [{ recentWindowTokens: '500' }, 'Recipe agent.strategy.recentWindowTokens must be a number, got "500".'],
+      [{ overBudgetGraceRatio: '0.35' }, 'Recipe agent.strategy.overBudgetGraceRatio must be a number, got "0.35".'],
+      [{ overBudgetGraceRatio: null }, 'Recipe agent.strategy.overBudgetGraceRatio must be a number, got null; give it a value, or leave the key out.'],
     ];
-    for (const [strategy, line] of lines) {
-      const fit = recipeFit(validateRecipe({ name: 'fit', agent: { systemPrompt: '', strategy: { type: 'autobiographical', ...strategy } } }), HAIKU);
-      expect(fit.checked).toBe(false);
-      expect(fit.checked === false && fit.line).toContain(line);
-      expect(fit.checked === false && fit.line).toContain('the budget is 168,000');
+    for (const [strategy, message] of refusals) {
+      expect(() => validateRecipe({ name: 'fit', agent: { systemPrompt: '', strategy: { type: 'autobiographical', ...strategy } } })).toThrow(message);
     }
   });
 
@@ -322,7 +314,7 @@ describe('a recipe load refuses what Anthropic refuses', () => {
       undefined,
       { type: 'autobiographical', recentWindowTokens: 2_000 },
       { type: 'autobiographical', recentWindowTokens: 150_000, overBudgetGraceRatio: 0.35 },
-      { type: 'autobiographical', headWindowTokens: 30_000, overBudgetGraceRatio: null },
+      { type: 'autobiographical', headWindowTokens: 30_000, overBudgetGraceRatio: 0 },
       { type: 'autobiographical', headWindowTokens: 52_000 },
       { type: 'frontdesk', headWindowTokens: 250_000, recentWindowTokens: 20_000 },
       { type: 'passthrough' },
@@ -393,19 +385,17 @@ describe('a recipe load refuses what Anthropic refuses', () => {
     expect(recipeFit(changed(base, 'headWindowTokens', 40_000), HAIKU)).toEqual({ checked: true, fits: true });
   });
 
-  test('fractional token counts end the check, and a number that isn\'t finite is named as it is', () => {
+  test('fractional token counts end the check, and a number that isn\'t finite stops the load', () => {
     for (const agent of [{ maxTokens: 16_384.5, contextBudgetTokens: 17_000 }, { maxTokens: 16_384, contextBudgetTokens: 20_000.5, strategy: { type: 'autobiographical', headWindowTokens: 3_999.5 } }]) {
       expect(recipeFit(validateRecipe({ name: 'fit', agent: { systemPrompt: '', ...agent } }), HAIKU)).toMatchObject({ checked: true, fits: false });
     }
-    const infinite = recipeFit(validateRecipe({ name: 'fit', agent: { systemPrompt: '', strategy: { type: 'autobiographical', overBudgetGraceRatio: Infinity } } }), HAIKU);
-    expect(infinite.checked === false && infinite.line).toContain('strategy.overBudgetGraceRatio is Infinity, not a finite number');
-    for (const [agent, line] of [
-      [{ maxTokens: Infinity }, 'agent.maxTokens is Infinity, not a finite number of tokens.'],
-      [{ contextBudgetTokens: Infinity }, 'agent.contextBudgetTokens is Infinity, not a finite number of tokens.'],
-      [{ strategy: { type: 'autobiographical', headWindowTokens: -Infinity } }, 'strategy.headWindowTokens is -Infinity, not a finite number of tokens.'],
+    for (const [agent, message] of [
+      [{ strategy: { type: 'autobiographical', overBudgetGraceRatio: Infinity } }, 'Recipe agent.strategy.overBudgetGraceRatio must be a number, got Infinity.'],
+      [{ maxTokens: Infinity }, 'Recipe agent.maxTokens must be a number, got Infinity.'],
+      [{ contextBudgetTokens: Infinity }, 'Recipe agent.contextBudgetTokens must be a number, got Infinity.'],
+      [{ strategy: { type: 'autobiographical', headWindowTokens: -Infinity } }, 'Recipe agent.strategy.headWindowTokens must be a number, got -Infinity.'],
     ] as const) {
-      const fit = recipeFit({ name: 'fit', agent: { systemPrompt: '', ...agent } } as never, HAIKU);
-      expect(fit.checked === false && fit.line).toContain(line);
+      expect(() => validateRecipe({ name: 'fit', agent: { systemPrompt: '', ...agent } })).toThrow(message);
     }
     const huge = recipeFit(validateRecipe({ name: 'fit', agent: { systemPrompt: '', maxTokens: 6e15, strategy: { type: 'passthrough' } } }), HAIKU);
     expect(huge).toMatchObject({ checked: true, fits: false });
@@ -428,7 +418,7 @@ describe('a recipe load refuses what Anthropic refuses', () => {
   test('a range of one value is named as that value: the one budget that loads, and a tail of 0', () => {
     const prompt = promptOfAbout(190_000);
     const tail = 200_000 - defaultTokenEstimator(prompt) - 4_000;
-    const single = { systemPrompt: prompt, maxTokens: 16_384, contextBudgetTokens: 20_000, strategy: { type: 'autobiographical', headWindowTokens: 4_000, recentWindowTokens: tail, overBudgetGraceRatio: null } };
+    const single = { systemPrompt: prompt, maxTokens: 16_384, contextBudgetTokens: 20_000, strategy: { type: 'autobiographical', headWindowTokens: 4_000, recentWindowTokens: tail, overBudgetGraceRatio: 0 } };
     const one = recipeFit(validateRecipe({ name: 'fit', agent: single }), HAIKU);
     const named = /set the budget to ([\d,]+), the one whole budget this check accepts, counting no tools/i.exec(one.checked && !one.fits ? one.refusal : '');
     expect(named).not.toBeNull();
@@ -445,7 +435,7 @@ describe('a recipe load refuses what Anthropic refuses', () => {
   test('the one whole budget that loads is named as that, for a recipe with no budget, with empty windows, and above a fractional maxTokens', () => {
     const prompt = promptOfAbout(150_000);
     const tail = 200_000 - defaultTokenEstimator(prompt) - 32_000 - 4_000;
-    const noBudget = recipeFit(validateRecipe({ name: 'fit', agent: { systemPrompt: prompt, maxTokens: 16_384, strategy: { type: 'autobiographical', headWindowTokens: 4_000, recentWindowTokens: tail, overBudgetGraceRatio: null } } }), HAIKU);
+    const noBudget = recipeFit(validateRecipe({ name: 'fit', agent: { systemPrompt: prompt, maxTokens: 16_384, strategy: { type: 'autobiographical', headWindowTokens: 4_000, recentWindowTokens: tail, overBudgetGraceRatio: 0 } } }), HAIKU);
     expect(noBudget.checked && !noBudget.fits && noBudget.refusal).toContain(
       `Set agent.contextBudgetTokens to ${(16_384 + 4_000 + tail).toLocaleString('en-US')}, the one whole budget that loads and leaves 32,000 of the window for the tools, where the head and the verbatim tail fill the compile and leave older history no room`);
     const full = promptOfAbout(199_999);
@@ -545,7 +535,7 @@ describe('context-manager\'s own strategy at the edges the fit computes', () => 
   // fit's is.
   const cases: Array<[string, Record<string, unknown>]> = [
     ['the default grace', {}],
-    ['a null grace', { overBudgetGraceRatio: null }],
+    ['a grace of 0', { overBudgetGraceRatio: 0 }],
     ['a grace of 0.35', { overBudgetGraceRatio: 0.35 }],
     ['a negative grace', { overBudgetGraceRatio: -1 }],
   ];
@@ -689,9 +679,13 @@ describe('the start checks the model it runs', () => {
 });
 
 describe('a token count that isn\'t a positive number', () => {
+  test('a token count given as text stops the load, naming the setting', async () => {
+    await expect(loadRecipe(recipeFile({ model: HAIKU, maxTokens: '16k' }))).rejects.toThrow('Recipe agent.maxTokens must be a number, got "16k".');
+    await expect(loadRecipe(recipeFile({ model: HAIKU, contextBudgetTokens: '200000' }))).rejects.toThrow(
+      'Recipe agent.contextBudgetTokens must be a number, got "200000".');
+  });
+
   const cases: Array<[string, Record<string, unknown>, string, string]> = [
-    ['agent.maxTokens', { maxTokens: '16k' }, '"16k"', 'not a number of tokens.'],
-    ['agent.contextBudgetTokens', { contextBudgetTokens: '200000' }, '"200000"', 'not a number of tokens.'],
     ['agent.maxTokens', { maxTokens: 0 }, '0', 'not a positive number of tokens.'],
   ];
   for (const [field, agent, shown, why] of cases) {
@@ -710,15 +704,14 @@ describe('a token count that isn\'t a positive number', () => {
     });
   }
 
-  test('null counts as unset for the budget and maxTokens, as before; a null budget keeps the 150k stream ceiling it had', () => {
+  test('null counts as unset for the budget, as before, and keeps the 150k stream ceiling it had; a null maxTokens stops the load', () => {
     expect(agentConfig({ contextBudgetTokens: null }, OPUS)).toMatchObject({ contextBudgetTokens: 300_000, maxStreamTokens: 150_000 });
-    expect(agentConfig({ maxTokens: null }, HAIKU)).toMatchObject({ maxTokens: 16_384, contextBudgetTokens: 200_000 - 32_000 });
-    expect(recipeFit(validateRecipe({ name: 'fit', agent: { systemPrompt: '', maxTokens: null } }), HAIKU)).toEqual({ checked: true, fits: true });
+    expect(() => validateRecipe({ name: 'fit', agent: { systemPrompt: '', maxTokens: null } }))
+      .toThrow('Recipe agent.maxTokens must be a number, got null; give it a value, or leave the key out.');
   });
 
-  test('an agent.model that isn\'t a string loads, and the fit says it wasn\'t checked', async () => {
-    const loaded = await loadRecipe(recipeFile({ model: 42 }));
-    expect(recipeFit(loaded, loaded.agent.model as never).checked).toBe(false);
+  test('an agent.model that isn\'t a string stops the load', async () => {
+    await expect(loadRecipe(recipeFile({ model: 42 }))).rejects.toThrow('Recipe agent.model must be a string, got 42.');
   });
 });
 

@@ -80,7 +80,7 @@ describe('recipe modules.history semantic — review findings', () => {
       rejects({ semantic: { url } }, /plaintext http.*allowInsecureHttp/);
       expect(() => validateRecipe(recipeWith({ semantic: { url, allowInsecureHttp: true } }))).not.toThrow();
     }
-    rejects({ semantic: { url: ok, allowInsecureHttp: 'yes' } }, /allowInsecureHttp must be a boolean/);
+    rejects({ semantic: { url: ok, allowInsecureHttp: 'yes' } }, /allowInsecureHttp must be true or false/);
   });
 
   test('budgets are integers >= 1; syncIntervalMs is 0 or an integer >= 5000', () => {

@@ -102,6 +102,7 @@ import { generateSessionName, namingSummary } from './synesthete.js';
 import {
   type Recipe,
   DEFAULT_RECIPE,
+  envText,
   loadRecipeDetailed,
   saveRecipe,
   loadSavedRecipe,
@@ -320,7 +321,7 @@ async function createFramework(
           autoStart: c.autoStart !== false,
         };
         if (c.dataDir !== undefined) entry.dataDir = c.dataDir;
-        if (c.env !== undefined) entry.env = c.env;
+        if (c.env !== undefined) entry.env = envText(c.env);
         if (c.subscription !== undefined) entry.subscription = c.subscription;
         if (c.autoRestart !== undefined) entry.autoRestart = c.autoRestart;
         return entry;
@@ -472,8 +473,8 @@ async function createFramework(
     webUiModule = new WebUiModule({
       port: webuiConfig.port,
       host: webuiConfig.host,
-      basicAuth: webuiConfig.basicAuth,
-      allowedOrigins: webuiConfig.allowedOrigins,
+      basicAuth: webuiConfig.basicAuth ?? undefined,
+      allowedOrigins: webuiConfig.allowedOrigins ?? undefined,
       observersPath,
       ...(callLedger ? { callLedger } : {}),
       ...(quotaMeter ? { quotaMeter } : {}),

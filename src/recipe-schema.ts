@@ -9,6 +9,7 @@ import type { AutobiographicalOptions } from '@animalabs/context-manager';
 import type { MembraneConfig } from '@animalabs/membrane';
 import { ENV_REFERENCE } from './recipe-document.js';
 import { shown } from './modules/shown.js';
+import { noteRecipeWarning } from './recipe-warnings.js';
 import { REASONING_EFFORTS } from './modules/settings-module.js';
 import { DEFAULT_INSTRUCTIONS_PATH } from './modules/instructions-module.js';
 import { isLoopbackOrTailnetHost } from './history-semantic.js';
@@ -182,17 +183,20 @@ const refusesKind = (issues: readonly z.core.$ZodIssue[], value: unknown): boole
   issues.some((issue) => issue.path.length === 0 && (issue.code === 'invalid_type'
     || (issue.code === 'invalid_value' && value !== null && typeof value === 'object')));
 
-function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyKey[], input: unknown, origin: RecipeOrigin): string[] {
+type Subject = (at: string) => string;
+const recipeSubject: Subject = (at) => (at === '' ? 'Recipe' : `Recipe ${at}`);
+
+function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyKey[], input: unknown, origin: RecipeOrigin, subject: Subject): string[] {
   const out: string[] = [];
   for (const issue of issues) {
     const path = [...base, ...issue.path];
     const at = dotted(path);
-    const name = at === '' ? 'Recipe' : `Recipe ${at}`;
+    const name = subject(at);
     const got = () => printed(valueAt(input, path), path, origin);
     if (issue.code === 'invalid_union') {
       if (issue.errors.length > 0) {
         const meant = issue.errors.filter((arm) => !refusesKind(arm, valueAt(input, path)));
-        if (meant.length === 1) { out.push(...sentences(meant[0]!, path, input, origin)); continue; }
+        if (meant.length === 1) { out.push(...sentences(meant[0]!, path, input, origin, subject)); continue; }
       } else if (issue.discriminator !== undefined) {
         const options = 'options' in issue ? issue.options ?? [] : [];
         out.push(`${name} must be ${listed(options.filter((o) => o !== null && o !== undefined))}, got ${got()}.`);
@@ -218,9 +222,9 @@ function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyK
   return out;
 }
 
-function faultMessage(issues: readonly z.core.$ZodIssue[], input: unknown, origin: RecipeOrigin): string {
-  const all = [...new Set(sentences(issues, [], input, origin))];
-  return all.length === 1 ? all[0]! : `The recipe has ${all.length} faults:\n${all.map((s) => `- ${s}`).join('\n')}`;
+function faultMessage(issues: readonly z.core.$ZodIssue[], input: unknown, origin: RecipeOrigin, subject: Subject = recipeSubject, whole = 'The recipe'): string {
+  const all = [...new Set(sentences(issues, [], input, origin, subject))];
+  return all.length === 1 ? all[0]! : `${whole} has ${all.length} faults:\n${all.map((s) => `- ${s}`).join('\n')}`;
 }
 
 const nonNegative = (phrase = 'a finite number of 0 or more') => numberWhere(phrase, (v) => v >= 0);
@@ -519,8 +523,8 @@ const retry = z.strictObject({
 }, takes('an object'));
 
 const clock = z.strictObject({
-  intervalMinutes: number().optional(),
-  intervalSeconds: number().optional(),
+  intervalMinutes: number('a positive whole number').optional(),
+  intervalSeconds: number('a positive whole number').optional(),
   precision: oneOf(['minutes', 'seconds']).optional(),
 }, takes('an object'))
   .check(rule<object>(['intervalMinutes', 'intervalSeconds', 'precision'], (c) => {
@@ -534,6 +538,7 @@ const clock = z.strictObject({
   }));
 
 /** `agent.autoContinue` as an object: agent-framework's `AutoContinueConfig`. */
+export type RecipeAutoContinue = z.output<typeof autoContinue>;
 const autoContinue = z.strictObject({
   /** Continuations in a row before the agent waits for the next event: a
    *  whole number, 1 to 20. Default 3. */
@@ -625,6 +630,7 @@ const mockShape = {
  * Each reply is chosen in this order: the next `responseQueue` entry, then
  * the echo, then `defaultResponse`. Unset numbers keep membrane's defaults.
  */
+export type RecipeMockConfig = z.output<typeof mock>;
 const mock: z.ZodType<Exact<typeof mockShape>> = z.looseObject(mockShape, takes('an object'));
 
 const refusalHandlingShape = {
@@ -954,6 +960,7 @@ const nonEmptyPatterns = (phrase: string) => listOf(nonEmptyText(), phrase);
 
 /** A narrowing for one tool-lifecycle path (RFC-007 §4.3). Every stated key
  *  must hold; patterns use the RFC-007 §6.2 grammar (`*` = any run). */
+export type RecipeToolLifecycleNarrowing = z.output<typeof narrowing>;
 const narrowing = z.strictObject({
   /** Patterns over the model-facing tool name: `mcpl--<serverId>--<tool>`
    *  for an MCPL server's tools unless its entry sets `toolPrefix`
@@ -970,7 +977,9 @@ const narrowing = z.strictObject({
   conversations: nonEmptyPatterns('a list of non-empty patterns').optional(),
 }, takes('a narrowing object ({} for no narrowing); omit it to leave the path denied'));
 
-/** `mcpServers.ID.toolLifecycle`, and mcpl-servers.json's `toolLifecycle`. */
+/** `mcpServers.ID.toolLifecycle`, and mcpl-servers.json's `toolLifecycle`.
+ *  agent-framework reads a narrowing of the wrong shape as admitting nothing,
+ *  so a malformed block would turn an intended grant off without a word. */
 export const toolLifecycleSchema = z.strictObject({
   observe: narrowing.optional(),
   inputs: narrowing.optional(),
@@ -1059,6 +1068,7 @@ type SourceShape = Exact<typeof sourceShape>;
  * `npm` (registry form) must be set; tools may require more depending on
  * the install pattern they're generating.
  */
+export type RecipeMcpServerSource = z.output<typeof source>;
 const source: z.ZodType<SourceShape> = z.looseObject(sourceShape, takes('an object'))
   .check(rule<SourceShape>(['url', 'npm'], (s) => {
     if (s.url && s.npm) return ({ at }) => `Recipe ${at()} must not set both "url" and "npm".`;
@@ -1134,6 +1144,7 @@ type CredentialFileShape = Exact<typeof credentialFileShape>;
  * }
  * ```
  */
+export type RecipeCredentialFile = z.output<typeof credentialFile>;
 const credentialFile: z.ZodType<CredentialFileShape> = z.looseObject(credentialFileShape, takes('an object'))
   .check(rule<CredentialFileShape>(['fields'], (f) => {
     const twice = f.fields.findIndex((field, i) => f.fields.findIndex((other) => other.name === field.name) !== i);
@@ -1366,6 +1377,7 @@ const fetchShape = {
 const fetchModule: z.ZodType<Exact<typeof fetchShape>> = z.looseObject(fetchShape, takes('an object'));
 
 /** `modules.wake.judge`, as agent-framework's `ReplyJudgeOptions` takes it. */
+export type RecipeReplyJudge = z.output<typeof replyJudge>;
 const replyJudge = z.strictObject({
   /** False leaves the judge unwired: `judge` rules then wake as debounces. */
   enabled: trueOrFalse().optional(),
@@ -1398,9 +1410,11 @@ const wakeShape = {
   judge: replyJudge.optional(),
 };
 /** `modules.wake` as an object: starting rules, and the reply judge. */
+export type RecipeWake = z.output<typeof wake>;
 const wake: z.ZodType<Exact<typeof wakeShape>> = z.looseObject(wakeShape, takes('an object'));
 
 /** `modules.heartbeat.defaults`. */
+export type RecipeHeartbeatDefaults = z.output<typeof heartbeatDefaults>;
 const heartbeatDefaults = z.strictObject({
   /** 60 or more. */
   intervalSeconds: numberWhere('a number of seconds, 60 or more', (v) => v >= 60).optional(),
@@ -1410,6 +1424,7 @@ const heartbeatDefaults = z.strictObject({
 }, takes('an object'));
 
 /** `modules.heartbeat` as an object. */
+export type RecipeHeartbeat = z.output<typeof heartbeat>;
 const heartbeat = z.strictObject({
   /** The state file; relative to the install directory. Default `{dataDir}/heartbeat.json`: the
    *  install's, so every session reads the same schedule, as heartbeat-mcpl's state was. */
@@ -1526,6 +1541,7 @@ type MountShape = Exact<typeof mountShape>;
  * maximum file size is operator-configurable because binary service
  * artifacts may legitimately exceed the conservative framework default.
  */
+export type RecipeWorkspaceMount = z.output<typeof mount>;
 const mount = z.strictObject(mountShape, {
   error: (issue) => (issue.code === 'unrecognized_keys'
     ? unknownKeysWords(issue.keys, Object.keys(mountShape), MOUNT_KEY_INSTEAD)
@@ -2148,7 +2164,9 @@ function instructionsMount(m: ModulesShape): Sentence | undefined {
   const mountName = path.slice(0, path.indexOf('/'));
   const declared = typeof m.workspace === 'object' ? m.workspace.mounts.length : 0;
   const mounts = buildWorkspaceMounts(m.workspace, '.') ?? [];
-  const match = mounts.find((mount) => mount.name === mountName);
+  const named = mounts.filter((mount) => mount.name === mountName);
+  if (named.length > 1) return undefined;
+  const match = named[0];
   const pathWords = (show: Show) => (ownPath !== undefined ? show('instructions.path', ownPath) : JSON.stringify(path));
   const nameWords = (show: Show) => (ownPath !== undefined ? show('instructions.path', mountName) : JSON.stringify(mountName));
   if (!match) {
@@ -2213,6 +2231,7 @@ const extensionShape = {
  * custom context strategies and/or framework modules at boot. See
  * src/extensions.ts for the loader and the `register(api, config)` contract.
  */
+export type RecipeExtension = z.output<typeof extension>;
 const extension: z.ZodType<Exact<typeof extensionShape>> = z.looseObject(extensionShape, takes('an object'));
 const extensions = mapOf(extension, 'an object mapping names to extension entries')
   .check(rule<Record<string, unknown>>([''], (e) =>
@@ -2247,7 +2266,7 @@ const codeExecutionShape = {
 type CodeExecutionShape = Exact<typeof codeExecutionShape>;
 /**
  * Client-side programmatic tool calling (af `code_execution` tool), passed to
- * the framework as written, so it is the framework's own config type.
+ * the framework as written, so its keys are agent-framework's CodeExecutionConfig.
  *
  * SECURITY: model-authored JavaScript runs in a QuickJS WebAssembly
  * engine, in a child process of the host, and reaches nothing but its
@@ -2255,6 +2274,7 @@ type CodeExecutionShape = Exact<typeof codeExecutionShape>;
  * containment beyond its engine and glue: the child runs as the host's
  * user, with no operating-system sandbox around it. Enable deliberately.
  */
+export type RecipeCodeExecution = z.output<typeof codeExecution>;
 const codeExecution: z.ZodType<CodeExecutionShape> = z.looseObject(codeExecutionShape, takes('an object'))
   .check(rule<CodeExecutionShape>(['enabled'], (ce) => {
     if (!ce.enabled) return undefined;
@@ -2286,6 +2306,7 @@ const channelKinds = <const T extends readonly [string, ...string[]]>(rules: T) 
  * channels an @-mention neither binds a fork nor triggers a bound one. Still
  * works; the host logs a `[deprecated]` line at startup when it is set.
  */
+export type RecipeConversations = z.output<typeof conversations>;
 const conversations = z.strictObject({
   /** When an unbound channel acquires a fork.
    * Defaults: dm 'always', groupDm 'always', channel 'mention'. */
@@ -2365,9 +2386,11 @@ function otherReadersKeys(reader: 'persistent' | 'forks'): (issue: z.core.$ZodRa
  *   (the same pattern as `conversations`; see buildSubconsciousConfig), and
  *   `framing`, how the fork is prompted, stays the framework's default.
  *
- * The types are the framework's own, minus those two fields;
+ * The keys are the framework's, less those two fields and `foreignRounds`,
+ * `physicalWindowTokens` and `thinkingBinding`, which a recipe doesn't set;
  * agent-framework's src/tune-out/tools.ts documents each field.
  */
+export type RecipeSubconscious = z.output<typeof subconscious>;
 const subconscious = z.discriminatedUnion('reader', [
   z.strictObject(persistentReaderShape, { error: otherReadersKeys('persistent') }),
   z.strictObject(forkReaderShape, { error: otherReadersKeys('forks') }),
@@ -2382,6 +2405,7 @@ const subconscious = z.discriminatedUnion('reader', [
  * `'latest-inbound'`: the previous rule, with the most recent delivered
  * inbound message as a global fallback locus.
  */
+export type RecipeSpeech = z.output<typeof speech>;
 const speech = z.strictObject({ locus: oneOf(['delivery', 'latest-inbound']).optional() }, takes('an object'));
 
 /**
@@ -2392,6 +2416,7 @@ const speech = z.strictObject({ locus: oneOf(['delivery', 'latest-inbound']).opt
  * refuses `enabled: true`, as the framework's `create` does, and lets
  * `enabled: false` load, which the framework accepts and ignores.
  */
+export type RecipeTuneOut = z.output<typeof tuneOut>;
 const tuneOut = z.strictObject({ enabled: trueOrFalse().optional(), announce: trueOrFalse().optional() }, takes('an object'))
   .check(rule<{ enabled?: boolean }>(['enabled'], (t) =>
     t.enabled === true
@@ -2400,6 +2425,7 @@ const tuneOut = z.strictObject({ enabled: trueOrFalse().optional(), announce: tr
       : undefined));
 
 /** Dendrite lifecycle options (agent-framework FrameworkConfig.dendrite). */
+export type RecipeDendrite = z.output<typeof dendrite>;
 const dendrite = z.strictObject({
   announceOrphans: trueOrFalse().optional(),
   collapseDerivationNoticesAfter: numberWhere('a non-negative integer', (v) => Number.isInteger(v) && v >= 0).optional(),
@@ -2427,7 +2453,7 @@ const recipeShape = {
   description: text().optional(),
   version: text().optional(),
   agent,
-  mcpServers: mapOf(mcpServer, 'an object of servers').optional(),
+  mcpServers: mapOf(mcpServer, 'an object that gives each server a name').optional(),
   modules: modules.optional(),
   /** Deployment-specific code extensions, keyed by a human-readable name. */
   extensions: extensions.optional(),
@@ -2553,6 +2579,8 @@ const RETIRED_RECIPE_KEYS: Readonly<Record<string, string>> = {
     'if it was true; if it was false, nothing',
 };
 
+const REFUSED_RECIPE_KEYS: ReadonlySet<string> = new Set(['agent.refusalHandling.primarySummaryFallback', 'modules.retrieval.reasoningContext']);
+
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -2600,8 +2628,8 @@ function unknownIn(schema: z.core.$ZodType, value: unknown, path: string, found:
   const warns = !(at.def.catchall instanceof z.ZodNever)
     && !(at === strategy && typeof value.type === 'string' && !isBuiltinStrategyType(value.type));
   for (const key of Object.keys(value)) {
-    if (!warns || Object.hasOwn(shape, key)) continue;
     const where = `${prefix}${key}`;
+    if (!warns || Object.hasOwn(shape, key) || REFUSED_RECIPE_KEYS.has(where)) continue;
     const retired = Object.hasOwn(RETIRED_RECIPE_KEYS, where) ? RETIRED_RECIPE_KEYS[where] : undefined;
     const near = retired === undefined ? nearestKey(key, known) : null;
     found.push(retired !== undefined ? `${where} (replaced by ${retired})` : near ? `${where} (did you mean ${prefix}${near}?)` : where);
@@ -2626,13 +2654,31 @@ export function unknownRecipeKeys(raw: unknown): string[] {
 /**
  * The recipe that `raw` holds, as the load gives it: a new object, with
  * `agent.systemPrompt` and `agent.cacheTtl` written where they are left out.
- * Throws one error whose message names every fault that one parse can judge,
- * printing values as `origin` allows.
+ * It writes one warning line naming each key that the host doesn't read
+ * (unknownRecipeKeys), and throws one error whose message names every fault
+ * that one parse can judge, printing values as `origin` allows.
  */
-export function parseRecipe(raw: unknown, origin: RecipeOrigin = { kind: 'literal' }): RecipeShape {
+export function validateRecipe(raw: unknown, origin: RecipeOrigin = { kind: 'literal' }): Recipe {
+  const unknownKeys = unknownRecipeKeys(raw);
+  if (unknownKeys.length > 0) {
+    const warning = `Recipe has keys the host does not read (ignored): ${unknownKeys.join(', ')}.`;
+    console.warn(warning);
+    noteRecipeWarning(warning);
+  }
   const result = recipeSchema.safeParse(raw, { error: words });
   if (result.success) return result.data;
   throw new Error(faultMessage(result.error.issues, raw, origin));
+}
+
+/**
+ * A server's `toolLifecycle` as a file other than the recipe gives it, such as
+ * mcpl-servers.json, checked as the recipe's is; `where` names its place in
+ * the file, and a refusal names it in place of "Recipe".
+ */
+export function parseToolLifecycle(value: unknown, where: string): RecipeToolLifecycle {
+  const result = toolLifecycleSchema.safeParse(value, { error: words });
+  if (result.success) return result.data;
+  throw new Error(faultMessage(result.error.issues, value, { kind: 'literal' }, (at) => (at === '' ? where : `${where}.${at}`), where));
 }
 
 type Same<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
@@ -2685,6 +2731,19 @@ void holdsSeesAPackagesChange;
 
 /** The recipe as the load gives it. */
 export type Recipe = z.output<typeof recipeSchema>;
+export type RecipeAgent = AgentShape;
+export type RecipeStrategy = StrategyShape;
+export type RecipeKvUnifiedConfig = z.output<typeof kvUnified>;
+export type RecipeMcpServer = McpServerShape;
+export type RecipeToolLifecycle = z.output<typeof toolLifecycleSchema>;
+export type RecipeCredentialFileField = z.output<typeof credentialField>;
+export type RecipeModules = ModulesShape;
+export type RecipeWebUi = z.output<typeof webui>;
+export type RecipeTtsRelay = z.output<typeof ttsRelay>;
+export type RecipeFleet = FleetShape;
+export type RecipeFleetChild = z.output<typeof fleetChild>;
+export type RecipePersistentReader = PersistentArm;
+export type RecipeForkReader = ForkArm;
 
 const misspeltKeysFailTheBuild = [
   // @ts-expect-error

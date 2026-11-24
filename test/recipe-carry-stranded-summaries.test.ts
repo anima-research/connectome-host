@@ -26,7 +26,7 @@ describe('carryStrandedSummaries', () => {
   test('anything but a boolean is refused at load', () => {
     for (const value of ['true', 1, 0, null, [], {}]) {
       expect(() => validateRecipe(recipe({ carryStrandedSummaries: value })))
-        .toThrow(/carryStrandedSummaries must be a boolean/);
+        .toThrow(/Recipe agent\.strategy\.carryStrandedSummaries must be true or false, got /);
     }
   });
 });

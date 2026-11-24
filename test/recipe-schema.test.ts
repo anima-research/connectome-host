@@ -1,0 +1,357 @@
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
+import { buildFrameworkStrategy } from '../src/framework-strategy.js';
+import { loadMcplServers } from '../src/mcpl-config.js';
+import {
+  loadRecipeDocument, loadSavedRecipe, readRecipeDocument, saveRecipe, unknownRecipeKeys, validateRecipe,
+} from '../src/recipe.js';
+
+const dirs: string[] = [];
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+const tempDir = () => {
+  const dir = mkdtempSync(join(tmpdir(), 'recipe-schema-'));
+  dirs.push(dir);
+  return dir;
+};
+
+const base = (extra: Record<string, unknown> = {}, agent: Record<string, unknown> = {}) => ({
+  name: 'schema',
+  agent: { systemPrompt: 'sys', ...agent },
+  ...extra,
+});
+
+function refusal(run: () => unknown): string {
+  try {
+    run();
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error('expected a refusal');
+}
+
+async function loadsFrom(raw: unknown, env: Record<string, string>): Promise<string> {
+  const dir = tempDir();
+  const file = join(dir, 'recipe.json');
+  writeFileSync(file, JSON.stringify(raw));
+  return loadRecipeDocument(await readRecipeDocument(file), file, { env, fetchSystemPrompt: false })
+    .then(() => '', (error: Error) => error.message);
+}
+
+describe('one message for every fault that one parse can judge', () => {
+  test('faults in three sections come in one message, one line each', () => {
+    const message = refusal(() => validateRecipe(base({ modules: { fetch: 'yes' }, speech: { locus: 'nowhere' } }, { maxTokens: 'lots' })));
+    expect(message).toBe([
+      'The recipe has 3 faults:',
+      '- Recipe agent.maxTokens must be a number, got "lots".',
+      '- Recipe modules.fetch must be true, false or an object, got "yes".',
+      '- Recipe speech.locus must be "delivery" or "latest-inbound", got "nowhere".',
+    ].join('\n'));
+  });
+
+  test('a wrong kind in one section and a broken rule of another object are both in the first message', () => {
+    const message = refusal(() => validateRecipe(base({ dendrite: { announceOrphans: 'no' } }, { proseLock: '#lounge' })));
+    expect(message).toContain('- Recipe agent.proseLock requires agent.proseRouting "locked", got no proseRouting (locus).');
+    expect(message).toContain('- Recipe dendrite.announceOrphans must be true or false, got "no".');
+  });
+
+  test('a rule runs where the settings it reads have their shape, whatever else has a fault', () => {
+    const message = refusal(() => validateRecipe(base({}, {
+      proseLock: '#lounge', strategy: { kvUnified: { policy: { alpha: 'high' } } },
+    })));
+    expect(message).toContain('Recipe agent.proseLock requires agent.proseRouting "locked"');
+    expect(message).toContain('Recipe agent.strategy.kvUnified.policy.alpha must be a finite number of 0 or more, got "high".');
+  });
+});
+
+describe('a message prints no value that came from the environment', () => {
+  const env = { TOKEN: 's3cret', MAX: 'many', PORT: '7343' };
+  const recipe = base({ mcpServers: { x: { command: 'node', token: '${TOKEN}' } }, modules: { history: '${TOKEN}' } },
+    { maxTokens: '${MAX}', cacheTtl: 'x-${TOKEN}' });
+
+  test('a load names the references as the author wrote them, and none of their values', async () => {
+    const message = await loadsFrom(recipe, env);
+    expect(message).toContain('Recipe agent.maxTokens must be a number, got "${MAX}".');
+    expect(message).toContain('Recipe agent.cacheTtl must be "5m" or "1h", got "x-${TOKEN}".');
+    expect(message).toContain('Recipe modules.history must be true, false or an object, got "${TOKEN}".');
+    expect(message).not.toContain('s3cret');
+    expect(message).not.toContain('many');
+  });
+
+  test('a saved document with its references does the same', async () => {
+    const dataDir = tempDir();
+    saveRecipe(dataDir, recipe);
+    const saved = { TOKEN: process.env.TOKEN, MAX: process.env.MAX };
+    Object.assign(process.env, { TOKEN: env.TOKEN, MAX: env.MAX });
+    try {
+      const message = await loadSavedRecipe(dataDir, { fetchSystemPrompt: false }).then(() => '', (error: Error) => error.message);
+      expect(message).toContain('got "${MAX}"');
+      expect(message).toContain('got "x-${TOKEN}"');
+      expect(message).not.toContain('s3cret');
+      expect(message).not.toContain('many');
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  test('a legacy snapshot, saved with its values in, names the kind of a string and not the string', async () => {
+    const dataDir = tempDir();
+    writeFileSync(join(dataDir, '.recipe.json'), JSON.stringify(base({}, { cacheTtl: 's3cret' })));
+    const message = await loadSavedRecipe(dataDir, { fetchSystemPrompt: false }).then(() => '', (error: Error) => error.message);
+    expect(message).toBe('Recipe agent.cacheTtl must be "5m" or "1h", got a string.');
+  });
+
+  test('a number from the environment is a string, and its refusal names the reference', async () => {
+    expect(await loadsFrom(base({ modules: { webui: { port: '${PORT}', host: '127.0.0.1' } } }), env))
+      .toBe('Recipe modules.webui.port must be a number, got "${PORT}".');
+  });
+
+  test('a value the author wrote is printed, and an object or a list by its kind', () => {
+    expect(refusal(() => validateRecipe(base({}, { cacheTtl: '5min' })))).toBe('Recipe agent.cacheTtl must be "5m" or "1h", got "5min".');
+    expect(refusal(() => validateRecipe(base({}, { retry: [1, 2] })))).toBe('Recipe agent.retry must be an object, got a list.');
+  });
+});
+
+describe('null, where the code gives it a meaning, and where it doesn\'t', () => {
+  test('each of the seven places loads; the prompt becomes empty and the other six stay null', () => {
+    const parsed = validateRecipe(base({ modules: { webui: { basicAuth: null, allowedOrigins: null } } }, {
+      systemPrompt: null, contextBudgetTokens: null, refusalHandling: null, strategy: { type: null },
+    }));
+    expect(parsed.agent.systemPrompt).toBe('');
+    expect(parsed.agent.contextBudgetTokens).toBeNull();
+    expect(parsed.agent.refusalHandling).toBeNull();
+    expect(parsed.agent.strategy?.type).toBeNull();
+    expect(parsed.modules?.webui).toEqual({ basicAuth: null, allowedOrigins: null });
+    expect(validateRecipe(base({}, { refusalHandling: { autoRewind: null } })).agent.refusalHandling).toEqual({ autoRewind: null });
+    expect(buildFrameworkAgentConfig(parsed, 'a', 'claude-opus-4-1', { kind: 'strategy' } as never).maxStreamTokens).toBe(150_000);
+  });
+
+  test('false loads and stays false at agent.refusalHandling and modules.ttsRelay', () => {
+    const parsed = validateRecipe(base({ modules: { ttsRelay: false } }, { refusalHandling: false }));
+    expect(parsed.agent.refusalHandling).toBe(false);
+    expect(parsed.modules?.ttsRelay).toBe(false);
+  });
+
+  test('a null elsewhere is refused, and the message says to give a value or leave the key out', () => {
+    expect(refusal(() => validateRecipe(base({ mcpServers: { x: { command: 'node', toolPrefix: null } } }))))
+      .toBe('Recipe mcpServers.x.toolPrefix must be a string, got null; give it a value, or leave the key out.');
+  });
+
+  test('the five loose checks of before refuse what they let through', () => {
+    for (const [recipe, message] of [
+      [base({ agent: [] }), 'Recipe agent must be an object, got a list.'],
+      [base({}, { cacheKeepalive: [] }), 'Recipe agent.cacheKeepalive must be an object, got a list.'],
+      [base({}, { strategy: { type: '' } }), 'Recipe agent.strategy.type must be "autobiographical", "passthrough", "frontdesk" or a custom type, got "".'],
+      [base({}, { refusalHandling: 0 }), 'Recipe agent.refusalHandling must be an object, such as {"autoRewind": true}, or left out, got 0.'],
+      [base({}, { contextBudgetTokens: 'many' }), 'Recipe agent.contextBudgetTokens must be a number, got "many".'],
+    ] as const) {
+      expect(refusal(() => validateRecipe(recipe))).toBe(message);
+    }
+  });
+
+  test('mcpServers is an object of servers, and a list of them is refused', () => {
+    expect(refusal(() => validateRecipe(base({ mcpServers: [{ command: 'node' }] }))))
+      .toBe('Recipe mcpServers must be an object that gives each server a name, got a list.');
+  });
+});
+
+describe('the parsed recipe', () => {
+  test('a left-out agent gets the two values the load writes, and nothing else', () => {
+    expect(validateRecipe(base()).agent).toEqual({ systemPrompt: 'sys', cacheTtl: '1h' });
+    expect(validateRecipe({ name: 'schema', agent: {} }).agent).toEqual({ systemPrompt: '', cacheTtl: '1h' });
+  });
+
+  test('the load returns a new object, and leaves its argument as it was', () => {
+    const raw = base({ modules: { fetch: true } });
+    const before = structuredClone(raw);
+    const parsed = validateRecipe(raw);
+    expect(parsed).not.toBe(raw);
+    expect(raw).toEqual(before);
+  });
+
+  test('an empty strategy stays empty, and the strategy in force is autobiographical', () => {
+    const parsed = validateRecipe(base({}, { strategy: {} }));
+    expect(parsed.agent.strategy).toEqual({});
+    expect(buildFrameworkStrategy(parsed, 'claude-opus-4-1', 'UTC').constructor.name).toBe('AutobiographicalStrategy');
+  });
+
+  test('toolResultMaxLastN takes a number or a map of numbers', () => {
+    expect(validateRecipe(base({}, { strategy: { toolResultMaxLastN: { snapshot: 1 } } })).agent.strategy?.toolResultMaxLastN)
+      .toEqual({ snapshot: 1 });
+    expect(refusal(() => validateRecipe(base({}, { strategy: { toolResultMaxLastN: { snapshot: '1' } } }))))
+      .toBe('Recipe agent.strategy.toolResultMaxLastN.snapshot must be a number, got "1".');
+  });
+
+  test('a server\'s args and env take text, a number or true and false, as given', () => {
+    const server = { command: 'node', args: ['--port', 8080, true], env: { PORT: 8080, DEBUG: true, NAME: 'x' } };
+    expect(validateRecipe(base({ mcpServers: { x: server } })).mcpServers?.x).toEqual(server);
+    expect(refusal(() => validateRecipe(base({ mcpServers: { x: { command: 'node', args: [null] } } }))))
+      .toBe('Recipe mcpServers.x.args[0] must be a string, a number, true or false, got null; give it a value, or leave the key out.');
+  });
+
+  test('a server entry takes agent-framework\'s settings that a recipe can write, with no warning', () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const discord = { command: 'node', allowHostCommands: true, enabledCapabilities: ['x'], protocol: 'modern', transport: 'http' };
+      expect(validateRecipe(base({ mcpServers: { discord } })).mcpServers?.discord).toEqual(discord);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('unknown keys', () => {
+  test('a built-in strategy warns of a misspelt option, naming the nearest; a custom type takes any key with no warning', () => {
+    expect(unknownRecipeKeys(base({}, { strategy: { maxMesageTokens: 1 } })))
+      .toEqual(['agent.strategy.maxMesageTokens (did you mean agent.strategy.maxMessageTokens?)']);
+    expect(unknownRecipeKeys(base({ extensions: { s: { kind: 'strategy', path: '/s.js' } } }, { strategy: { type: 'mine', anything: 1 } })))
+      .toEqual([]);
+  });
+
+  test('a section that said nothing of an unknown key now warns, and keeps the key', () => {
+    const recipe = base({ modules: { webui: { host: '127.0.0.1', hostt: 'x' } } });
+    expect(unknownRecipeKeys(recipe)).toEqual(['modules.webui.hostt (did you mean modules.webui.host?)']);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(validateRecipe(recipe).modules?.webui).toEqual({ host: '127.0.0.1', hostt: 'x' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('deprecated keys load, and retired keys load with their replacement named', () => {
+    const recipe = base({
+      modules: { files: false, mcplAdmin: { surface: 'tools' }, webui: { observersSurface: 'tools' }, instructions: false },
+      conversations: {}, tuneOut: { enabled: false },
+    }, { strategy: { identityReminderSilent: false }, refusalHandling: { announceHumanTurns: true }, files: 1 });
+    expect(unknownRecipeKeys(recipe)).toEqual([
+      'agent.files',
+      'agent.strategy.identityReminderSilent (replaced by a sentence asking for silence at the end of each nonblank reminder the recipe sets, ' +
+        'agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, if it was true; if it was false, nothing)',
+      'modules.files (replaced by modules.workspace)',
+    ]);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const parsed = validateRecipe(recipe);
+      expect(parsed.modules).toMatchObject({ files: false });
+      expect(parsed.agent.strategy).toEqual({ identityReminderSilent: false });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('a key the load refuses by name is refused, and isn\'t also named as a key the host ignores', () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(refusal(() => validateRecipe(base({}, { refusalHandling: { primarySummaryFallback: true } }))))
+        .toBe('Recipe agent.refusalHandling.primarySummaryFallback was removed and is unsupported.');
+      expect(refusal(() => validateRecipe(base({ modules: { retrieval: { reasoningContext: 'all_turns' } } }))))
+        .toStartWith('Recipe modules.retrieval.reasoningContext is not supported: ');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('the wake rules are kept as given and draw no warning, while a key beside them warns', () => {
+    const policies = [{ name: 'p', match: { anything: 1 }, behavior: 'nonsense' }];
+    const recipe = base({ modules: { wake: { policies, default: 7, judges: {} } } });
+    expect(unknownRecipeKeys(recipe)).toEqual(['modules.wake.judges (did you mean modules.wake.judge?)']);
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(validateRecipe(recipe).modules?.wake).toEqual({ policies, default: 7, judges: {} });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  const closed: Array<[string, Record<string, unknown>]> = [
+    ['agent.toolPresentation', base({}, { toolPresentation: { path: '/p.json', cataloguePath: 'products/c.md' } })],
+    ['agent.toolPresentation.defaults[0]', base({}, { toolPresentation: { path: '/p.json', cataloguePath: 'products/c.md', defaults: [{ source: 's', path: '/d.json' }] } })],
+    ['agent.retry', base({}, { retry: {} })],
+    ['agent.retry.overloaded', base({}, { retry: { overloaded: {} } })],
+    ['agent.autoContinue', base({}, { autoContinue: {} })],
+    ['agent.clock', base({}, { clock: { intervalMinutes: 10 } })],
+    ['agent.strategy.compressionToolProseFallback', base({}, { strategy: { compressionToolProseFallback: { intoTool: 'j', fromTools: ['s'] } } })],
+    ['mcpServers.x.toolLifecycle', base({ mcpServers: { x: { command: 'node', toolLifecycle: {} } } })],
+    ['mcpServers.x.toolLifecycle.observe', base({ mcpServers: { x: { command: 'node', toolLifecycle: { observe: {} } } } })],
+    ['mcpServers.x.toolLifecycle.inputs', base({ mcpServers: { x: { command: 'node', toolLifecycle: { inputs: {} } } } })],
+    ['modules.wake.judge', base({ modules: { wake: { judge: {} } } })],
+    ['modules.heartbeat', base({ modules: { heartbeat: {} } })],
+    ['modules.heartbeat.defaults', base({ modules: { heartbeat: { defaults: {} } } })],
+    ['modules.heartbeat.importFrom', base({ modules: { heartbeat: { importFrom: {} } } })],
+    ['modules.workspace', base({ modules: { workspace: { mounts: [{ name: 'm', path: './m' }] } } })],
+    ['modules.workspace.mounts[0]', base({ modules: { workspace: { mounts: [{ name: 'm', path: './m' }] } } })],
+    ['modules.instructions', base({ modules: { instructions: {}, workspace: { mounts: [{ name: 'instructions', path: './i', mode: 'read-only' }] } } })],
+    ['modules.notices', base({ modules: { notices: {} } })],
+    ['modules.notices.reply', base({ modules: { notices: { reply: {} } } })],
+    ['modules.history', base({ modules: { history: {} } })],
+    ['modules.history.semantic', base({ modules: { history: { semantic: { url: 'https://e.example' } } } })],
+    ['modules.selfRestart', base({ modules: { selfRestart: {} } })],
+    ['conversations', base({ conversations: {} })],
+    ['conversations.bind', base({ conversations: { bind: {} } })],
+    ['conversations.trigger', base({ conversations: { trigger: {} } })],
+    ['subconscious', base({ subconscious: { enabled: true, systemPrompt: 'p' } })],
+    ['speech', base({ speech: {} })],
+    ['tuneOut', base({ tuneOut: {} })],
+    ['dendrite', base({ dendrite: {} })],
+    ['inferenceBounds', base({ inferenceBounds: {} })],
+    ['inferenceBounds.progressBounds', base({ inferenceBounds: { progressBounds: {} } })],
+  ];
+
+  test('each of the 31 closed sections refuses an unknown key in one form, naming it and the keys it takes', () => {
+    expect(closed).toHaveLength(31);
+    for (const [at, recipe] of closed) {
+      expect(() => validateRecipe(recipe)).not.toThrow();
+      const target = at.replace(/\[(\d+)\]/g, '.$1').split('.').reduce<Record<string, unknown>>(
+        (value, key) => value[key] as Record<string, unknown>, recipe as Record<string, unknown>);
+      target.zzUnknown = 1;
+      expect(refusal(() => validateRecipe(recipe))).toMatch(new RegExp(`^Recipe ${at.replace(/[.[\]]/g, '\\$&')} has unknown key "zzUnknown"; it takes `));
+    }
+  });
+});
+
+describe('the saved document', () => {
+  test('a load, a save and a load from it: the file holds the author\'s document with two paths resolved, and no default', async () => {
+    const dir = tempDir();
+    const file = join(dir, 'recipe.json');
+    const authored = base({ description: '${LABEL}', extensions: { chart: { kind: 'module', path: '${ASSETS}/chart.js' } } });
+    writeFileSync(file, JSON.stringify(authored));
+    const env = { LABEL: 'A label', ASSETS: '/opt/assets' };
+    const { recipe, persistable } = await loadRecipeDocument(await readRecipeDocument(file), file, { env, fetchSystemPrompt: false });
+    expect(recipe.agent.cacheTtl).toBe('1h');
+    const dataDir = tempDir();
+    saveRecipe(dataDir, persistable);
+    const expected = { $unresolved: true, ...authored, extensions: { chart: { kind: 'module', path: '/opt/assets/chart.js' } } };
+    expect(readFileSync(join(dataDir, '.recipe.json'), 'utf8')).toBe(`${JSON.stringify(expected, null, 2)}\n`);
+  });
+});
+
+describe('connectome-servers file', () => {
+  test('a server\'s toolLifecycle in mcpl-servers.json is checked as the recipe\'s is, and named in the file', () => {
+    const dir = tempDir();
+    const file = join(dir, 'mcpl-servers.json');
+    writeFileSync(file, JSON.stringify({ mcplServers: { x: { command: 'node', toolLifecycle: { observe: { tool: ['a'] } } } } }));
+    expect(refusal(() => loadMcplServers(file))).toBe(
+      'mcpl-servers.json: mcplServers.x.toolLifecycle.observe has unknown key "tool" (did you mean "tools"?); it takes tools, classes and conversations.');
+  });
+
+  test('two faults there are named as the file\'s, not the recipe\'s', () => {
+    const dir = tempDir();
+    const file = join(dir, 'mcpl-servers.json');
+    writeFileSync(file, JSON.stringify({ mcplServers: { x: { command: 'node', toolLifecycle: { observe: { tool: ['a'] }, maxInputBytes: 0 } } } }));
+    expect(refusal(() => loadMcplServers(file))).toBe([
+      'mcpl-servers.json: mcplServers.x.toolLifecycle has 2 faults:',
+      '- mcpl-servers.json: mcplServers.x.toolLifecycle.observe has unknown key "tool" (did you mean "tools"?); it takes tools, classes and conversations.',
+      '- mcpl-servers.json: mcplServers.x.toolLifecycle.maxInputBytes must be a positive integer, got 0.',
+    ].join('\n'));
+  });
+});

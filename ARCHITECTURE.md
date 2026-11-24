@@ -45,7 +45,7 @@ it has moved upstream over time:
 
 | Concern | Lives in |
 |---|---|
-| Recipe schema, validation, `${VAR}` substitution, persistence | host (`src/recipe.ts`) |
+| Recipe schema, validation, `${VAR}` substitution, persistence | host (`src/recipe-schema.ts`, `src/recipe.ts`) |
 | Choosing and wrapping a provider transport; wire logs; cost/quota | host (`src/index.ts`, `src/logging-*.ts`, `src/call-ledger.ts`, `src/quota-meter.ts`) |
 | Operator surfaces (TUI, WebUI, headless IPC, slash commands) | host |
 | Fleet of child processes | host (`src/modules/fleet-module.ts`, `src/headless.ts`) |
@@ -107,8 +107,8 @@ server is a process-level singleton and survives the switch.
 
 ## Recipes
 
-A recipe is JSON; the full key set is typed and validated in
-`src/recipe.ts`, and the README documents the commonly used parts.
+A recipe is JSON; the full key set is typed and validated by one schema in
+`src/recipe-schema.ts`, and the README documents the commonly used parts.
 
 - **Substitution.** Every string value may use `${VAR}` or
   `${VAR:-default}`. A missing required variable is a load error. Bun loads
@@ -123,15 +123,19 @@ A recipe is JSON; the full key set is typed and validated in
   snapshot as its value, so keep secrets out of those two fields. Other state
   in the data dir can hold secrets too — the identity key, and fleet
   children's resolved `env` (#162).
-- **Validation checks values, and spelling in part.** Bad values, impossible
-  combinations (e.g. an instructions path on a mount that can't be written)
-  and partial policies are rejected at load, naming the key. An unrecognized
-  key at the top level or in `agent`, `agent.mock`, `agent.strategy.kvUnified`
-  and its `policy`, or `modules` is warned about, naming it, and the load
-  goes on. Some blocks, such as `subconscious`, the object form of
-  `modules.history`, `agent.retry`, `agent.clock`, and `modules.workspace`
-  and its mounts, refuse unknown fields. Others, such as `agent.thinking`,
-  don't check their keys, so a misspelled one there is silently ignored.
+- **One schema gives the recipe's type and its checks** (`src/recipe-schema.ts`,
+  zod). Wrong values, impossible combinations (e.g. an instructions path on a
+  mount that can't be written) and partial policies are refused at load,
+  naming the key, and one refusal names each fault that the schema finds. A
+  refusal prints no value that came from the environment: it names the
+  `${VAR}` reference, or the kind of value where a saved recipe no longer
+  holds the reference. Some blocks, such as `subconscious`, the object form
+  of `modules.history`, `agent.retry`, `agent.clock`, and `modules.workspace`
+  and its mounts, refuse an unknown key, naming the keys that they take.
+  Elsewhere an unknown key is warned about with its path, and the nearest
+  known key when one is near, and the load goes on with the key kept. A
+  custom strategy's own options, the wake gate's rules and an extension's
+  `config` take any key with no warning.
 - **Paths.** Fleet child recipes resolve relative to the parent recipe file;
   runtime paths (data dirs, workspace mounts) resolve against the CWD.
 - **Extensions.** `extensions` maps names to local modules that register
@@ -443,7 +447,8 @@ Claude Code transcripts are ingested by the procedure in
 | Path | Role |
 |---|---|
 | `src/index.ts` | Entry point, provider selection, `createFramework()`, session switching, runtime dispatch. |
-| `src/recipe.ts` | Recipe types, defaults, substitution, validation, persistence, CLI parsing. |
+| `src/recipe-schema.ts` | The recipe's schema: its types with their doc comments, and its checks. |
+| `src/recipe.ts` | Recipe defaults, substitution, loading, persistence, CLI parsing. |
 | `src/framework-strategy.ts`, `src/framework-agent-config.ts` | Recipe → memory strategy / agent config. |
 | `src/extensions.ts`, `src/workspace-mounts.ts`, `src/retrieval-config.ts`, `src/agent-name.ts` | Recipe helpers shared by runtime and validation. |
 | `src/mcpl-config.ts` | Server registry, agent overlay, child env. |

@@ -107,6 +107,12 @@ export function membraneCachingOverride(
   return promptCaching === undefined ? {} : { defaultPromptCaching: promptCaching };
 }
 
+function withoutNullAutoRewind(
+  { autoRewind, ...settings }: Exclude<NonNullable<Recipe['agent']['refusalHandling']>, false>,
+): NonNullable<AgentConfig['refusalHandling']> {
+  return autoRewind === null ? settings : { ...settings, autoRewind };
+}
+
 export function buildFrameworkAgentConfig(
   recipe: Recipe,
   agentName: string,
@@ -161,7 +167,7 @@ export function buildFrameworkAgentConfig(
     strategy,
     ...(thinking && { thinking }),
     ...thinkingBindingSettings(model, resolveProvider(recipe)),
-    ...(recipe.agent.refusalHandling && { refusalHandling: recipe.agent.refusalHandling }),
+    ...(recipe.agent.refusalHandling && { refusalHandling: withoutNullAutoRewind(recipe.agent.refusalHandling) }),
     ...(recipe.agent.sameRoundThinkTextPolicy !== undefined
       ? { sameRoundThinkTextPolicy: recipe.agent.sameRoundThinkTextPolicy }
       : {}),

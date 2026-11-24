@@ -64,13 +64,13 @@ describe('unknownRecipeKeys', () => {
     expect(unknownRecipeKeys(base({ modules: { files: false } }))).toEqual(['modules.files (replaced by modules.workspace)']);
   });
 
-  test('names a retired strategy key, and no other strategy key, since a strategy\'s keys are open', () => {
+  test('names a retired key of a built-in strategy with what replaced it, and any other key it doesn\'t take', () => {
     const retired = 'agent.strategy.identityReminderSilent (replaced by a sentence asking for silence at the end of ' +
       'each nonblank reminder the recipe sets, agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
       'if it was true; if it was false, nothing)';
     for (const type of ['autobiographical', 'frontdesk', 'passthrough']) {
       const strategy = { type, identityReminderSilent: true, anExtensionsOwnKey: 1 };
-      expect(unknownRecipeKeys(base({}, { strategy }))).toEqual([retired]);
+      expect(unknownRecipeKeys(base({}, { strategy }))).toEqual([retired, 'agent.strategy.anExtensionsOwnKey']);
     }
     expect(unknownRecipeKeys(base({}, { strategy: { identityReminderSilent: false } }))).toEqual([retired]);
     expect(unknownRecipeKeys(base({}, { strategy: { type: 'autobiographical', identityReminder: 'R' } }))).toEqual([]);
@@ -107,7 +107,7 @@ describe('validateRecipe and unknown keys', () => {
     expect(recipe.name).toBe('Test');
     expect(warn).toHaveBeenCalledTimes(1);
     const message = String(warn.mock.calls[0]![0]);
-    expect(message).toContain('Recipe "Test" has keys the host does not read (ignored)');
+    expect(message).toContain('Recipe has keys the host does not read (ignored)');
     for (const key of ['bogusTop', 'mcplServers (did you mean mcpServers?)', 'agent.bogusAgentKey', 'modules.files (replaced by modules.workspace)']) {
       expect(message).toContain(key);
     }

@@ -52,13 +52,13 @@ describe('recipe modules.instructions validation', () => {
   });
 
   test('rejects non-boolean, non-object values', () => {
-    expect(() => validateRecipe(recipe({ instructions: 'yes' }))).toThrow(/boolean or object/);
-    expect(() => validateRecipe(recipe({ instructions: ['x'] }))).toThrow(/boolean or object/);
+    expect(() => validateRecipe(recipe({ instructions: 'yes' }))).toThrow('Recipe modules.instructions must be true, false or an object, got "yes".');
+    expect(() => validateRecipe(recipe({ instructions: ['x'] }))).toThrow('Recipe modules.instructions must be true, false or an object, got a list.');
   });
 
   test('rejects unknown fields', () => {
     expect(() => validateRecipe(recipe({ instructions: { file: 'AGENTS.md' } })))
-      .toThrow(/unknown field "file"/);
+      .toThrow(/Recipe modules\.instructions has unknown key "file"/);
   });
 
   test('rejects a path without a "<mountName>/<relativePath>" shape', () => {
@@ -69,7 +69,7 @@ describe('recipe modules.instructions validation', () => {
     expect(() => validateRecipe(recipe({ instructions: { path: 'mount/' } })))
       .toThrow(/<mountName>\/<relativePath>/);
     expect(() => validateRecipe(recipe({ instructions: { path: '' } })))
-      .toThrow(/non-empty string/);
+      .toThrow(/<mountName>\/<relativePath>/);
   });
 
   test('rejects invalid maxBytes', () => {
@@ -83,7 +83,7 @@ describe('recipe modules.instructions validation', () => {
 
   test('rejects invalid position', () => {
     expect(() => validateRecipe(recipe({ instructions: { position: 'prepend' } })))
-      .toThrow(/'system', 'beforeUser', or 'afterUser'/);
+      .toThrow('Recipe modules.instructions.position must be "system", "beforeUser" or "afterUser", got "prepend".');
   });
 
   test('rejects non-string header', () => {
