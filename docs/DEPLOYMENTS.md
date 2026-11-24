@@ -740,8 +740,8 @@ update itself. After the move, the host's code comes from the package, and its
 service is the one that `connectome service install` writes. The resident
 keeps its data, its recipe, `.env` and its MCPL servers. The resident is down
 from step 5, where it stops, to step 9, where it starts again. A clone runs
-the library versions in its lockfile. An install takes the newest library
-releases that its version allows. So the move can update the libraries too.
+the library versions in its lockfile. An install runs the versions that npm
+chooses for it, which can be newer. So the move can update the libraries too.
 
 Run each step as the user that runs the resident. From another account, use a
 login shell of that user, such as `sudo -iu <user>`. `service install` needs
@@ -774,11 +774,22 @@ without `--user`, and move its files as root too.
 2. **Read the old service.** Run `systemctl --user cat <unit>`. It shows the
    unit's file and its drop-ins. Note its `WorkingDirectory`, and what its
    start command gives the host. The install goes into the working directory.
+   Note too whether the unit is enabled, which
+   `systemctl --user is-enabled <unit>` prints. Step 12 needs that.
    - The data directory is the one that the running host uses. Its `DATA_DIR`
      can come from the unit, from its environment files or from a `.env`
      file, so read it from the host. This prints the `headless.log` that the
      host holds open in its data directory:
      `ls -l /proc/$(systemctl --user show -p MainPID --value <unit>)/fd | grep headless.log`.
+     If the start command runs a script, `MainPID` can be the script's. Then
+     `systemctl --user status <unit>` lists the unit's processes. Use the
+     host's pid from that list.
+   - The new unit is `connectome-<name>.service`, with `<name>` as step 8
+     says. Check that the name is free:
+     `systemctl --user cat connectome-<name>.service` prints
+     `No files found for …`. If it shows a unit other than the old one,
+     another resident has the name. Then keep a service of your own instead,
+     as the end of this section says.
    - The new unit starts the host with the recipe and `--headless` alone. If
      the old start command gives the host other options, such as
      `--socket-path`, keep a service of your own instead, as the end of this
@@ -828,6 +839,9 @@ without `--user`, and move its files as root too.
    If an MCPL server keeps its state outside the data directory, give setup an
    `--extra-state` for each such place. Setup leaves a running host as it is. It
    prints `Set up <root> as the install of <version> that serves <data directory>.`
+   If it prints `… as before.` instead, the working directory already holds an
+   install root, which keeps its own release. A host that runs from the clone
+   doesn't use it. Remove `connectome-host`, and run setup again.
    Setup and "Setting it up, once" also tell you to change the service's
    start command. Leave the old service as it is. Steps 7 to 9 replace it.
 5. **Stop the host, and copy.** Choose a moment when the resident is idle,
@@ -838,7 +852,7 @@ without `--user`, and move its files as root too.
    checkouts" says how. Then copy the files that "Updating checkouts" lists.
    Copy `.env` too, since step 9 can add the shell daemon's port and token to
    it. Put the copy outside the working directory, such as in
-   `~/pre-move-copy`.
+   `~/pre-move-copy`. Go on only when the copy ends with no error.
 6. **Run the store audit from the install,** as "By hand" says. First export
    each variable that the old service sets. Then run
    `bun node_modules/@animalabs/connectome-host/src/index.ts --audit-stores --recipe <recipe> <data directory>`.
@@ -870,6 +884,9 @@ without `--user`, and move its files as root too.
      command before its start (`ExecStartPre=`), a restart delay
      (`RestartSec=`), and its environment (`Environment=`,
      `EnvironmentFile=`).
+   - A `DATA_DIR` in an environment file wins over the new unit's. A file that
+     you carry over can set `DATA_DIR`. Then make that line name the data
+     directory that setup serves.
    - Keep a restart delay. Without one, systemd's defaults stop the restarts
      after a few failed starts in a row, such as at a boot before the network
      is up. The unit then stays failed, and the resident stays down.
@@ -911,8 +928,8 @@ without `--user`, and move its files as root too.
       in step 5 again. Then restore the resident's files from the copy, as "By
       hand" says. If the copy holds no `.env`, remove the `.env` that step 9
       made. Start the MCPL servers again. Then start the old unit with
-      `systemctl --user enable --now <unit>`, since step 7 disabled it. If it
-      wasn't enabled before step 7, use `systemctl --user start <unit>`.
+      `systemctl --user enable --now <unit>`, since step 7 disabled it. If
+      step 2 found it disabled, use `systemctl --user start <unit>`.
     - Remove the install root, `connectome-host`, from the working directory.
       Setup keeps the release that an install root already holds. So a later
       move would start that release, whatever version npm installs. The
@@ -925,14 +942,15 @@ without `--user`, and move its files as root too.
 README's quick start. The resident then moves to a directory of its own, and
 the steps change in these ways:
 
-- Make the new directory, such as `~/resident`, and run step 3 there.
-- Before step 5, look for relative paths in the recipe, in `.env`, in the old
+- Choose the new directory, such as `~/resident`. Its name gives `<name>` in
+  steps 2 and 8. Make it, and run step 3 there.
+- Before step 5, list the relative paths in the recipe, in `.env`, in the old
   unit's environment, in `mcpl-servers.json` and in the agent overlay. After
   the move, a path relative to the working directory starts from the new
-  directory. So move or copy what such a path names into the new directory
-  too. A fleet child's recipe and an extension's file are relative to the
-  recipe's own file instead. Copy them with the recipe, in the same places
-  beside it, with the files that they use.
+  directory. So what such a path names goes into the new directory too. The
+  bullets below move or copy it after step 5. A fleet child's recipe and an
+  extension's file are relative to the recipe's own file instead. Copy them
+  with the recipe, in the same places beside it, with the files that they use.
 - Some files are in the working directory without a path that names them. The
   workspace is on unless the recipe turns it off. When the recipe names no
   mounts, the workspace has two in the working directory: `input` and `output`.
@@ -949,8 +967,7 @@ the steps change in these ways:
   - The recipe, with the files that it names.
   - What the other relative paths name, such as `input` and `output`.
 - Then run step 4 in the new directory. Give setup the data directory's new
-  path as `DATA_DIR`. Steps 6 to 11 run there too, and step 8's `<name>` is
-  the new directory's name.
+  path as `DATA_DIR`. Steps 6 to 11 run there too.
 - Step 12 restores each part of the copy where it came from: into the clone,
   where the old unit runs the host, and into a data directory outside the
   clone. Then move the new directory aside, such as to `~/resident.moved`, so
@@ -960,26 +977,32 @@ You can keep a service of your own instead. Then do steps 1 to 6. Then change
 the old unit's start command, as "Setting it up, once" says. Where the working
 directory moved, change its `WorkingDirectory` to the new directory. If its
 `DATA_DIR` names a place in the clone, change that to the new place too. Skip
-steps 7 to 9. `connectome doctor` then reports
-`No service is installed for this install.` With a service of your own, that
-line is expected. To go back, stop the service, put its old lines back, and run
-`systemctl --user daemon-reload`. Then do what step 12 says for a move stopped
-before step 7, and remove the install root as step 12 says.
+steps 7 to 9. Instead, start the MCPL servers that you stopped in step 5. Then
+run `systemctl --user daemon-reload`, and start the service.
+`connectome doctor` then reports `No service is installed for this install.`
+With a service of your own, that line is expected. For step 11, the service
+needs what "A resident's own update" says. Its start command must also name
+the recipe that step 11 edits. To go back, stop the service, put its old lines
+back, and run `systemctl --user daemon-reload`. Then do what step 12 says for a
+move stopped before step 7, and remove the install root as step 12 says.
 
 On a Mac, the old service is a launch agent. Step 2 reads its plist, such as
 with `plutil -p <plist>`. It finds the data directory with
 `lsof -p <pid> | grep headless.log`, where `launchctl list` shows the agent's
-pid. Step 5 stops and unloads it with
-`launchctl bootout gui/$(id -u) <plist>`. Step 7 moves its plist into the copy,
-so that launchd doesn't load it at the next login. launchd has no drop-ins,
-and `service install` writes the plist again each time it runs. So step 8 puts
-the old agent's environment into `.env`, which the host reads at its start. Only
-the old plist's environment can be carried over, and not its `PATH`: the new
-plist sets its own, which `.env` doesn't change. Step 9 writes and loads
-`~/Library/LaunchAgents/com.animalabs.connectome.<name>.plist`. Step 12 loads
-the old plist with `launchctl bootstrap gui/$(id -u) <plist>`. From step 7 on,
-it first unloads the new agents with `launchctl bootout`, removes their plists
-from `~/Library/LaunchAgents`, and moves the old plist back.
+pid. For an agent that runs a script, use the host's pid, which
+`pgrep -P <pid>` lists. Its name check looks for
+`~/Library/LaunchAgents/com.animalabs.connectome.<name>.plist`. Step 5
+stops and unloads it with `launchctl bootout gui/$(id -u) <plist>`. Step 7 moves
+its plist into the copy, so that launchd doesn't load it at the next login.
+launchd has no drop-ins, and `service install` writes the plist again each time
+it runs. So step 8 puts the old agent's environment into `.env`, which the host
+reads at its start. Only the old plist's environment can be carried over, and
+not its `PATH`: the new plist sets its own, which `.env` doesn't change. Step 9
+writes and loads `~/Library/LaunchAgents/com.animalabs.connectome.<name>.plist`.
+Step 12 loads the old plist with `launchctl bootstrap gui/$(id -u) <plist>`.
+From step 7 on, it first unloads the new agents with `launchctl bootout`,
+removes their plists from `~/Library/LaunchAgents`, and moves the old plist
+back.
 
 ---
 
