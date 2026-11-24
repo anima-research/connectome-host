@@ -6,12 +6,58 @@ import { JsStore } from '@animalabs/chronicle';
 import { WorkspaceModule, type ModuleContext } from '@animalabs/agent-framework';
 import { InstructionsModule } from '../src/modules/instructions-module.js';
 import { loadRecipeDetailed, validateRecipe } from '../src/recipe.js';
-import { buildWorkspaceMounts } from '../src/workspace-mounts.js';
+import { buildWorkspaceMounts, namesOutsideMounts, workspaceConfig } from '../src/workspace-mounts.js';
 
 function recipe(workspace: unknown) {
   return { name: 'mount-keys-test', agent: { systemPrompt: 'test' }, modules: { workspace } };
 }
 const mount = (extra: Record<string, unknown> = {}) => ({ name: 'notes', path: './notes', ...extra });
+
+describe('workspace outsideMounts', () => {
+  test("is taken as 'read-only' or 'read-write' and handed to the workspace as given, and left out where the recipe leaves it out", () => {
+    for (const outsideMounts of ['read-only', 'read-write'] as const) {
+      validateRecipe(recipe({ mounts: [mount()], outsideMounts }));
+      expect(workspaceConfig({ mounts: [mount()], outsideMounts }, '/store')).toEqual({
+        mounts: [{ name: 'notes', path: resolve('./notes'), mode: 'read-write', watch: 'never' }],
+        outsideMounts,
+      });
+    }
+    expect(Object.keys(workspaceConfig({ mounts: [mount()] }, '/store')!)).toEqual(['mounts']);
+    expect(Object.keys(workspaceConfig(true, '/store')!)).toEqual(['mounts']);
+    expect(workspaceConfig(false, '/store')).toBeNull();
+  });
+
+  test("a file viewer's path is outside the mounts where it's absolute or from the home directory, and a mount's own path isn't", () => {
+    expect(['/etc/hosts', '~/.ssh/config'].map(namesOutsideMounts)).toEqual([true, true]);
+    expect(['notes/log.txt', 'notes', '~notes/x', 'a/~/b'].map(namesOutsideMounts)).toEqual([false, false, false, false]);
+  });
+
+  test("refuses any other value, in agent-framework's words", () => {
+    for (const [value, shown] of [[true, 'true'], ['anywhere', '"anywhere"'], [null, 'null']] as const) {
+      expect(() => validateRecipe(recipe({ mounts: [mount()], outsideMounts: value })))
+        .toThrow(new RegExp(`^modules\\.workspace: outsideMounts must be 'read-only' or 'read-write', not ${shown}$`));
+    }
+  });
+
+  test('the workspace it makes reads a file outside its mounts, and says so in its tools', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'outside-mounts-'));
+    const store = JsStore.openOrCreate({ path: join(root, 'store') });
+    try {
+      mkdirSync(join(root, 'notes'));
+      writeFileSync(join(root, 'beside.txt'), 'outside the mount\n');
+      const workspace = new WorkspaceModule(workspaceConfig({ mounts: [mount({ path: join(root, 'notes') })], outsideMounts: 'read-only' }, root)!);
+      workspace.initStore(store);
+      const read = await workspace.handleToolCall({ id: 'read', name: 'read', input: { path: join(root, 'beside.txt') } });
+      expect(read.success).toBe(true);
+      expect(JSON.stringify(read.data)).toContain('outside the mount');
+      expect(workspace.getTools().find((tool) => tool.name === 'read')!.description).toContain('it reads a file outside the mounts');
+      expect(workspace.getTools().find((tool) => tool.name === 'write')!.description).toBe('Create or overwrite a file in the workspace.');
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('workspace mount keys', () => {
 
@@ -176,7 +222,7 @@ describe('workspace mount keys', () => {
 
   test('refuses a key the workspace does not have', () => {
     expect(() => validateRecipe(recipe({ mounts: [mount()], configMounts: true })))
-      .toThrow(/^workspace has unknown key "configMounts" \(did you mean "configMount"\?\); known: mounts, configMount$/);
+      .toThrow(/^workspace has unknown key "configMounts" \(did you mean "configMount"\?\); known: mounts, configMount, outsideMounts$/);
   });
 
   test('refuses a value of the wrong kind, null included', () => {

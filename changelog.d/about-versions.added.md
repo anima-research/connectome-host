@@ -13,8 +13,8 @@
   loaded, by its id, with the server's own name and version as the last
   handshake of its connection gave them. A server that isn't connected now
   shows those, with `(not connected now)`, or says that its name and
-  version aren't known. Agent Framework's range now starts at 0.35.2, the
-  first release whose server rows carry a server's own name and version.
+  version aren't known. Agent Framework 0.35.2 is the first release whose
+  server rows carry a server's own name and version.
   At the upgrade, each agent's summariser requests miss their prompt cache
   once: they carry every tool that the agent may call, utilities included,
   so they now carry this one too.
