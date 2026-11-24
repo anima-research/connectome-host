@@ -819,8 +819,11 @@ first: `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
      `src/recipe.ts`. Then the host keeps its agent's name and its modules.
    - If the recipe lies in the clone, and the working directory is elsewhere,
      the new service would still need the clone. So copy the recipe into the
-     working directory. Copy each file that it names by a relative path too, in
-     the same place beside it. Use the copy as `<recipe>` in steps 6 and 9.
+     working directory, and use the copy as `<recipe>` in steps 6 and 9. An
+     extension's path in it is relative to the recipe's own file. Copy that
+     file into the working directory too, with the files beside it that it
+     uses, and change the path in the copy. The recipe's other relative paths
+     start from the working directory already.
    - The working directory can be the clone itself, as after the README's
      quick start. The install can't go there, since the clone's
      `package.json` is the host's own. In that case, also follow the part
@@ -854,7 +857,8 @@ first: `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
    `systemctl --user stop <unit>`. Then copy the files that "Updating
    checkouts" lists.
    Copy `.env` too, since step 9 can add the shell daemon's port and token to
-   it. Put the copy outside the working directory, such as in
+   it. Copy the old service's recipe file too, since step 11 can edit it. Put
+   the copy outside the working directory, such as in
    `~/pre-move-copy`. If the copy ends with an error, start the old service
    again with `systemctl --user start <unit>`, and stop the move there.
 6. **Run the store audit from the install,** as "By hand" says. First export
@@ -868,8 +872,8 @@ first: `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
      line also gives words that you can say to the resident. To keep the
      memory as it was, go back by step 12.
 7. **Take the old service away, and keep its file.** Run
-   `systemctl --user disable --now <unit>`. Move its unit file and its drop-in
-   directory (`<unit>.d`) into the copy. Then run
+   `systemctl --user disable --now <unit>`. Move its unit file into the copy,
+   with its drop-in directory (`<unit>.d`) if it has one. Then run
    `systemctl --user daemon-reload`. `service install` refuses while systemd
    has loaded another unit whose `WorkingDirectory` is the same directory,
    since both would start the host at a boot.
@@ -896,9 +900,10 @@ first: `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
    - Keep a restart delay. Without one, systemd's defaults stop the restarts
      after a few failed starts in a row, such as at a boot before the network
      is up. The unit then stays failed, and the resident stays down.
-   - Leave out `ExecStart=`, `WorkingDirectory=`, and an `Environment=` line
-     that sets `DATA_DIR`. Also leave out each line that stops a restart on
-     exit 75 or exit 1. A `SuccessExitStatus=` or a
+   - Leave out `ExecStart=` and `WorkingDirectory=`. Leave out the `DATA_DIR`
+     assignment of an `Environment=` line, and keep the line's other
+     assignments. Also leave out each line that stops a restart on exit 75 or
+     exit 1. A `SuccessExitStatus=` or a
      `RestartPreventExitStatus=` line that names 75 or 1 stops such a restart.
      An update of the install needs systemd to restart the host on exit 75 and
      on exit 1, as "A resident's own update" says.
@@ -915,7 +920,9 @@ first: `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
    unit's own. A drop-in under another name is never read.
 10. **Check the move.** `connectome-host/connectome doctor` says
     `Doctor found no problem.` Then
-    `connectome-host/connectome send '<a line>'` prints the resident's reply.
+    `connectome-host/connectome send '<a line>'` prints the resident's reply. A
+    resident that answers only in a channel or with a tool prints nothing
+    here. `send` then says so.
 11. **If you choose, let the resident update itself.** Set
     `"selfUpdate": true` in the recipe's `modules`. If the recipe's
     `agent.allowedTools` is a list, add `lifecycle--update` to it. Then run
@@ -923,7 +930,8 @@ first: `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
     update its own host with `lifecycle--update`. This adds a tool. So with
     prompt caching on, the resident's next turn writes its whole prompt cache
     once.
-12. **To go back:**
+12. **To go back:** the copy holds the resident's files as they were at step 5.
+    So after step 9, going back discards what the resident recorded since.
     - After step 5 and before step 7, restore the copy, as "By hand" says.
       Then start the old service again with `systemctl --user start <unit>`.
     - From step 7 on: if step 9 ran, run
@@ -937,11 +945,11 @@ first: `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
       `.env` that step 9 made. Then start the old unit with
       `systemctl --user enable --now <unit>`, since step 7 disabled it. If
       step 2 found it disabled, use `systemctl --user start <unit>`.
-    - Remove the install root, `connectome-host`, from the working directory.
-      Setup keeps the release that an install root already holds. So a later
-      move would start that release, whatever version npm installs. The
-      install's other files can stay, since a host that starts from the clone
-      doesn't use them.
+    - Remove the install root that step 4 made. It is `connectome-host` in the
+      directory where step 4 ran. Setup keeps the release that an install root
+      already holds. So a later move would start that release, whatever
+      version npm installs. The install's other files can stay, since a host
+      that starts from the clone doesn't use them.
     - A workspace directory in the working directory, such as `output`, isn't
       in the copy. So it keeps what the new host wrote there.
 
