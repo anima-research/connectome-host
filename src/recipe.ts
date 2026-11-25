@@ -391,6 +391,11 @@ export interface RecipeAgent {
    * did not allow prompt caching" can also be account/region-dependent.
    */
   promptCaching?: boolean;
+  /** Off by default. Guard older history--extract results on eligible native
+   *  Anthropic requests without rewriting the stored conversation. Applies
+   *  to known non-binding and drop-capable models (on complete requests, the
+   *  latter must not replay native thinking). */
+  filterStoredHistoryExtractThinking?: boolean;
   /**
    * Same-round routing policy for ordinary text emitted beside think().
    * Omitted preserves the compatibility carry-forward in Agent Framework.
@@ -2094,7 +2099,7 @@ const RECIPE_AGENT_KEYS = [
   'systemPrompt', 'maxTokens', 'maxStreamTokens', 'contextBudgetTokens', 'cacheTtl',
   'cacheKeepalive', 'promptCaching', 'sameRoundThinkTextPolicy', 'sameRoundSkipReplyTextPolicy', 'proseRouting', 'proseLock',
   'toolWrapperProseGuard', 'primaryWaitsForAuxiliary', 'sendSilencing', 'autoContinue', 'anthropicBetas', 'strategy', 'thinking', 'responses', 'codex', 'mock',
-  'refusalHandling', 'clock',
+  'refusalHandling', 'clock', 'filterStoredHistoryExtractThinking',
 ] as const;
 export const DEFAULT_RECIPE_CLOCK: ClockConfig = Object.freeze({ intervalMinutes: 10 }) as ClockConfig;
 
@@ -2736,6 +2741,10 @@ export function validateRecipe(raw: unknown): Recipe {
     throw new Error(
       `Recipe agent.promptCaching must be a boolean, got ${JSON.stringify(agent.promptCaching)}.`,
     );
+  }
+
+  if (agent.filterStoredHistoryExtractThinking !== undefined && typeof agent.filterStoredHistoryExtractThinking !== 'boolean') {
+    throw new Error(`Recipe agent.filterStoredHistoryExtractThinking must be a boolean, got ${shown(agent.filterStoredHistoryExtractThinking)}.`);
   }
 
   if (

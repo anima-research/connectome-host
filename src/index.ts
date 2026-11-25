@@ -1084,6 +1084,16 @@ async function main() {
 
   const gateTelemetryDynamicHeaders = gateTelemetryHeaders(process.env, pendingDebtChunks, activeTurnTrigger);
 
+  const formatter = recipeFormatter(recipe, provider, resolveModel(recipe));
+  const filterStoredHistoryExtractThinking = recipe.agent.filterStoredHistoryExtractThinking === true;
+  if (filterStoredHistoryExtractThinking) {
+    if (provider !== 'anthropic') {
+      console.warn(`[history--extract] agent.filterStoredHistoryExtractThinking has no effect with provider "${provider}".`);
+    } else if (formatter.name === 'anthropic-xml') {
+      console.warn('[history--extract] agent.filterStoredHistoryExtractThinking with "anthropic-xml": main turns are not covered; eligible native background requests such as compression can still be filtered.');
+    }
+  }
+
   const adapter = provider === 'openai-responses'
     ? new LoggingProviderAdapter(
         new OpenAIResponsesAPIAdapter({
@@ -1113,6 +1123,7 @@ async function main() {
                   : {}),
               }),
           baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+          filterStoredHistoryExtractThinking,
           // Only with GATE_TELEMETRY=1 and ANTHROPIC_BASE_URL set, so the stamp
           // goes only to a gateway the operator has named, never to the
           // vendor's default endpoint.
@@ -1162,7 +1173,7 @@ async function main() {
 
   const membrane = new Membrane(adapter, {
     retry: hostMembraneRetry(recipe.agent.retry),
-    formatter: recipeFormatter(recipe, provider, resolveModel(recipe)),
+    formatter,
     ...membraneCachingOverride(recipe, resolveModel(recipe)),
     // membrane sends this participant's messages as assistant turns for a
     // request that names no assistant participant ('Claude' otherwise), and the

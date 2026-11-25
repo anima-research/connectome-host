@@ -1,4 +1,9 @@
 import { describe, test, expect } from 'bun:test';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AnthropicXmlFormatter, Membrane, NativeFormatter, OpenAIResponsesFormatter } from '@animalabs/membrane';
 import type { NormalizedMessage } from '@animalabs/membrane';
 import { recipeFormatter, xmlToolsInSystem } from '../src/recipe-formatter.js';
@@ -6,6 +11,39 @@ import type { Recipe } from '../src/recipe.js';
 
 const recipe = (agent: Record<string, unknown>) => ({ agent: { systemPrompt: 'You are Rhys.', ...agent } }) as unknown as Recipe;
 const xmlRecipe = (agent: Record<string, unknown> = {}) => recipe({ formatter: 'anthropic-xml', ...agent });
+
+const xmlWarning = '[history--extract] agent.filterStoredHistoryExtractThinking with "anthropic-xml": main turns are not covered; eligible native background requests such as compression can still be filtered.';
+test.each([
+  ['Anthropic XML, enabled', 'anthropic', 'anthropic-xml', true, [xmlWarning]],
+  ['Anthropic XML, disabled', 'anthropic', 'anthropic-xml', false, []],
+  ['Anthropic native, enabled', 'anthropic', undefined, true, []],
+  ['mock native, enabled', 'mock', 'native', true, ['[history--extract] agent.filterStoredHistoryExtractThinking has no effect with provider "mock".']],
+  ['OpenAI Responses, enabled', 'openai-responses', undefined, true, ['[history--extract] agent.filterStoredHistoryExtractThinking has no effect with provider "openai-responses".']],
+  ['mock native, disabled', 'mock', 'native', false, []],
+] as const)('extract guard startup warning: %s', (_label, provider, formatter, enabled, warnings) => {
+  const dir = mkdtempSync(join(tmpdir(), 'extract-formatter-'));
+  try {
+    const path = join(dir, 'recipe.json');
+    writeFileSync(path, JSON.stringify({
+      name: 'Extract formatter fixture',
+      agent: { systemPrompt: 'Test.', provider, formatter, filterStoredHistoryExtractThinking: enabled },
+      modules: { subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+    }));
+    const child = spawnSync(process.execPath, [fileURLToPath(new URL('../src/index.ts', import.meta.url)), path], {
+      cwd: dir, input: '', encoding: 'utf8', timeout: 15_000,
+      env: {
+        ...process.env, DATA_DIR: join(dir, 'data'), MODEL: '',
+        ANTHROPIC_API_KEY: 'fixture', ANTHROPIC_AUTH_TOKEN: '', ANTHROPIC_OAUTH_CREDENTIALS_FILE: '',
+        ANTHROPIC_BASE_URL: 'http://127.0.0.1:1', THINKING_BINDING_PROBE: 'off',
+        OPENAI_API_KEY: 'fixture', OPENAI_BASE_URL: 'http://127.0.0.1:1',
+      },
+    });
+    if (child.status !== 0) throw new Error(`Host failed to start: ${child.error ?? child.stderr}`);
+    expect(child.stderr.split('\n').filter((line) => line.includes('agent.filterStoredHistoryExtractThinking'))).toEqual(warnings);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 20_000);
 
 describe('recipeFormatter', () => {
   test('anthropic-xml is pinned to XML tool mode, not left to membrane', () => {
