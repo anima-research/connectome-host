@@ -1,6 +1,6 @@
-import { describe, test, expect } from 'bun:test';
+import { afterEach, beforeEach, describe, test, expect, spyOn } from 'bun:test';
 import { SubscriptionGcModule } from '../src/modules/subscription-gc-module.js';
-import type { ModuleContext, ProcessEvent, ProcessState } from '@animalabs/agent-framework';
+import type { AgentFramework, ModuleContext, ProcessEvent, ProcessState } from '@animalabs/agent-framework';
 
 function mockCtx() {
   let state: unknown = null;
@@ -163,6 +163,7 @@ describe('agent_settings extension (channel_idle_limits)', () => {
       channel_idle_default: 10,
       channel_idle_counters: { 'discord:g1:c1': 3 },
       channel_idle_pinned: ['C9'],
+      channel_idle_server: 'discord',
     });
     await mod.stop();
   });
@@ -506,5 +507,329 @@ describe('close provenance + explicit-open protection (issue #5)', () => {
     expect(counters['discord:g1:c1']).toBe(12);
 
     await m.stop();
+  });
+});
+
+// Events as agent-framework 0.35.3 hands them to a module: it adds
+// chat:addressed to every chat:mention, chat:reply and chat:dm at entry, on
+// both paths (mcpl/push-handler.ts, mcpl/channel-registry.ts).
+function pushFrom(
+  serverId: string,
+  channelId: string,
+  text: string,
+  opts: { tags?: string[]; origin?: Record<string, unknown> } = {},
+): ProcessEvent {
+  return {
+    type: 'mcpl:push-event',
+    serverId,
+    featureSet: `${serverId}.events`,
+    eventId: 'e1',
+    content: [{ type: 'text', text }],
+    origin: opts.origin ?? { source: serverId, channelId },
+    ...(opts.tags ? { tags: opts.tags } : {}),
+    timestamp: '2026-01-01T00:00:00Z',
+    inferenceId: 'i1',
+  };
+}
+
+function incomingFrom(
+  serverId: string,
+  channelId: string,
+  text: string,
+  opts: { tags?: string[]; metadata?: Record<string, unknown> } = {},
+): ProcessEvent {
+  return {
+    type: 'mcpl:channel-incoming',
+    serverId,
+    channelId,
+    messageId: 'm1',
+    author: { id: 'u1', name: 'someone' },
+    content: [{ type: 'text', text }],
+    timestamp: '2026-01-01T00:00:00Z',
+    metadata: opts.metadata ?? {},
+    ...(opts.tags ? { tags: opts.tags } : {}),
+  };
+}
+
+const inactiveLine = (watched: string, named: 'default' | 'recipe', from: string) =>
+  `[agent-settings] modules.subscriptionGc watches server "${watched}", ` +
+  (named === 'default' ? 'its default' : 'which modules.subscriptionGc.serverId names') +
+  `, and this host has no server "${watched}", so it closes no channel. Ambient traffic from server "${from}" isn't counted. ` +
+  'modules.subscriptionGc.serverId names the one server it watches, and modules.subscriptionGc: false turns it off.';
+
+const defaultLine = (from: string) =>
+  `[agent-settings] modules.subscriptionGc watches only server "discord", its default, so ambient traffic from server ` +
+  `"${from}" isn't counted, and no channel of "${from}" auto-closes. modules.subscriptionGc.serverId names the one ` +
+  'server it watches. Setting it to "discord" keeps cleanup as it is, without this line.';
+
+const settingsWarning = (watched: string) =>
+  `Idle cleanup watches server "${watched}", which this host doesn't have, so these limits are stored and not in ` +
+  "force, and no channel auto-closes. Only the host's operator can change the server " +
+  '(modules.subscriptionGc.serverId in the recipe): tell them if these limits matter to you.';
+
+const legacyNote = (watched: string) =>
+  ` Idle cleanup isn't in force on this host: it watches server "${watched}", which this host doesn't have.`;
+
+function host(...ids: string[]) {
+  const servers = [...ids];
+  const framework = {
+    listMcplServers: () => servers.map((id) => ({ id, connected: true })),
+  } as unknown as Pick<AgentFramework, 'listMcplServers'>;
+  return { framework, servers };
+}
+
+describe('events addressed to the agent are not ambient (chat:addressed)', () => {
+  test('a GitHub reply on a thread, on both paths, is neither counted nor closed', async () => {
+    const m = new SubscriptionGcModule({ defaultLimitChars: 5, serverId: 'github' });
+    const { ctx, toolCalls } = mockCtx();
+    m.setFramework(host('github').framework);
+    await m.start(ctx);
+    const replyTags = ['chat:reply', 'chat:from-human', 'chat:addressed'];
+    const thread = 'github:o/r#1';
+    await m.onProcess(pushFrom('github', thread, 'a long review reply', {
+      tags: replyTags,
+      origin: { source: 'github', repo: 'o/r', kind: 'issue_comment', number: 1, threadKind: 'pull', channelId: thread },
+    }), PS);
+    await m.onProcess(incomingFrom('github', thread, 'a long review reply', { tags: replyTags }), PS);
+    await m.onProcess(incomingFrom('github', thread, 'a long mention', { tags: ['chat:mention', 'chat:addressed'] }), PS);
+    await m.onProcess(pushFrom('github', thread, 'a long direct message', { tags: ['chat:dm', 'chat:addressed', 'chat:private'] }), PS);
+    expect(toolCalls).toEqual([]);
+    expect(m.getAgentSettingsExtension().get('agent').channel_idle_counters).toEqual({});
+    await m.stop();
+  });
+
+  test('an ambient comment on the same thread still counts and closes', async () => {
+    const m = new SubscriptionGcModule({ defaultLimitChars: 5, serverId: 'github' });
+    const { ctx, toolCalls } = mockCtx();
+    m.setFramework(host('github').framework);
+    await m.start(ctx);
+    await m.onProcess(incomingFrom('github', 'github:o/r#1', 'an overheard comment', { tags: ['chat:ambient'] }), PS);
+    expect(toolCalls.map((c) => c.input)).toEqual([
+      { channelId: 'github:o/r#1', serverId: 'github', source: 'subscription-gc', overrideExplicitOpen: false },
+    ]);
+    await m.stop();
+  });
+
+  test('an addressed event from an unwatched server gives no line, and leaves the line for the first ambient one', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const m = new SubscriptionGcModule({ defaultLimitChars: 5 });
+      m.setFramework(host('github').framework);
+      await m.start(mockCtx().ctx);
+      await m.onProcess(pushFrom('github', 'github:o/r#1', 'a reply', { tags: ['chat:reply', 'chat:addressed'] }), PS);
+      await m.onProcess(incomingFrom('github', 'github:o/r#1', 'a reply', { tags: ['chat:reply', 'chat:addressed'] }), PS);
+      expect(warn).not.toHaveBeenCalled();
+      await m.onProcess(pushFrom('github', 'github:o/r#1', 'an overheard comment', { tags: ['chat:ambient'] }), PS);
+      expect(warn.mock.calls).toEqual([[inactiveLine('discord', 'default', 'github')]]);
+      await m.stop();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('the module says when it watches a server that sends nothing, or leaves one unwatched', () => {
+  let warn: ReturnType<typeof spyOn>;
+  beforeEach(() => { warn = spyOn(console, 'warn').mockImplementation(() => {}); });
+  afterEach(() => { warn.mockRestore(); });
+  const said = () => warn.mock.calls.map((call: unknown[]) => call.join(' '));
+
+  test('a Portal host with the default: one line per unwatched server, at its first ambient text, and nothing closes', async () => {
+    const m = new SubscriptionGcModule({ defaultLimitChars: 5 });
+    const { ctx, toolCalls } = mockCtx();
+    m.setFramework(host('portal', 'zulip').framework);
+    await m.start(ctx);
+    await m.onProcess(incomingFrom('portal', 'portal:r1', 'a mention', { metadata: { isMention: true } }), PS);
+    await m.onProcess(incomingFrom('portal', 'portal:r1', 'a dm', { metadata: { isDM: true } }), PS);
+    await m.onProcess(incomingFrom('portal', 'portal:r1', ''), PS);
+    await m.onProcess(pushFrom('portal', '', 'no channel', { origin: { source: 'portal' } }), PS);
+    expect(said()).toEqual([]);
+    await m.onProcess(incomingFrom('portal', 'portal:r1', 'ambient chatter'), PS);
+    expect(said()).toEqual([inactiveLine('discord', 'default', 'portal')]);
+    await m.onProcess(pushFrom('portal', 'portal:r2', 'more ambient chatter'), PS);
+    await m.onProcess(incomingFrom('zulip', 'zulip:backend', 'ambient chatter'), PS);
+    expect(said()).toEqual([inactiveLine('discord', 'default', 'portal'), inactiveLine('discord', 'default', 'zulip')]);
+    await m.onProcess(incomingFrom('zulip', 'zulip:backend', 'more'), PS);
+    expect(said()).toEqual([inactiveLine('discord', 'default', 'portal'), inactiveLine('discord', 'default', 'zulip')]);
+    expect(toolCalls).toEqual([]);
+    await m.stop();
+  });
+
+  test('a GitHub-only host with the default is told the facts, with no server suggested', async () => {
+    const m = new SubscriptionGcModule({ defaultLimitChars: 5 });
+    m.setFramework(host('github').framework);
+    await m.start(mockCtx().ctx);
+    await m.onProcess(pushFrom('github', 'github:o/r#1', 'an overheard comment', { tags: ['chat:ambient'] }), PS);
+    expect(said()).toEqual([inactiveLine('discord', 'default', 'github')]);
+    expect(said()[0]).not.toContain('serverId: "github"');
+    await m.stop();
+  });
+
+  test('a recipe that names a server the host lacks is told so, naming the recipe', async () => {
+    const m = new SubscriptionGcModule({ defaultLimitChars: 5, serverId: 'zulipp' });
+    const { ctx, toolCalls } = mockCtx();
+    m.setFramework(host('zulip').framework);
+    await m.start(ctx);
+    await m.onProcess(incomingFrom('zulip', 'zulip:backend', 'ambient chatter'), PS);
+    expect(said()).toEqual([inactiveLine('zulipp', 'recipe', 'zulip')]);
+    await m.onProcess(incomingFrom('zulip', 'zulip:backend', 'more ambient chatter'), PS);
+    expect(said()).toEqual([inactiveLine('zulipp', 'recipe', 'zulip')]);
+    expect(toolCalls).toEqual([]);
+    await m.stop();
+  });
+
+  test('the default on a host that has discord and other chat servers: one note per other server, and discord still closes', async () => {
+    const m = new SubscriptionGcModule({ defaultLimitChars: 5 });
+    const { ctx, toolCalls } = mockCtx();
+    m.setFramework(host('discord', 'portal', 'zulip').framework);
+    await m.start(ctx);
+    await m.onProcess(pushFrom('portal', 'portal:r1', 'ambient chatter'), PS);
+    expect(said()).toEqual([defaultLine('portal')]);
+    await m.onProcess(pushFrom('portal', 'portal:r1', 'ambient chatter'), PS);
+    await m.onProcess(incomingFrom('zulip', 'zulip:backend', 'ambient chatter'), PS);
+    await m.onProcess(incomingFrom('zulip', 'zulip:backend', 'ambient chatter'), PS);
+    expect(said()).toEqual([defaultLine('portal'), defaultLine('zulip')]);
+    expect(toolCalls).toEqual([]);
+    await m.onProcess(ambient('c1', 'abcdefgh'), PS);
+    expect(toolCalls.map((c) => c.input.serverId)).toEqual(['discord']);
+    expect(said()).toHaveLength(2);
+    await m.stop();
+  });
+
+  test('a recipe that names discord on purpose hears nothing about the other server', async () => {
+    const m = new SubscriptionGcModule({ defaultLimitChars: 5, serverId: 'discord' });
+    m.setFramework(host('discord', 'portal').framework);
+    await m.start(mockCtx().ctx);
+    await m.onProcess(pushFrom('portal', 'portal:r1', 'ambient chatter'), PS);
+    await m.onProcess(incomingFrom('portal', 'portal:r1', 'ambient chatter'), PS);
+    expect(said()).toEqual([]);
+    await m.stop();
+  });
+
+  test('a server unloaded or connected while the host runs changes what the module says, and each new line comes once', async () => {
+    const m = new SubscriptionGcModule({ defaultLimitChars: 50 });
+    const live = host('discord', 'zulip');
+    m.setFramework(live.framework);
+    await m.start(mockCtx().ctx);
+    const settings = () => m.getAgentSettingsExtension().get('agent');
+    const listed = async () => (await m.handleToolCall({ id: 'l', name: 'list_channel_idle_limits', input: {} })).data;
+    await m.onProcess(incomingFrom('zulip', 'zulip:backend', 'ambient chatter'), PS);
+    expect(said()).toEqual([defaultLine('zulip')]);
+    expect(settings()).not.toHaveProperty('channel_idle_warning');
+
+    live.servers.splice(live.servers.indexOf('discord'), 1);
+    expect(settings().channel_idle_warning).toBe(settingsWarning('discord'));
+    expect(await listed()).toMatchObject({ active: false });
+    await m.onProcess(incomingFrom('zulip', 'zulip:backend', 'ambient chatter'), PS);
+    expect(said()).toEqual([defaultLine('zulip'), inactiveLine('discord', 'default', 'zulip')]);
+
+    live.servers.push('discord');
+    expect(settings()).not.toHaveProperty('channel_idle_warning');
+    expect(await listed()).toMatchObject({ active: true });
+    await m.onProcess(incomingFrom('zulip', 'zulip:backend', 'ambient chatter'), PS);
+    expect(said()).toEqual([defaultLine('zulip'), inactiveLine('discord', 'default', 'zulip')]);
+    await m.stop();
+  });
+});
+
+describe('a close that changes nothing says nothing', () => {
+  test('"already closed" adds no notice and sends no ops receipt', async () => {
+    const m = new SubscriptionGcModule({ defaultLimitChars: 5, serverId: 'discord' });
+    const { ctx, toolCalls, getState } = mockCtx();
+    const receipts: string[] = [];
+    Object.assign(ctx as object, {
+      getAgents: () => [{ name: 'mythos' }],
+      _receipts: receipts,
+      notifyOps(this: { _receipts: string[] }, kind: string) { this._receipts.push(kind); },
+      callTool: async (call: { name: string; input: Record<string, unknown> }) => {
+        toolCalls.push(call);
+        return { success: true, data: { channelId: 'g1:c1', serverId: 'discord', status: 'already closed' } };
+      },
+    });
+    m.setFramework(host('discord').framework);
+    await m.start(ctx);
+    const r = await m.onProcess(ambient('c1', 'abcdefgh'), PS);
+    expect(toolCalls).toHaveLength(1);
+    expect(r).toEqual({});
+    expect(receipts).toEqual([]);
+    expect((getState() as { counters: Record<string, number> }).counters).toEqual({});
+    await m.stop();
+  });
+
+  test('a real close names its server in the ops receipt and in the notice', async () => {
+    const m = new SubscriptionGcModule({ defaultLimitChars: 5, serverId: 'zulip' });
+    const { ctx } = mockCtx();
+    const receipts: Array<{ message: string; data?: Record<string, unknown> }> = [];
+    Object.assign(ctx as object, {
+      getAgents: () => [{ name: 'mythos' }],
+      _receipts: receipts,
+      notifyOps(this: { _receipts: typeof receipts }, _kind: string, _agent: string, message: string, data?: Record<string, unknown>) {
+        this._receipts.push({ message, data });
+      },
+      callTool: async () => ({ success: true, data: { channelId: 'backend', serverId: 'zulip', status: 'closed' } }),
+    });
+    m.setFramework(host('zulip').framework);
+    await m.start(ctx);
+    const r = await m.onProcess(incomingFrom('zulip', 'zulip:backend', 'ambient chatter'), PS);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].data).toMatchObject({ channelId: 'zulip:backend', serverId: 'zulip' });
+    expect(receipts[0].message).toStartWith('subscription-gc auto-closed channel zulip:backend on server zulip (');
+    const notice = r.addMessages?.[0]?.content[0];
+    expect(notice?.type === 'text' ? notice.text : '').toStartWith('[subscription-gc] Auto-closed channel zulip:backend on server zulip: ');
+    await m.stop();
+  });
+});
+
+describe('agent_settings and the old tools say which server cleanup watches, and when it is not in force', () => {
+  test('get, update and reset name the server, and carry the warning only where the host lacks it', async () => {
+    const active = new SubscriptionGcModule();
+    active.setFramework(host('discord').framework);
+    await active.start(mockCtx().ctx);
+    const on = active.getAgentSettingsExtension();
+    for (const answer of [
+      on.get('agent'),
+      on.update('agent', { channel_idle_limits: { 'discord:g1:c1': 5000 } }),
+      on.reset('agent'),
+    ]) {
+      expect(answer.channel_idle_server).toBe('discord');
+      expect(answer).not.toHaveProperty('channel_idle_warning');
+    }
+
+    const inactive = new SubscriptionGcModule();
+    inactive.setFramework(host('portal').framework);
+    await inactive.start(mockCtx().ctx);
+    const off = inactive.getAgentSettingsExtension();
+    for (const answer of [
+      off.get('agent'),
+      off.update('agent', { channel_idle_limits: { 'portal:r1': 5000 } }),
+      off.reset('agent'),
+    ]) {
+      expect(answer.channel_idle_server).toBe('discord');
+      expect(answer.channel_idle_warning).toBe(settingsWarning('discord'));
+    }
+    expect(off.properties).toEqual(on.properties);
+    expect(off.keys).toEqual(on.keys);
+  });
+
+  test('the old tools still store and succeed where the host lacks the server, and say it is not in force', async () => {
+    const m = new SubscriptionGcModule({ serverId: 'zulipp' });
+    m.setFramework(host('zulip').framework);
+    await m.start(mockCtx().ctx);
+    const pin = await m.handleToolCall({ id: 't1', name: 'pin_channel_idle_limit', input: { channelId: 'zulip:a', pinned: true } });
+    expect(pin).toEqual({ success: true, isError: false, data: { message: `Channel zulip:a pinned open (never auto-close).${legacyNote('zulipp')}` } });
+    const set = await m.handleToolCall({ id: 't2', name: 'set_channel_idle_limit', input: { channelId: 'zulip:b', limit: 'off' } });
+    expect(set).toEqual({ success: true, isError: false, data: { message: `Idle limit for zulip:b set to off (never auto-close).${legacyNote('zulipp')}` } });
+    const list = await m.handleToolCall({ id: 't3', name: 'list_channel_idle_limits', input: {} });
+    expect(list.data).toMatchObject({ active: false, serverId: 'zulipp', overrides: { 'zulip:b': 'off' }, pins: ['zulip:a'] });
+  });
+
+  test('where the host has the server, the old tools add no note and list says active', async () => {
+    const m = new SubscriptionGcModule({ serverId: 'zulip' });
+    m.setFramework(host('zulip').framework);
+    await m.start(mockCtx().ctx);
+    const pin = await m.handleToolCall({ id: 't1', name: 'pin_channel_idle_limit', input: { channelId: 'zulip:a', pinned: true } });
+    expect(pin.data).toEqual({ message: 'Channel zulip:a pinned open (never auto-close).' });
+    const list = await m.handleToolCall({ id: 't3', name: 'list_channel_idle_limits', input: {} });
+    expect(list.data).toMatchObject({ active: true, serverId: 'zulip' });
   });
 });
