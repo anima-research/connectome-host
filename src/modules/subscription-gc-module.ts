@@ -70,7 +70,8 @@ export class SubscriptionGcModule implements Module {
 
   private inactiveNote(): string {
     return this.isInactive()
-      ? ` Idle cleanup isn't in force on this host: it watches server ${JSON.stringify(this.serverId)}, which this host doesn't have.`
+      ? ` Idle cleanup isn't in force on this host: it watches server ${JSON.stringify(this.serverId)}, which this host doesn't have. ` +
+        "Only the host's operator can change the server."
       : '';
   }
 

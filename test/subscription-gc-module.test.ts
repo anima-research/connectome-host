@@ -568,7 +568,8 @@ const settingsWarning = (watched: string) =>
   '(modules.subscriptionGc.serverId in the recipe): tell them if these limits matter to you.';
 
 const legacyNote = (watched: string) =>
-  ` Idle cleanup isn't in force on this host: it watches server "${watched}", which this host doesn't have.`;
+  ` Idle cleanup isn't in force on this host: it watches server "${watched}", which this host doesn't have. ` +
+  "Only the host's operator can change the server.";
 
 function host(...ids: string[]) {
   const servers = [...ids];
