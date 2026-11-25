@@ -2184,7 +2184,8 @@ const modulesShape = {
     takes('false or an object ({ url, token, ... })')).optional(),
   /**
    * Auto-unsubscribe noisy ambient channels. On by default. Per subscribed
-   * channel, the host counts ambient (non-mention, non-DM) characters since the
+   * channel, the host counts ambient characters (not a mention, a DM or an event
+   * tagged `chat:addressed`) since the
    * agent's last activation; when a channel crosses its limit before the next
    * activation, it's auto-unsubscribed (delivery stops, and the surface starts
    * tracking what's then missed). A channel the agent opened itself stays open
@@ -2195,9 +2196,15 @@ const modulesShape = {
    * `channel_idle_limits`).
    *
    * `false` disables entirely. `defaultLimitChars` sets the global default
-   * (20000 if omitted). `serverId` names the MCPL server that owns
-   * subscriptions (default `discord`); `toolPrefix` is deprecated and read by
-   * nothing.
+   * (20000 if omitted). `serverId` names the one MCPL server whose ambient
+   * traffic it counts and whose channels it closes (default `discord`), by
+   * the server's id, as in `mcpServers` or `mcpl-servers.json`. Where the
+   * host has no server of that id, the module closes nothing, and the host
+   * says so: at start when `serverId` names it, at the first ambient message
+   * with text from each other server, and in `agent_settings`
+   * (`channel_idle_warning`). With `serverId` left out on a host that has
+   * `discord`, the first ambient message with text from each other server is
+   * named too. `toolPrefix` is deprecated and read by nothing.
    */
   subscriptionGc: either(subscriptionGc, 'true, false or an object').optional(),
   /**
