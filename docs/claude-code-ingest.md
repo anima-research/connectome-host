@@ -445,8 +445,9 @@ service.
    in the check, as `/puppet` would. The observers variable names a file in the new,
    empty directory, and that file doesn't exist. So no observer that the resident
    granted (`observers.json`) gets into the copy's Web UI without the check's password.
-   Where the host asks the API for a count, the count fails. Where it asks for none,
-   there is no live count either. The rest still compiles.
+   Where the host asks the API for a count, the count fails. But the host has still sent
+   the API the copy's compiled request. Where it asks for none, there is no live count
+   either. The rest still compiles.
 
    Then call the endpoints with the check's username and password, such as
    `curl -u check http://127.0.0.1:<port>/debug/context`. curl asks for the password

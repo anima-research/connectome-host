@@ -1080,6 +1080,8 @@ function keepsRenderStats(cm: unknown): boolean {
  * run, which leaves the render stats as they were, so `stats` is null
  * until a live compile has run since the strategy loaded its branch, and
  * for good where the strategy keeps none, which `statsKept` tells apart.
+ * A host with no Anthropic credential and no gateway at ANTHROPIC_BASE_URL
+ * asks for no count. `countHost` names the host that a count was asked at.
  */
 export async function buildContextMakeup(app: PanelAppRef, agentName: string): Promise<Record<string, unknown>> {
   const agent = requireAgent(app, agentName);
@@ -1115,17 +1117,18 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
   if (!countModel) {
     return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_unsupported_model' };
   }
+  const route = countRoute(app);
+  if (route.auth === null && route.base === ANTHROPIC_API) {
+    return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_no_credential' };
+  }
+  const countHost = hostOf(route.base);
   try {
-    const base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
-    const res = await fetch(base + '/v1/messages/count_tokens', {
+    const res = await fetch(route.base + '/v1/messages/count_tokens', {
       method: 'POST',
       headers: {
-        ...((app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN)
-          ? {
-              authorization: `Bearer ${app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN}`,
-              'anthropic-beta': 'oauth-2025-04-20',
-            }
-          : { 'x-api-key': process.env.ANTHROPIC_API_KEY ?? '' }),
+        ...(route.auth !== null && 'bearer' in route.auth
+          ? { authorization: `Bearer ${route.auth.bearer}`, 'anthropic-beta': 'oauth-2025-04-20' }
+          : { 'x-api-key': route.auth?.key ?? '' }),
         'anthropic-version': '2023-06-01',
         'content-type': 'application/json',
         'user-agent': 'conhost/1.0',
@@ -1133,8 +1136,9 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
       body: JSON.stringify({ model: countModel, ...payload }),
     });
     if (res.ok) {
-      const j = (await res.json()) as { input_tokens?: number };
-      exactTotalTokens = j.input_tokens ?? null;
+      const answer: unknown = await res.json();
+      const counted = typeof answer === 'object' && answer !== null && 'input_tokens' in answer ? answer.input_tokens : undefined;
+      exactTotalTokens = typeof counted === 'number' && Number.isSafeInteger(counted) && counted >= 0 ? counted : null;
     } else {
       countSource = `count_tokens_failed_${res.status}`;
     }
@@ -1142,7 +1146,36 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     countSource = 'count_tokens_error';
   }
 
-  return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource };
+  return {
+    agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource,
+    ...(countHost !== undefined ? { countHost } : {}),
+  };
+}
+
+const ANTHROPIC_API = 'https://api.anthropic.com';
+
+type CountRoute = { base: string; auth: { bearer: string } | { key: string } | null };
+
+function nonBlank(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function countRoute(app: PanelAppRef): CountRoute {
+  const bearer = nonBlank(app.credentials?.bearer()) ?? nonBlank(process.env.ANTHROPIC_AUTH_TOKEN);
+  const key = nonBlank(process.env.ANTHROPIC_API_KEY);
+  return {
+    base: (nonBlank(process.env.ANTHROPIC_BASE_URL) ?? ANTHROPIC_API).replace(/\/$/, ''),
+    auth: bearer !== undefined ? { bearer } : key !== undefined ? { key } : null,
+  };
+}
+
+function hostOf(base: string): string | undefined {
+  try {
+    return new URL(base).host;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

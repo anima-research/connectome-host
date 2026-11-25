@@ -1075,7 +1075,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `OBSERVERS_FILE` | `$DATA_DIR/observers.json` | Web UI observer grants |
 | `IDENTITY_KEY_FILE`, `IDENTITY_HOME` | `$DATA_DIR/identity-key.pem`, `id.animalabs.ai` | `modules.identity` |
 | `CONNECTOME_OPS_WEBHOOK` | — | Webhook for ops alerts |
-| `COUNT_TOKENS_MODEL` | the agent's model | Override the model used for exact token counts in the context-makeup panel |
+| `COUNT_TOKENS_MODEL` | the agent's model | Override the model used for exact token counts in the context-makeup panel. To make an exact count, the host sends the agent's next request to Anthropic's API, or to `ANTHROPIC_BASE_URL` when that is set |
 | `LLM_CALLS_FULL_PAYLOADS` | off | `1`/`true`: keep the full request on every llm-calls log entry (large; a line over 16 MiB drops it) |
 | `THINKING_BINDING_PROBE` | on | `off`: skip the start-up check of what the account does with a signed thinking block whose earlier conversation changed (see `docs/DEPLOYMENTS.md`'s "Refusals and signed thinking"); agents on a model whose thinking binds then leave such thinking out, as on an account that refuses it |
 | `GATE_TELEMETRY` | off | `1`: send `x-gate-*` telemetry headers — only when `ANTHROPIC_BASE_URL` is also set |

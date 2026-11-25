@@ -124,6 +124,11 @@ describe('a host that holds a credential or a gateway asks for the count', () =>
     expect(makeup.countHost).toBe('api.anthropic.com');
   });
 
+  test('with an ANTHROPIC_BASE_URL that is not a URL: the makeup still answers, and names no host', async () => {
+    const { makeup } = await makeupWith(appOn(undefined, 'claude-haiku-4-5'), { ANTHROPIC_BASE_URL: 'not a url', ANTHROPIC_API_KEY: 'key-test' });
+    expect('countHost' in makeup).toBe(false);
+  });
+
   for (const [label, bearer, env] of [
     ['an ANTHROPIC_AUTH_TOKEN of spaces', undefined, { ANTHROPIC_AUTH_TOKEN: '  ', ANTHROPIC_API_KEY: 'key-test' }],
     ['a subscription login whose token is spaces', '  ', { ANTHROPIC_API_KEY: 'key-test' }],
@@ -142,6 +147,13 @@ describe('a host that holds a credential or a gateway asks for the count', () =>
     expect(sent[0]!.headers.authorization).toBe('Bearer login-test');
     expect(makeup.exactTotalTokens).toBe(7);
     expect(makeup.countHost).toBe('api.anthropic.com');
+  });
+
+  test('with a subscription login and an ANTHROPIC_API_KEY: the request carries the login, as before', async () => {
+    const { sent } = await makeupWith(appOn(undefined, 'claude-haiku-4-5', 'login-test'), { ANTHROPIC_API_KEY: 'key-test' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.headers.authorization).toBe('Bearer login-test');
+    expect(sent[0]!.headers['x-api-key']).toBeUndefined();
   });
 
   test('a count that answers with an error status still names where it asked', async () => {
