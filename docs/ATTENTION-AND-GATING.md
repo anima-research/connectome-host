@@ -109,10 +109,13 @@ later start, rule by rule and by name:
 - once you've moved a recipe rule, the file's order stays;
 - an unedited `default` takes the recipe's.
 
-A start that changes something logs a line naming what it changed. A start
-that finds `gate.json` but no `gate.recipe.json`, as the first since
-agent-framework 0.27.0 does, removes and redefines nothing. See **Changing your
-rules** below for how to edit it safely.
+A start that changes the file, or keeps a rule against a change in the recipe,
+writes a line to the host's stderr that says what it changed and what it kept
+(`[gate] the recipe was applied to gate.json: …`). A start that finds
+`gate.json` but no `gate.recipe.json`, as the first since agent-framework 0.27.0
+does, removes and redefines nothing: it adds the recipe's rules that the file
+lacks, and the rules that match the recipe take the recipe's order. See
+**Changing your rules** below for how to edit it safely.
 
 It's an ordered list — **first match wins** — plus a `default`:
 
