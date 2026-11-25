@@ -6,8 +6,9 @@
   Opting in turns off the framework's built-in refusal reactions for all
   servers, including unselected ones. Replacing a selected connector
   (including with `mcpl_restart`) stops its markers until the host restarts.
-  A refusal-marker ops alert is raised once per server and stays until host
-  restart, even if a later marker succeeds.
+  A refusal-marker ops alert is sent once per server per host run, as a live
+  event: only viewers connected at that moment receive it, and the host keeps
+  no alert state. Later failures on that server appear only in diagnostics.
   While enabled, session switches (including `/session new`) are refused
   without changing the current session. To change sessions, start the host
   without the option, use `/session switch` or `/session new`, then re-enable

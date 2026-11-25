@@ -114,7 +114,9 @@ Diagnostics include server ID (null for unknown origin), agent name, turn ID and
 category. When a current refusal cannot produce a marker, the first failure per
 server also sends a `refusal-reaction-unavailable` ops alert. Alerts are bounded
 per installation, not a background health monitor: stale state is detected when
-a refusal arrives. A denied or failed Discord `filters_get` call reports the
+a refusal arrives. The alert is a live event, not stored host state: a Web UI or
+TUI that connects later does not see it, and a dismissed alert does not return.
+Later failures on the same server are not re-alerted; read the diagnostics. A denied or failed Discord `filters_get` call reports the
 tool error, not an unsupported suppression source. Check the status, connector
 availability, advertised schema, capabilities and suppression policy; restart the
 host after correcting config.
