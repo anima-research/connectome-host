@@ -129,9 +129,8 @@ test("connectome send prints nothing for a final round with no text, and says th
     const out: string[] = [];
     const err: string[] = [];
     const status = await send({ root, argv: ['hello'], out: (line) => out.push(line), err: (line) => err.push(line) });
-    expect({ status, err }).toMatchObject({ status: 0 });
-    expect(out).toEqual([]);
-    expect(err.some((line) => line.includes("the agent's turn ended without saying anything here"))).toBe(true);
+    expect({ status, out, err }).toMatchObject({ status: 0, out: [] });
+    expect(err.join('\n')).toContain("the agent's turn ended without saying anything here");
   }, { CHILD_REPLY: 'thinking-only' });
 }, 60_000);
 
@@ -143,7 +142,6 @@ test("connectome send prints the reply alone, without the agent's thinking", asy
     const out: string[] = [];
     const err: string[] = [];
     const status = await send({ root, argv: ['hello'], out: (line) => out.push(line), err: (line) => err.push(line) });
-    expect({ status, err }).toMatchObject({ status: 0 });
-    expect(out).toEqual([REPLY]);
+    expect({ status, out, err }).toMatchObject({ status: 0, out: [REPLY] });
   });
 }, 60_000);
