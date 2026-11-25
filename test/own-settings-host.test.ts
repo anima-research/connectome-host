@@ -127,6 +127,7 @@ describe('a real host process', () => {
 
       const next = await start(dir, document);
       expect(next.code, next.output).toBe(0);
+      expect(next.requests.some((request) => request.messages.includes('the host parks your settings file'))).toBe(true);
       expect(readdirSync(join(dir, 'data', 'own-settings'))).toEqual(['own.not-used.json']);
     } finally {
       rmSync(dir, { recursive: true, force: true });

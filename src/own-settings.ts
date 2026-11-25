@@ -1,4 +1,4 @@
-import { closeSync, constants, copyFileSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { resolveTimeZone } from '@animalabs/agent-framework';
@@ -60,11 +60,15 @@ function fileForStart(dir: string, grant: Grant): string {
 /** The resident's file as the host reads it. */
 export type OwnFile =
   | { readonly kind: 'none' }
-  | { readonly kind: 'unread'; readonly why: string }
+  | { readonly kind: 'unread'; readonly why: string; readonly remedy: string }
   | { readonly kind: 'not-an-object'; readonly why: string }
   | { readonly kind: 'entries'; readonly entries: ReadonlyArray<readonly [string, unknown]> };
 
-function readOwnFile(path: string): OwnFile {
+const REPLACE = 'Replace it with a plain file, or remove it.';
+const REACH = 'Check that the host can reach and read it on its path.';
+
+/** The bytes of a plain file of at most OWN_SETTINGS_MAX_BYTES, read with no link followed and no wait on a pipe. */
+function readPlainFile(path: string): { readonly bytes: Buffer } | Extract<OwnFile, { kind: 'none' | 'unread' }> {
   let fd: number;
   try {
     // Without O_NONBLOCK, opening a pipe waits for a writer.
@@ -72,28 +76,37 @@ function readOwnFile(path: string): OwnFile {
   } catch (err) {
     const code = errorCode(err);
     if (code === 'ENOENT') return { kind: 'none' };
-    if (code === 'ELOOP') return { kind: 'unread', why: 'it is a link, and the host follows no link there' };
-    return { kind: 'unread', why: unreadWhy(err) };
+    if (code === 'ELOOP') return { kind: 'unread', why: 'it is a link, and the host follows no link there', remedy: REPLACE };
+    return { kind: 'unread', why: unreadWhy(err), remedy: REACH };
   }
-  let text: string;
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile()) return { kind: 'unread', why: 'it is not a plain file' };
+    if (!stat.isFile()) return { kind: 'unread', why: 'it is not a plain file', remedy: REPLACE };
     const tooLarge = `it is larger than ${OWN_SETTINGS_MAX_BYTES} bytes`;
-    if (stat.size > OWN_SETTINGS_MAX_BYTES) return { kind: 'unread', why: tooLarge };
+    if (stat.size > OWN_SETTINGS_MAX_BYTES) return { kind: 'unread', why: tooLarge, remedy: REPLACE };
     const buffer = Buffer.alloc(OWN_SETTINGS_MAX_BYTES + 1);
     let length = 0;
     for (let n = -1; n !== 0 && length < buffer.length;) {
       n = readSync(fd, buffer, length, buffer.length - length, null);
       length += n;
     }
-    if (length > OWN_SETTINGS_MAX_BYTES) return { kind: 'unread', why: tooLarge };
-    text = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, length));
+    if (length > OWN_SETTINGS_MAX_BYTES) return { kind: 'unread', why: tooLarge, remedy: REPLACE };
+    return { bytes: buffer.subarray(0, length) };
   } catch (err) {
-    if (err instanceof TypeError) return { kind: 'not-an-object', why: 'it is not UTF-8 text' };
-    return { kind: 'unread', why: unreadWhy(err) };
+    return { kind: 'unread', why: unreadWhy(err), remedy: REACH };
   } finally {
     closeSync(fd);
+  }
+}
+
+function readOwnFile(path: string): OwnFile {
+  const read = readPlainFile(path);
+  if (!('bytes' in read)) return read;
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(read.bytes);
+  } catch {
+    return { kind: 'not-an-object', why: 'it is not UTF-8 text' };
   }
   let parsed: unknown;
   try {
@@ -215,13 +228,20 @@ function brief(value: unknown): string {
   }
 }
 
-/** A line for each of the first LISTED_MAX items, and a last line that counts the rest. */
-function listed<T>(items: readonly T[], line: (item: T) => string, rest: (count: number) => string): string[] {
-  const lines = items.slice(0, LISTED_MAX).map(line);
-  return items.length <= LISTED_MAX ? lines : [...lines, rest(items.length - LISTED_MAX)];
+function listed(entries: readonly OwnEntry[], line: (entry: OwnEntry) => string, rest: (count: number) => string): string[] {
+  const lines: string[] = [];
+  let others = 0;
+  for (const entry of entries) {
+    if (entry.notUsed?.kind !== 'unknown') lines.push(line(entry));
+    else if (others++ < LISTED_MAX) lines.push(line(entry));
+  }
+  return others > LISTED_MAX ? [...lines, rest(others - LISTED_MAX)] : lines;
 }
 
 const near = (name: string): string | null => nearestKey(name, OWN_SETTING_NAMES);
+
+/** An entry's name in an operator's line: a name that is no setting is quoted, so that no character of it can start a line of its own. */
+const logName = (entry: OwnEntry): string => (entry.notUsed?.kind === 'unknown' ? cut(JSON.stringify(entry.name)) : entry.name);
 
 const quoted = (sentence: string): string =>
   sentence.includes('\n') ? `\n${sentence.split('\n').map((line) => `    ${line}`).join('\n')}` : ` '${sentence}'`;
@@ -345,25 +365,25 @@ export function startOwnSettings(operator: OperatorRecipe, dataDir: string): Own
     } catch (err) {
       warn(`[own-settings] The host could not make ${dir}: ${errorText(err)}.`);
     }
-    if (!exists(own) && exists(parked)) {
-      move = 'put-back';
-      log.push(`[own-settings] The recipe lets the resident change settings again, so the host applies ${parked}, and puts it back ` +
-        `as ${own} once it has started.`);
-    }
   } else if (exists(own)) {
     move = 'park';
     log.push(`[own-settings] The recipe lets the resident change no setting, so the host parks ${own} as ${parked} once it has started.`);
   }
-  const check = checkOwnSettings(operator, dataDir, move === 'put-back' ? parked : own);
+  const check = checkOwnSettings(operator, dataDir, fileForStart(dir, grant));
+  if (check.path === parked && check.file.kind !== 'unread') {
+    move = 'put-back';
+    log.push(`[own-settings] The recipe lets the resident change settings again, so the host applies ${parked}, and puts it back ` +
+      `as ${own} once it has started.`);
+  }
   if (check.file.kind === 'unread' || check.file.kind === 'not-an-object') {
     warn(`[own-settings] The host did not use ${check.path}: ${check.file.why}.`);
   }
   const line = (entry: OwnEntry): string => (entry.notUsed === null
     ? `[own-settings] ${entry.name} is ${brief(entry.value)} from the resident's file; ${recipeOwn(operator, entry.name)}.`
-    : `[own-settings] ${cut(entry.name)} in the resident's file is not used: ${ended(operatorReason(entry.name, entry.notUsed))}`);
-  log.push(...listed(check.entries, line, (count) => `[own-settings] The resident's file has ${count} more entries.`));
+    : `[own-settings] ${logName(entry)} in the resident's file is not used: ${ended(operatorReason(entry.name, entry.notUsed))}`);
+  log.push(...listed(check.entries, line, (count) => `[own-settings] The resident's file has ${count} more entries that name no setting.`));
   warnings.push(...listed(check.entries.filter((entry) => entry.notUsed !== null), line,
-    (count) => `[own-settings] The resident's file has ${count} more entries that are not used.`));
+    (count) => `[own-settings] The resident's file has ${count} more entries that name no setting.`));
   const failed = (line: string): string => {
     noteRecipeWarning(line);
     return line;
@@ -375,7 +395,11 @@ export function startOwnSettings(operator: OperatorRecipe, dataDir: string): Own
       if (move === 'park') {
         renameSync(from, to);
       } else {
-        copyFileSync(from, to, constants.COPYFILE_EXCL);
+        const read = readPlainFile(from);
+        if (!('bytes' in read)) {
+          return failed(`[own-settings] The host did not put ${from} back: ${read.kind === 'none' ? 'it is gone' : read.why}.`);
+        }
+        writeFileSync(to, read.bytes, { flag: 'wx', mode: 0o600 });
         try {
           unlinkSync(from);
         } catch (err) {
@@ -407,18 +431,18 @@ function startNote(recipe: Recipe, dataDir: string, check: OwnSettingsCheck, mov
       'the recipe lets you change a setting again.');
   } else if (move === 'put-back') {
     parts.push(`Your operator's recipe lets you change your own settings again, so the host puts your parked settings file back as ${place}.` +
-      (inForce.length > 0 ? ` In force from it:\n${listed(inForce, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries`).join('\n')}` : ' Nothing of it is in force.'));
+      (inForce.length > 0 ? ` In force from it:\n${listed(inForce, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that name no setting`).join('\n')}` : ' Nothing of it is in force.'));
   }
   if (check.file.kind === 'unread' || check.file.kind === 'not-an-object') {
     parts.push(`The host did not use your settings file ${place} at this start: ${check.file.why}. The recipe's values are in force. ` +
       (check.file.kind === 'not-an-object'
-        ? 'Write it again as one JSON object, or remove it.'
-        : 'Replace it with a plain file, or ask your operator.'));
+        ? 'Write it again as one JSON object, remove it, or ask your operator.'
+        : check.file.remedy === REPLACE ? 'Replace it with a plain file, or ask your operator.' : 'Ask your operator.'));
   }
   if (notUsed.length > 0) {
     parts.push(`Your settings file ${place} did not take effect as written at this start.` +
       `${inForce.length > 0 ? ' Each other entry of it is in force.' : ''}\n` +
-      listed(notUsed, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that are not used`).join('\n'));
+      listed(notUsed, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that name no setting`).join('\n'));
   }
   if (parts.length === 0) return undefined;
   const allowed = recipe.agent.allowedTools;
@@ -448,8 +472,9 @@ function hostValue(name: OwnSettingName, recipe: Recipe, running: RunningAgent):
 
 /**
  * The answer of OWN_SETTINGS_TOOL: what is pending in the file, each setting
- * that the resident may read with its value in force and where that comes
- * from, how to change them, and the file as the next start would apply it.
+ * that the resident may read, with its value in force where it has one and
+ * where that comes from, how to change them, and the file as the next start
+ * would apply it.
  * It writes nothing.
  */
 export function ownSettingsAnswer(input: {
@@ -522,7 +547,7 @@ export function ownSettingsAnswer(input: {
   } else {
     const fromParked = resolve(next.path) === parked;
     const lines = next.file.kind === 'entries'
-      ? (next.entries.length === 0 ? ['It holds no entry.'] : listed(next.entries, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries`))
+      ? (next.entries.length === 0 ? ['It holds no entry.'] : listed(next.entries, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that name no setting`))
       : [];
     sections.push(fromParked
       ? `Your parked file ${parkedPlace} is there, and ${place} is not: the next start puts it back as ${place}, and applies it. If you ` +
@@ -566,13 +591,13 @@ export function ownSettingsLines(operator: OperatorRecipe, dataDir: string): str
   if (check.file.kind === 'none') lines.push(`There is no ${own}.`);
   else if (check.file.kind !== 'entries') {
     lines.push(`The next start does not use the resident's file: ${check.file.why}. ` +
-      (check.file.kind === 'not-an-object' ? 'Write it again as one JSON object, or remove it.' : 'Replace it with a plain file, or remove it.'));
+      (check.file.kind === 'not-an-object' ? 'Write it again as one JSON object, or remove it.' : check.file.remedy));
   }
   else if (check.entries.length === 0) lines.push('The resident\'s file holds no entry.');
   lines.push(...listed(check.entries, (entry) => (entry.notUsed === null
     ? `${entry.name} would be ${brief(entry.value)} from the resident's file; ${recipeOwn(operator, entry.name)}.`
-    : `${cut(entry.name)} in the resident's file would not be used: ${ended(operatorReason(entry.name, entry.notUsed))}`),
-  (count) => `The resident's file has ${count} more entries.`));
+    : `${logName(entry)} in the resident's file would not be used: ${ended(operatorReason(entry.name, entry.notUsed))}`),
+  (count) => `The resident's file has ${count} more entries that name no setting.`));
   if (ownThere && parkedThere) lines.push(`${parked} is there too, and the start uses ${OWN_SETTINGS_FILE}.`);
   return lines;
 }

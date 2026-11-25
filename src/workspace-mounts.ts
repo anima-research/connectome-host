@@ -18,7 +18,7 @@ export function ownSettingsMount(dataDir: string): MountConfig {
     mode: 'read-write',
     backend: 'direct',
     watch: 'never',
-    include: [OWN_SETTINGS_FILE, OWN_SETTINGS_SET_ASIDE],
+    include: [`/${OWN_SETTINGS_FILE}`, `/${OWN_SETTINGS_SET_ASIDE}`],
     maxFileSize: OWN_SETTINGS_MAX_BYTES,
   };
 }

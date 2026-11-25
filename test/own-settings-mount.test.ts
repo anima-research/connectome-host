@@ -76,4 +76,10 @@ describe('the _settings mount (case 18)', () => {
     expect((await call('delete', { path: '_settings/other.json' })).success).toBe(false);
     expect(readdirSync(dir)).toEqual(['other.json']);
   }, 30_000);
+
+  test('a file of the same name in a directory beneath is refused', async () => {
+    const { dir, call } = await started();
+    expect((await call('write', { path: '_settings/sub/own.json', content: '{}' })).success).toBe(false);
+    expect(readdirSync(dir)).toEqual([]);
+  }, 30_000);
 });

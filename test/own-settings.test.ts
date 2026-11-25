@@ -192,7 +192,7 @@ describe('what a start does with the file', () => {
     expect(start.check.recipe).toEqual(op.recipe);
     expect(start.note).toStartWith('The host did not use your settings file _settings/own.json at this start: it can\'t be read: a part of its path on the host is not a directory.');
     expect(answer(op, dir)).toContain('The next start does not use it: it can\'t be read: a part of its path on the host is not a directory.');
-    expect(ownSettingsLines(op, dir)).toContain('The next start does not use the resident\'s file: it can\'t be read: a part of its path on the host is not a directory. Replace it with a plain file, or remove it.');
+    expect(ownSettingsLines(op, dir)).toContain('The next start does not use the resident\'s file: it can\'t be read: a part of its path on the host is not a directory. Check that the host can reach and read it on its path.');
   });
 
   test('"read": a file there is parked and not used, and the start makes no directory for a mount (case 4, 16)', () => {
@@ -248,12 +248,61 @@ describe('what a start does with the file', () => {
     const start = startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own: { ...many, 'agent.timezone': 'UTC' } }));
     expect(start.check.recipe.agent.timezone).toBe('UTC');
     expect(start.note!.length).toBeLessThan(10_000);
-    expect(start.note).toContain('- and 99980 more entries that are not used');
+    expect(start.note).toContain('- and 99980 more entries that name no setting');
     expect(start.log.length).toBeLessThan(30);
     const map = Object.fromEntries(Array.from({ length: 50_000 }, (_, i) => [`tool_${i}`, 1]));
     const large = startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own: { 'agent.strategy.toolResultMaxLastN': map } }));
     expect(large.check.entries[0]!.notUsed).toBeNull();
     expect(large.log.every((line) => line.length < 2_000)).toBe(true);
+  });
+
+  test('a file of all 23 settings gives a log line and a doctor line for each', () => {
+    const op = operator({ ownSettings: 'all', ...EVERY_MODULE });
+    const dir = dataDir({ own: GOOD });
+    const start = startOwnSettings(op, dir);
+    const lines = ownSettingsLines(op, dir);
+    for (const name of OWN_SETTING_NAMES) {
+      expect(start.log.some((line) => line.startsWith(`[own-settings] ${name} `)), name).toBe(true);
+      expect(lines.some((line) => line.startsWith(`${name} `)), name).toBe(true);
+    }
+    expect([...start.log, ...lines].join('\n')).not.toContain('more entries');
+  });
+
+  test('a map with a wrong value at each of 200,000 keys is not used, and the start goes on', () => {
+    const map = Object.fromEntries(Array.from({ length: 200_000 }, (_, i) => [`k${i}`, null]));
+    const start = startOwnSettings(operator({ ownSettings: 'all' }),
+      dataDir({ own: { 'agent.strategy.toolResultMaxLastN': map, 'agent.timezone': 'UTC' } }));
+    expect(start.check.entries[0]!.notUsed?.kind).toBe('value');
+    expect(start.check.recipe.agent.timezone).toBe('UTC');
+    expect(start.note).toContain('agent.strategy.toolResultMaxLastN has more than 5 faults. The first 5:');
+  }, 60_000);
+
+  test('an object value replaces the recipe\'s object whole', () => {
+    const op = operator({ ownSettings: 'all', agent: { strategy: { toolResultMaxLastN: { bash: 3 } } } });
+    const start = startOwnSettings(op, dataDir({ own: { 'agent.strategy.toolResultMaxLastN': { read: 5 } } }));
+    expect(start.check.recipe.agent.strategy?.toolResultMaxLastN).toEqual({ read: 5 });
+  });
+
+  test('a parked file that is a link is not put back, at the start or at the move', () => {
+    const op = operator({ ownSettings: 'all' });
+    const dir = dataDir();
+    const elsewhere = join(dir, 'elsewhere.json');
+    writeFileSync(elsewhere, JSON.stringify({ 'agent.timezone': 'UTC' }));
+    symlinkSync(elsewhere, ownFile(dir, 'own.not-used.json'));
+    const linked = startOwnSettings(op, dir);
+    expect([linked.move, linked.moveFile(), existsSync(ownFile(dir))]).toEqual([null, null, false]);
+    expect(linked.check.file).toEqual({ kind: 'unread', why: 'it is a link, and the host follows no link there',
+      remedy: 'Replace it with a plain file, or remove it.' });
+
+    const later = dataDir({ parked: { 'agent.timezone': 'UTC' } });
+    const start = startOwnSettings(op, later);
+    expect(start.move).toBe('put-back');
+    rmSync(ownFile(later, 'own.not-used.json'));
+    symlinkSync(elsewhere, ownFile(later, 'own.not-used.json'));
+    takeRecipeWarnings();
+    const line = `[own-settings] The host did not put ${ownFile(later, 'own.not-used.json')} back: it is a link, and the host follows no link there.`;
+    expect(start.moveFile()).toBe(line);
+    expect([existsSync(ownFile(later)), takeRecipeWarnings()]).toEqual([false, [line]]);
   });
 
   test('a file that is not UTF-8 text is not used, and the note says so', () => {
@@ -303,7 +352,7 @@ describe('what a start does with the file', () => {
   test('an unknown name in the file is not used, with the nearest name, and a later entry is in force', () => {
     takeRecipeWarnings();
     const start = startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own: { 'agent.timezon': 'UTC', 'agent.clock': false } }));
-    expect(takeRecipeWarnings()).toEqual(['[own-settings] agent.timezon in the resident\'s file is not used: it is not a setting of the table (did you mean agent.timezone?).']);
+    expect(takeRecipeWarnings()).toEqual(['[own-settings] "agent.timezon" in the resident\'s file is not used: it is not a setting of the table (did you mean agent.timezone?).']);
     expect(start.check.entries[0]!.notUsed).toEqual({ kind: 'unknown' });
     expect(start.check.recipe.agent.clock).toBe(false);
     expect(start.note).toContain('- `agent.timezon` is not used: it is not a setting that you can manage (did you mean `agent.timezone`?).');
@@ -562,7 +611,7 @@ describe('the tool', () => {
     expect(answer(op, dir, start)).not.toContain('Pending:');
   });
 
-  test('"read": it shows all 23 with their values, and says that none may change (case 4)', () => {
+  test('"read": it shows all 23, and says that none may change (case 4)', () => {
     const op = operator({ ownSettings: 'read' });
     const text = answer(op, dataDir());
     for (const name of OWN_SETTING_NAMES) expect(text).toContain(`${name}: `);

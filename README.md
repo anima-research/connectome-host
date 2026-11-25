@@ -537,7 +537,7 @@ Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) wi
 - **`"all"`**: the resident may read and change every setting of the table below. A release that adds a setting to the table adds it to `"all"`.
 - **`"read"`**: the resident may read every setting of the table, and change none.
 
-Left out, nothing changes: the host adds no mount, offers no tool and applies no file.
+Left out, the host adds no mount, offers no tool and applies no file. It parks a file that an earlier grant left, as below.
 
 The resident's file is `own-settings/own.json` in the data directory: one JSON object, each key a setting's name, and each value what the recipe would hold at that path, whole, such as `{"agent.proseRouting": "explicit"}`. Where the grant lets the resident change a setting and the workspace is on, the host adds the mount `_settings` over that directory, so the resident writes `_settings/own.json` with its file tools. The mount is direct and holds that file and `own.not-used.json`, and nothing else. A recipe that has `ownSettings` can't name a mount of its own `_settings`. Without a workspace, the resident's tool gives the file's path on disk.
 
@@ -547,7 +547,7 @@ The resident's tool is `settings--own`, a utility in the built-in `settings` too
 
 When the recipe stops letting the resident change settings (the key left out, or `"read"`), the host parks `own.json` as `own.not-used.json`, and tells the resident. When a later start's recipe lets it change a setting again, and there is no `own.json`, the host applies the parked file, puts it back, and tells the resident. The host moves the file once the framework has started and the note is written, so a start that ends with an error before then moves nothing, and the next start does the same again, with its note.
 
-The operator sees the resident's values in the file, in the start's log (a line for each entry in force, with the recipe's own value, and one for each entry not used), and in `connectome doctor`, which prints what the next start would do with the file, against the recipe that the service's unit names, with the host up or down. With the host up, doctor fetches a recipe given by URL only where the own-settings directory is there, so a host that has not used the key costs no fetch.
+The operator sees the resident's values in the file, in the start's log (a line for each entry in force, with the recipe's own value, and one for each entry not used; of the entries that name no setting, the first 20, and a count of the rest), and in `connectome doctor`, which prints what the next start would do with the file, against the recipe that the service's unit names, with the host up or down. With the host up, doctor fetches a recipe given by URL only where the own-settings directory is there, so a host that has not used the key costs no fetch.
 
 The host's start and `connectome doctor` warn of a listed setting that does nothing on this host, and of an `agent.allowedTools` list that leaves out `settings--own`, or `workspace--write` where the grant lets the resident change a setting and the workspace is on. A list naming a setting that is not in the table stops the load.
 

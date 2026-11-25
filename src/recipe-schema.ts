@@ -117,13 +117,16 @@ export function nearestKey(key: string, known: readonly string[]): string | null
   return best !== null && bestDistance <= near ? best : null;
 }
 
+const UNKNOWN_KEYS_NAMED = 20;
+
 function unknownKeysWords(keys: readonly string[], known: readonly string[], instead: Readonly<Record<string, string>> = {}): string {
-  const named = keys.map((key) => {
+  const named = keys.slice(0, UNKNOWN_KEYS_NAMED).map((key) => {
     const hint = Object.hasOwn(instead, key) ? instead[key] : undefined;
     const near = hint === undefined ? nearestKey(key, known) : null;
     return `${JSON.stringify(key)}${hint !== undefined ? ` (${hint})` : near ? ` (did you mean "${near}"?)` : ''}`;
   });
-  return `has unknown key${keys.length > 1 ? 's' : ''} ${named.join(', ')}; it takes ${inProse(known)}`;
+  const more = keys.length > UNKNOWN_KEYS_NAMED ? `, and ${keys.length - UNKNOWN_KEYS_NAMED} more` : '';
+  return `has unknown key${keys.length > 1 ? 's' : ''} ${named.join(', ')}${more}; it takes ${inProse(known)}`;
 }
 
 const shapeKeys = (inst: unknown): string[] => (inst instanceof z.ZodObject ? Object.keys(inst.shape) : []);
@@ -247,15 +250,16 @@ function leavingOutBreaksARule(root: z.core.$ZodType, input: unknown, paths: rea
 }
 
 /**
- * The refusal's sentences. A null may be left out where its field is
- * optional, and where leaving it out together with each key offered so far
- * (`offered`, in the refusal's order) breaks no rule that reads one of
- * them, so that the offers hold together.
+ * The refusal's sentences, at most `limit` of them. A null may be left out
+ * where its field is optional, and where leaving it out together with each
+ * key offered so far (`offered`, in the refusal's order) breaks no rule that
+ * reads one of them, so that the offers hold together.
  */
 function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyKey[], input: unknown, origin: RecipeOrigin, subject: Subject, root: z.core.$ZodType,
-  offered: PropertyKey[][]): string[] {
+  offered: PropertyKey[][], limit: number): string[] {
   const out: string[] = [];
   for (const issue of issues) {
+    if (out.length >= limit) break;
     const path = [...base, ...issue.path];
     const at = dotted(path);
     const name = subject(at);
@@ -263,7 +267,10 @@ function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyK
     if (issue.code === 'invalid_union') {
       if (issue.errors.length > 0) {
         const meant = issue.errors.filter((arm) => !refusesKind(arm, valueAt(input, path)));
-        if (meant.length === 1) { out.push(...sentences(meant[0]!, path, input, origin, subject, root, offered)); continue; }
+        if (meant.length === 1) {
+          for (const inner of sentences(meant[0]!, path, input, origin, subject, root, offered, limit - out.length)) out.push(inner);
+          continue;
+        }
       } else if (issue.discriminator !== undefined) {
         const options = 'options' in issue ? issue.options ?? [] : [];
         out.push(`${name} must be ${listed(options.filter((o) => o !== null && o !== undefined))}, got ${got()}.`);
@@ -291,10 +298,15 @@ function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyK
   return out;
 }
 
-function faultMessage(issues: readonly z.core.$ZodIssue[], input: unknown, origin: RecipeOrigin, root: z.core.$ZodType, subject: Subject = recipeSubject, whole = 'The recipe'): string {
-  const all = [...new Set(sentences(issues, [], input, origin, subject, root, []))];
+function faultMessage(issues: readonly z.core.$ZodIssue[], input: unknown, origin: RecipeOrigin, root: z.core.$ZodType, subject: Subject = recipeSubject, whole = 'The recipe',
+  limit = Infinity): string {
+  const all = [...new Set(sentences(issues, [], input, origin, subject, root, [], limit + 1))];
+  if (all.length > limit) return `${whole} has more than ${limit} faults. The first ${limit}:\n${all.slice(0, limit).map((s) => `- ${s}`).join('\n')}`;
   return all.length === 1 ? all[0]! : `${whole} has ${all.length} faults:\n${all.map((s) => `- ${s}`).join('\n')}`;
 }
+
+/** The most faults that a setting's refusal names: a resident's entry can hold a map of any number of wrong values. */
+const SETTING_FAULTS_NAMED = 5;
 
 const nonNegative = (phrase = 'a finite number of 0 or more') => numberWhere(phrase, (v) => v >= 0);
 const aboveZero = (phrase = 'a finite number above 0') => numberWhere(phrase, (v) => v > 0);
@@ -2862,7 +2874,7 @@ export function settingFault(name: string, value: unknown): string | undefined {
   const result = z.safeParse(field, value, { error: words });
   if (result.success) return undefined;
   const subject: Subject = (at) => (at === '' ? name : at.startsWith('[') ? `${name}${at}` : `${name}.${at}`);
-  return faultMessage(result.error.issues, value, { kind: 'literal' }, field, subject, name);
+  return faultMessage(result.error.issues, value, { kind: 'literal' }, field, subject, name, SETTING_FAULTS_NAMED);
 }
 
 /** What the schema takes at the recipe path `name`, in its own words, such as `"locus", "explicit" or "hybrid"`. */

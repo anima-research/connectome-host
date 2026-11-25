@@ -23,10 +23,7 @@ type Availability = { readonly when: string; readonly on: (recipe: Recipe) => bo
 
 /**
  * When a setting of the table means something on a host: where the operator's
- * recipe has what reads it, by the start's own tests (the modules that
- * index.ts builds, the strategy that framework-strategy.ts builds, the gate
- * of gate-options.ts and agent-framework's reply judge). A resident's entry
- * never switches a module on.
+ * recipe has what reads it. A resident's entry never switches a module on.
  */
 export const AVAILABILITY: Readonly<Record<AvailabilityKind, Availability>> = {
   always: { when: 'on every host', on: () => true },
@@ -228,7 +225,7 @@ export const OWN_SETTINGS = [
     available: 'ttsRelay',
     example: false,
     words: 'Whether you are told when your voice was interrupted: one row of context each time.' +
-      ' With `false`, the posted message is still cut to what was spoken, and you are not told.',
+      ' With `false`, you are not told. Where the host can edit the posted message, it still cuts it to what was spoken.',
   },
   {
     name: 'modules.wake.judge.onError',
