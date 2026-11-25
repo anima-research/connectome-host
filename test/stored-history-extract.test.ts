@@ -1,4 +1,8 @@
-import { expect, test } from 'bun:test';
+import { expect, spyOn, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AnthropicAdapter, type ProviderRequest } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from '../src/logging-adapter.js';
 import { validateRecipe } from '../src/recipe.js';
@@ -298,13 +302,40 @@ test('preserves malformed bodies with markers only in arguments, quoted text, me
   }
 });
 
+const opus55 = 'claude-opus-5-5';
+
+function fixtureStream(model: string, blocks: Array<Record<string, unknown>> = [], stopReason = 'end_turn'): Response {
+  const events = [
+    { type: 'message_start', message: {
+      id: 'msg_fixture', type: 'message', role: 'assistant', model, content: [],
+      stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 },
+    } },
+    ...blocks,
+    { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: 1 } },
+    { type: 'message_stop' },
+  ];
+  return new Response(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''), {
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
+
+function signedEvents() {
+  return [
+    { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: thinking.thinking } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: thinking.signature } },
+    { type: 'content_block_stop', index: 0 },
+  ];
+}
+
 for (const lane of ['complete', 'stream'] as const) {
   test.each([
-    ['unbound thinking', 'claude-opus-4-6', thinking, false],
-    ['bound signed thinking without drop control', 'claude-mythos-5-1', thinking, true],
-    ['bound redacted thinking with drop control support', 'claude-fable-5-2', redacted, true],
-    ['unknown gateway alias', 'resident-model', thinking, true],
-  ] as const)(`${lane} filters only when enabled on a known non-binding model (%s)`, async (_label, model, laterThinking, treatedAsBinding) => {
+    ['unbound thinking', 'claude-opus-4-6', thinking, false, undefined],
+    ['strict binding', 'claude-mythos-5-1', thinking, true, 'thinking binds'],
+    ['drop-capable with native thinking', opus55, redacted, lane === 'complete', lane === 'complete' ? 'complete request carries native thinking' : undefined],
+    ['drop-capable without native thinking', opus55, undefined, false, undefined],
+    ['unknown gateway alias', 'resident-model', thinking, true, 'model not recognized'],
+  ] as const)(`${lane} applies the extract guard according to binding support (%s)`, async (_label, model, laterThinking, skipped, reason) => {
     const { request: base, result } = requestWith(exposed, lane === 'stream' ? act : call);
     const suffixCall = { ...call, id: 'toolu_suffix' };
     const suffixResult = { ...result, tool_use_id: suffixCall.id };
@@ -312,8 +343,10 @@ for (const lane of ['complete', 'stream'] as const) {
       ...base,
       model,
       messages: [
-        ...base.messages,
-        { role: 'assistant', content: [laterThinking, suffixCall] },
+        base.messages[0],
+        laterThinking ? base.messages[1] : { role: 'assistant', content: [lane === 'stream' ? act : call] },
+        base.messages[2],
+        { role: 'assistant', content: laterThinking ? [laterThinking, suffixCall] : [suffixCall] },
         { role: 'user', content: [suffixResult] },
       ],
     };
@@ -328,34 +361,41 @@ for (const lane of ['complete', 'stream'] as const) {
       hostname: '127.0.0.1', port: 0,
       async fetch(req) {
         bodies.push(await req.text());
-        if (lane === 'complete') return Response.json(reply);
-        const events = [
-          { type: 'message_start', message: { ...reply, stop_reason: null } },
-          { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } },
-          { type: 'message_stop' },
-        ];
-        return new Response(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''), {
-          headers: { 'content-type': 'text/event-stream' },
-        });
+        return lane === 'complete' ? Response.json(reply) : fixtureStream(model);
       },
     });
     const config = { apiKey: 'test', baseURL: server.url.href, cacheKeepalive: { enabled: false } };
-    const send = (adapter: AnthropicAdapter) => lane === 'complete'
-      ? adapter.complete(request, { timeoutMs: 2000 })
-      : adapter.stream(request, { onChunk() {} }, { timeoutMs: 2000 });
+    const send = (adapter: AnthropicAdapter, input = request) => lane === 'complete'
+      ? adapter.complete(input, { timeoutMs: 2000 })
+      : adapter.stream(input, { onChunk() {} }, { timeoutMs: 2000 });
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await send(new AnthropicAdapter(config));
       await send(new LoggingAnthropicAdapter(config, '/dev/null'));
       await send(new LoggingAnthropicAdapter({ ...config, filterStoredHistoryExtractThinking: false }, '/dev/null'));
-      await send(new LoggingAnthropicAdapter({ ...config, filterStoredHistoryExtractThinking: true }, '/dev/null'));
+      expect(warn).not.toHaveBeenCalled();
+      const enabled = new LoggingAnthropicAdapter({ ...config, filterStoredHistoryExtractThinking: true }, '/dev/null');
+      await send(enabled);
+      await send(enabled);
+      expect(warn.mock.calls).toEqual(reason ? [[`[history--extract] guard not applied to ${model}: ${reason}.`]] : []);
+      if (reason === 'model not recognized') {
+        const alias = { ...request, model: 'another-resident-model' };
+        await send(enabled, alias);
+        await send(enabled, alias);
+        expect(warn.mock.calls.slice(1)).toEqual([
+          ['[history--extract] guard not applied to another-resident-model: model not recognized.'],
+        ]);
+      }
     } finally {
+      warn.mockRestore();
       server.stop(true);
     }
-    expect(bodies).toHaveLength(4);
-    if (!treatedAsBinding) expect(bodies[1]).toBe(bodies[0]);
+    expect(bodies).toHaveLength(reason === 'model not recognized' ? 7 : 5);
+    if (lane === 'complete' || model === 'claude-opus-4-6' || model === 'resident-model') expect(bodies[1]).toBe(bodies[0]);
     expect(bodies[2]).toBe(bodies[1]);
     expect(resultOf(JSON.parse(bodies[1]!))).toEqual(result);
-    if (treatedAsBinding) {
+    expect(bodies[4]).toBe(bodies[3]);
+    if (skipped) {
       // Even the result after the last signed or redacted block is unchanged.
       expect(bodies[3]).toBe(bodies[2]);
     } else {
@@ -370,6 +410,121 @@ for (const lane of ['complete', 'stream'] as const) {
     expect(JSON.stringify(request)).toBe(original);
   });
 }
+
+test('Opus 5.5 accepts a second stream with the same signed prefix and both extracts filtered', async () => {
+  const { request, result } = requestWith(exposed);
+  const first = { ...request, model: opus55 };
+  const suffix = { ...call, id: 'toolu_new_extract' };
+  let prefix: string | undefined;
+  let acceptedSecond = false;
+  const server = Bun.serve({
+    hostname: '127.0.0.1', port: 0,
+    async fetch(req) {
+      const wire = await req.text();
+      const body = JSON.parse(wire);
+      if (prefix === undefined) {
+        const last = JSON.stringify(body.messages[2]);
+        const start = wire.indexOf(last);
+        if (start < 0) return new Response('Fixture could not locate the old extract message', { status: 400 });
+        prefix = wire.slice(0, start + last.length);
+        return fixtureStream(opus55, signedEvents());
+      }
+      acceptedSecond = wire.startsWith(prefix)
+        && body.thinking?.block_binding?.prefix_mismatch_behavior === 'drop_block'
+        && req.headers.get('anthropic-beta')?.includes('thinking-binding-controls-2026-08-01') === true
+        && body.messages[3]?.content[0]?.signature === thinking.signature
+        && body.messages[2]?.content[0]?.content === cleaned
+        && body.messages[4]?.content[0]?.content === cleaned;
+      return acceptedSecond ? fixtureStream(opus55)
+        : Response.json({ type: 'error', error: {
+          type: 'invalid_request_error', message: 'fixture rejected a changed prefix or unfiltered extract',
+        } }, { status: 400 });
+    },
+  });
+  try {
+    const adapter = new LoggingAnthropicAdapter({
+      apiKey: 'test', baseURL: server.url.href, cacheKeepalive: { enabled: false }, filterStoredHistoryExtractThinking: true,
+    }, '/dev/null');
+    const send = (input: ProviderRequest) => adapter.stream(input, { onChunk() {} }, { timeoutMs: 2000 });
+    const minted = await send(first);
+    expect(minted.content).toEqual([thinking]);
+    const second = await send({ ...first, messages: [
+      ...first.messages,
+      { role: 'assistant', content: [...minted.content, suffix] },
+      { role: 'user', content: [{ ...result, tool_use_id: suffix.id }] },
+    ] });
+    expect(acceptedSecond).toBe(true);
+    expect(second.stopReason).toBe('end_turn');
+  } finally {
+    server.stop(true);
+  }
+});
+
+test('the recipe opt-in reaches the Anthropic adapter on a real host turn', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'extract-recipe-'));
+  const model = 'claude-opus-4-6';
+  let requests = 0;
+  let captured: string | undefined;
+  const server = Bun.serve({
+    hostname: '127.0.0.1', port: 0,
+    async fetch(req) {
+      if (new URL(req.url).pathname !== '/v1/messages') return new Response(null, { status: 404 });
+      const body = await req.json();
+      if (!body.stream) return new Response(null, { status: 400 });
+      if (++requests === 1) return fixtureStream(model, [
+        ...signedEvents(),
+        { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Fixture reply.' } },
+        { type: 'content_block_stop', index: 1 },
+      ]);
+      const result = body.messages.flatMap((message: { content: unknown[] }) => message.content)
+        .find((block: { type: string; tool_use_id?: string }) => block.type === 'tool_result' && block.tool_use_id === call.id);
+      if (result) {
+        captured = typeof result.content === 'string' ? result.content
+          : result.content.map((part: { text?: string }) => part.text ?? '').join('');
+        return fixtureStream(model);
+      }
+      return fixtureStream(model, [
+        { type: 'content_block_start', index: 0, content_block: { ...call, input: {} } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify(call.input) } },
+        { type: 'content_block_stop', index: 0 },
+      ], 'tool_use');
+    },
+  });
+  try {
+    for (const enabled of [false, true]) {
+      captured = undefined;
+      requests = 0;
+      const recipe = join(dir, 'recipe.json');
+      writeFileSync(recipe, JSON.stringify({
+        name: 'Extract guard wiring', agent: {
+          provider: 'anthropic', model, systemPrompt: 'Fixture.', filterStoredHistoryExtractThinking: enabled,
+          thinking: { enabled: true, budgetTokens: 2048 },
+        },
+        modules: { history: true, subagents: false, lessons: false, retrieval: false, wake: false, workspace: false },
+      }));
+      const child = Bun.spawn([process.execPath, fileURLToPath(new URL('../src/index.ts', import.meta.url)), recipe, '--no-tui'], {
+        cwd: dir, stdin: new Blob(['Seed the history.\nRead our raw history.\n']), stdout: 'pipe', stderr: 'pipe', timeout: 12_000,
+        env: {
+          ...process.env, DATA_DIR: join(dir, String(enabled)), MODEL: '',
+          ANTHROPIC_API_KEY: 'fixture', ANTHROPIC_AUTH_TOKEN: '', ANTHROPIC_OAUTH_CREDENTIALS_FILE: '',
+          ANTHROPIC_BASE_URL: server.url.href, THINKING_BINDING_PROBE: 'off',
+        },
+      });
+      const [status, stdout, stderr] = await Promise.all([child.exited, child.stdout.text(), child.stderr.text()]);
+      if (status !== 0 || captured === undefined) {
+        throw new Error(`No extract result from host (${status}, ${requests} requests):\n${stdout}\n${stderr}`);
+      }
+      const page = JSON.stringify(JSON.parse(captured).messages);
+      expect(page).toContain('Fixture reply.');
+      if (enabled) expect(page).not.toContain(thinking.signature);
+      else expect(page).toContain(thinking.signature);
+    }
+  } finally {
+    server.stop(true);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30_000);
 
 test('recipe accepts only a boolean opt-in and leaves the flag unset by default', () => {
   const recipe = (flags = {}) => ({ name: 'fixture', agent: { systemPrompt: 'Test.', ...flags } });

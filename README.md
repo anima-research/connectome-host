@@ -780,28 +780,32 @@ unknown-key warning, like those at the other levels.
   `"filterStoredHistoryExtractThinking": true` inside `agent` in the recipe
   to omit copied private thinking from raw `history--extract` results
   on native requests sent through the Anthropic adapter. Off by default.
-  This doesn't change the saved conversation or native assistant thinking.
+  This doesn't rewrite the saved conversation or native thinking blocks.
   The wire result needs its matching native tool call (direct or via
   `toolsets--act`). Within an extract page, a nested result named
   `history--extract` is covered even if its call is off-page; unnamed and
   `toolsets--act` results still need a matching call on that page.
-  The guard applies only to models the host knows do not bind thinking to
-  the request prefix. It treats unknown IDs (including unrecognized gateway
-  aliases) as binding and leaves their requests unchanged. For binding or
-  unknown models, rely on the Agent Framework fix for new extracts
-  ([#1041](https://github.com/anima-research/agent-framework/pull/1041));
-  older extracts can still contain copies.
+  Coverage includes recognized Claude 4.x and older models, and Opus 5,
+  Sonnet 5, and Fable 5. On streams it also covers Opus, Sonnet, and Haiku
+  5.5 and Fable 5.1/5.2, which support dropping signed thinking on a prefix
+  mismatch. Those models are also covered on complete requests that don't
+  replay native thinking, such as compression. Mythos and unknown IDs
+  (including unrecognized gateway aliases) are skipped. Subagents and
+  compression may use different models from the main turn; the adapter
+  warns once per model ID when the enabled guard is skipped.
   Truncation recovery is best-effort; it needs a recognizable extract
   prefix. The host warns if the flag is enabled with a non-Anthropic
   provider, where it has no effect, or with `anthropic-xml`, where XML main
-  turns are not covered but native background requests such as compression
-  can be filtered on non-binding models. Summaries and debug context-makeup
-  token counts are not covered.
-  Turning the flag on or off does not change requests on binding or unknown
-  models. On known non-binding models, toggling it changes eligible earlier
-  extracts sent on the next request and can rewrite the prompt-cache prefix.
-  Remove the flag once stored extracts have aged out after upgrading to
-  the Agent Framework release that includes #1041.
+  turns are not covered but eligible native background requests can still
+  be filtered. Summaries and debug context-makeup token counts are not covered.
+  Turning the flag on or off can rewrite the prompt-cache prefix. On
+  drop-capable models this can incur a one-time loss of signed thinking
+  minted after an affected extract; new thinking is minted against the
+  updated prefix.
+  [Agent Framework #1041](https://github.com/anima-research/agent-framework/pull/1041)
+  will prevent these copies in new extracts once a release containing it
+  is installed; current releases do not include it. Remove the flag only
+  after upgrading and once affected stored extracts have aged out.
 - **Shared instructions** (opt-in, `modules.instructions`) — see below
 - **Identity** (opt-in, `modules.identity`) — the agent's own key-based
   identity, used to obtain access to services without credentials entering

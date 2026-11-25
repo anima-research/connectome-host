@@ -1083,7 +1083,7 @@ async function main() {
     if (provider !== 'anthropic') {
       console.warn(`[history--extract] agent.filterStoredHistoryExtractThinking has no effect with provider "${provider}".`);
     } else if (formatter.name === 'anthropic-xml') {
-      console.warn('[history--extract] agent.filterStoredHistoryExtractThinking with "anthropic-xml": main turns are not covered; native background requests such as compression can be filtered on non-binding models.');
+      console.warn('[history--extract] agent.filterStoredHistoryExtractThinking with "anthropic-xml": main turns are not covered; eligible native background requests such as compression can still be filtered.');
     }
   }
 

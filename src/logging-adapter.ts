@@ -444,6 +444,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   private readonly onCall?: ProviderCallObserver;
   private readonly oauthMode: boolean;
   private readonly filterStoredHistoryExtractThinking: boolean;
+  private readonly warnedStoredExtractModels = new Set<string>();
   /** LLM_CALLS_FULL_PAYLOADS=1 (or true, in any case): retain the full raw
    *  request on EVERY call, not just refusals/errors, within the 16 MiB a log
    *  line may take. Costs disk. */
@@ -879,12 +880,28 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     } as ProviderRequestOptions;
   }
 
-  private withStoredExtractGuard(request: ProviderRequest, options: ProviderRequestOptions): ProviderRequest {
-    // Unknown IDs may route to binding models. Rewriting even the newest
-    // extract could invalidate thinking on replay, so require a known non-binding model.
-    return this.filterStoredHistoryExtractThinking && !modelThinking(request.model, UNREACHED).binds
-      ? filterStoredHistoryExtracts(request, options.onContentAltered)
-      : request;
+  private withStoredExtractGuard(
+    request: ProviderRequest, options: ProviderRequestOptions, lane: 'complete' | 'stream',
+  ): ProviderRequest {
+    if (!this.filterStoredHistoryExtractThinking) return request;
+    const facts = modelThinking(request.model, UNREACHED);
+    let reason: string | undefined;
+    if (facts === UNREACHED) reason = 'model not recognized';
+    else if (facts.binds && !facts.dropBlock) reason = 'thinking binds';
+    // Stream has the drop control and the binding-refusal retry. Complete
+    // has neither; compression strips conversation thinking, so let it
+    // filter, but leave complete requests that replay native thinking alone.
+    else if (facts.dropBlock && lane === 'complete' && request.messages.some((message) => {
+      const content = (message as { content?: unknown } | null)?.content;
+      return Array.isArray(content) && content.some((block) =>
+        block?.type === 'thinking' || block?.type === 'redacted_thinking');
+    })) reason = 'complete request carries native thinking';
+    if (!reason) return filterStoredHistoryExtracts(request, options.onContentAltered);
+    if (!this.warnedStoredExtractModels.has(request.model)) {
+      this.warnedStoredExtractModels.add(request.model);
+      console.warn(`[history--extract] guard not applied to ${request.model}: ${reason}.`);
+    }
+    return request;
   }
 
   private recordCall(
@@ -958,7 +975,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     const wrapped = this.captureRawRequest(options, sink);
     let response: ProviderResponse;
     try {
-      response = await super.complete(this.withStoredExtractGuard(effective, wrapped), wrapped);
+      response = await super.complete(this.withStoredExtractGuard(effective, wrapped, 'complete'), wrapped);
     } catch (err) {
       this.recordCall('complete', request, t0, sink.rawRequest, { error: err });
       throw err;
@@ -990,7 +1007,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
       : callbacks;
     let response: ProviderResponse;
     try {
-      response = await super.stream(this.withStoredExtractGuard(effective, wrapped), watched, wrapped);
+      response = await super.stream(this.withStoredExtractGuard(effective, wrapped, 'stream'), watched, wrapped);
     } catch (err) {
       this.recordCall('stream', request, t0, sink.rawRequest, { error: err });
       // Sent again only when nothing of it reached the caller, as membrane's own retries.

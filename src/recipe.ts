@@ -391,9 +391,10 @@ export interface RecipeAgent {
    * did not allow prompt caching" can also be account/region-dependent.
    */
   promptCaching?: boolean;
-  /** Off by default. On native Anthropic requests for known non-binding models,
-   *  guard older history--extract results on send without rewriting the stored
-   *  conversation. Binding models and unknown model IDs are left untouched. */
+  /** Off by default. Guard older history--extract results on eligible native
+   *  Anthropic requests without rewriting the stored conversation. Applies
+   *  to known non-binding and drop-capable models (on complete requests, the
+   *  latter must not replay native thinking). */
   filterStoredHistoryExtractThinking?: boolean;
   /**
    * Same-round routing policy for ordinary text emitted beside think().
