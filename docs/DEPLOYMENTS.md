@@ -696,7 +696,10 @@ while a clone installs from its tag's `bun.lock`. So:
     each such name. It prints a line too for a store that it doesn't open. It
     exits 0 when no store was refused and every store there was audited. A
     session can name a store in its data directory that isn't there yet. Such a
-    store gets a line and no failure, since a start makes an empty one.
+    store gets a line and no failure, since a start makes an empty one. The
+    audit refuses a session's store directory that is there but holds no
+    store. A start refuses it too. Mount the volume that holds the store, or
+    remove the directory if the session is to begin empty.
     Otherwise, each line that says `refused`, or that starts `Couldn't audit`,
     names a store or a directory that the new version didn't open, and why. Then
     go back, below, which restores the copy. A store that lies outside its data
