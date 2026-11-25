@@ -959,7 +959,10 @@ const agentShape = {
    */
   thinking: thinking.optional(),
   /** OpenAI Responses settings. Reasoning applies to both OpenAI providers;
-   * compaction and serviceTier are API-key transport settings. */
+   * the host sends compaction and serviceTier on `openai-responses` only: a
+   * Codex recipe that sets them is warned at start-up
+   * (responsesTransportSettingsWarning), as a recipe on any other provider
+   * that sets `agent.codex.fastMode` is. */
   responses: responses.optional(),
   /** ChatGPT-subscription Codex settings. Only used with
    * `provider: "openai-codex"`. Runtime `/fast` overrides fastMode. */
