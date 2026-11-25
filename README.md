@@ -547,7 +547,7 @@ The resident's tool is `settings--own`, a utility in the built-in `settings` too
 
 When the recipe stops letting the resident change settings (the key left out, or `"read"`), the host parks `own.json` as `own.not-used.json`, and tells the resident. When a later start's recipe lets it change a setting again, and there is no `own.json`, the host applies the parked file, puts it back, and tells the resident. The host moves the file once the framework has started and the note is written, so a start that ends with an error before then moves nothing, and the next start does the same again, with its note.
 
-The operator sees the resident's values in the file, in the start's log (a line for each entry in force, with the recipe's own value, and one for each entry not used), and in `connectome doctor`, which prints what the next start would do with the file, against the recipe that the service's unit names, with the host up or down.
+The operator sees the resident's values in the file, in the start's log (a line for each entry in force, with the recipe's own value, and one for each entry not used), and in `connectome doctor`, which prints what the next start would do with the file, against the recipe that the service's unit names, with the host up or down. With the host up, doctor fetches a recipe given by URL only where the own-settings directory is there, so a host that has not used the key costs no fetch.
 
 The host's start and `connectome doctor` warn of a listed setting that does nothing on this host, and of an `agent.allowedTools` list that leaves out `settings--own`, or `workspace--write` where the grant lets the resident change a setting and the workspace is on. A list naming a setting that is not in the table stops the load.
 

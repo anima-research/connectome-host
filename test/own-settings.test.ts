@@ -387,6 +387,14 @@ describe('what a start does with the file', () => {
     expect(recipe.agent.strategy).toEqual({ identityReminder: 'Write as me.' });
   });
 
+  test('null is no value of a setting: an entry of null is not used, and the recipe\'s value stays', () => {
+    const op = operator({ ownSettings: 'all', agent: { refusalHandling: { autoRewind: false } } });
+    const start = startOwnSettings(op, dataDir({ own: { 'agent.refusalHandling.autoRewind': null } }));
+    expect(start.check.recipe.agent.refusalHandling).toEqual({ autoRewind: false });
+    expect(start.note).toContain('- `agent.refusalHandling.autoRewind` is not used: null is not a value that this setting takes. The host\'s check ' +
+      'says: \'agent.refusalHandling.autoRewind must be true or false, got null.\'');
+  });
+
   test('on passthrough, a strategy setting is not used, and the tool lists it as not available (case 11)', () => {
     const op = operator({ ownSettings: 'all', agent: { strategy: { type: 'passthrough' } } });
     const dir = dataDir({ own: { 'agent.strategy.maxLiveImages': 3 } });
@@ -544,6 +552,14 @@ describe('the tool', () => {
     expect(text).toContain('Your file _settings/own.json now, as the next start applies it:\n- `agent.timezone` is "Europe/Berlin".\n' +
       '- `agent.clock` is not used: "often" is not a value that this setting takes.');
     expect([readFileSync(ownFile(dir), 'utf-8'), readdirSync(join(dir, 'own-settings'))]).toEqual([content, ['own.json']]);
+  });
+
+  test('a map written again in another key order is no pending change', () => {
+    const op = operator({ ownSettings: 'all' });
+    const dir = dataDir({ own: { 'agent.strategy.toolResultMaxLastN': { bash: 3, read: 5 } } });
+    const start = startOwnSettings(op, dir).check;
+    writeFileSync(ownFile(dir), JSON.stringify({ 'agent.strategy.toolResultMaxLastN': { read: 5, bash: 3 } }));
+    expect(answer(op, dir, start)).not.toContain('Pending:');
   });
 
   test('"read": it shows all 23 with their values, and says that none may change (case 4)', () => {

@@ -1,5 +1,6 @@
 import { closeSync, constants, copyFileSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { resolveTimeZone } from '@animalabs/agent-framework';
 import { ENV_REFERENCE } from './recipe-document.js';
 import { DEFAULT_RECIPE_CLOCK, type Recipe, type RecipeOrigin } from './recipe.js';
@@ -196,7 +197,7 @@ function judge(grant: Grant, recipe: Recipe, name: string, value: unknown): OwnE
   if (setting === undefined) return { name, value, notUsed: { kind: 'unknown' } };
   if (!mayChange(grant, setting.name)) return { name, value, notUsed: { kind: 'not-granted' } };
   if (!isAvailable(setting, recipe)) return { name, value, notUsed: { kind: 'not-available', when: AVAILABILITY[setting.available].when } };
-  const fault = settingFault(name, value);
+  const fault = value === null ? `${name} must be ${settingTakes(name) ?? 'a value'}, got null.` : settingFault(name, value);
   return { name, value, notUsed: fault === undefined ? null : { kind: 'value', fault } };
 }
 
@@ -375,7 +376,12 @@ export function startOwnSettings(operator: OperatorRecipe, dataDir: string): Own
         renameSync(from, to);
       } else {
         copyFileSync(from, to, constants.COPYFILE_EXCL);
-        unlinkSync(from);
+        try {
+          unlinkSync(from);
+        } catch (err) {
+          return failed(`[own-settings] The host put ${from} back as ${to}, and could not remove ${from}: ${errorText(err)}. The next ` +
+            `start uses ${to}, and moves nothing.`);
+        }
       }
       return `[own-settings] The host moved ${from} to ${to}.`;
     } catch (err) {
@@ -429,7 +435,6 @@ export interface RunningAgent {
   readonly restartOffered: boolean;
 }
 
-const sameValue = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 function hostValue(name: OwnSettingName, recipe: Recipe, running: RunningAgent): string | undefined {
   switch (name) {
@@ -460,7 +465,7 @@ export function ownSettingsAnswer(input: {
   const fromFile = (name: string): boolean => start.entries.some((entry) => entry.name === name && entry.notUsed === null);
   const sections: string[] = [];
 
-  const pending = readable.filter((setting) => !sameValue(valueAt(start.recipe, setting.name), valueAt(next.recipe, setting.name)));
+  const pending = readable.filter((setting) => !isDeepStrictEqual(valueAt(start.recipe, setting.name), valueAt(next.recipe, setting.name)));
   if (pending.length > 0) {
     sections.push('Pending: your file changes these at the next start, and they are not in force in this run.\n' +
       pending.map((setting) => {
