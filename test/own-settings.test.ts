@@ -191,6 +191,8 @@ describe('what a start does with the file', () => {
     const start = startOwnSettings(op, dir);
     expect(start.check.recipe).toEqual(op.recipe);
     expect(start.note).toStartWith('The host did not use your settings file _settings/own.json at this start: it can\'t be read: a part of its path on the host is not a directory.');
+    const without = operator({});
+    expect([startOwnSettings(without, dir).move, ownSettingsLines(without, dir)]).toEqual([null, []]);
     expect(answer(op, dir)).toContain('The next start does not use it: it can\'t be read: a part of its path on the host is not a directory.');
     expect(ownSettingsLines(op, dir)).toContain('The next start does not use the resident\'s file: it can\'t be read: a part of its path on the host is not a directory. Check that the host can reach and read it on its path.');
   });
@@ -299,6 +301,29 @@ describe('what a start does with the file', () => {
     const op = operator({ ownSettings: 'all', agent: { strategy: { toolResultMaxLastN: { bash: 3 } } } });
     const start = startOwnSettings(op, dataDir({ own: { 'agent.strategy.toolResultMaxLastN': { read: 5 } } }));
     expect(start.check.recipe.agent.strategy?.toolResultMaxLastN).toEqual({ read: 5 });
+  });
+
+  test('a put-back touches no other file of the directory', () => {
+    const dir = dataDir({ parked: { 'agent.timezone': 'UTC' } });
+    writeFileSync(ownFile(dir, '.own.json.writing'), 'a draft of someone else\'s');
+    const start = startOwnSettings(operator({ ownSettings: 'all' }), dir);
+    expect(start.moveFile()).toBe(`[own-settings] The host moved ${ownFile(dir, 'own.not-used.json')} to ${ownFile(dir)}.`);
+    expect(readdirSync(join(dir, 'own-settings')).sort()).toEqual(['.own.json.writing', 'own.json']);
+    expect(readFileSync(ownFile(dir, '.own.json.writing'), 'utf-8')).toBe('a draft of someone else\'s');
+    expect(JSON.parse(readFileSync(ownFile(dir), 'utf-8'))).toEqual({ 'agent.timezone': 'UTC' });
+  });
+
+  test('without a grant, an own.json that is not a plain file is left where it is, and the operator is told', () => {
+    const op = operator({});
+    const dir = dataDir();
+    mkdirSync(ownFile(dir));
+    writeFileSync(join(ownFile(dir), 'note.txt'), 'an operator\'s note');
+    const start = startOwnSettings(op, dir);
+    expect([start.move, start.moveFile()]).toEqual([null, null]);
+    expect(start.log).toContain(`[own-settings] The recipe lets the resident change no setting, and ${ownFile(dir)} is not a plain file, so the host ` +
+      'leaves it where it is.');
+    expect(readdirSync(join(dir, 'own-settings'))).toEqual(['own.json']);
+    expect(ownSettingsLines(op, dir)).toContain(`${ownFile(dir)} is there, and it is not a plain file, so the next start leaves it where it is.`);
   });
 
   test('a parked file that isn\'t a JSON object is put back, and the note asks for own.json to be written again', () => {

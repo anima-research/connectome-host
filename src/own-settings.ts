@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { resolveTimeZone } from '@animalabs/agent-framework';
@@ -43,6 +44,14 @@ export const changesSettings = (grant: Grant): boolean => grant === 'all' || Arr
 
 const isAvailable = (setting: OwnSetting, recipe: Recipe): boolean => AVAILABILITY[setting.available].on(recipe);
 
+const isPlainFile = (path: string): boolean => {
+  try {
+    return lstatSync(path, { throwIfNoEntry: false })?.isFile() === true;
+  } catch {
+    return false;
+  }
+};
+
 const exists = (path: string): boolean => {
   try {
     return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
@@ -64,7 +73,6 @@ export type OwnFile =
   | { readonly kind: 'not-an-object'; readonly why: string }
   | { readonly kind: 'entries'; readonly entries: ReadonlyArray<readonly [string, unknown]> };
 
-const PUBLISHING = '.own.json.writing';
 const REPLACE = 'Replace it with a plain file, or remove it.';
 const SHRINK = `Make it ${OWN_SETTINGS_MAX_BYTES} bytes or smaller, or remove it.`;
 const REACH = 'Check that the host can reach and read it on its path.';
@@ -101,14 +109,10 @@ function readPlainFile(path: string): { readonly bytes: Buffer } | Extract<OwnFi
 }
 
 function publish(path: string, bytes: Buffer): void {
-  const temporary = join(dirname(path), PUBLISHING);
+  // A name of its own, created exclusively, so that no file already in the directory is touched.
+  const temporary = join(dirname(path), `.own.json.${randomBytes(8).toString('hex')}.writing`);
+  const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   try {
-    unlinkSync(temporary);
-  } catch (err) {
-    if (errorCode(err) !== 'ENOENT') throw err;
-  }
-  try {
-    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try {
       for (let written = 0; written < bytes.length;) written += writeSync(fd, bytes, written, bytes.length - written);
       fsyncSync(fd);
@@ -121,7 +125,7 @@ function publish(path: string, bytes: Buffer): void {
     try {
       unlinkSync(temporary);
     } catch {
-      // Nothing to remove, or nothing that the next put-back doesn't remove first.
+      // A name that this put-back made, which nothing reads.
     }
   }
 }
@@ -398,9 +402,11 @@ export function startOwnSettings(operator: OperatorRecipe, dataDir: string): Own
     } catch (err) {
       warn(`[own-settings] The host could not make ${dir}: ${errorText(err)}.`);
     }
-  } else if (exists(own)) {
+  } else if (isPlainFile(own)) {
     move = 'park';
     log.push(`[own-settings] The recipe lets the resident change no setting, so the host parks ${own} as ${parked} once it has started.`);
+  } else if (exists(own)) {
+    warn(`[own-settings] The recipe lets the resident change no setting, and ${own} is not a plain file, so the host leaves it where it is.`);
   }
   const check = checkOwnSettings(operator, dataDir, fileForStart(dir, grant));
   if (check.path === parked && check.file.kind !== 'unread') {
@@ -579,7 +585,11 @@ export function ownSettingsAnswer(input: {
   const parkedThere = exists(parked);
   const parkedPlace = filePlace(dataDir, operator.recipe, OWN_SETTINGS_SET_ASIDE);
   if (!changesSettings(grant)) {
-    if (ownThere) sections.push(`Your file ${place} is there, and the next start parks it, since the recipe lets you change no setting.`);
+    if (ownThere) {
+      sections.push(isPlainFile(join(ownSettingsDir(dataDir), OWN_SETTINGS_FILE))
+        ? `Your file ${place} is there, and the next start parks it, since the recipe lets you change no setting.`
+        : `Your ${place} is there, and it is not a plain file, so the next start leaves it where it is.`);
+    }
   } else if (next.file.kind === 'none') {
     sections.push(`There is no file ${place} now.`);
   } else {
@@ -626,7 +636,11 @@ export function ownSettingsLines(operator: OperatorRecipe, dataDir: string): str
   const lines: string[] = [...ownSettingsWarnings(operator.recipe)];
   if (!changesSettings(grant)) {
     lines.push(grant === undefined ? 'The recipe has no ownSettings.' : 'The recipe\'s ownSettings is "read", so the resident changes no setting.');
-    if (ownThere) lines.push(`${own} is there, and the next start parks it as ${OWN_SETTINGS_SET_ASIDE}.`);
+    if (ownThere) {
+      lines.push(isPlainFile(own)
+        ? `${own} is there, and the next start parks it as ${OWN_SETTINGS_SET_ASIDE}.`
+        : `${own} is there, and it is not a plain file, so the next start leaves it where it is.`);
+    }
     if (parkedThere) lines.push(`${parked} is there: the resident's file, parked while the recipe lets it change no setting.`);
     return lines;
   }
