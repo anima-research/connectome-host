@@ -504,7 +504,7 @@ async function auditStore(path: string, resident: Resident): Promise<Outcome> {
   endIfOrphaned();
   let store: JsStore;
   try {
-    store = JsStore.openOrCreate({ path });
+    store = JsStore.open({ path });
   } catch (error) {
     return { refused: refusal(error) };
   }

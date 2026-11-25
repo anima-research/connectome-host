@@ -87,7 +87,7 @@ import { openReadlineTerminal, type ReadlineTerminal, type ShownPrompt } from '.
 import { opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts.js';
 import { TURN_SETTLED_TRACES } from './state/turn-trace.js';
 import { readHostVersions, setCallLogPath, type HostVersions } from './bug-report.js';
-import { SessionManager } from './session-manager.js';
+import { SessionManager, noStoreRefusal } from './session-manager.js';
 import { startFramework } from './start-framework.js';
 import { StartRefusal, currentForStart, releaseHere, type ReleaseHere } from './update/host.js';
 import { installCommandAt } from './update/install-command-name.js';
@@ -1185,6 +1185,8 @@ async function main() {
   });
 
   const storePath = sessionManager.getStorePath(activeSession.id);
+  const noStore = noStoreRefusal(storePath, { kind: 'start', session: activeSession });
+  if (noStore !== null) throw new StartRefusal(noStore);
   let placesForTrial: string[] | null = null;
   if (installHere !== null) {
     const install = installHere;
