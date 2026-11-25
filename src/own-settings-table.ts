@@ -180,18 +180,6 @@ export const OWN_SETTINGS = [
     words: 'A reminder that is added to each instruction to your summarizer, so that a summary is written in your voice and not in another speaker\'s.',
   },
   {
-    name: 'agent.strategy.witnessedInstruction',
-    available: 'strategy',
-    example: 'Write what you saw.',
-    words: 'The words that tell your summarizer how to write witnessed history.',
-  },
-  {
-    name: 'agent.strategy.witnessedIdentityReminder',
-    available: 'strategy',
-    example: 'Still me.',
-    words: 'The reminder for history that is witnessed as a whole.',
-  },
-  {
     name: 'speech.locus',
     available: 'always',
     example: 'latest-inbound',

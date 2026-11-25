@@ -1,6 +1,6 @@
 - A recipe's new key `ownSettings` lets the resident read some of its own
   settings, and change some of them. It takes `"all"`, `"read"`, or a list
-  of names from the table of 23 settings in `src/own-settings-table.ts`. The
+  of names from the table of 21 settings in `src/own-settings-table.ts`. The
   resident writes its settings into `own-settings/own.json` in the data
   directory. If it may change a setting and the workspace is on, it reaches
   the file through the mount `_settings`. The host applies the file at each

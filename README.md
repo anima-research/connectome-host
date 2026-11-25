@@ -554,7 +554,7 @@ The host's start and `connectome doctor` warn of a listed setting that does noth
 | Setting | Available |
 | --- | --- |
 | `agent.proseRouting`, `agent.timezone`, `agent.autoContinue`, `agent.clock`, `agent.refusalHandling.autoRewind`, `speech.locus` | on every host |
-| `agent.strategy.maxLiveImages`, `agent.strategy.imageStripDepthTokens`, `agent.strategy.toolResultMaxLastN`, `agent.strategy.toolUseInputMaxTokens`, `agent.strategy.maxMessageTokens`, `agent.strategy.summaryTargetTokens`, `agent.strategy.targetChunkTokens`, `agent.strategy.summaryParticipant`, `agent.strategy.summaryContextLabel`, `agent.strategy.identityReminder`, `agent.strategy.witnessedInstruction`, `agent.strategy.witnessedIdentityReminder` | with the strategy `autobiographical` (the default) or `frontdesk` |
+| `agent.strategy.maxLiveImages`, `agent.strategy.imageStripDepthTokens`, `agent.strategy.toolResultMaxLastN`, `agent.strategy.toolUseInputMaxTokens`, `agent.strategy.maxMessageTokens`, `agent.strategy.summaryTargetTokens`, `agent.strategy.targetChunkTokens`, `agent.strategy.summaryParticipant`, `agent.strategy.summaryContextLabel`, `agent.strategy.identityReminder` | with the strategy `autobiographical` (the default) or `frontdesk` |
 | `tuneOut.announce` | with a reader (`subconscious`) on |
 | `modules.retrieval.maxInjected` | with `modules.retrieval` and `modules.lessons` on |
 | `modules.subagents.orientation` | with `modules.subagents` on |

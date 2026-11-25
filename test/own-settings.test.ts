@@ -74,7 +74,7 @@ const EVERY_MODULE = {
 
 describe('the table', () => {
   test('each name of the table is a path of the recipe schema, the schema says what it takes, and its example passes', () => {
-    expect(OWN_SETTING_NAMES).toHaveLength(23);
+    expect(OWN_SETTING_NAMES).toHaveLength(21);
     for (const setting of OWN_SETTINGS) {
       expect(isRecipeSetting(setting.name)).toBe(true);
       expect(settingTakes(setting.name)).toEqual(expect.any(String));
@@ -258,7 +258,7 @@ describe('what a start does with the file', () => {
     expect(large.log.every((line) => line.length < 2_000)).toBe(true);
   });
 
-  test('a file of all 23 settings gives a log line and a doctor line for each', () => {
+  test('a file of all 21 settings gives a log line and a doctor line for each', () => {
     const op = operator({ ownSettings: 'all', ...EVERY_MODULE });
     const dir = dataDir({ own: GOOD });
     const start = startOwnSettings(op, dir);
@@ -434,7 +434,7 @@ describe('what a start does with the file', () => {
     expect(start.note).toContain('- `agent.proseRouting` is not used: your operator\'s recipe does not let you change it. Remove it from the file, or ask your operator.');
   });
 
-  test('"all" with one entry for each of the 23, on a recipe with each module on: all are in force (case 5)', () => {
+  test('"all" with one entry for each of the 21, on a recipe with each module on: all are in force (case 5)', () => {
     const op = operator({ ownSettings: 'all', ...EVERY_MODULE });
     const start = startOwnSettings(op, dataDir({ own: GOOD }));
     expect(start.check.entries.filter((entry) => entry.notUsed !== null)).toEqual([]);
@@ -681,7 +681,7 @@ describe('the tool', () => {
     expect(answer(op, dir, start)).not.toContain('Pending:');
   });
 
-  test('"read": it shows all 23, and says that none may change (case 4)', () => {
+  test('"read": it shows all 21, and says that none may change (case 4)', () => {
     const op = operator({ ownSettings: 'read' });
     const text = answer(op, dataDir());
     for (const name of OWN_SETTING_NAMES) expect(text).toContain(`${name}: `);
