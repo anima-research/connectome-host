@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ModuleContext } from '@animalabs/agent-framework';
 import { runningFit, substituteEnvVars, validateRecipe } from '../src/recipe.js';
+import { takeRecipeWarnings } from '../src/recipe-warnings.js';
 import { isRecipeSetting, nearestKey, settingFault, settingTakes } from '../src/recipe-schema.js';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
 import { dendriteCreateOptions } from '../src/framework-strategy.js';
@@ -94,7 +95,7 @@ describe('the schema\'s helpers', () => {
 });
 
 describe('the fit check', () => {
-  test('reads none of the table\'s settings, so an entry needs no fit check of its own (case 29)', () => {
+  test('gives the same result with one example value of each setting of the table (case 29)', () => {
     const base = { ...EVERY_MODULE, agent: { contextBudgetTokens: 150_000 } };
     const fitOf = (document: Record<string, unknown>) => runningFit(operator(document).recipe, undefined);
     expect(fitOf(base).checked).toBe(true);
@@ -176,10 +177,10 @@ describe('what a start does with the file', () => {
     expect(readdirSync(join(dir, 'own-settings'))).toEqual(['own.json']);
     const failedBefore = startOwnSettings(op, dir);
     expect([failedBefore.move, failedBefore.note]).toEqual([start.move, start.note]);
-    expect(start.moveFile()).toEqual([`[own-settings] The host moved ${ownFile(dir)} to ${ownFile(dir, 'own.not-used.json')}.`]);
+    expect(start.moveFile()).toBe(`[own-settings] The host moved ${ownFile(dir)} to ${ownFile(dir, 'own.not-used.json')}.`);
     expect(JSON.parse(readFileSync(ownFile(dir, 'own.not-used.json'), 'utf-8'))).toEqual({ 'agent.proseRouting': 'explicit' });
     const again = startOwnSettings(op, dir);
-    expect([again.move, again.note, again.moveFile()]).toEqual([null, undefined, []]);
+    expect([again.move, again.note, again.moveFile()]).toEqual([null, undefined, null]);
   });
 
   test('an own-settings that is a file stops no start, and the tool and doctor say why', () => {
@@ -189,9 +190,9 @@ describe('what a start does with the file', () => {
     const op = operator({ ownSettings: 'all' });
     const start = startOwnSettings(op, dir);
     expect(start.check.recipe).toEqual(op.recipe);
-    expect(start.note).toStartWith('The host did not use your settings file _settings/own.json at this start: it can\'t be read (ENOTDIR).');
-    expect(answer(op, dir)).toContain('The next start does not use it: it can\'t be read (ENOTDIR).');
-    expect(ownSettingsLines(op, dir)).toContain('The next start does not use the resident\'s file: it can\'t be read (ENOTDIR).');
+    expect(start.note).toStartWith('The host did not use your settings file _settings/own.json at this start: it can\'t be read: a part of its path on the host is not a directory.');
+    expect(answer(op, dir)).toContain('The next start does not use it: it can\'t be read: a part of its path on the host is not a directory.');
+    expect(ownSettingsLines(op, dir)).toContain('The next start does not use the resident\'s file: it can\'t be read: a part of its path on the host is not a directory. Replace it with a plain file, or remove it.');
   });
 
   test('"read": a file there is parked and not used, and the start makes no directory for a mount (case 4, 16)', () => {
@@ -242,10 +243,44 @@ describe('what a start does with the file', () => {
     expect(start.log.every((line) => line.length < 2_000)).toBe(true);
   });
 
+  test('a file of many entries, or of a large valid map, gives a short note and log', () => {
+    const many = Object.fromEntries(Array.from({ length: 100_000 }, (_, i) => [`unknown.${i}`, i]));
+    const start = startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own: { ...many, 'agent.timezone': 'UTC' } }));
+    expect(start.check.recipe.agent.timezone).toBe('UTC');
+    expect(start.note!.length).toBeLessThan(10_000);
+    expect(start.note).toContain('- and 99980 more entries that are not used');
+    expect(start.log.length).toBeLessThan(30);
+    const map = Object.fromEntries(Array.from({ length: 50_000 }, (_, i) => [`tool_${i}`, 1]));
+    const large = startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own: { 'agent.strategy.toolResultMaxLastN': map } }));
+    expect(large.check.entries[0]!.notUsed).toBeNull();
+    expect(large.log.every((line) => line.length < 2_000)).toBe(true);
+  });
+
+  test('a file that is not UTF-8 text is not used, and the note says so', () => {
+    const dir = dataDir();
+    writeFileSync(ownFile(dir), Buffer.from([0x7b, 0x22, 0x61, 0xff, 0x22, 0x3a, 0x31, 0x7d]));
+    const start = startOwnSettings(operator({ ownSettings: 'all' }), dir);
+    expect(start.check.file).toEqual({ kind: 'not-an-object', why: 'it is not UTF-8 text' });
+    expect(start.note).toContain('it is not UTF-8 text');
+  });
+
+  test('an entry keeps the system prompt that the load fetched, where the author wrote a URL', () => {
+    const op = operator({ ownSettings: 'all' });
+    const fetched: OperatorRecipe = {
+      recipe: { ...op.recipe, agent: { ...op.recipe.agent, systemPrompt: 'the fetched prompt' } },
+      origin: { kind: 'authored', document: { ...(op.origin.kind === 'authored' ? op.origin.document as Record<string, unknown> : {}),
+        agent: { name: 'ember', model: 'claude-opus-4-6', systemPrompt: 'https://example.invalid/prompt.md' } } },
+    };
+    const start = startOwnSettings(fetched, dataDir({ own: { 'agent.timezone': 'UTC' } }));
+    expect(start.check.recipe.agent.systemPrompt).toBe('the fetched prompt');
+    expect(start.check.recipe.agent.timezone).toBe('UTC');
+  });
+
   test('a value nested deeper than the host can show stops no start', () => {
     for (const depth of [5_000, 50_000, 500_000]) {
       const text = `{"agent.timezone": "UTC", "agent.proseRouting": ${'['.repeat(depth)}${']'.repeat(depth)}}`;
       const start = startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own: text }));
+      expect(start.check.recipe.agent.timezone).toBe('UTC');
       expect(start.note!.length).toBeLessThan(5_000);
       expect(start.log.every((line) => line.length < 2_000)).toBe(true);
     }
@@ -257,15 +292,19 @@ describe('what a start does with the file', () => {
     const start = startOwnSettings(op, dir);
     expect(start.move).toBe('put-back');
     writeFileSync(ownFile(dir), JSON.stringify({ 'agent.timezone': 'Europe/Berlin' }));
-    expect(start.moveFile()).toEqual([`[own-settings] ${ownFile(dir)} was written during the start, so the host left ` +
-      `${ownFile(dir, 'own.not-used.json')} where it is.`]);
+    takeRecipeWarnings();
+    const line = `[own-settings] ${ownFile(dir)} was written during the start, so the host left ${ownFile(dir, 'own.not-used.json')} where it is.`;
+    expect(start.moveFile()).toBe(line);
+    expect(takeRecipeWarnings()).toEqual([line]);
     expect(JSON.parse(readFileSync(ownFile(dir), 'utf-8'))).toEqual({ 'agent.timezone': 'Europe/Berlin' });
     expect(existsSync(ownFile(dir, 'own.not-used.json'))).toBe(true);
   });
 
   test('an unknown name in the file is not used, with the nearest name, and a later entry is in force', () => {
+    takeRecipeWarnings();
     const start = startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own: { 'agent.timezon': 'UTC', 'agent.clock': false } }));
-    expect(start.check.entries[0]!.notUsed).toEqual({ kind: 'unknown', near: 'agent.timezone' });
+    expect(takeRecipeWarnings()).toEqual(['[own-settings] agent.timezon in the resident\'s file is not used: it is not a setting of the table (did you mean agent.timezone?).']);
+    expect(start.check.entries[0]!.notUsed).toEqual({ kind: 'unknown' });
     expect(start.check.recipe.agent.clock).toBe(false);
     expect(start.note).toContain('- `agent.timezon` is not used: it is not a setting that you can manage (did you mean `agent.timezone`?).');
     expect(nearestKey('x'.repeat(5_000_000), OWN_SETTING_NAMES)).toBeNull();
@@ -456,7 +495,7 @@ describe('what a start does with the file', () => {
       'workspace, so a shell tool of yours can write it there, or your operator can:');
   });
 
-  test('a recipe value from the environment shows as written, in the tool and in the log (case 28)', () => {
+  test('a recipe value from the environment shows as written, in the tool, the log and doctor (case 28)', () => {
     const op = operator({ ownSettings: 'all', agent: { timezone: '${TZ}' } }, { TZ: 'Asia/Tokyo' });
     expect(op.recipe.agent.timezone).toBe('Asia/Tokyo');
     const dir = dataDir({ own: { 'agent.timezone': 'Europe/Berlin' } });
@@ -466,6 +505,9 @@ describe('what a start does with the file', () => {
     const tool = answer(op, dir, start.check);
     expect(tool).toContain('"${TZ}", which the host fills from its environment');
     expect(tool).not.toContain('Asia/Tokyo');
+    const doctor = ownSettingsLines(op, dir).join('\n');
+    expect(doctor).toContain('"${TZ}", which the host fills from its environment');
+    expect(doctor).not.toContain('Asia/Tokyo');
   });
 
   test('a reference inside a recipe value, and the tool\'s example, show no value from the environment', () => {
@@ -520,7 +562,8 @@ describe('the tool', () => {
     expect(text).not.toContain('agent.clock');
     expect(text).toContain('Your parked file _settings/own.not-used.json is there');
     const parkedOnly = dataDir({ parked: { 'agent.timezone': 'Asia/Tokyo' } });
-    expect(answer(op, parkedOnly)).toContain('Your parked file _settings/own.not-used.json (there is no _settings/own.json)');
+    expect(answer(op, parkedOnly)).toContain('Your parked file _settings/own.not-used.json is there, and _settings/own.json is not: ' +
+      'the next start puts it back as _settings/own.json, and applies it. If you write a new _settings/own.json first');
   });
 });
 
@@ -544,7 +587,9 @@ describe('the settings module', () => {
     expect(await mod.handleToolCall({ id: 'call-1', name: 'own', input: {}, callerAgentName: 'ember' }))
       .toEqual({ success: true, data: 'the answer' });
     expect(await mod.handleToolCall({ id: 'call-2', name: 'own', input: {}, callerAgentName: 'ember-fork-1' })).toEqual({
-      success: false, isError: true, error: 'settings--own shows ember\'s own settings, and answers ember alone, so nothing ran.',
+      success: false, isError: true,
+      error: 'settings--own shows ember\'s own settings, and answers ember alone, so nothing ran. A call again gives the same; ask ember for ' +
+        'what you need from them.',
     });
   });
 

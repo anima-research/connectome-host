@@ -133,7 +133,8 @@ export class SettingsModule implements Module {
         return {
           success: false,
           isError: true,
-          error: `settings--own shows ${resident}'s own settings, and answers ${resident} alone, so nothing ran.`,
+          error: `settings--own shows ${resident}'s own settings, and answers ${resident} alone, so nothing ran. A call again gives the same; ` +
+            `ask ${resident} for what you need from them.`,
         };
       }
       return { success: true, data: this.own.answer() };

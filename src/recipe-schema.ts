@@ -107,7 +107,6 @@ function editDistance(a: string, b: string): number {
 export function nearestKey(key: string, known: readonly string[]): string | null {
   const near = Math.max(2, Math.floor(key.length / 3));
   const lower = key.toLowerCase();
-  // An edit distance is at least the difference of the lengths, so a key this much longer than every name is near none.
   if (lower.length - Math.max(0, ...known.map((name) => name.toLowerCase().length)) > near) return null;
   let best: string | null = null;
   let bestDistance = Infinity;

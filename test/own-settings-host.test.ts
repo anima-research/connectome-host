@@ -5,7 +5,6 @@ import { join, resolve } from 'node:path';
 
 const LOCKED = { 'agent.proseRouting': 'locked' };
 
-/** A module extension whose start throws: the framework's creation fails after the settings module has started. */
 const BOOM = `
 export function register(api) {
   api.registerModule(() => ({
@@ -67,10 +66,12 @@ async function start(dir: string, document: Record<string, unknown> | null, env:
     stdout: 'pipe',
     stderr: 'pipe',
   });
-  const timer = setTimeout(() => host.kill('SIGKILL'), START_LIMIT_MS);
+  let killed = false;
+  const timer = setTimeout(() => { killed = true; host.kill('SIGKILL'); }, START_LIMIT_MS);
   try {
     const [output, errors] = await Promise.all([new Response(host.stdout).text(), new Response(host.stderr).text()]);
     const code = await host.exited;
+    if (killed) throw new Error(`the host ran past ${START_LIMIT_MS} ms:\n${output}\n${errors}`);
     return { code, output: `${output}\n${errors}`, requests: requestsIn(data), data };
   } finally {
     clearTimeout(timer);

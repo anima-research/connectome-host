@@ -67,6 +67,8 @@ export const OWN_SETTINGS = [
       ' `locus`: the host posts each plain line to the turn\'s channel, where the turn has one.' +
       ' `explicit`: a line is posted only where you put a destination before it, such as `>>#channel`.' +
       ' A line without one is not posted, and it is held for you to send again.' +
+      ' The host then wakes you about the held line, up to two times in a row.' +
+      ' This also happens when your line answered someone at the host\'s terminal.' +
       ' `hybrid`: as `locus`, and `>>>destination` sends a line elsewhere.' +
       ' `disabled`: no plain line is posted, and only a send tool posts.' +
       ' `locked`: every plain line goes to one destination, and you move it with the tool `prose_locus`, if your operator\'s tool list lets you call it.' +
@@ -246,10 +248,10 @@ export const OWN_SETTINGS_TOOL = 'settings--own';
 const WRITE_TOOL = 'workspace--write';
 
 /**
- * The load's warnings about `ownSettings` in a recipe that loads: one for
- * each setting that the list names and that does nothing on this host, and
- * one when `agent.allowedTools` is a list that leaves out a tool that the
- * grant needs.
+ * The warnings about `ownSettings` that a start's log and `connectome doctor`
+ * give: one for each setting that the list names and that does nothing on
+ * this host, and one when `agent.allowedTools` is a list that leaves out a
+ * tool that the grant needs.
  */
 export function ownSettingsWarnings(recipe: Recipe): string[] {
   const grant = recipe.ownSettings;

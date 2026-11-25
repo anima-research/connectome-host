@@ -301,11 +301,13 @@ async function checkOwnSettingsFile(report: Report, parts: DoctorParts, root: st
       if (existsSync(ownSettingsDir(dataDir))) report.check('–', `Not checked: the resident's own settings, since ${named.why}.`);
       return;
     }
+    const dirThere = existsSync(ownSettingsDir(named.dataDir));
+    if (!dirThere && /^https?:\/\//.test(named.recipe)) return;
     try {
       service = await within(parts.recipeLimitMs, (async () => {
         const document = await readRecipeDocument(named.recipe);
         const grants = typeof document.raw === 'object' && document.raw !== null && 'ownSettings' in document.raw;
-        return grants || existsSync(ownSettingsDir(named.dataDir)) ? loadService(named, false, document) : null;
+        return grants || dirThere ? loadService(named, false, document) : null;
       })());
       if (service === null) return;
     } catch (error) {

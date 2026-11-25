@@ -1314,7 +1314,8 @@ async function main() {
     extensions,
     places: () => placesForTrial ?? (installHere === null ? null : trialPlaces(installHere.root)),
   });
-  for (const line of own.moveFile()) console.log(line);
+  const moved = own.moveFile();
+  if (moved !== null) console.log(moved);
   setupSynesthete(app);
   setupMcplStderrLog(app, storePath);
   hostUpdate.configure({

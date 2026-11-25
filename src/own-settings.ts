@@ -1,9 +1,10 @@
-import { closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync } from 'node:fs';
+import { closeSync, constants, copyFileSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { resolveTimeZone } from '@animalabs/agent-framework';
 import { ENV_REFERENCE } from './recipe-document.js';
 import { DEFAULT_RECIPE_CLOCK, type Recipe, type RecipeOrigin } from './recipe.js';
 import { checkRecipe, nearestKey, settingFault, settingTakes } from './recipe-schema.js';
+import { noteRecipeWarning } from './recipe-warnings.js';
 import { strategyMessageCap } from './framework-strategy.js';
 import { shown } from './modules/shown.js';
 import { settingsRoute } from './modules/unknown-tool.js';
@@ -20,6 +21,17 @@ const settingNamed = (name: string): OwnSetting | undefined => OWN_SETTINGS.find
 const errorCode = (err: unknown): string | undefined =>
   typeof err === 'object' && err !== null && 'code' in err && typeof err.code === 'string' ? err.code : undefined;
 const errorText = (err: unknown): string => errorCode(err) ?? (err instanceof Error ? err.message : String(err));
+
+const UNREAD_WORDS: Readonly<Record<string, string>> = {
+  ENOTDIR: 'a part of its path on the host is not a directory',
+  EACCES: 'the host has no permission to read it',
+  EPERM: 'the host has no permission to read it',
+  EISDIR: 'it is a directory',
+};
+const unreadWhy = (err: unknown): string => {
+  const code = errorCode(err);
+  return `it can't be read: ${(code === undefined ? undefined : UNREAD_WORDS[code]) ?? errorText(err)}`;
+};
 
 const mayRead = (grant: Grant, name: OwnSettingName): boolean =>
   grant === 'all' || grant === 'read' || (Array.isArray(grant) && grant.includes(name));
@@ -60,7 +72,7 @@ function readOwnFile(path: string): OwnFile {
     const code = errorCode(err);
     if (code === 'ENOENT') return { kind: 'none' };
     if (code === 'ELOOP') return { kind: 'unread', why: 'it is a link, and the host follows no link there' };
-    return { kind: 'unread', why: `it can't be read (${errorText(err)})` };
+    return { kind: 'unread', why: unreadWhy(err) };
   }
   let text: string;
   try {
@@ -75,9 +87,10 @@ function readOwnFile(path: string): OwnFile {
       length += n;
     }
     if (length > OWN_SETTINGS_MAX_BYTES) return { kind: 'unread', why: tooLarge };
-    text = buffer.subarray(0, length).toString('utf-8');
+    text = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, length));
   } catch (err) {
-    return { kind: 'unread', why: `it can't be read (${errorText(err)})` };
+    if (err instanceof TypeError) return { kind: 'not-an-object', why: 'it is not UTF-8 text' };
+    return { kind: 'unread', why: unreadWhy(err) };
   } finally {
     closeSync(fd);
   }
@@ -96,7 +109,7 @@ function readOwnFile(path: string): OwnFile {
 
 /** Why the host does not use an entry of the resident's file. */
 export type NotUsed =
-  | { readonly kind: 'unknown'; readonly near: string | null }
+  | { readonly kind: 'unknown' }
   | { readonly kind: 'not-granted' }
   | { readonly kind: 'not-available'; readonly when: string }
   | { readonly kind: 'value'; readonly fault: string }
@@ -180,7 +193,7 @@ export function checkOwnSettings(operator: OperatorRecipe, dataDir: string,
 
 function judge(grant: Grant, recipe: Recipe, name: string, value: unknown): OwnEntry {
   const setting = settingNamed(name);
-  if (setting === undefined) return { name, value, notUsed: { kind: 'unknown', near: nearestKey(name, OWN_SETTING_NAMES) } };
+  if (setting === undefined) return { name, value, notUsed: { kind: 'unknown' } };
   if (!mayChange(grant, setting.name)) return { name, value, notUsed: { kind: 'not-granted' } };
   if (!isAvailable(setting, recipe)) return { name, value, notUsed: { kind: 'not-available', when: AVAILABILITY[setting.available].when } };
   const fault = settingFault(name, value);
@@ -189,11 +202,10 @@ function judge(grant: Grant, recipe: Recipe, name: string, value: unknown): OwnE
 
 const ended = (text: string): string => (text.endsWith('.') ? text : `${text}.`);
 
-/** The most characters of one name, value or check's sentence from the resident's file that a note or a log line shows. */
 const SHOWN_MAX = 300;
+const LISTED_MAX = 20;
 const cut = (text: string): string => (text.length > SHOWN_MAX ? `${text.slice(0, SHOWN_MAX)}…` : text);
 
-/** A value from the resident's file, as a note or a log line shows it: bounded, and never a throw. */
 function brief(value: unknown): string {
   try {
     return cut(shown(value));
@@ -201,6 +213,14 @@ function brief(value: unknown): string {
     return 'a value too deeply nested to show';
   }
 }
+
+/** A line for each of the first LISTED_MAX items, and a last line that counts the rest. */
+function listed<T>(items: readonly T[], line: (item: T) => string, rest: (count: number) => string): string[] {
+  const lines = items.slice(0, LISTED_MAX).map(line);
+  return items.length <= LISTED_MAX ? lines : [...lines, rest(items.length - LISTED_MAX)];
+}
+
+const near = (name: string): string | null => nearestKey(name, OWN_SETTING_NAMES);
 
 const quoted = (sentence: string): string =>
   sentence.includes('\n') ? `\n${sentence.split('\n').map((line) => `    ${line}`).join('\n')}` : ` '${sentence}'`;
@@ -211,7 +231,10 @@ function residentReason(entry: OwnEntry): string {
   if (reason === null) return `${name} is ${brief(entry.value)}.`;
   switch (reason.kind) {
     case 'unknown':
-      return `${name} is not used: it is not a setting that you can manage${reason.near ? ` (did you mean \`${reason.near}\`?)` : ''}.`;
+    {
+      const nearest = near(entry.name);
+      return `${name} is not used: it is not a setting that you can manage${nearest ? ` (did you mean \`${nearest}\`?)` : ''}.`;
+    }
     case 'not-granted':
       return `${name} is not used: your operator's recipe does not let you change it. Remove it from the file, or ask your operator.`;
     case 'not-available':
@@ -228,10 +251,12 @@ function residentReason(entry: OwnEntry): string {
   }
 }
 
-function operatorReason(reason: NotUsed): string {
+function operatorReason(name: string, reason: NotUsed): string {
   switch (reason.kind) {
-    case 'unknown':
-      return `it is not a setting of the table${reason.near ? ` (did you mean ${reason.near}?)` : ''}`;
+    case 'unknown': {
+      const nearest = near(name);
+      return `it is not a setting of the table${nearest ? ` (did you mean ${nearest}?)` : ''}`;
+    }
     case 'not-granted':
       return 'the recipe\'s ownSettings does not name it';
     case 'not-available':
@@ -279,17 +304,22 @@ export type OwnFileMove = 'park' | 'put-back' | null;
 export interface OwnSettingsStart {
   readonly check: OwnSettingsCheck;
   readonly move: OwnFileMove;
-  /** The start's log lines for the operator. */
+  /**
+   * The start's log lines for the operator. The lines that need the
+   * operator (the grant's warnings, and what the host did not use) also go
+   * to the recipe-warning queue, which the TUI's and headless logs read.
+   */
   readonly log: readonly string[];
   /** The host note for the resident, where the file did not take effect as written or the host moves it. */
   readonly note: string | undefined;
   /**
-   * Makes the move, and gives its log line. The start calls it once the
-   * framework has started, after the note is written, so that a start that
-   * fails before then leaves the file where it was, and the next start
-   * decides the same and gives the note again.
+   * Makes the move, and gives its log line; a move that fails also goes to
+   * the recipe-warning queue. The start calls it once the framework has
+   * started, after the note is written, so that a start that fails before
+   * then leaves the file where it was, and the next start decides the same
+   * and gives the note again.
    */
-  moveFile(): string[];
+  moveFile(): string | null;
 }
 
 /**
@@ -304,13 +334,15 @@ export function startOwnSettings(operator: OperatorRecipe, dataDir: string): Own
   const dir = ownSettingsDir(dataDir);
   const own = join(dir, OWN_SETTINGS_FILE);
   const parked = join(dir, OWN_SETTINGS_SET_ASIDE);
-  const log = ownSettingsWarnings(operator.recipe).map((warning) => `[own-settings] ${warning}`);
+  const warnings = ownSettingsWarnings(operator.recipe).map((warning) => `[own-settings] ${warning}`);
+  const log = [...warnings];
+  const warn = (line: string) => { log.push(line); warnings.push(line); };
   let move: OwnFileMove = null;
   if (changesSettings(grant)) {
     try {
       mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
     } catch (err) {
-      log.push(`[own-settings] The host could not make ${dir}: ${errorText(err)}.`);
+      warn(`[own-settings] The host could not make ${dir}: ${errorText(err)}.`);
     }
     if (!exists(own) && exists(parked)) {
       move = 'put-back';
@@ -323,33 +355,38 @@ export function startOwnSettings(operator: OperatorRecipe, dataDir: string): Own
   }
   const check = checkOwnSettings(operator, dataDir, move === 'put-back' ? parked : own);
   if (check.file.kind === 'unread' || check.file.kind === 'not-an-object') {
-    log.push(`[own-settings] The host did not use ${check.path}: ${check.file.why}.`);
+    warn(`[own-settings] The host did not use ${check.path}: ${check.file.why}.`);
   }
-  for (const entry of check.entries) {
-    log.push(entry.notUsed === null
-      ? `[own-settings] ${entry.name} is ${brief(entry.value)} from the resident's file; ${recipeOwn(operator, entry.name)}.`
-      : `[own-settings] ${cut(entry.name)} in the resident's file is not used: ${ended(operatorReason(entry.notUsed))}`);
-  }
-  const moveFile = (): string[] => {
-    if (move === null) return [];
+  const line = (entry: OwnEntry): string => (entry.notUsed === null
+    ? `[own-settings] ${entry.name} is ${brief(entry.value)} from the resident's file; ${recipeOwn(operator, entry.name)}.`
+    : `[own-settings] ${cut(entry.name)} in the resident's file is not used: ${ended(operatorReason(entry.name, entry.notUsed))}`);
+  log.push(...listed(check.entries, line, (count) => `[own-settings] The resident's file has ${count} more entries.`));
+  warnings.push(...listed(check.entries.filter((entry) => entry.notUsed !== null), line,
+    (count) => `[own-settings] The resident's file has ${count} more entries that are not used.`));
+  const failed = (line: string): string => {
+    noteRecipeWarning(line);
+    return line;
+  };
+  const moveFile = (): string | null => {
+    if (move === null) return null;
     const [from, to] = move === 'park' ? [own, parked] : [parked, own];
     try {
       if (move === 'park') {
         renameSync(from, to);
       } else {
-        // A link fails where own.json is there by now, so a file written during the start is never replaced.
-        linkSync(from, to);
+        copyFileSync(from, to, constants.COPYFILE_EXCL);
         unlinkSync(from);
       }
-      return [`[own-settings] The host moved ${from} to ${to}.`];
+      return `[own-settings] The host moved ${from} to ${to}.`;
     } catch (err) {
       if (move === 'put-back' && errorCode(err) === 'EEXIST') {
-        return [`[own-settings] ${to} was written during the start, so the host left ${from} where it is.`];
+        return failed(`[own-settings] ${to} was written during the start, so the host left ${from} where it is.`);
       }
-      return [`[own-settings] The host could not move ${from} to ${to}: ${errorText(err)}. The next start decides the same, and gives ` +
-        'the resident its note again.'];
+      return failed(`[own-settings] The host could not move ${from} to ${to}: ${errorText(err)}. The next start decides the same, and ` +
+        'gives the resident its note again.');
     }
   };
+  for (const warning of warnings) noteRecipeWarning(warning);
   return { check, move, log, note: startNote(operator.recipe, dataDir, check, move), moveFile };
 }
 
@@ -364,7 +401,7 @@ function startNote(recipe: Recipe, dataDir: string, check: OwnSettingsCheck, mov
       'the recipe lets you change a setting again.');
   } else if (move === 'put-back') {
     parts.push(`Your operator's recipe lets you change your own settings again, so the host puts your parked settings file back as ${place}.` +
-      (inForce.length > 0 ? ` In force from it:\n${inForce.map((entry) => `- ${residentReason(entry)}`).join('\n')}` : ' Nothing of it is in force.'));
+      (inForce.length > 0 ? ` In force from it:\n${listed(inForce, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries`).join('\n')}` : ' Nothing of it is in force.'));
   }
   if (check.file.kind === 'unread' || check.file.kind === 'not-an-object') {
     parts.push(`The host did not use your settings file ${place} at this start: ${check.file.why}. The recipe's values are in force. ` +
@@ -375,7 +412,7 @@ function startNote(recipe: Recipe, dataDir: string, check: OwnSettingsCheck, mov
   if (notUsed.length > 0) {
     parts.push(`Your settings file ${place} did not take effect as written at this start.` +
       `${inForce.length > 0 ? ' Each other entry of it is in force.' : ''}\n` +
-      notUsed.map((entry) => `- ${residentReason(entry)}`).join('\n'));
+      listed(notUsed, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that are not used`).join('\n'));
   }
   if (parts.length === 0) return undefined;
   const allowed = recipe.agent.allowedTools;
@@ -478,13 +515,17 @@ export function ownSettingsAnswer(input: {
   } else if (next.file.kind === 'none') {
     sections.push(`There is no file ${place} now.`);
   } else {
-    const read = resolve(next.path) === parked
-      ? `Your parked file ${parkedPlace} (there is no ${place}): the next start puts it back as ${place}, and applies it`
-      : `Your file ${place} now`;
-    sections.push(next.file.kind !== 'entries'
-      ? `${read}. The next start does not use it: ${next.file.why}.`
-      : `${read}, as the next start applies it:\n` +
-        (next.entries.length === 0 ? 'It holds no entry.' : next.entries.map((entry) => `- ${residentReason(entry)}`).join('\n')));
+    const fromParked = resolve(next.path) === parked;
+    const lines = next.file.kind === 'entries'
+      ? (next.entries.length === 0 ? ['It holds no entry.'] : listed(next.entries, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries`))
+      : [];
+    sections.push(fromParked
+      ? `Your parked file ${parkedPlace} is there, and ${place} is not: the next start puts it back as ${place}, and applies it. If you ` +
+        `write a new ${place} first, the next start uses that file in its place, and leaves the parked one where it is.\n` +
+        (next.file.kind === 'entries' ? `The parked file, as the next start applies it:\n${lines.join('\n')}` : `The next start does not use the parked file: ${next.file.why}.`)
+      : next.file.kind === 'entries'
+        ? `Your file ${place} now, as the next start applies it:\n${lines.join('\n')}`
+        : `Your file ${place} now. The next start does not use it: ${next.file.why}.`);
   }
   if (parkedThere && resolve(next.path) !== parked) {
     sections.push(`Your parked file ${parkedPlace} is there: the host parked it when the recipe let you change no setting, and it puts it back ` +
@@ -518,13 +559,15 @@ export function ownSettingsLines(operator: OperatorRecipe, dataDir: string): str
   if (!ownThere && parkedThere) lines.push(`The next start puts ${parked} back as ${OWN_SETTINGS_FILE}, and applies it.`);
   const check = checkOwnSettings(operator, dataDir);
   if (check.file.kind === 'none') lines.push(`There is no ${own}.`);
-  else if (check.file.kind !== 'entries') lines.push(`The next start does not use the resident's file: ${check.file.why}.`);
-  else if (check.entries.length === 0) lines.push('The resident\'s file holds no entry.');
-  for (const entry of check.entries) {
-    lines.push(entry.notUsed === null
-      ? `${entry.name} would be ${brief(entry.value)} from the resident's file; ${recipeOwn(operator, entry.name)}.`
-      : `${cut(entry.name)} in the resident's file would not be used: ${ended(operatorReason(entry.notUsed))}`);
+  else if (check.file.kind !== 'entries') {
+    lines.push(`The next start does not use the resident's file: ${check.file.why}. ` +
+      (check.file.kind === 'not-an-object' ? 'Write it again as one JSON object, or remove it.' : 'Replace it with a plain file, or remove it.'));
   }
+  else if (check.entries.length === 0) lines.push('The resident\'s file holds no entry.');
+  lines.push(...listed(check.entries, (entry) => (entry.notUsed === null
+    ? `${entry.name} would be ${brief(entry.value)} from the resident's file; ${recipeOwn(operator, entry.name)}.`
+    : `${cut(entry.name)} in the resident's file would not be used: ${ended(operatorReason(entry.name, entry.notUsed))}`),
+  (count) => `The resident's file has ${count} more entries.`));
   if (ownThere && parkedThere) lines.push(`${parked} is there too, and the start uses ${OWN_SETTINGS_FILE}.`);
   return lines;
 }

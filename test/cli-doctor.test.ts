@@ -744,6 +744,16 @@ describe('connectome doctor: the resident\'s own settings (case 22)', () => {
     expect(r.lines).toContain('Doctor found no problem.');
   });
 
+  test('with the host up, a recipe that grants settings is checked before the resident has written a file', async () => {
+    const at = install({ recipe: ownRecipe });
+    const r = await run(at, { states: RUNNING, health: HEALTHY });
+    const loaded = r.lines.indexOf('✓ The host loaded Ember when it started.');
+    expect(r.lines.slice(loaded + 1, loaded + 3)).toEqual([
+      `The resident's own settings, in ${join(at.data, 'own-settings')}:`,
+      `  There is no ${join(at.data, 'own-settings', 'own.json')}.`,
+    ]);
+  });
+
   test('a recipe without the key and no file prints nothing of it', async () => {
     const r = await run(install(), { states: RUNNING, health: HEALTHY });
     expect(r.out).not.toContain('own settings');

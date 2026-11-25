@@ -25,6 +25,38 @@ async function started() {
   return { dir: ownSettingsDir(dataDir), call };
 }
 
+async function startsWith(mounts: unknown[], dataDir: string): Promise<boolean> {
+  const store = JsStore.openOrCreate({ path: join(dataDir, 'store.chronicle') });
+  const workspace = new WorkspaceModule({ mounts } as ConstructorParameters<typeof WorkspaceModule>[0]);
+  workspace.initStore(store);
+  cleanups.push(async () => { await workspace.stop().catch(() => {}); store.close?.(); });
+  await workspace.start({ isRestart: false, getState: () => null, setState: () => {}, pushEvent: () => {} } as never);
+  return true;
+}
+
+describe('the _settings mount beside what can be at its path', () => {
+  const dataDir = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'own-settings-mount-'));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    return dir;
+  };
+
+  test('a workspace starts where own-settings is a file', async () => {
+    const dir = dataDir();
+    writeFileSync(ownSettingsDir(dir), 'a file');
+    expect(await startsWith([ownSettingsMount(dir)], dir)).toBe(true);
+  }, 30_000);
+
+  test('a workspace starts beside a recipe mount over the data directory, or at own-settings itself', async () => {
+    const over = dataDir();
+    mkdirSync(ownSettingsDir(over));
+    expect(await startsWith([{ name: 'data', path: over, mode: 'read-write', backend: 'direct' }, ownSettingsMount(over)], over)).toBe(true);
+    const at = dataDir();
+    mkdirSync(ownSettingsDir(at));
+    expect(await startsWith([{ name: 'own', path: ownSettingsDir(at), mode: 'read-write', backend: 'direct' }, ownSettingsMount(at)], at)).toBe(true);
+  }, 30_000);
+});
+
 describe('the _settings mount (case 18)', () => {
   test('a write, an edit and a delete of _settings/own.json are on disk when they answer', async () => {
     const { dir, call } = await started();
