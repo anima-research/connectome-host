@@ -2627,9 +2627,8 @@ const recipeSchema: z.ZodType<RecipeShape> = z.looseObject(recipeShape, takes('a
       const type = r.agent.strategy?.type;
       if (!type || isBuiltinStrategyType(type)) return undefined;
       if (Object.values(r.extensions ?? {}).some((e) => e.kind === 'strategy')) return undefined;
-      return ({ show }) => `Invalid strategy type ${show('agent.strategy.type', type)}. Must be "autobiographical", "passthrough", ` +
-        'or "frontdesk" — or a custom type registered by a "kind": "strategy" entry in the ' +
-        'recipe\'s "extensions" block (none is declared).';
+      return ({ show }) => 'Recipe agent.strategy.type must be "autobiographical", "passthrough", "frontdesk" or a type that a ' +
+        `"kind": "strategy" extension registers (none is declared), got ${show('agent.strategy.type', type)}.`;
     }),
     rule<RecipeShape>(['modules.fetch', 'agent.provider'], (r) => {
       const fetch = r.modules?.fetch;

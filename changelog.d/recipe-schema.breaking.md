@@ -98,7 +98,11 @@
     that comes from the environment, such as `"port": "${PORT}"`, since
     substitution gives text.
 
-  Unchanged: a recipe that loads gets the same parsed recipe as before.
+  Unchanged: a recipe that loads gets the same parsed recipe as before,
+  with one exception. A saved recipe of the older form, without
+  `$unresolved`, no longer keeps an entry named `__proto__` in an object
+  whose keys the recipe chooses, such as `mcpServers`. A recipe file
+  already lost that entry at substitution.
   `null` keeps its meaning at `agent.systemPrompt`,
   `agent.contextBudgetTokens`, `agent.refusalHandling` and its
   `autoRewind`, `agent.strategy.type`, and `modules.webui.basicAuth` and
