@@ -3,13 +3,14 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FleetModule } from '../src/modules/fleet-module.js';
+import { NoticesModule } from '../src/modules/notices-module.js';
 import { startFramework } from '../src/start-framework.js';
 import { installPaths, moveCurrent, readCurrent, readJournal, switchQuiesceReason, writeMark } from '../src/update/contract.js';
 
 type Servers = Array<{ id: string; connected: boolean; closedTab?: boolean }>;
 
 function framework(order: string[], options: {
-  fleet?: FleetModule; servers?: Servers; atStart?: () => void; stopFails?: true; quiesceReason?: string; resumeFails?: true;
+  fleet?: FleetModule; notices?: NoticesModule; servers?: Servers; atStart?: () => void; stopFails?: true; quiesceReason?: string; resumeFails?: true;
 } = {}) {
   let quiesced = options.quiesceReason !== undefined;
   return {
@@ -24,11 +25,12 @@ function framework(order: string[], options: {
     notifyOps: (kind: string, agent: string, message: string) => { order.push(`the operator is told (${kind}, of ${agent}): ${message}`); },
     start: () => { options.atStart?.(); order.push('framework starts its agents'); },
     stop: async () => {
-      await Bun.sleep(20);
       if (options.stopFails) throw new Error('the stop failed');
-      order.push('framework stopped');
+      order.push('framework stop entered');
+      await Bun.sleep(20);
+      order.push('framework stop completed');
     },
-    getModule: (name: string) => (options.fleet && name === options.fleet.name ? options.fleet : null),
+    getModule: (name: string) => name === 'notices' ? options.notices : (options.fleet && name === options.fleet.name ? options.fleet : null),
     listMcplServers: () => options.servers ?? [],
   } as unknown as Parameters<typeof startFramework>[0];
 }
@@ -129,12 +131,17 @@ describe('startFramework, for a host an install started', () => {
       .toEqual([{ step: 'commit', from: '0.10.2', to: '0.11.0', outcome: 'ok' }]);
   });
 
-  test("a start on trial with a configured server the framework didn't connect stops it, starting nothing, and names the server", async () => {
+  test("R2-1: a refused release commit drains notices before the framework stops and starts nothing", async () => {
     const order: string[] = [];
+    const notices = new NoticesModule({});
+    spyOn(notices, 'drainHome').mockImplementation(async () => {
+      await Promise.resolve();
+      order.push('notices drained');
+    });
     const servers = [{ id: 'discord', connected: false }, { id: 'heartbeat', connected: true }];
-    await expect(startFramework(framework(order, { fleet: watchedFleet(order), servers }), { root, release: '0.11.0' }))
+    await expect(startFramework(framework(order, { fleet: watchedFleet(order), notices, servers }), { root, release: '0.11.0' }))
       .rejects.toThrow("The MCPL server discord wasn't connected when this release went to commit, so it starts none of its agents, and the next start goes back to 0.10.2: ");
-    expect(order).toEqual(['framework stopped']);
+    expect(order).toEqual(['notices drained', 'framework stop entered', 'framework stop completed']);
     expect(readCurrent(root)).toBe('0.10.2');
   });
 
@@ -185,7 +192,7 @@ describe('startFramework, for a host an install started', () => {
       `This host couldn't record 0.11.0 as the release the install at ${root} runs on, so none of its agents started, ` +
       'and the next start goes back to 0.10.2: ',
     );
-    expect(order).toEqual(['framework stopped']);
+    expect(order).toEqual(['framework stop entered', 'framework stop completed']);
     expect(readCurrent(root)).toBe('0.10.2');
   });
 

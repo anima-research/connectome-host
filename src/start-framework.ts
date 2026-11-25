@@ -1,4 +1,5 @@
 import type { AgentFramework } from '@animalabs/agent-framework';
+import { stopFramework } from './stop-framework.js';
 import { FleetModule } from './modules/fleet-module.js';
 import type { ExtensionRegistry } from './extensions.js';
 import { auditBeforeCommit } from './update/audit-stores.js';
@@ -21,7 +22,7 @@ export async function startFramework(
         unconnectedServers: () => framework.listMcplServers().filter((server) => !server.connected && !server.closedTab).map((server) => server.id),
       });
     } catch (error) {
-      await framework.stop().catch((stopping: unknown) => {
+      await stopFramework(framework).catch((stopping: unknown) => {
         console.error(`[update] stopping the framework after its start ended failed too: ${stopping instanceof Error ? stopping.message : String(stopping)}`);
       });
       throw error;

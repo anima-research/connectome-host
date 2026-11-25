@@ -27,6 +27,7 @@
 import { createServer, type Socket, type Server } from 'node:net';
 import { createWriteStream, mkdirSync, existsSync, unlinkSync, writeFileSync, type WriteStream } from 'node:fs';
 import { sessionMarker } from './session-marker.js';
+import { stopFramework } from './stop-framework.js';
 import { join, resolve } from 'node:path';
 import type { AppContext } from './index.js';
 import type { TraceEvent } from '@animalabs/agent-framework';
@@ -774,7 +775,7 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
       if (app.switching) log('waiting for the session switch under way to settle, so what it made can be stopped');
       if ((await switchUnderWay).madeStopFailed) exitCode = 1;
     }
-    try { await app.framework.stop(); } catch (err) {
+    try { await stopFramework(app.framework); } catch (err) {
       exitCode = 1;
       log(`framework.stop() failed: ${String(err)}`);
     }

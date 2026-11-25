@@ -14,6 +14,7 @@ const written = async (name: string): Promise<void> => {
 const framework = (name: string) => ({
   getAllAgents: () => [{ name: 'fixture', state: { status: 'idle' } }],
   getAllModules: () => [],
+  getModule: () => undefined,
   getHostModeStatus: () => ({ drained: true, activeTurnAgents: [], parkedAdmissions: 0, gatedRequests: 0, backgroundScripts: 0 }),
   getQueueDepth: () => 0,
   onTrace: () => () => {},

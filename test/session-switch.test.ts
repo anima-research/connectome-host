@@ -1,14 +1,16 @@
-import { expect, test } from 'bun:test';
+import { expect, spyOn, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createBranchState, handleCommand } from '../src/commands.js';
+import { NoticesModule } from '../src/modules/notices-module.js';
 import { SessionManager } from '../src/session-manager.js';
 import { switchSessionSteps } from '../src/session-switch.js';
 
-function recorder(opts: { during?: Partial<Record<'stopOld' | 'make', () => void>>; nextStop?: () => Promise<void>; makeFails?: boolean } = {}) {
+function recorder(opts: { during?: Partial<Record<'stopOld' | 'make', () => void>>; nextStop?: () => Promise<void>; makeFails?: boolean; notices?: NoticesModule } = {}) {
   const calls: string[] = [];
   const next = {
+    getModule: (name: string) => name === 'notices' ? opts.notices : undefined,
     stop: async () => {
       calls.push('next.stop');
       await opts.nextStop?.();
@@ -49,11 +51,16 @@ test('a stop that begins while the old framework stops leaves the switch making 
   expect(calls).toEqual(['stopOld']);
 });
 
-test('a stop that begins while the new framework is made stops it and the Web UI server, and installs nothing', async () => {
+test('R2-1: a stop during make drains the new framework before stopping it and the Web UI server', async () => {
   const app: { stopping?: boolean } = {};
-  const { calls, steps } = recorder({ during: { make: () => { app.stopping = true; } } });
-  await switchSessionSteps(app, steps);
-  expect(calls).toEqual(['stopOld', 'make', 'next.stop', 'stopServer']);
+  const notices = new NoticesModule({});
+  const { calls, steps } = recorder({ during: { make: () => { app.stopping = true; } }, notices });
+  spyOn(notices, 'drainHome').mockImplementation(async () => {
+    await Promise.resolve();
+    calls.push('notices drained');
+  });
+  expect(await switchSessionSteps(app, steps)).toBe(false);
+  expect(calls).toEqual(['stopOld', 'make', 'notices drained', 'next.stop', 'stopServer']);
 });
 
 test('when stopping the made framework fails, the server still closes, the failure reaches the caller, and the switch logs it', async () => {
