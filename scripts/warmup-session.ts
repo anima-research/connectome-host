@@ -214,7 +214,16 @@ async function main() {
     },
   });
 
-  const store = JsStore.openOrCreate({ path: storePath });
+  let store: JsStore;
+  try {
+    store = JsStore.open({ path: storePath });
+  } catch (error) {
+    console.error(
+      `No store opened at ${storePath}: ${error instanceof Error ? error.message : String(error)}. Warmup makes no ` +
+        'store: it works on the store that an import or a host made.',
+    );
+    process.exit(1);
+  }
   const strategy = new AutobiographicalStrategy({
     compressionModel: opts.model,
     summaryParticipant: agentName,
