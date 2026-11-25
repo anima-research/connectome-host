@@ -97,12 +97,16 @@ With `mainRefusalReactions` enabled, the host refuses `/session switch` and
 `/session new` before changing the current session or touching its framework.
 The current session keeps running, and no new session is created. Startup
 reopens the active session; there is no session-selection flag. To change
-sessions, start the host with the option removed from the recipe and the same
-data directory. Use `/session switch <name-or-id>` or `/session new [name]`,
-then restore the option and restart the host after the switch completes.
+sessions, remove the option from the recipe and start the host with that
+recipe's path and the same data directory. A bare start reloads the saved
+recipe snapshot, which still has the option. Use `/session switch <name-or-id>`
+or `/session new [name]`, then restore the option and start the host again
+with the edited recipe's path.
 At startup with the option enabled, selected connectors
-must be connected and supported; fix any connector or closed-tab configuration
-before restarting.
+must be connected and supported. A selected server that was saved as a closed
+tab stops startup; to recover, start the host the same way without the option,
+reopen that server, then restore the option and start again with the recipe
+path. Fix any other connector configuration before restarting.
 
 An epoch identifies the framework's config and connection objects in this
 process, not the child PID, a transport epoch, or a connector's identity.

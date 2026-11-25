@@ -196,9 +196,10 @@ This launches the TUI. The active session is whatever was active before you star
 > The warmup script's "Open with: `bun src/index.ts … --session <name>`" hint is forward-looking; `--session` isn't a real host CLI flag right now. Use `/session switch` after launch.
 
 If your recipe enables [`mainRefusalReactions`](MAIN-REFUSAL-REACTIONS.md),
-start the host without that option, using the same data directory. Switch to
-the import with `/session switch`, then restore the option and restart the
-host once the imported session is active.
+start the host with the path of a recipe that omits that option (a bare start
+reloads the saved snapshot), using the same data directory. Switch to
+the import with `/session switch`, then restore the option and start again with the recipe path
+once the imported session is active.
 
 Once you're on the right session, type a turn. The agent should recognize the continuation — its `<recovered_thinking>` blocks, the persistent memories block in its prompt, and the transplant addendum all explain the unusual artifacts in its own context.
 

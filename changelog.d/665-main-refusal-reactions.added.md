@@ -13,7 +13,8 @@
   error text.
   While enabled, session switches (including `/session new`) are refused
   without changing the current session. To change sessions, start the host
-  without the option, use `/session switch` or `/session new`, then re-enable
-  the option and restart the host.
+  with the path of a recipe that omits the option (a bare start reloads the
+  saved snapshot), use `/session switch` or `/session new`, then re-enable the
+  option and start the host again with the edited recipe's path.
   Omit the option to retain built-in Discord refusal reactions and normal session
   switching (#665).
