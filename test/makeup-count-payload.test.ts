@@ -227,7 +227,9 @@ for (const [label, systemPrompt, where] of [
     const sent: Array<Record<string, unknown>> = [];
     const realFetch = globalThis.fetch;
     const priorModel = process.env.COUNT_TOKENS_MODEL;
+    const priorKey = process.env.ANTHROPIC_API_KEY;
     process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
+    process.env.ANTHROPIC_API_KEY = 'key-test';
     globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
       sent.push(JSON.parse(init?.body ?? '{}'));
       return new Response(JSON.stringify({ input_tokens: 1 }), { status: 200 });
@@ -238,6 +240,8 @@ for (const [label, systemPrompt, where] of [
       globalThis.fetch = realFetch;
       if (priorModel === undefined) delete process.env.COUNT_TOKENS_MODEL;
       else process.env.COUNT_TOKENS_MODEL = priorModel;
+      if (priorKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = priorKey;
     }
     expect(sent).toHaveLength(1);
     expect(JSON.stringify(sent[0]![where])).toContain('Read a file from the workspace');
@@ -260,7 +264,9 @@ for (const [label, provider, sendsServerBlocks] of [
     const sent: Array<Record<string, unknown>> = [];
     const realFetch = globalThis.fetch;
     const priorModel = process.env.COUNT_TOKENS_MODEL;
+    const priorKey = process.env.ANTHROPIC_API_KEY;
     process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
+    process.env.ANTHROPIC_API_KEY = 'key-test';
     globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
       sent.push(JSON.parse(init?.body ?? '{}'));
       return new Response(JSON.stringify({ input_tokens: 1 }), { status: 200 });
@@ -271,6 +277,8 @@ for (const [label, provider, sendsServerBlocks] of [
       globalThis.fetch = realFetch;
       if (priorModel === undefined) delete process.env.COUNT_TOKENS_MODEL;
       else process.env.COUNT_TOKENS_MODEL = priorModel;
+      if (priorKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = priorKey;
     }
     expect(sent).toHaveLength(1);
     const assistantTypes = blocksOf((sent[0]!.messages as unknown[])[1]).map((b) => b.type);
@@ -296,7 +304,9 @@ test("a subagent's context count places its tools as the primary agent's model d
   const sent: Array<Record<string, unknown>> = [];
   const realFetch = globalThis.fetch;
   const priorModel = process.env.COUNT_TOKENS_MODEL;
+  const priorKey = process.env.ANTHROPIC_API_KEY;
   process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
+  process.env.ANTHROPIC_API_KEY = 'key-test';
   globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
     sent.push(JSON.parse(init?.body ?? '{}'));
     return new Response(JSON.stringify({ input_tokens: 1 }), { status: 200 });
@@ -307,6 +317,8 @@ test("a subagent's context count places its tools as the primary agent's model d
     globalThis.fetch = realFetch;
     if (priorModel === undefined) delete process.env.COUNT_TOKENS_MODEL;
     else process.env.COUNT_TOKENS_MODEL = priorModel;
+    if (priorKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = priorKey;
   }
   expect(sent).toHaveLength(1);
   expect(JSON.stringify(sent[0]!.system)).toContain('Read a file from the workspace');

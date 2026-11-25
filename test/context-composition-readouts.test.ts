@@ -57,6 +57,18 @@ describe("the Context page's figures", () => {
       .toEqual({ reason: 'not counted: count_tokens answered 429' });
   });
 
+  test('the line under a count names the address that counted, where the answer gives it', async () => {
+    const { contextPageView, countedBy } = await words();
+    const makeup = { stats: null, statsKept: true, exactTotalTokens: 4_242, countModel: 'claude-haiku-4-5', countSource: 'count_tokens' };
+    const counted = contextPageView({ ...makeup, countHost: 'gateway.example:8443' }).count;
+    expect(counted).toEqual({ tokens: 4_242, model: 'claude-haiku-4-5', host: 'gateway.example:8443' });
+    if (!('tokens' in counted)) throw new Error('expected a count');
+    expect(countedBy(counted)).toBe('counted by count_tokens at gateway.example:8443 for claude-haiku-4-5');
+    const fromAnOlderHost = contextPageView(makeup).count;
+    if (!('tokens' in fromAnOlderHost)) throw new Error('expected a count');
+    expect(countedBy(fromAnOlderHost)).toBe('counted by count_tokens for claude-haiku-4-5');
+  });
+
   test("it shows the last live compile's stats, else the line, taking a response without statsKept as a strategy that keeps them", async () => {
     const { contextPageView } = await words();
     const stats = { total: { messages: 160, tokens: 16_690 } };
@@ -137,6 +149,9 @@ describe("why the Context page's next request wasn't counted", () => {
     expect(notCounted('count_tokens_failed_429')).toBe('not counted: count_tokens answered 429');
     expect(notCounted('count_tokens_error')).toBe('not counted: the count_tokens call failed');
     expect(notCounted('count_tokens')).toBe('not counted: count_tokens answered with no count');
+    expect(notCounted('count_tokens_no_credential')).toBe(
+      "not counted: the host has no Anthropic credential, so it asked nothing. A count sends the agent's next request to Anthropic's API, or to ANTHROPIC_BASE_URL.",
+    );
     expect(notCounted('something_new')).toBe('not counted (something_new)');
   });
 });
@@ -152,14 +167,18 @@ function cmWith(stats: unknown, statsKept: boolean) {
 
 describe('the makeup endpoint', () => {
   const priorModel = process.env.COUNT_TOKENS_MODEL;
+  const priorKey = process.env.ANTHROPIC_API_KEY;
   const realFetch = globalThis.fetch;
   beforeAll(() => {
+    process.env.ANTHROPIC_API_KEY = 'key-test';
     globalThis.fetch = (async () => new Response(JSON.stringify({ input_tokens: 4_242 }), { status: 200 })) as unknown as typeof fetch;
   });
   afterAll(() => {
     globalThis.fetch = realFetch;
     if (priorModel === undefined) delete process.env.COUNT_TOKENS_MODEL;
     else process.env.COUNT_TOKENS_MODEL = priorModel;
+    if (priorKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = priorKey;
   });
 
   function appWith(cm: ReturnType<typeof cmWith>, model: string) {
