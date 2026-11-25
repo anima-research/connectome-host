@@ -139,6 +139,14 @@ describe('validateRecipe and unknown keys', () => {
     expect(taken[0]).toContain('mcplServers (did you mean mcpServers?)');
     expect(takeRecipeWarnings()).toEqual([]);
   });
+
+  test('writes the warning beside a refusal, and keeps none for the runtime log from a recipe that is refused', () => {
+    warn = spyOn(console, 'warn').mockImplementation(() => {});
+    takeRecipeWarnings();
+    expect(() => validateRecipe({ agent: {}, nmae: 'x' })).toThrow();
+    expect(String(warn.mock.calls[0]![0])).toContain('nmae');
+    expect(takeRecipeWarnings()).toEqual([]);
+  });
 });
 
 test('the shipped recipes carry no unknown keys', () => {

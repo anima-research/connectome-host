@@ -98,7 +98,7 @@ describe('inferenceBounds', () => {
     ['an array', [], 'Recipe inferenceBounds must be false or an object, got an empty list.'],
     ['a misspelt key', { progressbounds: {} }, 'Recipe inferenceBounds has unknown key "progressbounds" (did you mean "progressBounds"?); it takes progressBounds and flatMinimumMs.'],
     ['progressBounds that isn\'t an object', { progressBounds: true }, 'Recipe inferenceBounds.progressBounds must be an object, got true.'],
-    ['progressBounds of null', { progressBounds: null }, 'Recipe inferenceBounds.progressBounds must be an object, got null; give it a value, or leave the key out, which takes the default.'],
+    ['progressBounds of null', { progressBounds: null }, 'Recipe inferenceBounds.progressBounds must be an object, got null; give it a value, or leave the key out.'],
     ['a bound that isn\'t finite', { progressBounds: { thinkTokensPerSecond: Infinity } }, 'Recipe inferenceBounds.progressBounds.thinkTokensPerSecond must be a finite number above 0, got Infinity.'],
     ['a misspelt bound', { progressBounds: { beforeContentMS: 90_000 } }, 'Recipe inferenceBounds.progressBounds has unknown key "beforeContentMS" (did you mean "beforeContentMs"?); it takes beforeContentMs, betweenEventsMs and thinkTokensPerSecond.'],
     ['a bound of 0', { progressBounds: { betweenEventsMs: 0 } }, 'Recipe inferenceBounds.progressBounds.betweenEventsMs must be a finite number above 0, got 0.'],

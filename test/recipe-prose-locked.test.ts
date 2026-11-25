@@ -18,7 +18,7 @@ describe('locked prose routing recipe wiring', () => {
 
   test('refuses a proseLock that names nothing', () => {
     const cases: Array<[unknown, string]> = [
-      ['', '""'], ['   ', '"   "'], [7, '7'], [null, 'null; give it a value, or leave the key out, which takes the default'], [['#lounge'], 'a list'],
+      ['', '""'], ['   ', '"   "'], [7, '7'], [null, 'null; give it a value, or leave the key out'], [['#lounge'], 'a list'],
     ];
     for (const [proseLock, got] of cases) {
       expect(() => validateRecipe(recipe({ proseRouting: 'locked', proseLock }))).toThrow(

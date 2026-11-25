@@ -44,7 +44,7 @@ describe('clock recipe wiring', () => {
     const cases: Array<[unknown, string]> = [
       [true, 'Recipe agent.clock must be false (no clock rows) or an object such as { "intervalMinutes": 10 }, got true.'],
       [10, 'Recipe agent.clock must be false (no clock rows) or an object such as { "intervalMinutes": 10 }, got 10.'],
-      [null, 'Recipe agent.clock must be false (no clock rows) or an object such as { "intervalMinutes": 10 }, got null; give it a value, or leave the key out, which takes the default.'],
+      [null, 'Recipe agent.clock must be false (no clock rows) or an object such as { "intervalMinutes": 10 }, got null; give it a value, or leave the key out.'],
       ['10', 'Recipe agent.clock must be false (no clock rows) or an object such as { "intervalMinutes": 10 }, got "10".'],
       [[10], 'Recipe agent.clock must be false (no clock rows) or an object such as { "intervalMinutes": 10 }, got a list.'],
       [{ interval: 10 }, [

@@ -173,7 +173,7 @@ describe('toolResultInlineMaxChars', () => {
     ['0', 0, 'Recipe toolResultInlineMaxChars must be a finite number of at least 1000, got 0.'],
     ['Infinity', Infinity, 'Recipe toolResultInlineMaxChars must be a finite number of at least 1000, got Infinity.'],
     ['a number given as a string', '30000', 'Recipe toolResultInlineMaxChars must be a finite number of at least 1000, got "30000".'],
-    ['null', null, 'Recipe toolResultInlineMaxChars must be a finite number of at least 1000, got null; give it a value, or leave the key out, which takes the default.'],
+    ['null', null, 'Recipe toolResultInlineMaxChars must be a finite number of at least 1000, got null; give it a value, or leave the key out.'],
     ['true', true, 'Recipe toolResultInlineMaxChars must be a finite number of at least 1000, got true.'],
   ];
   for (const [what, value, message] of refused) {

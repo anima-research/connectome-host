@@ -1,14 +1,20 @@
 - **Recipe authors:** one schema now gives the recipe's type and its checks,
   so the load checks every setting that the host reads itself, and a recipe
   that loaded before can be refused at its next load. This holds for the
-  recipe that a host saved in its data directory too: a host whose saved
-  recipe holds such a value stops at its next start, with the refusal. A
-  release that an update starts on trial stops so before its commit, and
-  the next start goes back to the release before, with its data. To
-  migrate, give each setting that the refusal names the value that it asks
-  for, or, where the refusal says so, leave the key out, which takes the
-  default. One refusal names every fault that the schema finds. Newly
-  refused:
+  recipe that a host saved in its data directory too: a host that next
+  resumes such a saved recipe, with no recipe named, stops with the
+  refusal. A start that names a recipe file, as a service unit does, loads
+  that file and saves it in place of the old one. A release that an update
+  starts on trial loads the recipe that each start would load, so a refused
+  one stops the trial before its commit, and the next start goes back to
+  the release before, with its data. To migrate, give each setting that the
+  refusal names the value that it asks for, or, where the refusal says so,
+  leave the key out. In an `mcpServers` entry that `mcpl-servers.json`
+  also defines, a `null` at a key replaced the file's value before, and a
+  key left out now takes the file's value. To run without the file's
+  value, write the value that you want in the recipe, or change
+  `mcpl-servers.json`. One refusal names every fault that the schema
+  finds. Newly refused:
   - A value of the wrong kind, a word outside a setting's list of words, or
     `null`, at a setting that had no check:
     - at the top level: `description`, `version`, and `mcpServers` itself.
@@ -117,7 +123,8 @@
   `modules.webui.basicAuth` and `allowedOrigins`, a number or
   `true`/`false` in an `mcpServers` entry's `args` and `env` and a fleet
   child's `env`, `"http"` as an entry's `transport`, the map form of
-  `agent.strategy.toolResultMaxLastN`, and `false` at `modules.ttsRelay`.
+  `agent.strategy.toolResultMaxLastN`, and `false` at `agent.refusalHandling`
+  and `modules.ttsRelay`.
   `RecipeWake`'s `policies` and `default` are `unknown`, since the load
   doesn't check the wake gate's rules. Code that builds a `Recipe` by hand,
   or reads one of these settings as its old type, may need a change.

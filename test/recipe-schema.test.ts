@@ -62,7 +62,7 @@ describe('one message for every fault that one parse can judge', () => {
 
   test('a rule that reads a setting with a fault of shape adds no sentence of its own', () => {
     expect(refusal(() => validateRecipe(base({}, { strategy: { type: 'passthrough', kvUnified: null } })))).toBe(
-      'Recipe agent.strategy.kvUnified must be a complete object (omit it for the standard block), got null; give it a value, or leave the key out, which takes the default.');
+      'Recipe agent.strategy.kvUnified must be a complete object (omit it for the standard block), got null; give it a value, or leave the key out.');
   });
 
   test('a key of the other subconscious reader and a misspelt key are both named, with what switching readers needs', () => {
@@ -195,6 +195,13 @@ describe('null, where the code gives it a meaning, and where it doesn\'t', () =>
     expect(buildFrameworkAgentConfig(parsed, 'a', 'claude-opus-4-1', { kind: 'strategy' } as never).maxStreamTokens).toBe(150_000);
   });
 
+  test('agent-framework gets no autoRewind key where the recipe gives none, or gives null', () => {
+    for (const refusalHandling of [{ retries: 2 }, { retries: 2, autoRewind: null }]) {
+      const config = buildFrameworkAgentConfig(validateRecipe(base({}, { refusalHandling })), 'a', 'claude-opus-4-1', { kind: 'strategy' } as never);
+      expect(Object.keys(config.refusalHandling ?? {})).toEqual(['retries']);
+    }
+  });
+
   test('false loads and stays false at agent.refusalHandling and modules.ttsRelay', () => {
     const parsed = validateRecipe(base({ modules: { ttsRelay: false } }, { refusalHandling: false }));
     expect(parsed.agent.refusalHandling).toBe(false);
@@ -203,7 +210,7 @@ describe('null, where the code gives it a meaning, and where it doesn\'t', () =>
 
   test('a null at a setting that the code gives no meaning is refused, and the message says to leave the key out only where it may be left out', () => {
     expect(refusal(() => validateRecipe(base({ mcpServers: { x: { command: 'node', toolPrefix: null } } }))))
-      .toBe('Recipe mcpServers.x.toolPrefix must be a string, got null; give it a value, or leave the key out, which takes the default.');
+      .toBe('Recipe mcpServers.x.toolPrefix must be a string, got null; give it a value, or leave the key out.');
     expect(refusal(() => validateRecipe({ name: null, agent: {} }))).toBe('Recipe name must be a non-empty string, got null; give it a value.');
     expect(refusal(() => validateRecipe(base({}, { thinking: { enabled: null } }))))
       .toBe('Recipe agent.thinking.enabled must be true or false, got null; give it a value.');
@@ -219,9 +226,19 @@ describe('null, where the code gives it a meaning, and where it doesn\'t', () =>
     const mode = 'Recipe modules.workspace.mounts[0].mode must be "read-write" or "read-only", got null';
     expect(refusal(() => validateRecipe(base({ modules: { workspace: { mounts: [direct] } } })))).toBe(`${mode}; give it a value.`);
     expect(refusal(() => validateRecipe(base({}, { baseUrl: null }))))
-      .toBe('Recipe agent.baseUrl must be an absolute http(s) URL, got null; give it a value, or leave the key out, which takes the default.');
+      .toBe('Recipe agent.baseUrl must be an absolute http(s) URL, got null; give it a value, or leave the key out.');
     expect(refusal(() => validateRecipe(base({ modules: { workspace: { mounts: [{ ...direct, backend: 'chronicle' }] } } }))))
-      .toBe(`${mode}; give it a value, or leave the key out, which takes the default.`);
+      .toBe(`${mode}; give it a value, or leave the key out.`);
+  });
+
+  test('the offers to leave a key out hold together: following each of them, and giving the others values, loads', () => {
+    const server = (source: Record<string, unknown>) => base({ mcpServers: { x: { command: 'node', source } } });
+    expect(refusal(() => validateRecipe(server({ url: null, npm: null })))).toBe('The recipe has 2 faults:\n' +
+      '- Recipe mcpServers.x.source.url must be a string, got null; give it a value, or leave the key out.\n' +
+      '- Recipe mcpServers.x.source.npm must be a string, got null; give it a value.');
+    expect(validateRecipe(server({ npm: 'calendar-mcp' })).mcpServers?.x?.source).toEqual({ npm: 'calendar-mcp' });
+    expect(refusal(() => validateRecipe(server({})))).toBe('Recipe mcpServers.x.source must have a non-empty "url" (git clone) or "npm" ' +
+      '(registry package spec) string.');
   });
 
   test('the five loose checks of before refuse what they let through', () => {

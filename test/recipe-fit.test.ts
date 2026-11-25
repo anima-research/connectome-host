@@ -136,7 +136,7 @@ describe('a recipe load refuses what Anthropic refuses', () => {
     expect(floor).toBeGreaterThan(17_000);
     const nullTail = { model: HAIKU, maxTokens: 16_384, contextBudgetTokens: 17_000, strategy: { type: 'autobiographical', recentWindowTokens: null } };
     await expect(loadRecipe(recipeFile(nullTail))).rejects.toThrow(
-      'Recipe agent.strategy.recentWindowTokens must be a number, got null; give it a value, or leave the key out, which takes the default.');
+      'Recipe agent.strategy.recentWindowTokens must be a number, got null; give it a value, or leave the key out.');
   });
 
   const ownTail = (strategy: Record<string, unknown>) => ({ model: HAIKU, maxTokens: 16_384, strategy: { type: 'autobiographical', headWindowTokens: 4_000, ...strategy } });
@@ -206,7 +206,7 @@ describe('a recipe load refuses what Anthropic refuses', () => {
       [{ headWindowTokens: '4000' }, 'Recipe agent.strategy.headWindowTokens must be a number, got "4000".'],
       [{ recentWindowTokens: '500' }, 'Recipe agent.strategy.recentWindowTokens must be a number, got "500".'],
       [{ overBudgetGraceRatio: '0.35' }, 'Recipe agent.strategy.overBudgetGraceRatio must be a number, got "0.35".'],
-      [{ overBudgetGraceRatio: null }, 'Recipe agent.strategy.overBudgetGraceRatio must be a number, got null; give it a value, or leave the key out, which takes the default.'],
+      [{ overBudgetGraceRatio: null }, 'Recipe agent.strategy.overBudgetGraceRatio must be a number, got null; give it a value, or leave the key out.'],
     ];
     for (const [strategy, message] of refusals) {
       expect(() => validateRecipe({ name: 'fit', agent: { systemPrompt: '', strategy: { type: 'autobiographical', ...strategy } } })).toThrow(message);
@@ -707,7 +707,7 @@ describe('a token count that isn\'t a positive number', () => {
   test('null counts as unset for the budget, as before, and keeps the 150k stream ceiling it had; a null maxTokens stops the load', () => {
     expect(agentConfig({ contextBudgetTokens: null }, OPUS)).toMatchObject({ contextBudgetTokens: 300_000, maxStreamTokens: 150_000 });
     expect(() => validateRecipe({ name: 'fit', agent: { systemPrompt: '', maxTokens: null } }))
-      .toThrow('Recipe agent.maxTokens must be a number, got null; give it a value, or leave the key out, which takes the default.');
+      .toThrow('Recipe agent.maxTokens must be a number, got null; give it a value, or leave the key out.');
   });
 
   test('an agent.model that isn\'t a string stops the load', async () => {

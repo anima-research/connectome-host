@@ -110,7 +110,7 @@ export function membraneCachingOverride(
 function withoutNullAutoRewind(
   { autoRewind, ...settings }: Exclude<NonNullable<Recipe['agent']['refusalHandling']>, false>,
 ): NonNullable<AgentConfig['refusalHandling']> {
-  return autoRewind === null ? settings : { ...settings, autoRewind };
+  return autoRewind === null || autoRewind === undefined ? settings : { ...settings, autoRewind };
 }
 
 export function buildFrameworkAgentConfig(

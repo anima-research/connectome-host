@@ -236,12 +236,19 @@ function pathsRulesRead(issues: readonly z.core.$ZodIssue[], base: readonly Prop
   });
 }
 
-function leavingOutBreaksARule(root: z.core.$ZodType, input: unknown, path: readonly PropertyKey[]): boolean {
-  const result = z.safeParse(root, withoutKey(input, path));
-  return !result.success && pathsRulesRead(result.error.issues, []).some((read) => overlaps(read, path));
+function leavingOutBreaksARule(root: z.core.$ZodType, input: unknown, paths: readonly (readonly PropertyKey[])[]): boolean {
+  const result = z.safeParse(root, paths.reduce<unknown>(withoutKey, input));
+  return !result.success && pathsRulesRead(result.error.issues, []).some((read) => paths.some((path) => overlaps(read, path)));
 }
 
-function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyKey[], input: unknown, origin: RecipeOrigin, subject: Subject, root: z.core.$ZodType): string[] {
+/**
+ * The refusal's sentences. A null may be left out where its field is
+ * optional, and where leaving it out together with each key offered so far
+ * (`offered`, in the refusal's order) breaks no rule that reads one of
+ * them, so that the offers hold together.
+ */
+function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyKey[], input: unknown, origin: RecipeOrigin, subject: Subject, root: z.core.$ZodType,
+  offered: PropertyKey[][]): string[] {
   const out: string[] = [];
   for (const issue of issues) {
     const path = [...base, ...issue.path];
@@ -251,7 +258,7 @@ function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyK
     if (issue.code === 'invalid_union') {
       if (issue.errors.length > 0) {
         const meant = issue.errors.filter((arm) => !refusesKind(arm, valueAt(input, path)));
-        if (meant.length === 1) { out.push(...sentences(meant[0]!, path, input, origin, subject, root)); continue; }
+        if (meant.length === 1) { out.push(...sentences(meant[0]!, path, input, origin, subject, root, offered)); continue; }
       } else if (issue.discriminator !== undefined) {
         const options = 'options' in issue ? issue.options ?? [] : [];
         out.push(`${name} must be ${listed(options.filter((o) => o !== null && o !== undefined))}, got ${got()}.`);
@@ -271,17 +278,16 @@ function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyK
       }));
       continue;
     }
-    const advice = valueAt(input, path) !== null ? ''
-      : mayBeLeftOut(root, input, path) && !leavingOutBreaksARule(root, input, path)
-        ? '; give it a value, or leave the key out, which takes the default'
-        : '; give it a value';
+    const leaveOut = valueAt(input, path) === null && mayBeLeftOut(root, input, path) && !leavingOutBreaksARule(root, input, [...offered, path]);
+    if (leaveOut) offered.push(path);
+    const advice = valueAt(input, path) !== null ? '' : leaveOut ? '; give it a value, or leave the key out' : '; give it a value';
     out.push(`${name} must be ${issue.message}, got ${got()}${advice}.`);
   }
   return out;
 }
 
 function faultMessage(issues: readonly z.core.$ZodIssue[], input: unknown, origin: RecipeOrigin, root: z.core.$ZodType, subject: Subject = recipeSubject, whole = 'The recipe'): string {
-  const all = [...new Set(sentences(issues, [], input, origin, subject, root))];
+  const all = [...new Set(sentences(issues, [], input, origin, subject, root, []))];
   return all.length === 1 ? all[0]! : `${whole} has ${all.length} faults:\n${all.map((s) => `- ${s}`).join('\n')}`;
 }
 
@@ -2761,20 +2767,19 @@ export function unknownRecipeKeys(raw: unknown): string[] {
  * The recipe that `raw` holds, as the load gives it: a new object, with
  * `agent.systemPrompt` and `agent.cacheTtl` written where they are left out.
  * It writes one warning line naming the keys that unknownRecipeKeys gives,
- * if it gives any, and throws one error whose message names every fault
- * that one parse can judge, printing values as `origin` allows.
+ * if it gives any, and notes it for the session's log only where the recipe
+ * loads. It throws one error whose message names every fault that one parse
+ * can judge, printing values as `origin` allows.
  */
 export function validateRecipe(raw: unknown, origin: RecipeOrigin = { kind: 'literal' }): Recipe {
   const unknownKeys = unknownRecipeKeys(raw);
-  if (unknownKeys.length > 0) {
-    const named = isPlainObject(raw) && raw.name !== undefined && origin.kind !== 'resolved' ? ` ${printed(raw.name, ['name'], origin)}` : '';
-    const warning = `Recipe${named} has keys the host does not read (ignored): ${unknownKeys.join(', ')}.`;
-    console.warn(warning);
-    noteRecipeWarning(warning);
-  }
+  const named = isPlainObject(raw) && raw.name !== undefined && origin.kind !== 'resolved' ? ` ${printed(raw.name, ['name'], origin)}` : '';
+  const warning = unknownKeys.length > 0 ? `Recipe${named} has keys the host does not read (ignored): ${unknownKeys.join(', ')}.` : undefined;
+  if (warning !== undefined) console.warn(warning);
   const result = recipeSchema.safeParse(raw, { error: words });
-  if (result.success) return result.data;
-  throw new Error(faultMessage(result.error.issues, raw, origin, recipeSchema));
+  if (!result.success) throw new Error(faultMessage(result.error.issues, raw, origin, recipeSchema));
+  if (warning !== undefined) noteRecipeWarning(warning);
+  return result.data;
 }
 
 export function parseToolLifecycle(value: unknown, where: string): RecipeToolLifecycle {
