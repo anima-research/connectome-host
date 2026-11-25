@@ -51,13 +51,14 @@ the wire they already watch. Kinds and what feeds them:
 | `quota-spent` | quota meter: a non-advisory window at 100% for this agent's model | the meter reads the window below 100% / past its reset |
 | `quota-unreadable` | quota meter: three consecutive failed reads and never a good one (inference-only tokens answer 429 on the usage path) | the first good read |
 | `auth-expiring` | credential file `expiresAt` within 30 min | a rotation, or supersession by a 401 |
-| `auth-expired` / `auth-rejected` | a 401 (membrane `type: 'auth'`) seen by the logging adapters; `expired` when the file's expiry has passed | the next successful call, or a passing probe after an action |
+| `auth-expired` / `auth-rejected` | a typed authentication error or HTTP 401/403 seen by the logging adapters, including local Codex existing-login refusals; `expired` when the file's expiry has passed | the next successful call, or a passing probe after an action |
 | `auth-login-required` | the Codex app-server's device-code prompt (URL + code ride in the alert) | the login completes |
 | `credential-unsaved` | a write of the Anthropic credential to its file that failed (after a refresh or a pasted token); raised beside the state, which it leaves as it was, and named by `unsaved` in the state while it stands | the next write that succeeds, including the one `recheck` makes while it stands |
 
 Each alert's `data.actions` lists what the host can run for that state:
-`refresh` (rotate with a refresh token / the app-server), `login` (Codex
-device-code flow; `account/logout` first when supported), `set-token` (an
+`refresh` (rotate with a refresh token / the app-server, when the source has
+not established that refresh is unavailable), `login` (Codex device-code flow;
+`account/logout` first when supported; omitted under existing-login-only policy), `set-token` (an
 operator paste, kept in memory and written to the credentials file when one
 was loaded), `recheck` (usage probe + meter read, and while `credential-unsaved`
 stands, a write of the credential to its file first). The WebUI renders them as
@@ -203,3 +204,12 @@ the host's credential surface narrows to match:
   Explicit host disposal still stops app-server and clears pending RPCs.
 
 Co-authored by GPT-6 via OpenAI Codex.
+
+For local Codex existing-login-only refusals, authentication is unavailable
+before a provider verdict. Missing or unreadable, malformed or token-less
+`CODEX_HOME/auth.json` produces the same nonretryable local auth alert. Re-check
+remains available; unavailable Refresh and Login actions give the configured
+CLI/file-storage recovery guidance. Sign in externally, restart the host process
+(or its service), then retry. Until account/file inspection establishes that
+refresh is unavailable, including before the first model call, Refresh remains
+available. Default interactive login and other providers retain their actions.
