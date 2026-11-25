@@ -64,13 +64,13 @@ describe('unknownRecipeKeys', () => {
     expect(unknownRecipeKeys(base({ modules: { files: false } }))).toEqual(['modules.files (replaced by modules.workspace)']);
   });
 
-  test('names a retired strategy key, and no other strategy key, since a strategy\'s keys are open', () => {
+  test('names a retired key of a built-in strategy with what replaced it, and any other key it doesn\'t take', () => {
     const retired = 'agent.strategy.identityReminderSilent (replaced by a sentence asking for silence at the end of ' +
       'each nonblank reminder the recipe sets, agent.strategy.identityReminder and agent.strategy.witnessedIdentityReminder, ' +
       'if it was true; if it was false, nothing)';
     for (const type of ['autobiographical', 'frontdesk', 'passthrough']) {
       const strategy = { type, identityReminderSilent: true, anExtensionsOwnKey: 1 };
-      expect(unknownRecipeKeys(base({}, { strategy }))).toEqual([retired]);
+      expect(unknownRecipeKeys(base({}, { strategy }))).toEqual([retired, 'agent.strategy.anExtensionsOwnKey']);
     }
     expect(unknownRecipeKeys(base({}, { strategy: { identityReminderSilent: false } }))).toEqual([retired]);
     expect(unknownRecipeKeys(base({}, { strategy: { type: 'autobiographical', identityReminder: 'R' } }))).toEqual([]);
@@ -137,6 +137,14 @@ describe('validateRecipe and unknown keys', () => {
     const taken = takeRecipeWarnings();
     expect(taken).toHaveLength(1);
     expect(taken[0]).toContain('mcplServers (did you mean mcpServers?)');
+    expect(takeRecipeWarnings()).toEqual([]);
+  });
+
+  test('writes the warning beside a refusal, and keeps none for the runtime log from a recipe that is refused', () => {
+    warn = spyOn(console, 'warn').mockImplementation(() => {});
+    takeRecipeWarnings();
+    expect(() => validateRecipe({ agent: {}, nmae: 'x' })).toThrow();
+    expect(String(warn.mock.calls[0]![0])).toContain('nmae');
     expect(takeRecipeWarnings()).toEqual([]);
   });
 });

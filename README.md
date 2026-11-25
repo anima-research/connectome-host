@@ -110,15 +110,15 @@ A recipe is a JSON file that configures everything specific to one agent:
 Every string value may reference the environment as `${VAR}` or
 `${VAR:-default}`; a missing required variable fails the load, naming it.
 Values and combinations are validated at load time and fail loudly, naming
-the key. An unrecognized key at the recipe's top level or in `agent`,
-`agent.mock`, `agent.strategy.kvUnified` and its `policy`, or `modules`
-(`mcplServers`, a leftover `modules.files`) doesn't stop the load: the host
-warns, naming it and, where one is close, the key it was probably meant to
-be. Keys inside other objects aren't checked this way, so check spelling
-against this README and `src/recipe.ts`. Some objects refuse a key they
-don't have, naming it, such as `modules.workspace` and each of its mounts,
-`modules.history`, `agent.retry` and `agent.clock`; `agent.toolPresentation`
-refuses one without naming it.
+the key, with each fault on its own line. An unrecognized key (`mcplServers`,
+a leftover `modules.files`) doesn't stop the load: the host warns, naming
+it and, where one is close, the key it was probably meant to be. Some
+objects refuse a key they don't have, naming it and the keys they take,
+such as `modules.workspace` and each of its mounts, `modules.history`,
+`agent.retry`, `agent.clock` and `agent.toolPresentation`. A custom
+strategy's own options, the wake gate's rules, and an extension's `config`,
+`source` and `sourceMeta` and a server's `sourceMeta` aren't checked this
+way. `src/recipe-schema.ts` holds every key.
 
 `agent.timezone` is an IANA zone used only for times rendered to the agent.
 Chronicle and MCPL protocol timestamps remain epoch/UTC. If the recipe omits
@@ -535,7 +535,7 @@ Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) wi
 
 A script that runs long yields and keeps going. The agent can wait on it, stop it, or leave it running past its turn. A script can wake the agent with `wake_agent(payload)`. The agent is also woken if the script fails or reaches its lifetime.
 
-Each script starts fresh, and reaches nothing but the agent's tools: no network, files, timers or packages. So by design it adds no authority: anything a script does, the agent could already do one call at a time. That holds as far as the engine holds. The script runs in QuickJS's WebAssembly sandbox, inside a child process of the host, as the host's user. No operating-system sandbox is around it. agent-framework claims no containment beyond its engine and its glue (see the security note on `RecipeCodeExecution` in `src/recipe.ts`). A resident that already has a shell tool can already do far more than a script can. For a resident without one, weigh that before you turn code execution on.
+Each script starts fresh, and reaches nothing but the agent's tools: no network, files, timers or packages. So by design it adds no authority: anything a script does, the agent could already do one call at a time. That holds as far as the engine holds. The script runs in QuickJS's WebAssembly sandbox, inside a child process of the host, as the host's user. No operating-system sandbox is around it. agent-framework claims no containment beyond its engine and its glue (see the security note on `RecipeCodeExecution` in `src/recipe-schema.ts`). A resident that already has a shell tool can already do far more than a script can. For a resident without one, weigh that before you turn code execution on.
 
 There is nothing to install. The engine, QuickJS in a child process, ships with agent-framework 0.24 and later. Releases before that ran Python and took other keys (`pythonPath`, `idleReclaimMs`, `env`, `scriptTimeoutMs` …). In a block with `"enabled": true`, current hosts refuse those keys, with a message that says what replaced each. Every limit has a default (`yieldMs`, `maxYieldMs`, `scriptLifetimeMs`, `maxRunningScripts`, `maxScriptChildren`, `toolCallTimeoutMs`, `wakeMinIntervalMs`, `maxWakesPerScript`, `memoryMaxBytes`). So `{ "enabled": true }` is the whole setting. Code execution is off unless the recipe turns it on. The host's built-in default recipe leaves it off, so an agent started with no recipe has none. Turning it on for a running resident adds one tool. So the resident's first turn after the restart is one full cache write.
 
@@ -616,8 +616,10 @@ Memory sizing and compression-model settings are covered in
 
 ### ChatGPT subscription provider
 
-Install the Codex CLI, sign in with `codex login`, then select the subscription
-transport in a recipe:
+Install the Codex CLI and sign in with ChatGPT using
+`codex -c 'cli_auth_credentials_store="file"' login`, then select the
+subscription transport in a recipe. Use the host's `CODEX_BINARY` executable
+and `CODEX_HOME` directory if configured:
 
 ```json
 {
@@ -630,8 +632,36 @@ transport in a recipe:
 }
 ```
 
-Connectome asks the Codex app-server to refresh the ChatGPT login and starts a
-device-code flow if needed. No `OPENAI_API_KEY` is used for this provider. Use
+Connectome asks the Codex app-server to refresh the ChatGPT login. By default,
+it starts a device-code flow if needed on first token acquisition (a model call or an earlier `/auth refresh`). With
+`CODEX_REQUIRE_EXISTING_LOGIN=1` (or `true`), local app-server auth refuses a
+missing or API-key account before starting device-code login. This check runs
+on the first token acquisition (the first model call or an earlier `/auth refresh`),
+not at boot; the credential monitor can show `credential ok` until then. Host login actions are disabled, so they cannot
+log out the existing session. Existing-session refresh still runs, including
+after a 401. Refresh remains available until the app-server establishes that
+there is no usable account or refresh token. A missing account or unusable
+credential file then offers Re-check with external-login recovery guidance.
+After an external CLI login, restart the host process (or its service), then
+retry a model call. The running app-server caches its login state; this recovery
+also applies when an existing session becomes unusable.
+
+The host forces `cli_auth_credentials_store="file"` and reads
+`CODEX_HOME/auth.json` (default `~/.codex/auth.json`). A keyring-only login is
+insufficient. Use the same executable and directory when signing in, for example
+`CODEX_HOME=/absolute/path/to/.codex /path/to/codex -c 'cli_auth_credentials_store="file"' login`.
+The refusal message names the configured executable and directory.
+
+For library callers, adapter `requireExistingLogin: true` also restricts a
+supplied `CodexAppServerAuth`. Configure the restriction before starting auth or
+logout; if an operation is in progress, wait for it to finish and retry configuration.
+Earlier adapters sharing that app-server also honor its tightened policy.
+An arbitrary custom `authProvider.getAccessToken`
+callback owns its internal login and refresh policy; the adapter disables host
+login actions but cannot control flows inside that callback. Gate-token auth
+keeps its existing behavior and starts no local CLI.
+
+No `OPENAI_API_KEY` is used for this provider. Use
 `/fast on` or `/fast off` at runtime. Connectome requests Codex's Fast tier and
 warns if the service reports that it fell back to Standard; Fast mode consumes
 subscription credits at a higher rate when applied. Quota windows are shown
@@ -777,7 +807,7 @@ unknown-key warning, like those at the other levels.
   tools' descriptions say what the setting allows, so setting it changes
   them. The setting came in Agent Framework 0.35.3. See
   `RecipeWorkspaceMount` in
-  `src/recipe.ts`
+  `src/recipe-schema.ts`
 - **History** (opt-in, `modules.history`) — the agent searches and extracts
   from its own uncompressed record. The object form
   `{ "semantic": { "url": … } }` adds `history--semantic_search`:
@@ -1034,6 +1064,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `BEDROCK_BASE_URL` | — | Route Bedrock calls through a gateway |
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |
 | `CODEX_HOME` | `~/.codex` | Codex credential/config directory |
+| `CODEX_REQUIRE_EXISTING_LOGIN` | off | `1`/`true` (case-insensitive, whitespace trimmed): require an existing file-backed ChatGPT login on first token acquisition (a model call or an earlier `/auth refresh`); disable host login actions. Existing-session refresh and gate-token auth are unchanged. Unset, empty, `0`/`false`: off; other values warn and leave it off. Custom callbacks own their internal auth policy |
 | `CODEX_BASE_URL` | ChatGPT Codex backend | Optional subscription transport override |
 | `CODEX_GATE_TOKEN` | — | `openai-codex` through an inference gate that holds the ChatGPT logins (gate's `/codex` leg): no Codex CLI or login on this host. Requires `CODEX_BASE_URL` pointing at the gate |
 | `MODEL` | from recipe, else `claude-opus-4-6` (`gpt-5.4` for `openai-codex`) | Override model (wins over the recipe) |
@@ -1152,7 +1183,7 @@ headless socket.
 | `/branches` | List Chronicle branches and checkpoints |
 | `/checkout <name>` | Switch to branch |
 | `/branchto <msgId>` | Roll the record back to a message, on a new branch; the old branch keeps the rest |
-| `/history [n]` | Show the last n messages (20 by default) |
+| `/history [n]` | Show the last n messages (20 by default, at most 500; `/find` for older) |
 | `/find <text>` | Search messages for text |
 | `/mcp list` | List servers in `mcpl-servers.json` |
 | `/mcp add <id> <cmd> [args...]` | Add or overwrite a registry server (keeps its env) |

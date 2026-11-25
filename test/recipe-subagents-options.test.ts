@@ -17,8 +17,8 @@ describe('modules.subagents: orientation and lifecycleReach', () => {
 
   test('a value the module would read as its default is refused, naming the key and the values it takes', () => {
     expect(() => validateRecipe(recipe({ orientation: 'None' })))
-      .toThrow('Recipe modules.subagents.orientation is "None"; it must be "full" or "none".');
+      .toThrow('Recipe modules.subagents.orientation must be "full" or "none", got "None".');
     expect(() => validateRecipe(recipe({ lifecycleReach: 'every' })))
-      .toThrow('Recipe modules.subagents.lifecycleReach is "every"; it must be "subtree" or "all".');
+      .toThrow('Recipe modules.subagents.lifecycleReach must be "subtree" or "all", got "every".');
   });
 });

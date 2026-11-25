@@ -24,7 +24,7 @@ describe('agent.sameRoundSkipReplyTextPolicy', () => {
   test('refuses any other value, saying which it takes', () => {
     for (const value of ['public', 'Ask', 'on', true, null, {}, 1]) {
       expect(() => validateRecipe(recipe({ sameRoundSkipReplyTextPolicy: value })))
-        .toThrow(/agent\.sameRoundSkipReplyTextPolicy must be 'private' or 'ask'/);
+        .toThrow(/agent\.sameRoundSkipReplyTextPolicy must be "private" or "ask", got /);
     }
   });
 

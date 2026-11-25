@@ -16,25 +16,15 @@ export function effectiveMaxTokens(recipe: Recipe): number {
   return recipe.agent.maxTokens ?? DEFAULT_MAX_TOKENS;
 }
 
-const isTokenSize = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
-
-const isTokenCount = (value: unknown): value is number => isTokenSize(value) && value > 0;
-
-function unreadableTokenField(recipe: Recipe): 'maxTokens' | 'contextBudgetTokens' | undefined {
-  const reply: unknown = recipe.agent.maxTokens;
-  if (reply !== undefined && reply !== null && !isTokenCount(reply)) return 'maxTokens';
-  const budget: unknown = recipe.agent.contextBudgetTokens;
-  if (budget !== undefined && budget !== null && !isTokenSize(budget)) return 'contextBudgetTokens';
-  return undefined;
-}
+const unreadableMaxTokens = (recipe: Recipe): boolean => recipe.agent.maxTokens !== undefined && recipe.agent.maxTokens <= 0;
 
 function modelWindow(recipe: Recipe, model: string): ModelLimits | undefined {
-  if (resolveProvider(recipe) !== 'anthropic' || typeof model !== 'string') return undefined;
+  if (resolveProvider(recipe) !== 'anthropic') return undefined;
   return getDefaultModelLimits(model);
 }
 
 function fittedWindow(recipe: Recipe, model: string): ModelLimits | undefined {
-  return unreadableTokenField(recipe) === undefined ? modelWindow(recipe, model) : undefined;
+  return unreadableMaxTokens(recipe) ? undefined : modelWindow(recipe, model);
 }
 
 function systemPromptTokens(recipe: Recipe): number {
@@ -71,41 +61,22 @@ type Numbers = {
   grace: number;
 };
 
-const show = (value: unknown) => (typeof value === 'number' ? String(value) : JSON.stringify(value) ?? String(value));
-
 function readNumbers(recipe: Recipe): Numbers | string {
-  const unreadable = unreadableTokenField(recipe);
-  const notA = (value: unknown) => (typeof value === 'number' ? 'not a finite number' : 'not a number');
-  if (unreadable === 'maxTokens') {
-    const value: unknown = recipe.agent.maxTokens;
-    return `agent.maxTokens is ${show(value)}, ${isTokenSize(value) ? 'not a positive number' : notA(value)} of tokens.`;
-  }
-  if (unreadable) return `agent.contextBudgetTokens is ${show(recipe.agent.contextBudgetTokens)}, ${notA(recipe.agent.contextBudgetTokens)} of tokens.`;
+  if (unreadableMaxTokens(recipe)) return `agent.maxTokens is ${recipe.agent.maxTokens}, not a positive number of tokens.`;
   const strategy = recipe.agent.strategy;
   const type = strategy?.type ?? 'autobiographical';
-  const raw = type === 'autobiographical' || type === 'frontdesk';
-  const head: unknown = headWindowTokens(recipe);
-  const tail: unknown = strategy?.recentWindowTokens ?? undefined;
-  const grace: unknown = strategy?.overBudgetGraceRatio;
-  if (raw && !isTokenSize(head)) return `strategy.headWindowTokens is ${show(head)}, ${notA(head)} of tokens.`;
-  if (raw && tail !== undefined && !isTokenSize(tail)) {
-    return `strategy.recentWindowTokens is ${show(tail)}, ${notA(tail)} of tokens.`;
-  }
-  if (raw && grace !== undefined && grace !== null && !isTokenSize(grace)) {
-    return `strategy.overBudgetGraceRatio is ${show(grace)}, ${notA(grace)}.`;
-  }
+  const tail = strategy?.recentWindowTokens;
+  const grace = strategy?.overBudgetGraceRatio;
   const thinking = thinkingOf(recipe);
   return {
     reply: effectiveMaxTokens(recipe),
     replyFloor: thinking === undefined ? 1 : Math.floor(thinking) + 1,
     budget: recipe.agent.contextBudgetTokens ?? undefined,
-    raw,
-    head: isTokenSize(head) ? Math.max(0, head) : 0,
-    ownHead: isTokenSize(strategy?.headWindowTokens),
-    tail: isTokenSize(tail) ? Math.max(0, tail) : undefined,
-    grace: grace === undefined
-      ? (DEFAULT_AUTOBIOGRAPHICAL_CONFIG.overBudgetGraceRatio ?? 0)
-      : Math.max(0, isTokenSize(grace) ? grace : 0),
+    raw: type === 'autobiographical' || type === 'frontdesk',
+    head: Math.max(0, headWindowTokens(recipe)),
+    ownHead: strategy?.headWindowTokens !== undefined,
+    tail: tail === undefined ? undefined : Math.max(0, tail),
+    grace: grace === undefined ? (DEFAULT_AUTOBIOGRAPHICAL_CONFIG.overBudgetGraceRatio ?? 0) : Math.max(0, grace),
   };
 }
 
@@ -294,16 +265,7 @@ function waysOut(f: Fit, problem: Problem): { floor: string; ways: string[]; atA
 }
 
 function thinkingOf(recipe: Recipe): number | undefined {
-  const thinking: unknown = recipe.agent.thinking?.enabled === true ? recipe.agent.thinking.budgetTokens : undefined;
-  return isTokenCount(thinking) ? thinking : undefined;
-}
-
-function capOutput(recipe: Recipe, most: number): string {
-  const thinking = thinkingOf(recipe);
-  if (thinking === undefined) return ` Set it to ${n(most)} or less.`;
-  if (thinking >= most) return '';
-  const least = Math.floor(thinking) + 1;
-  return ` Set it to ${least === most ? n(most) : `between ${n(least)} and ${n(most)}`}.`;
+  return recipe.agent.thinking?.enabled === true ? recipe.agent.thinking.budgetTokens : undefined;
 }
 
 export function recipeFit(recipe: Recipe, model: string): RecipeFit {
@@ -319,10 +281,9 @@ export function recipeFit(recipe: Recipe, model: string): RecipeFit {
   if (!window) {
     const provider = resolveProvider(recipe);
     return notChecked(provider === 'anthropic'
-      ? `The host has no window for ${show(model)}.`
+      ? `The host has no window for ${JSON.stringify(model)}.`
       : `The host knows windows only on provider "anthropic", and this recipe's is "${provider}".`);
   }
-  const maxTokens: unknown = recipe.agent.maxTokens ?? DEFAULT_MAX_TOKENS;
   const thinking = thinkingOf(recipe);
   const overOutput = (value: number) => `Recipe agent.maxTokens (${n(value)}) is over ${model}'s maximum output of ` +
     `${n(window.maxOutputTokens)} tokens, which Anthropic's API refuses on every reply.` +
@@ -332,15 +293,7 @@ export function recipeFit(recipe: Recipe, model: string): RecipeFit {
         `below ${n(window.maxOutputTokens)}.`
       : '');
   const numbers = readNumbers(recipe);
-  if (typeof numbers === 'string') {
-    if (!isTokenCount(maxTokens) || maxTokens <= window.maxOutputTokens) return notChecked(numbers);
-    return {
-      checked: true,
-      fits: false,
-      refusal: `${overOutput(maxTokens)}${capOutput(recipe, window.maxOutputTokens)} The rest of the fit isn't ` +
-        `checked: ${numbers}`,
-    };
-  }
+  if (typeof numbers === 'string') return notChecked(numbers);
   const f: Fit = {
     ...numbers, window: window.maxContextTokens, maxOutput: window.maxOutputTokens, system: systemPromptTokens(recipe),
   };

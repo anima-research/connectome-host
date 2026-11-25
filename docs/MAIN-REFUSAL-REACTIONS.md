@@ -123,8 +123,9 @@ replay it to later viewers. The TUI can retain received alerts in memory, and
 the notices module can track them in an episode if configured to do so.
 Later failures on the same server are not re-alerted; read the diagnostics. A denied or failed Discord `filters_get` call reports the
 tool error, not an unsupported suppression source. Check the status, connector
-availability, advertised schema, capabilities and suppression policy; restart the
-host after correcting config.
+availability, advertised schema, capabilities and suppression policy; after
+correcting the recipe, start the host again with the recipe's path (a bare start
+reloads the saved snapshot).
 
 ## Effect guarantees
 

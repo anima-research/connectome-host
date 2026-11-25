@@ -39,13 +39,13 @@ describe('validateRecipe — conversations schema', () => {
   test('unknown top-level conversation field is rejected rather than silently ignored', () => {
     expect(() => validateRecipe(baseRecipe({
       conversations: { idleTTLms: 1000 },
-    }))).toThrow(/unknown field \"idleTTLms\"/);
+    }))).toThrow(/Recipe conversations has unknown key "idleTTLms"/);
   });
 
   test('unknown channel kind is rejected', () => {
     expect(() => validateRecipe(baseRecipe({
       conversations: { bind: { thread: 'always' } },
-    }))).toThrow(/unknown channel kind "thread"/);
+    }))).toThrow(/Recipe conversations\.bind has unknown key "thread"/);
   });
 
   test('invalid bind rule is rejected', () => {

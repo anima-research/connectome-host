@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { validateRecipe } from '../src/recipe.js';
 
 const recipe = (codeExecution: unknown) => ({
@@ -39,8 +39,16 @@ describe('recipe codeExecution (agent-framework 0.24)', () => {
     }
   });
 
-  test('reads nothing else of a block that is off', () => {
-    expect(() => validateRecipe(recipe({ enabled: false, pythonPath: 'python3', yieldMs: -1 }))).not.toThrow();
-    expect(() => validateRecipe(recipe({ enabled: 'true' }))).toThrow(/codeExecution\.enabled must be a boolean/);
+  test('a block that is off still has its numbers checked, and a retired key in it is a warning, not a refusal', () => {
+    expect(() => validateRecipe(recipe({ enabled: false, yieldMs: -1 })))
+      .toThrow('Recipe codeExecution.yieldMs must be a whole number of 0 or more, got -1.');
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(() => validateRecipe(recipe({ enabled: false, pythonPath: 'python3' }))).not.toThrow();
+      expect(warn).toHaveBeenCalledWith('Recipe "code-execution-test" has keys the host does not read (ignored): codeExecution.pythonPath.');
+    } finally {
+      warn.mockRestore();
+    }
+    expect(() => validateRecipe(recipe({ enabled: 'true' }))).toThrow('Recipe codeExecution.enabled must be true or false, got "true".');
   });
 });

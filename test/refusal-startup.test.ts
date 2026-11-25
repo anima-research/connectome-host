@@ -60,7 +60,7 @@ test.each(['/session switch later', '/session sw later', '/session new third', '
       expect(result.asyncWork).toBeUndefined();
       expect(result.refused).toBe(true);
       expect(result.lines.map(line => line.text).join(' ')).toContain(
-        'The current session is still running. Start the host without mainRefusalReactions, use /session switch or /session new, then re-enable the option and restart the host.',
+        'The current session is still running. Start the host with the path of a recipe without mainRefusalReactions (a bare start reloads the saved recipe), use /session switch or /session new, then re-enable the option and start the host again with the recipe path.',
       );
       expect(sessionManager.load()).toEqual(before);
       expect(branchState.checkpoints.get('saved')).toEqual({ branchName: 'main' });

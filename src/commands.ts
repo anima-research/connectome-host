@@ -8,7 +8,7 @@
  *   /branches      — List all Chronicle branches
  *   /checkout N    — Switch to named branch
  *   /branchto M    — Roll the record back to a message, on a new branch
- *   /history [n]   — Show the last n messages (20 by default)
+ *   /history [n]   — Show the last n messages (20 by default, at most 500; /find for older)
  *   /lessons       — Show current lesson library
  *   /status        — Show agent/module status
  *   /clear         — Clear conversation display
@@ -48,6 +48,7 @@ import { hostUpdate, type UpdateAnswer } from './update/update.js';
 import {
   COMMAND_WAYS, PAGE_WAYS, cliWays, goBackLines, goBackUnread, statusLines, type UpdateWays,
 } from './web/update-text.js';
+import { HISTORY_PAGE_MAX } from './web/protocol.js';
 import { agentActivity, type AgentBudgetHold, type AgentRetrying } from './web/agent-activity.js';
 import { CREDENTIAL_STRINGS, keepNamedStrings } from './modules/web-ui-observers.js';
 
@@ -364,7 +365,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
           { text: '  /restore [name]        Roll back to a checkpoint on a new branch, or to its branch head (no name: list checkpoints)', style: 'system' },
           { text: '  /branches              List Chronicle branches and checkpoints', style: 'system' },
           { text: '  /checkout <name>       Switch to branch', style: 'system' },
-          { text: '  /history [n]           Show the last n messages (20 by default)', style: 'system' },
+          { text: '  /history [n]           Show the last n messages (20 by default, at most 500; /find for older)', style: 'system' },
           { text: '  /find <text>           Search messages for text', style: 'system' },
           { text: '  /branchto <msgId>      Roll back to a message, on a new branch', style: 'system' },
           { text: '  /mcp list              List MCPL servers', style: 'system' },
@@ -709,7 +710,7 @@ const hostStopping: CommandResult = {
 const refusalReactionsSwitchRefused: CommandResult = {
   refused: true,
   lines: [{
-    text: 'Session switch refused: mainRefusalReactions is enabled. The current session is still running. Start the host without mainRefusalReactions, use /session switch or /session new, then re-enable the option and restart the host.',
+    text: 'Session switch refused: mainRefusalReactions is enabled. The current session is still running. Start the host with the path of a recipe without mainRefusalReactions (a bare start reloads the saved recipe), use /session switch or /session new, then re-enable the option and start the host again with the recipe path.',
     style: 'system',
   }],
 };
@@ -1571,10 +1572,31 @@ function handleHistory(app: AppContext, countArg?: string): CommandResult {
   const cm = commandAgent(app)?.getContextManager();
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
+  // A count that isn't written as a whole number above 0 in decimal digits is
+  // refused, naming it: "1e309" read as Infinity and slice(-Infinity) printed the whole store,
+  // one line per message, in the command's result, and "abc", "0" or "-5"
+  // fell back to 20 without a word. The grammar is digits with an optional
+  // leading + and a decimal part of zeros ("20", "+20", "20.0"), which main
+  // read too; exponents, other signs, 0x, separators and words are refused.
+  // #669's parseTokenCount reads the same grammar (plus a k/m suffix) below
+  // 2^53 and refuses larger counts, where this reads them as the cap (past
+  // the cap every count means the cap), so the two keep separate checks.
+  let count = 20;
+  if (countArg !== undefined) {
+    const match = /^\+?(\d*)(?:\.(\d*))?$/.exec(countArg);
+    const whole = match?.[1] ?? '';
+    const fraction = (match?.[2] ?? '').replace(/0+$/, '');
+    if (!match || whole === '' || fraction !== '' || !/[1-9]/.test(whole)) {
+      return { lines: [{ text: `Invalid message count: "${countArg}". Examples: 20, 200`, style: 'system' }] };
+    }
+    // Past the cap every count means the cap, so a long digit string needs no exactness.
+    count = Math.min(Number(whole), HISTORY_PAGE_MAX);
+  }
+
   const { messages } = cm.queryMessages({});
   const lines: Line[] = [{ text: `--- History (${messages.length} messages) ---`, style: 'system' }];
 
-  const recent = messages.slice(-(countArg && Number(countArg) > 0 ? Number(countArg) : 20));
+  const recent = messages.slice(-count);
   for (const msg of recent) {
     const text = msg.content
       .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
@@ -1588,6 +1610,14 @@ function handleHistory(app: AppContext, countArg?: string): CommandResult {
     });
   }
 
+  // The result is capped where the Web UI's history paging is: /history 5000
+  // on a 4,590-message store printed 4,590 lines, 151 KB (#666). The line
+  // about the cap comes last, after the rows, and only where the cap held
+  // rows back: through fleet--command the output is one event a line in a
+  // 500-entry buffer, so a line put first is evicted.
+  if (count === HISTORY_PAGE_MAX && messages.length > HISTORY_PAGE_MAX) {
+    lines.push({ text: `Showing the last ${HISTORY_PAGE_MAX} of ${messages.length}; /find <text> searches them all.`, style: 'system' });
+  }
   return { lines };
 }
 

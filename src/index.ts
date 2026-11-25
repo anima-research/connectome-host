@@ -38,7 +38,7 @@ import {
   OpenAICompatibleAdapter,
   OpenRouterAdapter,
 } from '@animalabs/membrane';
-import { LoggingAnthropicAdapter, offPathRefusalAlert } from './logging-adapter.js';
+import { LoggingAnthropicAdapter, createOffPathRefusalCallback } from './logging-adapter.js';
 import { recipeFormatter } from './recipe-formatter.js';
 import { gateOptionsFor } from './gate-options.js';
 import { heartbeatOptionsFor, withoutHeartbeatMcpl } from './heartbeat-options.js';
@@ -48,7 +48,7 @@ import { LoggingProviderAdapter } from './logging-provider-wrapper.js';
 import { mockAdapterConfig } from './mock-provider.js';
 import { gateTelemetryHeaders, stampedTrigger, type TurnTrigger } from './gate-telemetry.js';
 import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
-import { CodexSubscriptionAdapter, codexGateAuth } from './codex-subscription-adapter.js';
+import { CodexSubscriptionAdapter, codexGateAuth, parseCodexRequireExistingLogin } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, WorkspaceModule, resolveTimeZone, HistoryModule, type McplServerConfig, type Module } from '@animalabs/agent-framework';
@@ -103,6 +103,7 @@ import { generateSessionName, namingSummary } from './synesthete.js';
 import {
   type Recipe,
   DEFAULT_RECIPE,
+  envText,
   loadRecipeDetailed,
   saveRecipe,
   loadSavedRecipe,
@@ -118,7 +119,7 @@ import {
   runningFit,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
-import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption } from './framework-agent-config.js';
+import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption, warnTransportSettings } from './framework-agent-config.js';
 import { probeAccountBinding } from './thinking-binding-probe.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
@@ -152,6 +153,7 @@ const config = {
   // used in its place, since the recipe names the endpoint.
   openaiCompatibleApiKey: process.env.OPENAI_COMPATIBLE_API_KEY,
   codexBinary: process.env.CODEX_BINARY,
+  codexRequireExistingLogin: parseCodexRequireExistingLogin(process.env.CODEX_REQUIRE_EXISTING_LOGIN),
   model: process.env.MODEL,
   dataDir: process.env.DATA_DIR || './data',
 };
@@ -321,7 +323,7 @@ async function createFramework(
           autoStart: c.autoStart !== false,
         };
         if (c.dataDir !== undefined) entry.dataDir = c.dataDir;
-        if (c.env !== undefined) entry.env = c.env;
+        if (c.env !== undefined) entry.env = envText(c.env);
         if (c.subscription !== undefined) entry.subscription = c.subscription;
         if (c.autoRestart !== undefined) entry.autoRestart = c.autoRestart;
         return entry;
@@ -473,8 +475,8 @@ async function createFramework(
     webUiModule = new WebUiModule({
       port: webuiConfig.port,
       host: webuiConfig.host,
-      basicAuth: webuiConfig.basicAuth,
-      allowedOrigins: webuiConfig.allowedOrigins,
+      basicAuth: webuiConfig.basicAuth ?? undefined,
+      allowedOrigins: webuiConfig.allowedOrigins ?? undefined,
       observersPath,
       ...(callLedger ? { callLedger } : {}),
       ...(quotaMeter ? { quotaMeter } : {}),
@@ -952,6 +954,10 @@ async function main() {
   const provider = resolveProvider(recipe);
   const fit = runningFit(recipe, config.model);
   if (!fit.checked) console.log(fit.line);
+  // Once per process, before the runtimes own stderr, and into their logs:
+  // a session switch builds the framework again, and the warning depends on
+  // the recipe alone.
+  warnTransportSettings(recipe);
 
   if (provider === 'openrouter' && !config.openrouterApiKey) {
     console.error('Missing OPENROUTER_API_KEY for recipe provider "openrouter".');
@@ -991,6 +997,7 @@ async function main() {
   const codexAdapter = provider === 'openai-codex'
     ? new CodexSubscriptionAdapter({
         codexBinary: config.codexBinary,
+        requireExistingLogin: config.codexRequireExistingLogin,
         fastMode: recipe.agent.codex?.fastMode ?? false,
         onLoginRequired: ({ verificationUrl, userCode }) => {
           console.error('\nOpenAI Codex subscription login required.');
@@ -1283,13 +1290,7 @@ async function main() {
   appForAlerts = app;
 
   if (adapter instanceof LoggingAnthropicAdapter) {
-    adapter.onRefusal = (info) => {
-      const fw = app.framework as unknown as {
-        notifyOpsAlert?: (kind: string, agent: string, msg: string, data?: Record<string, unknown>) => void;
-      };
-      const alert = offPathRefusalAlert(info);
-      fw.notifyOpsAlert?.(alert.kind, app.agentName, alert.message, alert.data);
-    };
+    adapter.onRefusal = createOffPathRefusalCallback(() => app.framework);
   }
 
   // The headless sink attaches inside runHeadless, after start() has

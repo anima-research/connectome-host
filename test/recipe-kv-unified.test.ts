@@ -129,7 +129,7 @@ describe('kv-unified recipe plumbing', () => {
 
     for (const value of [null, 0, 1, 'true', {}, []]) {
       expect(() => validateRecipe(recipe({ ...config(), hysteresisCertificate: value })))
-        .toThrow(/hysteresisCertificate must be a boolean/);
+        .toThrow(/hysteresisCertificate must be true or false, got /);
     }
   });
 
@@ -156,7 +156,7 @@ describe('kv-unified recipe plumbing', () => {
 
     for (const steps of [-1, 65, 1.5, Number.NaN, '4', null]) {
       expect(() => validateRecipe(recipe({ ...config(), policy: { ...config().policy, ageBandSteps: steps } })))
-        .toThrow(/ageBandSteps must be an integer from 0 to 64/);
+        .toThrow(/ageBandSteps must be a whole number from 0 to 64, got /);
     }
     for (const engine of ['leaf', 'DAG', 'subtree ', null, 0]) {
       expect(() => validateRecipe(recipe({ ...config(), engine }))).toThrow(/engine must be "auto", "subtree" or "dag"/);

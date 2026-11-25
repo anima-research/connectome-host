@@ -26,9 +26,9 @@ export type MainRefusal = Parameters<Bridge['isCurrent']>[0];
 export const DISCORD_SOURCE = 'dc80b2fba48308fdfe13a9920ff744ead0118c01';
 export const ZULIP_SOURCE = '61298a12396c27e7cebc004f31cf67c958e35930';
 
-type Discord = { kind: 'discord'; sourceRevision: typeof DISCORD_SOURCE };
+type Discord = { kind: 'discord'; sourceRevision: string };
 type Zulip = {
-  kind: 'zulip'; sourceRevision: typeof ZULIP_SOURCE;
+  kind: 'zulip'; sourceRevision: string;
   realmTag: string; idMode: 'strict' | 'compat' | 'legacy';
   /** Names must be preflighted by the operator for this realm; no live proof. */
   emojis: Record<string, string> & { unknown: string };
@@ -46,8 +46,8 @@ type Surface = Pick<AgentFramework, 'executeToolCall' | 'getAllTools' | 'listMcp
 const object = (v: unknown): Record<string, unknown> | undefined =>
   v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
 
-/** Shape checks shared by recipe loading and direct runtime callers. Connector
- * contract checks remain in prepare, after child environments are composed. */
+/** Shape checks for direct runtime callers, matching the recipe schema.
+ * Connector contract checks follow after child environments are composed. */
 export function validateRefusalReactionConfig(value: unknown): asserts value is RefusalReactionConfig | undefined {
   if (value === undefined) return;
   const config = object(value);

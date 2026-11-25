@@ -49,6 +49,7 @@ import {
   type HostModeSnapshot,
   type SurgeryResultMessage,
   type OperatorLogEntryWire,
+  HISTORY_PAGE_MAX,
 } from '@conhost/web/protocol';
 import {
   applyStreamEnded, applyTrace, conversationAgentOf, streamEventFor, toolCallState, treesShownFor, WindowFrames,
@@ -876,7 +877,6 @@ export function App() {
     queueScroll();
   };
 
-  const HISTORY_PAGE_CAP = 500;
   const [bulkRemaining, setBulkRemaining] = createSignal(0);
   const [bulkLoaded, setBulkLoaded] = createSignal(0);
 
@@ -886,7 +886,7 @@ export function App() {
     const corrId = `h${++historyCorrSeq}`;
     pendingHistoryCorr = corrId;
     setHistoryLoading(true);
-    wire.send({ type: 'request-history', corrId, beforeIndex: info.startIndex, limit: Math.min(limit, HISTORY_PAGE_CAP) });
+    wire.send({ type: 'request-history', corrId, beforeIndex: info.startIndex, limit: Math.min(limit, HISTORY_PAGE_MAX) });
     window.clearTimeout(pendingHistoryTimer);
     pendingHistoryTimer = window.setTimeout(() => {
       if (pendingHistoryCorr === corrId) {
@@ -903,7 +903,7 @@ export function App() {
     const want = Math.min(n, info.startIndex);
     setBulkLoaded(0);
     setBulkRemaining(want);
-    requestOlder(Math.min(want, HISTORY_PAGE_CAP));
+    requestOlder(Math.min(want, HISTORY_PAGE_MAX));
   };
   const stopLoadOlder = (): void => { setBulkRemaining(0); };
 
@@ -932,7 +932,7 @@ export function App() {
     setBulkLoaded((v) => v + msg.entries.length);
     setBulkRemaining(remaining);
     if (remaining > 0 && msg.startIndex > 0 && msg.entries.length > 0) {
-      requestOlder(Math.min(remaining, HISTORY_PAGE_CAP));
+      requestOlder(Math.min(remaining, HISTORY_PAGE_MAX));
     } else if (remaining > 0) {
       setBulkRemaining(0);
     }
@@ -1433,7 +1433,7 @@ export function App() {
                         type="button"
                         class="px-1.5 py-0.5 rounded border border-neutral-800 hover:border-neutral-600 hover:text-neutral-200 disabled:text-neutral-700"
                         disabled={historyLoading()}
-                        title={`load the ${Math.min(n, historyInfo()?.startIndex ?? 0).toLocaleString()} older messages just above (500 per request)`}
+                        title={`load the ${Math.min(n, historyInfo()?.startIndex ?? 0).toLocaleString()} older messages just above (${HISTORY_PAGE_MAX} per request)`}
                         onClick={() => loadOlder(n)}
                       >{n >= 1000 ? `${n / 1000}k` : n}</button>
                     )}</For>

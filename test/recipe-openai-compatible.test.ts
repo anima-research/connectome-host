@@ -20,12 +20,12 @@ describe('recipe agent.provider openai-compatible', () => {
 
   test('requires baseUrl', () => {
     expect(() => validateRecipe(recipe({ provider: 'openai-compatible', model: 'm' }))).toThrow(/agent\.baseUrl is required/);
-    expect(() => validateRecipe(recipe({ provider: 'openai-compatible', baseUrl: '   ', model: 'm' }))).toThrow(/agent\.baseUrl is required/);
+    expect(() => validateRecipe(recipe({ provider: 'openai-compatible', baseUrl: '   ', model: 'm' }))).toThrow('Recipe agent.baseUrl must be an absolute http(s) URL, got "   ".');
   });
 
   test('requires an absolute http(s) URL', () => {
     expect(() => validateRecipe(recipe({ provider: 'openai-compatible', baseUrl: 'localhost:11434/v1', model: 'm' }))).toThrow(/absolute http\(s\) URL|http or https/);
-    expect(() => validateRecipe(recipe({ provider: 'openai-compatible', baseUrl: 'ftp://host/v1', model: 'm' }))).toThrow(/http or https/);
+    expect(() => validateRecipe(recipe({ provider: 'openai-compatible', baseUrl: 'ftp://host/v1', model: 'm' }))).toThrow('Recipe agent.baseUrl must be an absolute http(s) URL, got "ftp://host/v1".');
   });
 
   test('requires an explicit model (no default for an arbitrary endpoint)', () => {

@@ -57,7 +57,7 @@ describe('startup with a saved recipe it can\'t use', () => {
       modules: { workspace: { mounts: [{ name: 'notes', path: './notes', readOnly: true }] } },
     }));
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain('Failed to resume the saved recipe <DATA_DIR>/.recipe.json: workspace.mounts[0] has unknown key "readOnly"');
+    expect(r.stderr).toContain('Failed to resume the saved recipe <DATA_DIR>/.recipe.json: Recipe modules.workspace.mounts[0] has unknown key "readOnly"');
     expect(r.stderr).toContain(remedy);
     expect(r.stderr).not.toContain(NO_CREDENTIALS_STOP);
   }, START_MS);

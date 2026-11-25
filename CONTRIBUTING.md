@@ -226,6 +226,7 @@ bun install
 bun run build:web   # the Web UI, which nothing builds on install
 bun test            # test suite
 bunx tsc --noEmit   # typecheck the host's source (src/)
+bunx tsc --noEmit -p tsconfig.packages.json   # the recipe schema against its packages' types
 (cd web && bunx tsc --noEmit)   # typecheck the web app
 bun src/index.ts    # run (generic assistant)
 ```
@@ -239,10 +240,15 @@ once, on ubuntu at the oldest Node and Bun the package supports (22.12.0 and
 (`node scripts/host-starts.mjs`: `@opentui/core` loads with its native package
 for that platform, and the offline smoke run answers). A typecheck job
 checks the types of the host's source (`src/`; `test/` and `scripts/`
-aren't checked) and of the web app (`tsc --noEmit`), which nothing else
+aren't checked, but for one file named below) and of the web app (`tsc --noEmit`), which nothing else
 does: bun runs TypeScript without checking its types, and `vite build`
-doesn't check them either. If you touched `web/`
-dependencies, regenerate the npm lock with `npm run relock:web`, so it
+doesn't check them either. The same job typechecks
+`test/recipe-schema-packages.ts` with `tsconfig.packages.json`: each section
+of the recipe schema that the host passes on to agent-framework,
+context-manager or membrane must match that package's type, apart from the
+keys that the check names, so a raise of one of them in the lockfile says
+where the schema must follow. The package doesn't ship that file.
+If you touched `web/` dependencies, regenerate the npm lock with `npm run relock:web`, so it
 carries both platforms' native binaries. It resolves every web dependency
 afresh, so review the lock's diff. Then regenerate `web/bun.lock` from it:
 delete `web/bun.lock` and run `bun install --lockfile-only` in `web/`, which

@@ -35,7 +35,8 @@
     "@animalabs/context-manager": "^0.28.0",
     "@animalabs/membrane": "^0.10.4",
     "@opentui/core": "^0.2.16",
-    "turndown": "^7.2.5"
+    "turndown": "^7.2.5",
+    "zod": "^4.6.7"
   },
   "engines": {
     "node": ">=22.12.0",
