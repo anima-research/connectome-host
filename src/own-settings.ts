@@ -467,7 +467,7 @@ function startNote(recipe: Recipe, dataDir: string, check: OwnSettingsCheck, mov
       (inForce.length > 0 ? ` In force from it:\n${listed(inForce, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that name no setting`).join('\n')}` : ' Nothing of it is in force.'));
   }
   if (check.file.kind === 'unread' || check.file.kind === 'not-an-object') {
-    parts.push(resolve(check.path) === resolve(ownSettingsDir(dataDir), OWN_SETTINGS_SET_ASIDE)
+    parts.push(check.file.kind === 'unread' && resolve(check.path) === resolve(ownSettingsDir(dataDir), OWN_SETTINGS_SET_ASIDE)
       ? `The host did not use your parked settings file ${filePlace(dataDir, recipe, OWN_SETTINGS_SET_ASIDE)} at this start, and it ` +
         `leaves it where it is: ${check.file.why}. The recipe's values are in force. ${residentRemedy(check.file)}`
       : `The host did not use your settings file ${place} at this start: ${check.file.why}. The recipe's values are in force. ` +
@@ -526,7 +526,8 @@ export function ownSettingsAnswer(input: {
 
   const pending = readable.filter((setting) => !isDeepStrictEqual(valueAt(start.recipe, setting.name), valueAt(next.recipe, setting.name)));
   if (pending.length > 0) {
-    sections.push('Pending: your file changes these at the next start, and they are not in force in this run.\n' +
+    sections.push('Pending: your file changes what the recipe holds for these at the next start, if the recipe stays as it is. In this run, ' +
+      'the recipe holds what it held when the host started. A value that the host or a package gives by default can be the same as yours.\n' +
       pending.map((setting) => {
         const later = valueAt(next.recipe, setting.name);
         const fromNextFile = next.entries.some((entry) => entry.name === setting.name && entry.notUsed === null);

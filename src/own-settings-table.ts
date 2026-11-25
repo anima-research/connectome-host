@@ -62,8 +62,8 @@ export const OWN_SETTINGS = [
     example: 'explicit',
     words: 'The mode of your plain speech: where a line goes that you write without a send tool.' +
       ' `locus`: the host posts each plain line to the turn\'s channel, where the turn has one.' +
-      ' `explicit`: a line is posted only where you put a destination before it, such as `>>#channel`.' +
-      ' A line without one is not posted, and it is held for you to send again.' +
+      ' `explicit`: a line is posted where you put a destination before it, such as `>>#channel`, and each later line of that turn goes there too, until you name another.' +
+      ' A line with no destination named before it in the turn is not posted, and it is held for you to send again.' +
       ' The host then wakes you about the held line, up to two times in a row.' +
       ' This also happens when your line answered someone at the host\'s terminal.' +
       ' `hybrid`: as `locus`, and `>>>destination` sends a line elsewhere.' +

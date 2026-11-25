@@ -301,6 +301,17 @@ describe('what a start does with the file', () => {
     expect(start.check.recipe.agent.strategy?.toolResultMaxLastN).toEqual({ read: 5 });
   });
 
+  test('a parked file that isn\'t a JSON object is put back, and the note asks for own.json to be written again', () => {
+    const dir = dataDir({ parked: '[]' });
+    const start = startOwnSettings(operator({ ownSettings: 'all' }), dir);
+    expect(start.move).toBe('put-back');
+    expect(start.note).toContain('so the host puts your parked settings file back as _settings/own.json. Nothing of it is in force.');
+    expect(start.note).toContain('The host did not use your settings file _settings/own.json at this start: it holds a list, not a JSON object.');
+    expect(start.note).not.toContain('leaves it where it is');
+    start.moveFile();
+    expect(readdirSync(join(dir, 'own-settings'))).toEqual(['own.json']);
+  });
+
   test('a parked file that is a link is not put back, at the start or at the move', () => {
     const op = operator({ ownSettings: 'all' });
     const dir = dataDir();
@@ -622,7 +633,9 @@ describe('the tool', () => {
     const content = JSON.stringify({ 'agent.timezone': 'Europe/Berlin', 'agent.clock': 'often' });
     writeFileSync(ownFile(dir), content);
     const text = answer(op, dir, start);
-    expect(text).toStartWith('Pending: your file changes these at the next start, and they are not in force in this run.\n' +
+    expect(text).toStartWith('Pending: your file changes what the recipe holds for these at the next start, if the recipe stays as it is. ' +
+      'In this run, the recipe holds what it held when the host started. A value that the host or a package gives by default can be the ' +
+      'same as yours.\n' +
       '- agent.timezone: "Europe/Berlin" at the next start');
     expect(text).toContain('Your file _settings/own.json now, as the next start applies it:\n- `agent.timezone` is "Europe/Berlin".\n' +
       '- `agent.clock` is not used: "often" is not a value that this setting takes.');
