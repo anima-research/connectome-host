@@ -4,4 +4,4 @@
   model is one that count_tokens can count, `/debug/context/makeup` now reports
   `countSource: "count_tokens_no_credential"` for such a host. A new
   `countHost` field names the host that a count was asked at. The Context
-  tab shows the same host under the count.
+  tab shows it under an exact count, and beside the reason when a count fails.
