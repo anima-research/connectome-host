@@ -5,6 +5,8 @@
   store opened, and the host writes nothing there. A start also refuses an
   empty `<data>/store`, where hosts before sessions kept their one store. If
   such a refusal comes during an update's trial, the update doesn't commit.
+  The launcher then starts the release that ran before. From 0.23.0 on, that
+  release still makes an empty store in a directory that is still empty.
   From 0.23.0 until now, a start, a switch and the audit each made an empty
   store in an empty directory. The resident then began that session with no
   past, and the audit printed `opens`. Before 0.23.0, a start and the audit
