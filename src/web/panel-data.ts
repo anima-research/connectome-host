@@ -1080,8 +1080,6 @@ function keepsRenderStats(cm: unknown): boolean {
  * run, which leaves the render stats as they were, so `stats` is null
  * until a live compile has run since the strategy loaded its branch, and
  * for good where the strategy keeps none, which `statsKept` tells apart.
- * A host with no Anthropic credential and no gateway at ANTHROPIC_BASE_URL
- * asks for no count. `countHost` names the host that a count was asked at.
  */
 export async function buildContextMakeup(app: PanelAppRef, agentName: string): Promise<Record<string, unknown>> {
   const agent = requireAgent(app, agentName);
@@ -1118,10 +1116,11 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_unsupported_model' };
   }
   const route = countRoute(app);
-  if (route.auth === null && route.base === ANTHROPIC_API) {
+  const address = urlOf(route.base);
+  if (route.auth === null && address?.hostname === 'api.anthropic.com') {
     return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_no_credential' };
   }
-  const countHost = hostOf(route.base);
+  const countHost = address?.host;
   try {
     const res = await fetch(route.base + '/v1/messages/count_tokens', {
       method: 'POST',
@@ -1152,8 +1151,6 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
   };
 }
 
-const ANTHROPIC_API = 'https://api.anthropic.com';
-
 type CountRoute = { base: string; auth: { bearer: string } | { key: string } | null };
 
 function nonBlank(value: string | undefined): string | undefined {
@@ -1165,14 +1162,14 @@ function countRoute(app: PanelAppRef): CountRoute {
   const bearer = nonBlank(app.credentials?.bearer()) ?? nonBlank(process.env.ANTHROPIC_AUTH_TOKEN);
   const key = nonBlank(process.env.ANTHROPIC_API_KEY);
   return {
-    base: (nonBlank(process.env.ANTHROPIC_BASE_URL) ?? ANTHROPIC_API).replace(/\/$/, ''),
+    base: (nonBlank(process.env.ANTHROPIC_BASE_URL) ?? 'https://api.anthropic.com').replace(/\/$/, ''),
     auth: bearer !== undefined ? { bearer } : key !== undefined ? { key } : null,
   };
 }
 
-function hostOf(base: string): string | undefined {
+function urlOf(base: string): URL | undefined {
   try {
-    return new URL(base).host;
+    return new URL(base);
   } catch {
     return undefined;
   }

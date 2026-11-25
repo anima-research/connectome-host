@@ -1,8 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { buildContextMakeup } from '../src/web/panel-data.js';
+import { type CountEnv, withCountEnv } from './count-env.js';
 
-const COUNT_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'COUNT_TOKENS_MODEL'] as const;
-type CountEnv = Partial<Record<(typeof COUNT_VARS)[number], string>>;
 type Sent = { url: string; headers: Record<string, string> };
 
 function appOn(provider: string | undefined, model: string, bearer?: string) {
@@ -16,31 +15,18 @@ function appOn(provider: string | undefined, model: string, bearer?: string) {
   };
 }
 
-/** The makeup answer with exactly `env` for the four variables a count reads,
- *  none of them taken from the developer's environment, and each request that
- *  the count sends. */
 async function makeupWith(app: ReturnType<typeof appOn>, env: CountEnv, answer: () => Response = () => Response.json({ input_tokens: 7 })) {
-  const prior = Object.fromEntries(COUNT_VARS.map((name) => [name, process.env[name]]));
   const sent: Sent[] = [];
   const realFetch = globalThis.fetch;
-  for (const name of COUNT_VARS) {
-    const value = env[name];
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
-  }
   globalThis.fetch = (async (url: unknown, init?: { headers?: HeadersInit }) => {
     sent.push({ url: String(url), headers: Object.fromEntries(new Headers(init?.headers).entries()) });
+    if (!URL.canParse(String(url))) throw new TypeError('Invalid URL');
     return answer();
   }) as unknown as typeof fetch;
   try {
-    return { makeup: await buildContextMakeup(app as never, 'agent'), sent };
+    return { makeup: await withCountEnv(env, () => buildContextMakeup(app as never, 'agent')), sent };
   } finally {
     globalThis.fetch = realFetch;
-    for (const name of COUNT_VARS) {
-      const value = prior[name];
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
   }
 }
 
@@ -70,6 +56,9 @@ describe('a host with no Anthropic credential and no gateway', () => {
     ['ANTHROPIC_BASE_URL at Anthropic\'s own address', { ANTHROPIC_BASE_URL: 'https://api.anthropic.com' }],
     ['ANTHROPIC_BASE_URL at Anthropic\'s own address with a slash at its end', { ANTHROPIC_BASE_URL: 'https://api.anthropic.com/' }],
     ['an ANTHROPIC_BASE_URL of spaces', { ANTHROPIC_BASE_URL: '  ' }],
+    ['ANTHROPIC_BASE_URL at Anthropic\'s address in capitals', { ANTHROPIC_BASE_URL: 'https://API.ANTHROPIC.COM' }],
+    ['ANTHROPIC_BASE_URL at Anthropic\'s address with its port', { ANTHROPIC_BASE_URL: 'https://api.anthropic.com:443' }],
+    ['ANTHROPIC_BASE_URL at Anthropic\'s address with a path', { ANTHROPIC_BASE_URL: 'https://api.anthropic.com/v1' }],
   ] as const) {
     test(`with ${label} and nothing else, sends no count request`, async () => {
       const { makeup, sent } = await makeupWith(appOn('bedrock', 'anthropic.claude-sonnet-4-5-20250929-v1:0'), env);
@@ -124,9 +113,20 @@ describe('a host that holds a credential or a gateway asks for the count', () =>
     expect(makeup.countHost).toBe('api.anthropic.com');
   });
 
-  test('with an ANTHROPIC_BASE_URL that is not a URL: the makeup still answers, and names no host', async () => {
-    const { makeup } = await makeupWith(appOn(undefined, 'claude-haiku-4-5'), { ANTHROPIC_BASE_URL: 'not a url', ANTHROPIC_API_KEY: 'key-test' });
+  test('with an ANTHROPIC_BASE_URL that is not a URL: the request fails as fetch fails, and the answer says so and names no host', async () => {
+    const { makeup, sent } = await makeupWith(appOn(undefined, 'claude-haiku-4-5'), { ANTHROPIC_BASE_URL: 'not a url', ANTHROPIC_API_KEY: 'key-test' });
+    expect(sent).toHaveLength(1);
+    expect(makeup.countSource).toBe('count_tokens_error');
     expect('countHost' in makeup).toBe(false);
+  });
+
+  test('a count whose request throws still names where it asked', async () => {
+    const { makeup, sent } = await makeupWith(appOn(undefined, 'claude-haiku-4-5'), { ANTHROPIC_API_KEY: 'key-test' }, () => {
+      throw new TypeError('fetch failed');
+    });
+    expect(sent).toHaveLength(1);
+    expect(makeup.countSource).toBe('count_tokens_error');
+    expect(makeup.countHost).toBe('api.anthropic.com');
   });
 
   for (const [label, bearer, env] of [
@@ -147,6 +147,19 @@ describe('a host that holds a credential or a gateway asks for the count', () =>
     expect(sent[0]!.headers.authorization).toBe('Bearer login-test');
     expect(makeup.exactTotalTokens).toBe(7);
     expect(makeup.countHost).toBe('api.anthropic.com');
+  });
+
+  test('with a subscription login and an ANTHROPIC_AUTH_TOKEN: the request carries the login, as before', async () => {
+    const { sent } = await makeupWith(appOn(undefined, 'claude-haiku-4-5', 'login-test'), { ANTHROPIC_AUTH_TOKEN: 'token-test' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.headers.authorization).toBe('Bearer login-test');
+  });
+
+  test('with a subscription login whose token is spaces and an ANTHROPIC_AUTH_TOKEN: the request carries the token', async () => {
+    const { sent } = await makeupWith(appOn(undefined, 'claude-haiku-4-5', '  '), { ANTHROPIC_AUTH_TOKEN: 'token-test', ANTHROPIC_API_KEY: 'key-test' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.headers.authorization).toBe('Bearer token-test');
+    expect(sent[0]!.headers['x-api-key']).toBeUndefined();
   });
 
   test('with a subscription login and an ANTHROPIC_API_KEY: the request carries the login, as before', async () => {
@@ -186,14 +199,16 @@ describe('a count is a whole number that is not negative', () => {
     ['JSON null as the whole answer', null],
   ] as const) {
     test(`an answer of ${label} gives no total`, async () => {
-      const { makeup } = await makeupWith(appOn(undefined, 'claude-haiku-4-5'), { ANTHROPIC_API_KEY: 'key-test' }, () => Response.json(body));
+      const { makeup, sent } = await makeupWith(appOn(undefined, 'claude-haiku-4-5'), { ANTHROPIC_API_KEY: 'key-test' }, () => Response.json(body));
+      expect(sent).toHaveLength(1);
       expect(makeup.exactTotalTokens).toBeNull();
       expect(makeup.countSource).toBe('count_tokens');
     });
   }
 
   test('an answer of 0 gives a total of 0', async () => {
-    const { makeup } = await makeupWith(appOn(undefined, 'claude-haiku-4-5'), { ANTHROPIC_API_KEY: 'key-test' }, () => Response.json({ input_tokens: 0 }));
+    const { makeup, sent } = await makeupWith(appOn(undefined, 'claude-haiku-4-5'), { ANTHROPIC_API_KEY: 'key-test' }, () => Response.json({ input_tokens: 0 }));
+    expect(sent).toHaveLength(1);
     expect(makeup.exactTotalTokens).toBe(0);
   });
 });

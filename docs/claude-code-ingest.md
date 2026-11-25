@@ -445,9 +445,13 @@ service.
    in the check, as `/puppet` would. The observers variable names a file in the new,
    empty directory, and that file doesn't exist. So no observer that the resident
    granted (`observers.json`) gets into the copy's Web UI without the check's password.
-   Where the host asks the API for a count, the count fails. But the host has still sent
-   the API the copy's compiled request. Where it asks for none, there is no live count
-   either. The rest still compiles.
+   When the host asks the API for a count, the API refuses it, as it refuses every
+   request that carries the mock key. The ask still carries the copy's compiled request
+   to the API. For a copy whose provider isn't `anthropic`, `ANTHROPIC_BASE_URL` affects
+   only the count. So give the command `ANTHROPIC_BASE_URL=http://127.0.0.1:9` too, and
+   the count is refused on the machine.
+   Where the host asks for no count, there is no live count either. The rest still
+   compiles.
 
    Then call the endpoints with the check's username and password, such as
    `curl -u check http://127.0.0.1:<port>/debug/context`. curl asks for the password

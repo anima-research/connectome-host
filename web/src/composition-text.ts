@@ -42,7 +42,7 @@ export function contextPageView<S>(makeup: MakeupFigures<S>): {
   return {
     count: makeup.exactTotalTokens != null
       ? { tokens: makeup.exactTotalTokens, model: makeup.countModel, ...(makeup.countHost ? { host: makeup.countHost } : {}) }
-      : { reason: notCounted(makeup.countSource) },
+      : { reason: notCounted(makeup.countSource) + (makeup.countHost ? ` (asked at ${makeup.countHost})` : '') },
     composition: compositionView(makeup.stats, makeup.statsKept !== false),
   };
 }
