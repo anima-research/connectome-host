@@ -12,7 +12,10 @@
   resident when its file doesn't take effect as written. The host parks the
   file as `own.not-used.json` when the recipe stops letting the resident
   change settings. A later grant of a change brings the file back, if there
-  is no `own.json`. `connectome doctor` prints what the next start would do
+  is no `own.json` and the host can read the parked file as a plain file of
+  5 MiB or less. `connectome doctor` prints what the next start would do
   with the file. A recipe without `ownSettings` runs as before, with one
   exception: a start parks an `own.json` that an earlier grant left, and
-  tells the resident.
+  tells the resident. Before this change, the host warned that it ignores
+  a key named `ownSettings`. A recipe with that key now loads only if its
+  value is `"all"`, `"read"` or a list of the table's setting names.

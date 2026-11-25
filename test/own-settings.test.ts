@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ModuleContext } from '@animalabs/agent-framework';
-import { runningFit, substituteEnvVars, validateRecipe } from '../src/recipe.js';
+import { loadRecipeDetailed, runningFit, substituteEnvVars, validateRecipe } from '../src/recipe.js';
 import { takeRecipeWarnings } from '../src/recipe-warnings.js';
 import { isRecipeSetting, nearestKey, settingFault, settingTakes } from '../src/recipe-schema.js';
 import { buildFrameworkAgentConfig } from '../src/framework-agent-config.js';
@@ -120,7 +120,7 @@ describe('the recipe key', () => {
   test('a recipe mount named _settings is refused beside the key, and loads without it (case 23)', () => {
     const workspace = { mounts: [{ name: '_settings', path: '/tmp/x' }] };
     expect(() => operator({ ownSettings: 'read', modules: { workspace } }))
-      .toThrow('Recipe modules.workspace.mounts[0] is named "_settings", the name of the host\'s own mount');
+      .toThrow('Recipe modules.workspace.mounts[0] is named "_settings". A recipe with ownSettings keeps that name for the host\'s mount');
     expect(() => operator({ modules: { workspace } })).not.toThrow();
   });
 
@@ -277,6 +277,24 @@ describe('what a start does with the file', () => {
     expect(start.note).toContain('agent.strategy.toolResultMaxLastN has more than 5 faults. The first 5:');
   }, 60_000);
 
+  test('an entry keeps the paths that the load resolved against the recipe\'s place', async () => {
+    const at = dataDir();
+    const source = join(at, 'recipe.json');
+    writeFileSync(source, JSON.stringify({
+      name: 'Ember', ownSettings: 'all',
+      agent: { name: 'ember', model: 'claude-opus-4-6', systemPrompt: 'hi' },
+      modules: { fleet: { children: [{ name: 'c', recipe: './child.json', autoStart: false }] } },
+      extensions: { ext: { kind: 'module', path: './ext.js' } },
+    }));
+    const loaded = await loadRecipeDetailed(source, { fetchSystemPrompt: false });
+    const op: OperatorRecipe = { recipe: loaded.recipe, origin: { kind: 'authored', document: loaded.persistable } };
+    const start = startOwnSettings(op, dataDir({ own: { 'agent.timezone': 'UTC' } }));
+    const fleet = start.check.recipe.modules?.fleet;
+    expect(start.check.recipe.agent.timezone).toBe('UTC');
+    expect(typeof fleet === 'object' && fleet !== null ? fleet.children?.[0]?.recipe : undefined).toBe(join(at, 'child.json'));
+    expect(start.check.recipe.extensions?.ext?.path).toBe(join(at, 'ext.js'));
+  });
+
   test('an object value replaces the recipe\'s object whole', () => {
     const op = operator({ ownSettings: 'all', agent: { strategy: { toolResultMaxLastN: { bash: 3 } } } });
     const start = startOwnSettings(op, dataDir({ own: { 'agent.strategy.toolResultMaxLastN': { read: 5 } } }));
@@ -293,6 +311,12 @@ describe('what a start does with the file', () => {
     expect([linked.move, linked.moveFile(), existsSync(ownFile(dir))]).toEqual([null, null, false]);
     expect(linked.check.file).toEqual({ kind: 'unread', why: 'it is a link, and the host follows no link there',
       remedy: 'Replace it with a plain file, or remove it.' });
+    expect(linked.note).toStartWith('The host did not use your parked settings file _settings/own.not-used.json at this start, and it leaves ' +
+      'it where it is: it is a link, and the host follows no link there. The recipe\'s values are in force. Replace it with a plain file, ' +
+      'remove it, or ask your operator.');
+    expect(answer(op, dir)).toContain('The next start leaves the parked file where it is, and does not use it: it is a link');
+    expect(ownSettingsLines(op, dir)).toContain(`The next start leaves ${ownFile(dir, 'own.not-used.json')} where it is, and does not use ` +
+      'it: it is a link, and the host follows no link there. Replace it with a plain file, or remove it.');
 
     const later = dataDir({ parked: { 'agent.timezone': 'UTC' } });
     const start = startOwnSettings(op, later);
@@ -532,16 +556,18 @@ describe('what a start does with the file', () => {
     symlinkSync(target, ownFile(linked));
     const piped = dataDir();
     expect(Bun.spawnSync(['mkfifo', ownFile(piped)]).exitCode).toBe(0);
+    const opened = Bun.spawnSync(['bun', join(import.meta.dir, 'fixtures', 'own-settings-pipe.ts'), piped], { timeout: 20_000 });
+    expect([opened.exitCode, opened.stdout.toString().trim()], opened.stderr.toString()).toEqual([0, 'it is not a plain file']);
     const large = dataDir({ own: `{"agent.timezone": "Europe/Berlin"}${' '.repeat(OWN_SETTINGS_MAX_BYTES)}` });
     for (const [dir, why] of [
       [linked, 'it is a link, and the host follows no link there'],
-      [piped, 'it is not a plain file'],
       [large, `it is larger than ${OWN_SETTINGS_MAX_BYTES} bytes`],
     ] as const) {
       const start = startOwnSettings(op, dir);
       expect(start.check.recipe.agent.timezone).toBeUndefined();
       expect(start.note).toStartWith(`The host did not use your settings file _settings/own.json at this start: ${why}.`);
     }
+    expect(startOwnSettings(op, large).note).toContain(`Make it ${OWN_SETTINGS_MAX_BYTES} bytes or smaller, remove it, or ask your operator.`);
   });
 
   test('without a workspace, the file on disk is applied, and the tool gives its path on disk (case 25)', () => {
@@ -601,6 +627,12 @@ describe('the tool', () => {
     expect(text).toContain('Your file _settings/own.json now, as the next start applies it:\n- `agent.timezone` is "Europe/Berlin".\n' +
       '- `agent.clock` is not used: "often" is not a value that this setting takes.');
     expect([readFileSync(ownFile(dir), 'utf-8'), readdirSync(join(dir, 'own-settings'))]).toEqual([content, ['own.json']]);
+  });
+
+  test('where the tool list leaves out workspace--write, the tool says to ask the operator to write the file', () => {
+    const op = operator({ ownSettings: 'all', agent: { allowedTools: ['settings--own', 'workspace--read'] } });
+    expect(quietly(() => answer(op, dataDir()))).toContain('though your operator\'s tool list leaves out workspace--write, so ask your operator ' +
+      'to write it, unless a shell tool of yours can');
   });
 
   test('a map written again in another key order is no pending change', () => {

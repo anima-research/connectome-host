@@ -305,7 +305,6 @@ function faultMessage(issues: readonly z.core.$ZodIssue[], input: unknown, origi
   return all.length === 1 ? all[0]! : `${whole} has ${all.length} faults:\n${all.map((s) => `- ${s}`).join('\n')}`;
 }
 
-/** The most faults that a setting's refusal names: a resident's entry can hold a map of any number of wrong values. */
 const SETTING_FAULTS_NAMED = 5;
 
 const nonNegative = (phrase = 'a finite number of 0 or more') => numberWhere(phrase, (v) => v >= 0);
@@ -2714,8 +2713,8 @@ const recipeSchema: z.ZodType<RecipeShape> = z.looseObject(recipeShape, takes('a
       if (r.ownSettings === undefined || typeof workspace !== 'object') return undefined;
       const i = workspace.mounts.findIndex((m) => m.name === OWN_SETTINGS_MOUNT);
       return i < 0 ? undefined
-        : ({ at }) => `Recipe ${at(`modules.workspace.mounts.${i}`)} is named "${OWN_SETTINGS_MOUNT}", the name of the host's own mount ` +
-          'of the resident\'s settings file, which ownSettings adds. Give this mount another name.';
+        : ({ at }) => `Recipe ${at(`modules.workspace.mounts.${i}`)} is named "${OWN_SETTINGS_MOUNT}". A recipe with ownSettings keeps that ` +
+          'name for the host\'s mount of the resident\'s settings file, which a grant to change a setting adds. Give this mount another name.';
     }),
     rule<RecipeShape>(['agent.toolPresentation', 'modules.workspace'], (r) => {
       const tp = r.agent.toolPresentation;

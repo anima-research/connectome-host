@@ -52,8 +52,7 @@ export function buildWorkspaceMounts(
   // gate.recipe.json beside gate.json and reads it at each start, so a rewind
   // takes it back with gate.json. The include keeps editors' and recovery
   // files out (anima-research/connectome-host#278); each name covers that
-  // name in any directory beneath as well, since agent-framework's include
-  // has no form for the root alone.
+  // name in any directory beneath as well.
   const wantConfigMount = typeof workspace === 'object' && workspace.configMount;
   if (wantConfigMount) {
     mounts.push({

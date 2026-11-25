@@ -224,8 +224,8 @@ export const OWN_SETTINGS = [
     name: 'modules.ttsRelay.notifyOnInterruption',
     available: 'ttsRelay',
     example: false,
-    words: 'Whether you are told when your voice was interrupted: one row of context each time.' +
-      ' With `false`, you are not told. Where the host can edit the posted message, it still cuts it to what was spoken.',
+    words: 'Whether you are told when your voice was interrupted: one row of context each time, where the host can tell that it was your voice.' +
+      ' With `false`, you are not told. Either way, where some of the message was spoken and the host can edit it, the host cuts the posted message to what was spoken.',
   },
   {
     name: 'modules.wake.judge.onError',
@@ -242,7 +242,7 @@ export const OWN_SETTING_NAMES: readonly OwnSettingName[] = OWN_SETTINGS.map((se
 
 /** The settings tool, as agent-framework names a utility of the host's `settings` module. */
 export const OWN_SETTINGS_TOOL = 'settings--own';
-const WRITE_TOOL = 'workspace--write';
+export const WRITE_TOOL = 'workspace--write';
 
 /**
  * The warnings about `ownSettings` that a start's log and `connectome doctor`

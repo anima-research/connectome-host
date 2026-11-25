@@ -1,5 +1,5 @@
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { resolveTimeZone } from '@animalabs/agent-framework';
 import { ENV_REFERENCE } from './recipe-document.js';
@@ -12,7 +12,7 @@ import { settingsRoute } from './modules/unknown-tool.js';
 import { PRIVATE_DIR_MODE } from './update/data-swap.js';
 import {
   AVAILABILITY, OWN_SETTING_NAMES, OWN_SETTINGS, OWN_SETTINGS_FILE, OWN_SETTINGS_MAX_BYTES, OWN_SETTINGS_MOUNT,
-  OWN_SETTINGS_SET_ASIDE, OWN_SETTINGS_TOOL, ownSettingsDir, ownSettingsWarnings, type OwnSetting, type OwnSettingName,
+  OWN_SETTINGS_SET_ASIDE, OWN_SETTINGS_TOOL, WRITE_TOOL, ownSettingsDir, ownSettingsWarnings, type OwnSetting, type OwnSettingName,
 } from './own-settings-table.js';
 
 type Grant = Recipe['ownSettings'];
@@ -64,10 +64,11 @@ export type OwnFile =
   | { readonly kind: 'not-an-object'; readonly why: string }
   | { readonly kind: 'entries'; readonly entries: ReadonlyArray<readonly [string, unknown]> };
 
+const PUBLISHING = '.own.json.writing';
 const REPLACE = 'Replace it with a plain file, or remove it.';
+const SHRINK = `Make it ${OWN_SETTINGS_MAX_BYTES} bytes or smaller, or remove it.`;
 const REACH = 'Check that the host can reach and read it on its path.';
 
-/** The bytes of a plain file of at most OWN_SETTINGS_MAX_BYTES, read with no link followed and no wait on a pipe. */
 function readPlainFile(path: string): { readonly bytes: Buffer } | Extract<OwnFile, { kind: 'none' | 'unread' }> {
   let fd: number;
   try {
@@ -83,20 +84,52 @@ function readPlainFile(path: string): { readonly bytes: Buffer } | Extract<OwnFi
     const stat = fstatSync(fd);
     if (!stat.isFile()) return { kind: 'unread', why: 'it is not a plain file', remedy: REPLACE };
     const tooLarge = `it is larger than ${OWN_SETTINGS_MAX_BYTES} bytes`;
-    if (stat.size > OWN_SETTINGS_MAX_BYTES) return { kind: 'unread', why: tooLarge, remedy: REPLACE };
+    if (stat.size > OWN_SETTINGS_MAX_BYTES) return { kind: 'unread', why: tooLarge, remedy: SHRINK };
     const buffer = Buffer.alloc(OWN_SETTINGS_MAX_BYTES + 1);
     let length = 0;
     for (let n = -1; n !== 0 && length < buffer.length;) {
       n = readSync(fd, buffer, length, buffer.length - length, null);
       length += n;
     }
-    if (length > OWN_SETTINGS_MAX_BYTES) return { kind: 'unread', why: tooLarge, remedy: REPLACE };
+    if (length > OWN_SETTINGS_MAX_BYTES) return { kind: 'unread', why: tooLarge, remedy: SHRINK };
     return { bytes: buffer.subarray(0, length) };
   } catch (err) {
     return { kind: 'unread', why: unreadWhy(err), remedy: REACH };
   } finally {
     closeSync(fd);
   }
+}
+
+function publish(path: string, bytes: Buffer): void {
+  const temporary = join(dirname(path), PUBLISHING);
+  try {
+    unlinkSync(temporary);
+  } catch (err) {
+    if (errorCode(err) !== 'ENOENT') throw err;
+  }
+  try {
+    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      for (let written = 0; written < bytes.length;) written += writeSync(fd, bytes, written, bytes.length - written);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    // A link fails where `path` is there, so a file written meanwhile is never replaced.
+    linkSync(temporary, path);
+  } finally {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // Nothing to remove, or nothing that the next put-back doesn't remove first.
+    }
+  }
+}
+
+function residentRemedy(file: Extract<OwnFile, { kind: 'unread' | 'not-an-object' }>): string {
+  if (file.kind === 'not-an-object') return 'Write it again as one JSON object, remove it, or ask your operator.';
+  if (file.remedy === REACH) return 'Ask your operator.';
+  return `${file.remedy.replace(/, or remove it\.$/, '')}, remove it, or ask your operator.`;
 }
 
 function readOwnFile(path: string): OwnFile {
@@ -240,7 +273,7 @@ function listed(entries: readonly OwnEntry[], line: (entry: OwnEntry) => string,
 
 const near = (name: string): string | null => nearestKey(name, OWN_SETTING_NAMES);
 
-/** An entry's name in an operator's line: a name that is no setting is quoted, so that no character of it can start a line of its own. */
+// Quoted, so that no character of a name from the file can start a log line of its own.
 const logName = (entry: OwnEntry): string => (entry.notUsed?.kind === 'unknown' ? cut(JSON.stringify(entry.name)) : entry.name);
 
 const quoted = (sentence: string): string =>
@@ -399,7 +432,7 @@ export function startOwnSettings(operator: OperatorRecipe, dataDir: string): Own
         if (!('bytes' in read)) {
           return failed(`[own-settings] The host did not put ${from} back: ${read.kind === 'none' ? 'it is gone' : read.why}.`);
         }
-        writeFileSync(to, read.bytes, { flag: 'wx', mode: 0o600 });
+        publish(to, read.bytes);
         try {
           unlinkSync(from);
         } catch (err) {
@@ -416,7 +449,7 @@ export function startOwnSettings(operator: OperatorRecipe, dataDir: string): Own
         'gives the resident its note again.');
     }
   };
-  for (const warning of warnings) noteRecipeWarning(warning);
+  if (warnings.length > 0) noteRecipeWarning(warnings.join('\n'));
   return { check, move, log, note: startNote(operator.recipe, dataDir, check, move), moveFile };
 }
 
@@ -434,10 +467,11 @@ function startNote(recipe: Recipe, dataDir: string, check: OwnSettingsCheck, mov
       (inForce.length > 0 ? ` In force from it:\n${listed(inForce, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that name no setting`).join('\n')}` : ' Nothing of it is in force.'));
   }
   if (check.file.kind === 'unread' || check.file.kind === 'not-an-object') {
-    parts.push(`The host did not use your settings file ${place} at this start: ${check.file.why}. The recipe's values are in force. ` +
-      (check.file.kind === 'not-an-object'
-        ? 'Write it again as one JSON object, remove it, or ask your operator.'
-        : check.file.remedy === REPLACE ? 'Replace it with a plain file, or ask your operator.' : 'Ask your operator.'));
+    parts.push(resolve(check.path) === resolve(ownSettingsDir(dataDir), OWN_SETTINGS_SET_ASIDE)
+      ? `The host did not use your parked settings file ${filePlace(dataDir, recipe, OWN_SETTINGS_SET_ASIDE)} at this start, and it ` +
+        `leaves it where it is: ${check.file.why}. The recipe's values are in force. ${residentRemedy(check.file)}`
+      : `The host did not use your settings file ${place} at this start: ${check.file.why}. The recipe's values are in force. ` +
+        residentRemedy(check.file));
   }
   if (notUsed.length > 0) {
     parts.push(`Your settings file ${place} did not take effect as written at this start.` +
@@ -524,8 +558,11 @@ export function ownSettingsAnswer(input: {
   if (changesSettings(grant)) {
     const example = OWN_SETTINGS.find((setting) => mayChange(grant, setting.name) && isAvailable(setting, operator.recipe))
       ?? OWN_SETTINGS.find((setting) => mayChange(grant, setting.name));
+    const allowed = operator.recipe.agent.allowedTools;
+    const writes = !Array.isArray(allowed) || allowed.includes(WRITE_TOOL);
     sections.push(`To change a setting, write it into ${place}` +
-      (mounted ? '' : ', on the host\'s disk: this host has no workspace, so a shell tool of yours can write it there, or your operator can') +
+      (!mounted ? ', on the host\'s disk: this host has no workspace, so a shell tool of yours can write it there, or your operator can'
+        : writes ? '' : `, though your operator's tool list leaves out ${WRITE_TOOL}, so ask your operator to write it, unless a shell tool of yours can`) +
       ': one JSON object, each key a setting\'s name, and each value what the recipe would hold at that place, whole' +
       (example === undefined ? '' : `, such as {${JSON.stringify(example.name)}: ${shown(example.example)}}`) + '. ' +
       'A change takes effect when the host next starts. A key that you remove from the file follows the recipe again. ' +
@@ -550,12 +587,18 @@ export function ownSettingsAnswer(input: {
       ? (next.entries.length === 0 ? ['It holds no entry.'] : listed(next.entries, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that name no setting`))
       : [];
     sections.push(fromParked
-      ? `Your parked file ${parkedPlace} is there, and ${place} is not: the next start puts it back as ${place}, and applies it. If you ` +
-        `write a new ${place} first, the next start uses that file in its place, and leaves the parked one where it is.\n` +
-        (next.file.kind === 'entries' ? `The parked file, as the next start applies it:\n${lines.join('\n')}` : `The next start does not use the parked file: ${next.file.why}.`)
+      ? (next.file.kind === 'unread'
+        ? `Your parked file ${parkedPlace} is there, and ${place} is not. The next start leaves the parked file where it is, and does ` +
+          `not use it: ${next.file.why}. ${residentRemedy(next.file)}`
+        : `Your parked file ${parkedPlace} is there, and ${place} is not: the next start puts it back as ${place}` +
+          `${next.file.kind === 'entries' ? ', and applies it' : ''}. If you write a new ${place} first, the next start uses that file ` +
+          'in its place, and leaves the parked one where it is.\n' +
+          (next.file.kind === 'entries'
+            ? `The parked file, as the next start applies it:\n${lines.join('\n')}`
+            : `The next start does not use the parked file: ${next.file.why}. ${residentRemedy(next.file)}`))
       : next.file.kind === 'entries'
         ? `Your file ${place} now, as the next start applies it:\n${lines.join('\n')}`
-        : `Your file ${place} now. The next start does not use it: ${next.file.why}.`);
+        : `Your file ${place} now. The next start does not use it: ${next.file.why}. ${residentRemedy(next.file)}`);
   }
   if (parkedThere && resolve(next.path) !== parked) {
     sections.push(`Your parked file ${parkedPlace} is there: the host parked it when the recipe let you change no setting, and it puts it back ` +
@@ -586,14 +629,21 @@ export function ownSettingsLines(operator: OperatorRecipe, dataDir: string): str
     if (parkedThere) lines.push(`${parked} is there: the resident's file, parked while the recipe lets it change no setting.`);
     return lines;
   }
-  if (!ownThere && parkedThere) lines.push(`The next start puts ${parked} back as ${OWN_SETTINGS_FILE}, and applies it.`);
   const check = checkOwnSettings(operator, dataDir);
-  if (check.file.kind === 'none') lines.push(`There is no ${own}.`);
-  else if (check.file.kind !== 'entries') {
-    lines.push(`The next start does not use the resident's file: ${check.file.why}. ` +
-      (check.file.kind === 'not-an-object' ? 'Write it again as one JSON object, or remove it.' : check.file.remedy));
+  const fromParked = resolve(check.path) === parked;
+  if (check.file.kind === 'none') {
+    lines.push(`There is no ${own}.`);
+  } else if (fromParked && check.file.kind === 'unread') {
+    lines.push(`The next start leaves ${parked} where it is, and does not use it: ${check.file.why}. ${check.file.remedy}`);
+  } else {
+    if (fromParked) lines.push(`The next start puts ${parked} back as ${OWN_SETTINGS_FILE}${check.file.kind === 'entries' ? ', and applies it' : ''}.`);
+    if (check.file.kind !== 'entries') {
+      lines.push(`The next start does not use the resident's file: ${check.file.why}. ` +
+        (check.file.kind === 'not-an-object' ? 'Write it again as one JSON object, or remove it.' : check.file.remedy));
+    } else if (check.entries.length === 0) {
+      lines.push('The resident\'s file holds no entry.');
+    }
   }
-  else if (check.entries.length === 0) lines.push('The resident\'s file holds no entry.');
   lines.push(...listed(check.entries, (entry) => (entry.notUsed === null
     ? `${entry.name} would be ${brief(entry.value)} from the resident's file; ${recipeOwn(operator, entry.name)}.`
     : `${logName(entry)} in the resident's file would not be used: ${ended(operatorReason(entry.name, entry.notUsed))}`),
