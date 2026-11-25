@@ -951,6 +951,41 @@ describe('the store audit', () => {
     expect(second.failed).toEqual([expect.stringMatching(new RegExp(`^Couldn't audit ${join(dir, 'sessions', 'blocked', 'inner')}: it can't be reached: ENOTDIR`))]);
   });
 
+  for (const [kind, make] of [
+    ['an empty directory', (store: string) => mkdirSync(store)],
+    ['a directory that holds only lost+found', (store: string) => mkdirSync(join(store, 'lost+found'), { recursive: true })],
+    ['a directory that a create left with only LOCK and blobs', (store: string) => {
+      mkdirSync(join(store, 'blobs'), { recursive: true });
+      writeFileSync(join(store, 'LOCK'), '');
+    }],
+  ] as const) {
+    test(`a listed session whose store directory is ${kind} is refused with Chronicle's reason, and nothing is made there`, async () => {
+      const { dir, stores } = await makeDataDir('data', [
+        { namespace: 'agents/agent', crossed: false },
+        { namespace: 'agents/agent', crossed: false },
+      ]);
+      rmSync(stores[1]!, { recursive: true });
+      make(stores[1]!);
+      const contents = () => fs.readdirSync(stores[1]!, { recursive: true }).map(String).sort().map((entry) => {
+        const path = join(stores[1]!, entry);
+        return statSync(path).isFile() ? `${entry}: ${readFileSync(path, 'hex')}` : `${entry}/`;
+      });
+      const before = contents();
+      let reason = '';
+      try {
+        JsStore.open({ path: stores[1]! }).close();
+      } catch (error) {
+        reason = error instanceof Error ? error.message : String(error);
+      }
+      expect(reason).not.toBe('');
+      const { status, lines, failed } = await audit([dir]);
+      expect(lines).toEqual([`${stores[0]} (agents/agent): opens`, `${stores[1]} (agents/agent): refused: ${reason}`]);
+      expect(failed).toEqual([`${stores[1]} (agents/agent): refused: ${reason}`]);
+      expect(status).toBe(1);
+      expect(contents()).toEqual(before);
+    });
+  }
+
   test('a recipe whose strategy cannot be built leaves its directory not audited, rather than its stores refused', async () => {
     const { dir } = await makeDataDir('data', [{ namespace: 'agents/agent', crossed: false }]);
     withStrategy(dir, 'broken', "export function register(api) { api.registerStrategy('broken', () => { throw new Error('cannot build'); }); }\n");
@@ -1347,8 +1382,8 @@ describe("what a strategy's open and an index can do", () => {
     const outside = new SessionManager(dir).getStorePath(escaped);
     await copyStore(outside, 'agents/agent', false);
     const opened: string[] = [];
-    const openStore = JsStore.openOrCreate.bind(JsStore);
-    const opening = spyOn(JsStore, 'openOrCreate').mockImplementation((config) => {
+    const openStore = JsStore.open.bind(JsStore);
+    const opening = spyOn(JsStore, 'open').mockImplementation((config) => {
       opened.push(config.path);
       return openStore(config);
     });
@@ -2436,8 +2471,8 @@ describe('which stores an audit opens, by where they lie', () => {
       return realpath(path, options);
     }) as typeof fs.realpathSync);
     const opened: string[] = [];
-    const openStore = JsStore.openOrCreate.bind(JsStore);
-    const opening = spyOn(JsStore, 'openOrCreate').mockImplementation((config) => {
+    const openStore = JsStore.open.bind(JsStore);
+    const opening = spyOn(JsStore, 'open').mockImplementation((config) => {
       opened.push(config.path);
       return openStore(config);
     });
@@ -2574,8 +2609,8 @@ describe('a host on trial, before its commit', () => {
   async function trial(dir: string, activeStore: string, places: () => string[] | null) {
     const { framework, counts } = counting();
     const opened: string[] = [];
-    const openStore = JsStore.openOrCreate.bind(JsStore);
-    const opening = spyOn(JsStore, 'openOrCreate').mockImplementation((config) => {
+    const openStore = JsStore.open.bind(JsStore);
+    const opening = spyOn(JsStore, 'open').mockImplementation((config) => {
       opened.push(config.path);
       return openStore(config);
     });
@@ -3002,7 +3037,7 @@ describe('a host on trial, before its commit', () => {
     expect(readCurrent(install)).toBe('0.11.0');
     rmSync(stores[1]!, { recursive: true, force: true });
     await copyStore(stores[1]!, 'agents/agent', true);
-    const opening = spyOn(JsStore, 'openOrCreate');
+    const opening = spyOn(JsStore, 'open');
     try {
       await startFramework(framework, { root: install, release: '0.11.0' }, { dataDir: dir, activeStore: stores[0]!, places });
       rmSync(join(install, 'current'));

@@ -62,6 +62,7 @@ function hostApp(
     sessionManager: {
       getActiveSession: () => sessions.find((s) => s.id === index),
       findSession: (nameOrId: string) => sessions.find((s) => s.id === nameOrId || s.name === nameOrId),
+      getStorePath: (id: string) => join(import.meta.dir, 'absent-session-stores', id),
     },
     recipe: { name: 'test', agent: { name: 'main' } },
     branchState: { checkpoints: new Map(), undoStack: [], redoStack: [] },
