@@ -36,6 +36,10 @@ const WITHOUT_A_STORE: Array<[string, (dir: string) => void]> = [
     mkdirSync(dirname(dir), { recursive: true });
     symlinkSync(join(dirname(dir), 'unmounted', 'store'), dir);
   }],
+  ['a regular file', (dir) => {
+    mkdirSync(dirname(dir), { recursive: true });
+    writeFileSync(dir, 'not a store');
+  }],
 ];
 
 let root: string;
@@ -47,6 +51,7 @@ afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
 function contents(dir: string): string[] {
   if (!existsSync(dir)) return [`a link to ${readlinkSync(dir)}`];
+  if (statSync(dir).isFile()) return [`a file: ${readFileSync(dir, 'hex')}`];
   return readdirSync(dir, { recursive: true }).map(String).sort().map((entry) => {
     const path = join(dir, entry);
     return statSync(path).isFile() ? `${entry}: ${readFileSync(path, 'hex')}` : `${entry}/`;
@@ -146,6 +151,23 @@ describe('a start', () => {
     expect(existsSync(join(freshDir, 'MANIFEST'))).toBe(true);
   }, 120_000);
 
+  test("on a session whose store path can't be looked at, since sessions/ is a file, is refused, and nothing is written there", async () => {
+    const data = join(root, 'data');
+    const sessions = new SessionManager(data);
+    const session = sessions.createSession();
+    const dir = sessions.getStorePath(session.id);
+    rmSync(join(data, 'sessions'), { recursive: true });
+    writeFileSync(join(data, 'sessions'), 'not a directory');
+    const reason = chronicleReason(dir);
+
+    const { exitCode, stderr, reachedSocket } = await start(data);
+
+    expect(stderr).toBe(`${startWords(session, dir, reason)}\n`);
+    expect(exitCode).toBe(1);
+    expect(reachedSocket).toBe(false);
+    expect(readFileSync(join(data, 'sessions'), 'utf8')).toBe('not a directory');
+  }, 60_000);
+
   test('with no index and a store from before sessions that is an empty directory, moves nothing and starts nothing', async () => {
     const data = join(root, 'data');
     const legacy = join(data, 'store');
@@ -195,20 +217,44 @@ describe('a start', () => {
 });
 
 describe('/session switch', () => {
-  function appOn(data: string): { app: App; sessions: SessionManager; first: { id: string; name: string }; other: { id: string; name: string } } {
-    const sessions = new SessionManager(data);
-    const other = sessions.createSession('Other');
-    const first = sessions.createSession('First');
-    makeRealStore(sessions.getStorePath(first.id));
-    const app = {
+  function appFor(sessions: SessionManager): App {
+    return {
       framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }) },
       sessionManager: sessions,
       recipe: { name: 'test' },
       branchState: { checkpoints: new Map([['before', { branchName: 'main' }]]), undoStack: [], redoStack: [] },
       switchSession: async () => {},
     } as unknown as App;
-    return { app, sessions, first, other };
   }
+
+  function appOn(data: string): { app: App; sessions: SessionManager; first: { id: string; name: string }; other: { id: string; name: string } } {
+    const sessions = new SessionManager(data);
+    const other = sessions.createSession('Other');
+    const first = sessions.createSession('First');
+    makeRealStore(sessions.getStorePath(first.id));
+    return { app: appFor(sessions), sessions, first, other };
+  }
+
+  test("to a session whose store path can't be looked at, since sessions/ is a file, is refused, and the session that runs goes on", () => {
+    const data = join(root, 'data');
+    const sessions = new SessionManager(data);
+    const other = sessions.createSession('Other');
+    const first = sessions.createSession('First');
+    const app = appFor(sessions);
+    const dir = sessions.getStorePath(other.id);
+    rmSync(join(data, 'sessions'), { recursive: true });
+    writeFileSync(join(data, 'sessions'), 'not a directory');
+    const reason = chronicleReason(dir);
+
+    let result: ReturnType<typeof handleCommand> | undefined;
+    expect(() => { result = handleCommand(`/session switch ${other.id}`, app); }).not.toThrow();
+
+    expect(result?.lines.map((line) => line.text)).toEqual([switchWords(other, dir, reason)]);
+    expect(result?.refused).toBe(true);
+    expect(result?.switchToSessionId).toBeUndefined();
+    expect(sessions.getActiveSession()?.id).toBe(first.id);
+    expect(readFileSync(join(data, 'sessions'), 'utf8')).toBe('not a directory');
+  });
 
   for (const [kind, make] of WITHOUT_A_STORE) {
     test(`to a session whose store directory is ${kind} is refused, and the session that runs goes on`, () => {
