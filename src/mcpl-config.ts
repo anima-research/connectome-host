@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { agentOverlayPath } from './update/agent-overlay-path.js';
 import { namesEnvReference, type RecipeToolLifecycle } from './recipe.js';
-import { validateToolLifecycle } from './tool-lifecycle-config.js';
+import { parseToolLifecycle } from './recipe-schema.js';
 import { parseHandWrittenJson } from './hand-written-json.js';
 import { resolveServerBinding, serverConfigProblems } from '@animalabs/agent-framework';
 import { isServerPresentation, SERVER_PRESENTATIONS_TEXT, type ServerPresentation } from './server-presentation.js';
@@ -129,8 +129,7 @@ function checkedPresentation(value: unknown, id: string): ServerPresentation {
 }
 
 function checkedToolLifecycle(value: unknown, id: string): RecipeToolLifecycle {
-  validateToolLifecycle(value, `mcpl-servers.json: mcplServers.${id}.toolLifecycle`);
-  return value as RecipeToolLifecycle;
+  return parseToolLifecycle(value, `mcpl-servers.json: mcplServers.${id}.toolLifecycle`);
 }
 
 /**

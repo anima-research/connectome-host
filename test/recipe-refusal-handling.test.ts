@@ -19,19 +19,21 @@ function thrown(run: () => unknown): string | null {
 
 const shape = (got: string) =>
   `Recipe agent.refusalHandling must be an object, such as {"autoRewind": true}, or left out, got ${got}.`;
-const autoRewind = (got: string) => `Recipe agent.refusalHandling.autoRewind must be a boolean, got ${got}.`;
+const autoRewind = (got: string) => `Recipe agent.refusalHandling.autoRewind must be true or false, got ${got}.`;
 
 const refused: Array<[unknown, string]> = [
   [true, shape('true')],
   ['false', shape('"false"')],
   [1, shape('1')],
-  [[], shape('[]')],
+  [0, shape('0')],
+  ['', shape('""')],
+  [[], shape('an empty list')],
   [{ autoRewind: 'yes' }, autoRewind('"yes"')],
   [{ autoRewind: 1 }, autoRewind('1')],
 ];
 
 const loads: unknown[] = [
-  undefined, false, null, 0, '',
+  undefined, false, null,
   {}, { autoRewind: true }, { autoRewind: false }, { autoRewind: null }, { retries: 2, maxRewinds: 3 },
 ];
 
@@ -45,13 +47,21 @@ describe('recipe agent.refusalHandling', () => {
   test('refuses at load what agent-framework refuses once the host passes it on, for each listed value', () => {
     for (const value of [...refused.map(([v]) => v), ...loads]) {
       const host = thrown(() => validateRecipe(recipe(value))) !== null;
-      const parsed = validateRecipe(recipe(undefined));
-      (parsed.agent as Record<string, unknown>).refusalHandling = value;
-      const config = buildFrameworkAgentConfig(parsed, 'agent', 'model', { kind: 'strategy' } as never);
+      const config: Record<string, unknown> = buildFrameworkAgentConfig(validateRecipe(recipe(host ? undefined : value)), 'agent', 'model', { kind: 'strategy' } as never);
+      if (host) config.refusalHandling = value;
       // agent-framework's Agent constructor checks its switches before anything
       // else, so a refusal with these stubs that names the setting is that check's.
       const framework = /refusalHandling/.test(thrown(() => new Agent(config, {} as never, {} as never)) ?? '');
       expect({ value, refused: host }).toEqual({ value, refused: framework });
     }
+  });
+
+  test('passes on what it loads as written, and a null autoRewind as left out', () => {
+    const forwarded = (value: unknown) =>
+      buildFrameworkAgentConfig(validateRecipe(recipe(value)), 'agent', 'model', { kind: 'strategy' } as never).refusalHandling;
+    expect(forwarded({ retries: 2, maxRewinds: 3, autoRewind: true })).toStrictEqual({ retries: 2, maxRewinds: 3, autoRewind: true });
+    expect(forwarded({ retries: 2, autoRewind: null })).toStrictEqual({ retries: 2 });
+    expect(forwarded(null)).toBeUndefined();
+    expect(forwarded(false)).toBeUndefined();
   });
 });

@@ -32,10 +32,10 @@ describe('workspace outsideMounts', () => {
     expect(['notes/log.txt', 'notes', '~notes/x', 'a/~/b'].map(namesOutsideMounts)).toEqual([false, false, false, false]);
   });
 
-  test("refuses any other value, in agent-framework's words", () => {
-    for (const [value, shown] of [[true, 'true'], ['anywhere', '"anywhere"'], [null, 'null']] as const) {
+  test('refuses any other value', () => {
+    for (const [value, got] of [[true, 'true'], ['anywhere', '"anywhere"'], [null, 'null; give it a value, or leave the key out']] as const) {
       expect(() => validateRecipe(recipe({ mounts: [mount()], outsideMounts: value })))
-        .toThrow(new RegExp(`^modules\\.workspace: outsideMounts must be 'read-only' or 'read-write', not ${shown}$`));
+        .toThrow(`Recipe modules.workspace.outsideMounts must be "read-only" or "read-write", got ${got}.`);
     }
   });
 
@@ -63,10 +63,10 @@ describe('workspace mount keys', () => {
 
   test('refuses adjacent and nonadjacent duplicate mount names, naming both indexes', () => {
     expect(() => validateRecipe(recipe({ mounts: [mount(), mount({ path: './second' })] })))
-      .toThrow(/^workspace\.mounts\[1\] is named "notes", as workspace\.mounts\[0\] is: /);
+      .toThrow(/^Recipe modules\.workspace\.mounts\[1\] is named "notes", as modules\.workspace\.mounts\[0\] is: /);
     expect(() => validateRecipe(recipe({
       mounts: [mount(), mount({ name: 'other', path: './middle' }), mount({ path: './last' })],
-    }))).toThrow(/^workspace\.mounts\[2\] is named "notes", as workspace\.mounts\[0\] is: /);
+    }))).toThrow(/^Recipe modules\.workspace\.mounts\[2\] is named "notes", as modules\.workspace\.mounts\[0\] is: /);
   });
 
   test('refuses two mounts named instructions in either order, naming the duplicate rather than what the instructions check makes of the first', () => {
@@ -78,11 +78,11 @@ describe('workspace mount keys', () => {
     expect(() => validateRecipe(instructionsRecipe([
       mount({ name: 'instructions', path: './a', mode: 'read-only' }),
       mount({ name: 'instructions', path: './b', mode: 'read-write' }),
-    ]))).toThrow(/^workspace\.mounts\[1\] is named "instructions", as workspace\.mounts\[0\] is: /);
+    ]))).toThrow(/^Recipe modules\.workspace\.mounts\[1\] is named "instructions", as modules\.workspace\.mounts\[0\] is: /);
     expect(() => validateRecipe(instructionsRecipe([
       mount({ name: 'instructions', path: './a', mode: 'read-write' }),
       mount({ name: 'instructions', path: './b', mode: 'read-only' }),
-    ]))).toThrow(/^workspace\.mounts\[1\] is named "instructions", as workspace\.mounts\[0\] is: /);
+    ]))).toThrow(/^Recipe modules\.workspace\.mounts\[1\] is named "instructions", as modules\.workspace\.mounts\[0\] is: /);
   });
 
   test('accepts mounts that each have their own name, two differing only in case among them, and a single instructions mount; no workspace and workspace: true are controls', () => {
@@ -117,16 +117,16 @@ describe('workspace mount keys', () => {
 
   test('refuses a key a mount does not have, naming what to write instead or the nearest key it does have', () => {
     expect(() => validateRecipe(recipe({ mounts: [mount({ readOnly: true })] })))
-      .toThrow(/^workspace\.mounts\[0\] has unknown key "readOnly" \(mode: "read-only" makes a mount read-only, and a mount is read-write without it\); known: name, path, mode, backend, watch, /);
+      .toThrow(/^Recipe modules\.workspace\.mounts\[0\] has unknown key "readOnly" \(mode: "read-only" makes a mount read-only, and a mount is read-write without it\); it takes name, path, mode, backend, include, watch, /);
     expect(() => validateRecipe(recipe({ mounts: [mount(), mount({ name: 'tickets', wakeOnChnage: true })] })))
-      .toThrow(/^workspace\.mounts\[1\] has unknown key "wakeOnChnage" \(did you mean "wakeOnChange"\?\)/);
+      .toThrow(/^Recipe modules\.workspace\.mounts\[1\] has unknown key "wakeOnChnage" \(did you mean "wakeOnChange"\?\)/);
   });
 
   test("refuses a direct mount that doesn't say its mode, and passes on one that says read-only as given, unwatched", () => {
     for (const mounts of [[mount({ backend: 'direct' })], [mount(), mount({ name: 'repo', path: './repo', backend: 'direct', include: ['*.ts'] })]]) {
       const at = mounts.length - 1;
       expect(() => validateRecipe(recipe({ mounts })))
-        .toThrow(new RegExp(`^workspace\\.mounts\\[${at}\\] is direct, so it must say its mode: add "mode": "read-only", or "read-write" for one the agent writes on disk directly, with no undo$`));
+        .toThrow(new RegExp(`^Recipe modules\\.workspace\\.mounts\\[${at}\\] is direct, so it must say its mode: add "mode": "read-only", or "read-write" for one the agent writes on disk directly, with no undo\\.$`));
     }
     const workspace = {
       mounts: [mount({ backend: 'direct', mode: 'read-only' }), mount({ name: 'out', path: './out' }), mount({ name: 'kept', path: './kept', backend: 'chronicle' })],
@@ -148,7 +148,7 @@ describe('workspace mount keys', () => {
   });
 
   test("refuses, in agent-framework's words, what it refuses on a direct mount, before the recipe can be saved", async () => {
-    const direct = "^modules\\.workspace: Mount \"notes\" is direct, which reads disk as it is with no store, watcher or push: ";
+    const direct = "^Recipe modules\\.workspace: Mount \"notes\" is direct, which reads disk as it is with no store, watcher or push: ";
     for (const [extra, says] of [
       [{ watch: 'always' }, "watch \"always\" would watch nothing \\(leave it out, or set 'never'\\)"],
       [{ watch: 'on-agent-action' }, "watch \"on-agent-action\" would watch nothing"],
@@ -177,7 +177,7 @@ describe('workspace mount keys', () => {
 
   test("refuses an include pattern agent-framework can't read, in its words", () => {
     expect(() => validateRecipe(recipe({ mounts: [mount({ include: ['*.md', 'src/../x'] })] })))
-      .toThrow(/^modules\.workspace: Mount "notes": include .*"\.\." segment/);
+      .toThrow(/^Recipe modules\.workspace: Mount "notes": include .*"\.\." segment/);
   });
 
   test('validates a mount without making its directory, or anything beneath it, as the framework\'s constructor does nothing but check', () => {
@@ -199,7 +199,7 @@ describe('workspace mount keys', () => {
       expect(() => validateRecipe(recipe(nested))).not.toThrow();
       expect(warn).not.toHaveBeenCalled();
       expect(() => validateRecipe(recipe({ mounts: [mount({ path: '.' }), mount({ name: 'inner', path: './inner', backend: 'direct', mode: 'read-only', watch: 'always' })] })))
-        .toThrow(/^modules\.workspace: Mount "inner" is direct/);
+        .toThrow(/^Recipe modules\.workspace: Mount "inner" is direct/);
       expect(warn).not.toHaveBeenCalled();
       console.warn('zz-after');
       expect(warn.mock.calls.map((c) => String(c[0]))).toEqual(['zz-after']);
@@ -215,52 +215,52 @@ describe('workspace mount keys', () => {
     for (const configMount of [undefined, false, true]) {
       const workspace = { mounts: [mount(), mount({ name: '_config', path: './config' })], ...(configMount === undefined ? {} : { configMount }) };
       expect(() => validateRecipe(recipe(workspace)))
-        .toThrow(/^workspace\.mounts\[1\] is named "_config", the name of the host's own mount of the session's config directory, which configMount: true adds\. Give this mount another name\.$/);
+        .toThrow(/^Recipe modules\.workspace\.mounts\[1\] is named "_config", the name of the host's own mount of the session's config directory, which configMount: true adds\. Give this mount another name\.$/);
     }
     expect(() => validateRecipe(recipe({ mounts: [mount({ name: '_Config', path: './config' })] }))).not.toThrow();
   });
 
   test('refuses a key the workspace does not have', () => {
     expect(() => validateRecipe(recipe({ mounts: [mount()], configMounts: true })))
-      .toThrow(/^workspace has unknown key "configMounts" \(did you mean "configMount"\?\); known: mounts, configMount, outsideMounts$/);
+      .toThrow(/^Recipe modules\.workspace has unknown key "configMounts" \(did you mean "configMount"\?\); it takes mounts, configMount and outsideMounts\.$/);
   });
 
   test('refuses a value of the wrong kind, null included', () => {
     const refused: Array<[Record<string, unknown>, RegExp]> = [
-      [{ watch: 'allways' }, /\.watch must be "always", "on-agent-action" or "never"$/],
-      [{ watch: null }, /\.watch must be "always", "on-agent-action" or "never"$/],
-      [{ mode: 'readonly' }, /\.mode must be "read-write" or "read-only"$/],
-      [{ backend: 'disk' }, /\.backend must be "chronicle" or "direct"$/],
-      [{ backend: null }, /\.backend must be "chronicle" or "direct"$/],
-      [{ include: [] }, /\.include must be a non-empty list of strings$/],
-      [{ include: '*.md' }, /\.include must be a non-empty list of strings$/],
-      [{ include: ['*.md', 1] }, /\.include must be a non-empty list of strings$/],
-      [{ include: null }, /\.include must be a non-empty list of strings$/],
-      [{ name: '' }, /\.name must be a non-empty string$/],
+      [{ watch: 'allways' }, /\.watch must be "always", "on-agent-action" or "never", got "allways"\.$/],
+      [{ watch: null }, /\.watch must be "always", "on-agent-action" or "never", got null; give it a value, or leave the key out\.$/],
+      [{ mode: 'readonly' }, /\.mode must be "read-write" or "read-only", got "readonly"\.$/],
+      [{ backend: 'disk' }, /\.backend must be "chronicle" or "direct", got "disk"\.$/],
+      [{ backend: null }, /\.backend must be "chronicle" or "direct", got null; give it a value, or leave the key out\.$/],
+      [{ include: [] }, /\.include must be a non-empty list of strings, got an empty list\.$/],
+      [{ include: '*.md' }, /\.include must be a non-empty list of strings, got "\*\.md"\.$/],
+      [{ include: ['*.md', 1] }, /\.include\[1\] must be a string, got 1\.$/],
+      [{ include: null }, /\.include must be a non-empty list of strings, got null; give it a value, or leave the key out\.$/],
+      [{ name: '' }, /\.name must be a non-empty string, got ""\.$/],
       // A timer runs a delay above 2147483647 ms, or below 0, at once, and truncates a fraction.
-      [{ watchDebounceMs: -1 }, /\.watchDebounceMs must be a whole number of milliseconds from 0 to 2147483647$/],
-      [{ watchDebounceMs: 250.5 }, /\.watchDebounceMs must be a whole number of milliseconds from 0 to 2147483647$/],
-      [{ watchDebounceMs: 2147483648 }, /\.watchDebounceMs must be a whole number of milliseconds from 0 to 2147483647$/],
-      [{ watchRootPollMs: 2147483648 }, /\.watchRootPollMs must be a whole number of milliseconds from 1 to 2147483647$/],
+      [{ watchDebounceMs: -1 }, /\.watchDebounceMs must be a whole number of milliseconds from 0 to 2147483647, got /],
+      [{ watchDebounceMs: 250.5 }, /\.watchDebounceMs must be a whole number of milliseconds from 0 to 2147483647, got /],
+      [{ watchDebounceMs: 2147483648 }, /\.watchDebounceMs must be a whole number of milliseconds from 0 to 2147483647, got /],
+      [{ watchRootPollMs: 2147483648 }, /\.watchRootPollMs must be a whole number of milliseconds from 1 to 2147483647, got /],
       // A poll of 0 runs as often as one of 1.
-      [{ watchRootPollMs: 0 }, /\.watchRootPollMs must be a whole number of milliseconds from 1 to 2147483647$/],
-      [{ watchRootPollMs: '2s' }, /\.watchRootPollMs must be a whole number of milliseconds from 1 to 2147483647$/],
-      [{ maxFileSize: '5MB' }, /\.maxFileSize must be a whole number of bytes, 1 or more$/],
-      [{ maxFileSize: -1 }, /\.maxFileSize must be a whole number of bytes, 1 or more$/],
+      [{ watchRootPollMs: 0 }, /\.watchRootPollMs must be a whole number of milliseconds from 1 to 2147483647, got /],
+      [{ watchRootPollMs: '2s' }, /\.watchRootPollMs must be a whole number of milliseconds from 1 to 2147483647, got /],
+      [{ maxFileSize: '5MB' }, /\.maxFileSize must be a whole number of bytes, 1 or more, got /],
+      [{ maxFileSize: -1 }, /\.maxFileSize must be a whole number of bytes, 1 or more, got /],
       // A cap of 0 refuses every file that isn't empty.
-      [{ maxFileSize: 0 }, /\.maxFileSize must be a whole number of bytes, 1 or more$/],
-      [{ maxFileSize: 1024.5 }, /\.maxFileSize must be a whole number of bytes, 1 or more$/],
+      [{ maxFileSize: 0 }, /\.maxFileSize must be a whole number of bytes, 1 or more, got /],
+      [{ maxFileSize: 1024.5 }, /\.maxFileSize must be a whole number of bytes, 1 or more, got /],
       // What agent-framework refuses when the workspace is built, refused here at load.
-      [{ walkCap: 0 }, /\.walkCap must be a whole number of entries from 1 to 9007199254740991$/],
-      [{ walkCap: -1 }, /\.walkCap must be a whole number of entries from 1 to 9007199254740991$/],
-      [{ walkCap: 2.5 }, /\.walkCap must be a whole number of entries from 1 to 9007199254740991$/],
-      [{ walkCap: 2 ** 53 }, /\.walkCap must be a whole number of entries from 1 to 9007199254740991$/],
-      [{ walkCap: 1e20 }, /\.walkCap must be a whole number of entries from 1 to 9007199254740991$/],
-      [{ followSymlinks: 'yes' }, /\.followSymlinks must be true or false$/],
-      [{ autoMaterialize: 1 }, /\.autoMaterialize must be true or false$/],
-      [{ ignore: 'node_modules' }, /\.ignore must be an array of strings$/],
-      [{ ignore: ['node_modules', 1] }, /\.ignore must be an array of strings$/],
-      [{ wakeOnChange: ['created', 'renamed'] }, /\.wakeOnChange must be true, false, or a list of "created", "modified" or "deleted"$/],
+      [{ walkCap: 0 }, /\.walkCap must be a whole number of entries from 1 to 9007199254740991, got /],
+      [{ walkCap: -1 }, /\.walkCap must be a whole number of entries from 1 to 9007199254740991, got /],
+      [{ walkCap: 2.5 }, /\.walkCap must be a whole number of entries from 1 to 9007199254740991, got /],
+      [{ walkCap: 2 ** 53 }, /\.walkCap must be a whole number of entries from 1 to 9007199254740991, got /],
+      [{ walkCap: 1e20 }, /\.walkCap must be a whole number of entries from 1 to 9007199254740991, got /],
+      [{ followSymlinks: 'yes' }, /\.followSymlinks must be true or false, got /],
+      [{ autoMaterialize: 1 }, /\.autoMaterialize must be true or false, got /],
+      [{ ignore: 'node_modules' }, /\.ignore must be a list of strings, got "node_modules"\.$/],
+      [{ ignore: ['node_modules', 1] }, /\.ignore\[1\] must be a string, got 1\.$/],
+      [{ wakeOnChange: ['created', 'renamed'] }, /\.wakeOnChange\[1\] must be "created", "modified" or "deleted", got "renamed"\.$/],
     ];
     for (const key of ['watchDebounceMs', 'watchRootPollMs', 'maxFileSize', 'walkCap']) {
       for (const value of ['250', null, NaN, Infinity]) {
@@ -270,8 +270,8 @@ describe('workspace mount keys', () => {
     for (const [extra, message] of refused) {
       expect(() => validateRecipe(recipe({ mounts: [mount(extra)] }))).toThrow(message);
     }
-    expect(() => validateRecipe(recipe({ mounts: [{ name: 'notes' }] }))).toThrow(/^workspace\.mounts\[0\]\.path must be a non-empty string$/);
-    expect(() => validateRecipe(recipe({ mounts: [{ path: './notes' }] }))).toThrow(/^workspace\.mounts\[0\]\.name must be a non-empty string$/);
+    expect(() => validateRecipe(recipe({ mounts: [{ name: 'notes' }] }))).toThrow(/^Recipe modules\.workspace\.mounts\[0\]\.path must be a non-empty string, got nothing\.$/);
+    expect(() => validateRecipe(recipe({ mounts: [{ path: './notes' }] }))).toThrow(/^Recipe modules\.workspace\.mounts\[0\]\.name must be a non-empty string, got nothing\.$/);
     expect(() => validateRecipe(recipe({ mounts: [mount()], configMount: 'yes' }))).toThrow(/workspace\.configMount must be true or false/);
     expect(() => validateRecipe(recipe({ mounts: [mount()], configMount: null }))).toThrow(/workspace\.configMount must be true or false/);
   });
@@ -292,14 +292,14 @@ describe('workspace mount keys', () => {
   test('modules is an object, and anything else stops the recipe loading', () => {
     for (const modules of ['off', 0, false, true, null, [], [{ workspace: false }]]) {
       expect(() => validateRecipe({ name: 'modules-test', agent: { systemPrompt: 'test' }, modules }))
-        .toThrow(/^modules must be an object of module settings, not null or a list$/);
+        .toThrow(/^Recipe modules must be an object of module settings, not null or a list, got /);
     }
     expect(() => validateRecipe({ name: 'modules-test', agent: { systemPrompt: 'test' }, modules: {} })).not.toThrow();
   });
 
   test('modules.workspace is true, false or an object, and anything else stops the recipe loading', () => {
     for (const workspace of [null, 'off', 0, 1, [], [mount()]]) {
-      expect(() => validateRecipe(recipe(workspace))).toThrow(/^modules\.workspace must be true, false or an object of settings, not null or a list$/);
+      expect(() => validateRecipe(recipe(workspace))).toThrow(/^Recipe modules\.workspace must be true, false or an object of settings, got /);
     }
     for (const workspace of [true, false, { mounts: [mount()] }]) {
       expect(() => validateRecipe(recipe(workspace))).not.toThrow();

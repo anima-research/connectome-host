@@ -420,19 +420,22 @@ describe('connectome doctor: check 3, the recipe', () => {
 
   test('the loader takes its values from .env, with doctor\'s own environment over them', async () => {
     const recipe = JSON.stringify({ name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hi', proseRouting: '${ROUTING}' } });
-    const at = install({ recipe, env: `DISCORD_TOKEN="${TOKEN}"\nROUTING=from-dotenv\n` });
+    const at = install({ recipe, env: `DISCORD_TOKEN="${TOKEN}"\nROUTING=hybrid\n` });
     const fromDotenv = await run(at, { states: { [HOST]: 'inactive/dead' } });
-    expect(fromDotenv.lines[5]).toEndWith('got "from-dotenv".');
+    expect(fromDotenv.lines[5]).toBe(`✓ ${join(at.work, 'recipe.json')} loads.`);
     const fromEnv = await run(at, { states: { [HOST]: 'inactive/dead' }, env: { ROUTING: 'from-environment' } });
-    expect(fromEnv.lines[5]).toEndWith('got "from-environment".');
+    expect(fromEnv.lines[5]).toEndWith('got "${ROUTING}".');
   });
 
   test('the loader gets the install\'s data directory as DATA_DIR, as the service\'s unit sets it, over doctor\'s own', async () => {
-    const recipe = JSON.stringify({ name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hi', proseRouting: '${DATA_DIR}' } });
-    const at = install({ recipe });
+    const at = install();
+    const children = [{ name: '${DATA_DIR}', recipe: 'a.json' }, { name: at.data, recipe: 'b.json' }];
+    writeFileSync(join(at.work, 'recipe.json'), JSON.stringify({
+      name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hi' }, modules: { fleet: { children } },
+    }));
     for (const env of [{}, { DATA_DIR: '/elsewhere' }]) {
       const r = await run(at, { states: { [HOST]: 'inactive/dead' }, env });
-      expect(r.lines[5]).toEndWith(`got "${at.data}".`);
+      expect(r.lines[5]).toEndWith(`Recipe modules.fleet.children[1].name ${JSON.stringify(at.data)} is duplicated.`);
     }
   });
 
@@ -441,7 +444,7 @@ describe('connectome doctor: check 3, the recipe', () => {
     const at = install({ recipe });
     const r = await run(at, { states: { [HOST]: 'inactive/dead' } });
     expect(r.lines[5]).toStartWith(`✗ ${join(at.work, 'recipe.json')} doesn't load: `);
-    expect(r.lines[5]).toEndWith('got "<DISCORD_TOKEN>".');
+    expect(r.lines[5]).toEndWith('got "${DISCORD_TOKEN}".');
     expect(r.out).not.toContain(TOKEN);
     expect(r.lines[6]).toBe(`  Next: correct it, then start the service with \`systemctl --user start ${HOST}\`.`);
   });

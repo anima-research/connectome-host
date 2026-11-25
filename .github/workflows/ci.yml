@@ -87,6 +87,9 @@ jobs:
       - name: Typecheck the host's source
         run: npx tsc --noEmit
 
+      - name: Typecheck the recipe schema against its packages' types
+        run: npx tsc --noEmit -p tsconfig.packages.json
+
       - name: Typecheck the web app
         working-directory: web
         run: npx tsc --noEmit

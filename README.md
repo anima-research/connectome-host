@@ -110,15 +110,15 @@ A recipe is a JSON file that configures everything specific to one agent:
 Every string value may reference the environment as `${VAR}` or
 `${VAR:-default}`; a missing required variable fails the load, naming it.
 Values and combinations are validated at load time and fail loudly, naming
-the key. An unrecognized key at the recipe's top level or in `agent`,
-`agent.mock`, `agent.strategy.kvUnified` and its `policy`, or `modules`
-(`mcplServers`, a leftover `modules.files`) doesn't stop the load: the host
-warns, naming it and, where one is close, the key it was probably meant to
-be. Keys inside other objects aren't checked this way, so check spelling
-against this README and `src/recipe.ts`. Some objects refuse a key they
-don't have, naming it, such as `modules.workspace` and each of its mounts,
-`modules.history`, `agent.retry` and `agent.clock`; `agent.toolPresentation`
-refuses one without naming it.
+the key, with each fault on its own line. An unrecognized key (`mcplServers`,
+a leftover `modules.files`) doesn't stop the load: the host warns, naming
+it and, where one is close, the key it was probably meant to be. Some
+objects refuse a key they don't have, naming it and the keys they take,
+such as `modules.workspace` and each of its mounts, `modules.history`,
+`agent.retry`, `agent.clock` and `agent.toolPresentation`. A custom
+strategy's own options, the wake gate's rules, and an extension's `config`,
+`source` and `sourceMeta` and a server's `sourceMeta` aren't checked this
+way. `src/recipe-schema.ts` holds every key.
 
 `agent.timezone` is an IANA zone used only for times rendered to the agent.
 Chronicle and MCPL protocol timestamps remain epoch/UTC. If the recipe omits
@@ -535,7 +535,7 @@ Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) wi
 
 A script that runs long yields and keeps going. The agent can wait on it, stop it, or leave it running past its turn. A script can wake the agent with `wake_agent(payload)`. The agent is also woken if the script fails or reaches its lifetime.
 
-Each script starts fresh, and reaches nothing but the agent's tools: no network, files, timers or packages. So by design it adds no authority: anything a script does, the agent could already do one call at a time. That holds as far as the engine holds. The script runs in QuickJS's WebAssembly sandbox, inside a child process of the host, as the host's user. No operating-system sandbox is around it. agent-framework claims no containment beyond its engine and its glue (see the security note on `RecipeCodeExecution` in `src/recipe.ts`). A resident that already has a shell tool can already do far more than a script can. For a resident without one, weigh that before you turn code execution on.
+Each script starts fresh, and reaches nothing but the agent's tools: no network, files, timers or packages. So by design it adds no authority: anything a script does, the agent could already do one call at a time. That holds as far as the engine holds. The script runs in QuickJS's WebAssembly sandbox, inside a child process of the host, as the host's user. No operating-system sandbox is around it. agent-framework claims no containment beyond its engine and its glue (see the security note on `RecipeCodeExecution` in `src/recipe-schema.ts`). A resident that already has a shell tool can already do far more than a script can. For a resident without one, weigh that before you turn code execution on.
 
 There is nothing to install. The engine, QuickJS in a child process, ships with agent-framework 0.24 and later. Releases before that ran Python and took other keys (`pythonPath`, `idleReclaimMs`, `env`, `scriptTimeoutMs` …). In a block with `"enabled": true`, current hosts refuse those keys, with a message that says what replaced each. Every limit has a default (`yieldMs`, `maxYieldMs`, `scriptLifetimeMs`, `maxRunningScripts`, `maxScriptChildren`, `toolCallTimeoutMs`, `wakeMinIntervalMs`, `maxWakesPerScript`, `memoryMaxBytes`). So `{ "enabled": true }` is the whole setting. Code execution is off unless the recipe turns it on. The host's built-in default recipe leaves it off, so an agent started with no recipe has none. Turning it on for a running resident adds one tool. So the resident's first turn after the restart is one full cache write.
 
@@ -807,7 +807,7 @@ unknown-key warning, like those at the other levels.
   tools' descriptions say what the setting allows, so setting it changes
   them. The setting came in Agent Framework 0.35.3. See
   `RecipeWorkspaceMount` in
-  `src/recipe.ts`
+  `src/recipe-schema.ts`
 - **History** (opt-in, `modules.history`) — the agent searches and extracts
   from its own uncompressed record. The object form
   `{ "semantic": { "url": … } }` adds `history--semantic_search`:

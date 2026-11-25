@@ -33,7 +33,7 @@ import { AUDIT_POINTER, loadRepairAlert, loadRepairLines, type LoadRepairReport 
 import { loadExtensions, type ExtensionRegistry } from '../extensions.js';
 import { buildFrameworkStrategy } from '../framework-strategy.js';
 import { fleetChildDataDir, fleetChildEnv, spawnErrorText } from '../modules/fleet-module.js';
-import { DEFAULT_RECIPE, loadRecipeDetailed, loadSavedRecipe, recipeModel, savedRecipePath, type Recipe } from '../recipe.js';
+import { DEFAULT_RECIPE, envText, loadRecipeDetailed, loadSavedRecipe, recipeModel, savedRecipePath, type Recipe } from '../recipe.js';
 import { SessionManager } from '../session-manager.js';
 import {
   childrenFilePath, isChildEntry, ITEM_UPDATE_DIR, readRecord, realOrResolved, writeJsonAtomic, type ChildrenFile,
@@ -644,7 +644,7 @@ function fleetEntries(recipe: Recipe | null): FleetEntry[] {
     name: entry.name,
     dataDir: fleetChildDataDir(entry),
     recipe: entry.recipe,
-    ...(entry.env !== undefined ? { env: entry.env } : {}),
+    ...(entry.env !== undefined ? { env: envText(entry.env) } : {}),
     timeZone,
   }));
 }
