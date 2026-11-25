@@ -37,7 +37,7 @@ import {
   OpenAICompatibleAdapter,
   OpenRouterAdapter,
 } from '@animalabs/membrane';
-import { LoggingAnthropicAdapter, offPathRefusalAlert } from './logging-adapter.js';
+import { LoggingAnthropicAdapter, createOffPathRefusalCallback } from './logging-adapter.js';
 import { recipeFormatter } from './recipe-formatter.js';
 import { gateOptionsFor } from './gate-options.js';
 import { heartbeatOptionsFor, withoutHeartbeatMcpl } from './heartbeat-options.js';
@@ -47,7 +47,7 @@ import { LoggingProviderAdapter } from './logging-provider-wrapper.js';
 import { mockAdapterConfig } from './mock-provider.js';
 import { gateTelemetryHeaders, stampedTrigger, type TurnTrigger } from './gate-telemetry.js';
 import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
-import { CodexSubscriptionAdapter, codexGateAuth } from './codex-subscription-adapter.js';
+import { CodexSubscriptionAdapter, codexGateAuth, parseCodexRequireExistingLogin } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, WorkspaceModule, resolveTimeZone, HistoryModule, type Module } from '@animalabs/agent-framework';
@@ -152,6 +152,7 @@ const config = {
   // used in its place, since the recipe names the endpoint.
   openaiCompatibleApiKey: process.env.OPENAI_COMPATIBLE_API_KEY,
   codexBinary: process.env.CODEX_BINARY,
+  codexRequireExistingLogin: parseCodexRequireExistingLogin(process.env.CODEX_REQUIRE_EXISTING_LOGIN),
   model: process.env.MODEL,
   dataDir: process.env.DATA_DIR || './data',
 };
@@ -983,6 +984,7 @@ async function main() {
   const codexAdapter = provider === 'openai-codex'
     ? new CodexSubscriptionAdapter({
         codexBinary: config.codexBinary,
+        requireExistingLogin: config.codexRequireExistingLogin,
         fastMode: recipe.agent.codex?.fastMode ?? false,
         onLoginRequired: ({ verificationUrl, userCode }) => {
           console.error('\nOpenAI Codex subscription login required.');
@@ -1275,13 +1277,7 @@ async function main() {
   appForAlerts = app;
 
   if (adapter instanceof LoggingAnthropicAdapter) {
-    adapter.onRefusal = (info) => {
-      const fw = app.framework as unknown as {
-        notifyOpsAlert?: (kind: string, agent: string, msg: string, data?: Record<string, unknown>) => void;
-      };
-      const alert = offPathRefusalAlert(info);
-      fw.notifyOpsAlert?.(alert.kind, app.agentName, alert.message, alert.data);
-    };
+    adapter.onRefusal = createOffPathRefusalCallback(() => app.framework);
   }
 
   // The headless sink attaches inside runHeadless, after start() has
