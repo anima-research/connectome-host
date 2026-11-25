@@ -450,9 +450,9 @@ service.
    to the API. For a copy on a provider other than `anthropic`, `ANTHROPIC_BASE_URL`
    doesn't redirect that provider's own requests. So give the command
    `ANTHROPIC_BASE_URL=http://127.0.0.1:9` too, and the count is refused on the machine.
-   The thinking check above also keys its saved records by this variable. So when the
-   copy's model has thinking that binds, the copy can't fall back on the record that the
-   resident's own starts saved.
+   The thinking check above also keys its saved records by this variable. On a model
+   whose thinking binds, the copy can then use a saved record only if that record was
+   saved with the same `ANTHROPIC_BASE_URL`.
    Where the host asks for no count, there is no live count either. The rest still
    compiles.
 

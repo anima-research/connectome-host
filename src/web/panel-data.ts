@@ -1116,13 +1116,14 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_unsupported_model' };
   }
   const route = countRoute(app);
-  const address = urlOf(route.base);
+  const target = route.base + '/v1/messages/count_tokens';
+  const address = urlOf(target);
   if (route.auth === null && address?.hostname.replace(/\.$/, '') === 'api.anthropic.com') {
     return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_no_credential' };
   }
   const countHost = address?.host;
   try {
-    const res = await fetch(route.base + '/v1/messages/count_tokens', {
+    const res = await fetch(target, {
       method: 'POST',
       headers: {
         ...(route.auth !== null && 'bearer' in route.auth
@@ -1162,7 +1163,7 @@ function countRoute(app: PanelAppRef): CountRoute {
   const bearer = nonBlank(app.credentials?.bearer()) ?? nonBlank(process.env.ANTHROPIC_AUTH_TOKEN);
   const key = nonBlank(process.env.ANTHROPIC_API_KEY);
   return {
-    base: (nonBlank(process.env.ANTHROPIC_BASE_URL) ?? 'https://api.anthropic.com').replace(/\/$/, ''),
+    base: (nonBlank(process.env.ANTHROPIC_BASE_URL) ?? 'https://api.anthropic.com').replace(/\/+$/, ''),
     auth: bearer !== undefined ? { bearer } : key !== undefined ? { key } : null,
   };
 }

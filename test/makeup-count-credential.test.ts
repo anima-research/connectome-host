@@ -121,6 +121,17 @@ describe('a host that holds a credential or a gateway asks for the count', () =>
     expect('countHost' in makeup).toBe(false);
   });
 
+  test('with an ANTHROPIC_BASE_URL that ends in several slashes: the request goes to the canonical path', async () => {
+    const { sent } = await makeupWith(appOn(undefined, 'claude-haiku-4-5'), { ANTHROPIC_BASE_URL: 'https://gateway.example///', ANTHROPIC_API_KEY: 'key-test' });
+    expect(sent.map((s) => s.url)).toEqual(['https://gateway.example/v1/messages/count_tokens']);
+  });
+
+  test('with an ANTHROPIC_BASE_URL of a bare scheme: the answer names the host that the request goes to', async () => {
+    const { makeup, sent } = await makeupWith(appOn(undefined, 'claude-haiku-4-5'), { ANTHROPIC_BASE_URL: 'https://', ANTHROPIC_API_KEY: 'key-test' });
+    expect(sent.map((s) => new URL(s.url).host)).toEqual(['v1']);
+    expect(makeup.countHost).toBe('v1');
+  });
+
   test('a count whose request throws still names where it asked', async () => {
     const { makeup, sent } = await makeupWith(appOn(undefined, 'claude-haiku-4-5'), { ANTHROPIC_API_KEY: 'key-test' }, () => {
       throw new TypeError('fetch failed');
@@ -174,6 +185,22 @@ describe('a host that holds a credential or a gateway asks for the count', () =>
     const { makeup } = await makeupWith(appOn(undefined, 'claude-haiku-4-5'), { ANTHROPIC_API_KEY: 'key-test' }, () => new Response('{}', { status: 429 }));
     expect(makeup.countSource).toBe('count_tokens_failed_429');
     expect(makeup.countHost).toBe('api.anthropic.com');
+  });
+});
+
+describe('COUNT_TOKENS_MODEL for an agent whose model count_tokens does not take', () => {
+  test('without a credential: no request, and the reason is the missing credential, for the override model', async () => {
+    const { makeup, sent } = await makeupWith(appOn('openrouter', 'openai/gpt-6'), { COUNT_TOKENS_MODEL: 'claude-haiku-4-5' });
+    expect(sent).toEqual([]);
+    expect(makeup.countSource).toBe('count_tokens_no_credential');
+    expect(makeup.countModel).toBe('claude-haiku-4-5');
+  });
+
+  test('with a credential: one request, counted for the override model', async () => {
+    const { makeup, sent } = await makeupWith(appOn('openrouter', 'openai/gpt-6'), { COUNT_TOKENS_MODEL: 'claude-haiku-4-5', ANTHROPIC_API_KEY: 'key-test' });
+    expect(sent).toHaveLength(1);
+    expect(makeup.exactTotalTokens).toBe(7);
+    expect(makeup.countModel).toBe('claude-haiku-4-5');
   });
 });
 
