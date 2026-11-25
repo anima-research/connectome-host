@@ -549,7 +549,7 @@ When the recipe stops letting the resident change settings (the key left out, or
 
 The operator sees the resident's values in the file, in the start's log (a line for each entry in force, with the recipe's own value, and one for each entry not used), and in `connectome doctor`, which prints what the next start would do with the file, against the recipe that the service's unit names, with the host up or down.
 
-The host's start and `connectome doctor` warn of a listed setting that does nothing on this host, and of an `agent.allowedTools` list that leaves out `settings--own`, or `workspace--write` where the grant lets the resident change a setting. A list naming a setting that is not in the table stops the load.
+The host's start and `connectome doctor` warn of a listed setting that does nothing on this host, and of an `agent.allowedTools` list that leaves out `settings--own`, or `workspace--write` where the grant lets the resident change a setting and the workspace is on. A list naming a setting that is not in the table stops the load.
 
 | Setting | Available |
 | --- | --- |

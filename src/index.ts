@@ -981,7 +981,8 @@ async function main() {
         running: {
           name: agentName,
           proseRouting: agent?.proseRouting,
-          restartOffered: (framework?.getAllTools().some((tool) => tool.name === 'lifecycle--restart') ?? false)
+          restartOffered: headless
+            && (framework?.getAllTools().some((tool) => tool.name === 'lifecycle--restart') ?? false)
             && (agent?.canUseTool('lifecycle--restart') ?? false),
         },
       });

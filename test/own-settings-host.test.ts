@@ -4,6 +4,20 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const LOCKED = { 'agent.proseRouting': 'locked' };
+
+/** A module extension whose start throws: the framework's creation fails after the settings module has started. */
+const BOOM = `
+export function register(api) {
+  api.registerModule(() => ({
+    name: 'boom',
+    getTools() { return []; },
+    async start() { throw new Error('boom: the module refuses to start'); },
+    async stop() {},
+    async handleToolCall() { return { success: false, error: 'no tools' }; },
+    async onProcess() { return {}; },
+  }));
+}
+`;
 const START_LIMIT_MS = 30_000;
 
 function recipe(extra: Record<string, unknown>): Record<string, unknown> {
@@ -84,6 +98,7 @@ describe('a real host process', () => {
       expect(granted.output).toContain('[own-settings] agent.proseRouting is "locked" from the resident\'s file; the recipe sets none.');
       expect(granted.requests.some((request) => request.messages.includes('the host puts your parked settings file back'))).toBe(true);
       expect(granted.requests.some((request) => request.tools.includes('prose_locus'))).toBe(true);
+
       const saved = JSON.parse(readFileSync(join(granted.data, '.recipe.json'), 'utf-8')) as { agent: Record<string, unknown> };
       expect(saved.agent.proseRouting).toBeUndefined();
 
@@ -91,6 +106,27 @@ describe('a real host process', () => {
       expect(resumed.code, resumed.output).toBe(0);
       expect(resumed.output).toContain('[own-settings] agent.proseRouting is "locked" from the resident\'s file; the recipe sets none.');
       expect(resumed.requests.some((request) => request.tools.includes('prose_locus'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  test('a start that fails while the framework starts, after the note is written, moves nothing (case 30)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'own-settings-host-'));
+    try {
+      const own = join(dir, 'data', 'own-settings', 'own.json');
+      mkdirSync(join(dir, 'data', 'own-settings'), { recursive: true });
+      writeFileSync(own, JSON.stringify(LOCKED));
+      writeFileSync(join(dir, 'boom.ts'), BOOM);
+      const document = recipe({});
+      const failed = await start(dir, { ...document, extensions: { boom: { kind: 'module', path: join(dir, 'boom.ts') } } });
+      expect(failed.code, failed.output).not.toBe(0);
+      expect(failed.output).toContain('boom: the module refuses to start');
+      expect(readdirSync(join(dir, 'data', 'own-settings'))).toEqual(['own.json']);
+
+      const next = await start(dir, document);
+      expect(next.code, next.output).toBe(0);
+      expect(readdirSync(join(dir, 'data', 'own-settings'))).toEqual(['own.not-used.json']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

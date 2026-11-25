@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadRecipeDocument, readRecipeDocument } from '../recipe.js';
+import type { RecipeDocument } from '../recipe-document.js';
 import { ownSettingsLines, type OperatorRecipe } from '../own-settings.js';
 import { ownSettingsDir } from '../own-settings-table.js';
 import { checkDiscordToken } from '../setup/discord-token.js';
@@ -244,8 +245,9 @@ function serviceRecipe(parts: DoctorParts, root: string, units: ServiceUnits | n
 
 type LoadedService = { readonly operator: OperatorRecipe; readonly dataDir: string };
 
-async function loadService(service: Exclude<ServiceRecipe, { why: string }>, fetchSystemPrompt: boolean): Promise<LoadedService> {
-  const document = await readRecipeDocument(service.recipe);
+async function loadService(service: Exclude<ServiceRecipe, { why: string }>, fetchSystemPrompt: boolean,
+  document?: RecipeDocument): Promise<LoadedService> {
+  document ??= await readRecipeDocument(service.recipe);
   const warn = console.warn;
   if (!fetchSystemPrompt) console.warn = () => {};
   let loaded: Awaited<ReturnType<typeof loadRecipeDocument>>;
@@ -299,9 +301,13 @@ async function checkOwnSettingsFile(report: Report, parts: DoctorParts, root: st
       if (existsSync(ownSettingsDir(dataDir))) report.check('–', `Not checked: the resident's own settings, since ${named.why}.`);
       return;
     }
-    if (!existsSync(ownSettingsDir(named.dataDir))) return;
     try {
-      service = await within(parts.recipeLimitMs, loadService(named, false));
+      service = await within(parts.recipeLimitMs, (async () => {
+        const document = await readRecipeDocument(named.recipe);
+        const grants = typeof document.raw === 'object' && document.raw !== null && 'ownSettings' in document.raw;
+        return grants || existsSync(ownSettingsDir(named.dataDir)) ? loadService(named, false, document) : null;
+      })());
+      if (service === null) return;
     } catch (error) {
       if (error instanceof TooLong) {
         report.check('–', `Not checked: the resident's own settings, since ${named.recipe} ${error.message}.`,

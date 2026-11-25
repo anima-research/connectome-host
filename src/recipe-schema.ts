@@ -105,14 +105,17 @@ function editDistance(a: string, b: string): number {
 
 /** The name in `known` nearest to `key` by edit distance, when it is near enough to be what `key` meant. */
 export function nearestKey(key: string, known: readonly string[]): string | null {
-  if (key.length > 2 * Math.max(0, ...known.map((name) => name.length))) return null;
+  const near = Math.max(2, Math.floor(key.length / 3));
+  const lower = key.toLowerCase();
+  // An edit distance is at least the difference of the lengths, so a key this much longer than every name is near none.
+  if (lower.length - Math.max(0, ...known.map((name) => name.toLowerCase().length)) > near) return null;
   let best: string | null = null;
   let bestDistance = Infinity;
   for (const candidate of known) {
-    const d = editDistance(key.toLowerCase(), candidate.toLowerCase());
+    const d = editDistance(lower, candidate.toLowerCase());
     if (d < bestDistance) { bestDistance = d; best = candidate; }
   }
-  return best !== null && bestDistance <= Math.max(2, Math.floor(key.length / 3)) ? best : null;
+  return best !== null && bestDistance <= near ? best : null;
 }
 
 function unknownKeysWords(keys: readonly string[], known: readonly string[], instead: Readonly<Record<string, string>> = {}): string {
@@ -2835,14 +2838,11 @@ export function checkRecipe(raw: unknown, origin: RecipeOrigin = { kind: 'litera
 function fieldAt(name: string): z.core.$ZodType | undefined {
   let schema: z.core.$ZodType = recipeSchema;
   for (const key of name.split('.')) {
-    let at = bare(schema);
-    if (at instanceof z.ZodUnion) {
-      const arm = armFor(at, {});
-      if (arm === undefined) return undefined;
-      at = bare(arm);
-    }
-    if (!(at instanceof z.ZodObject) || !Object.hasOwn(at.shape, key)) return undefined;
-    schema = at.shape[key];
+    const at = bare(schema);
+    const arms = at instanceof z.ZodUnion ? at.options.map((arm) => bare(arm)) : [at];
+    const holder = arms.find((arm) => arm instanceof z.ZodObject && Object.hasOwn(arm.shape, key));
+    if (!(holder instanceof z.ZodObject)) return undefined;
+    schema = holder.shape[key];
   }
   return schema;
 }

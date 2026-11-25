@@ -52,6 +52,13 @@ const quietly = <T>(work: () => T): T => {
 
 const GOOD: Readonly<Record<string, unknown>> = Object.fromEntries(OWN_SETTINGS.map((setting) => [setting.name, setting.example]));
 
+function without(document: unknown, path: readonly string[]): unknown {
+  const [key, ...rest] = path;
+  if (key === undefined || typeof document !== 'object' || document === null || !(key in document)) return document;
+  const { [key]: inner, ...others } = document as Record<string, unknown>;
+  return rest.length === 0 ? others : { ...others, [key]: without(inner, rest) };
+}
+
 function withValue(document: unknown, path: readonly string[], value: unknown): unknown {
   const [key, ...rest] = path;
   if (key === undefined) return value;
@@ -73,6 +80,16 @@ describe('the table', () => {
       expect([setting.name, settingFault(setting.name, setting.example)]).toEqual([setting.name, undefined]);
     }
     expect(settingTakes('agent.proseRouting')).toBe('"locus", "explicit", "hybrid", "disabled" or "locked"');
+  });
+});
+
+describe('the schema\'s helpers', () => {
+  test('a field in any arm of a union is a setting, and the nearest name ignores no candidate within reach', () => {
+    expect(isRecipeSetting('subconscious.voice')).toBe(true);
+    expect(isRecipeSetting('subconscious.systemPrompt')).toBe(true);
+    expect(isRecipeSetting('subconscious.nothing')).toBe(false);
+    expect(nearestKey('abc', ['a'])).toBe('a');
+    expect(nearestKey('x'.repeat(100), ['a'])).toBeNull();
   });
 });
 
@@ -188,6 +205,9 @@ describe('what a start does with the file', () => {
     expect(start.move).toBe('park');
     expect(start.check.recipe.agent.timezone).toBeUndefined();
     expect(start.note).toContain('settings--own shows your own settings');
+    const broken = startOwnSettings(op, dataDir({ own: 'not json' }));
+    expect(broken.move).toBe('park');
+    expect(broken.note).not.toContain('did not use your settings file');
   });
 
   test('a list: the entry is in force, the saved document keeps the operator\'s value, and no note comes (case 2)', () => {
@@ -201,14 +221,46 @@ describe('what a start does with the file', () => {
     expect(start.log).toEqual(['[own-settings] agent.proseRouting is "explicit" from the resident\'s file; the recipe\'s own value is "locus".']);
   });
 
-  test('each entry changes its own path of the recipe and nothing else, on a recipe that sets every setting', () => {
+  test('each entry changes its own path of the recipe and nothing else, on a recipe that sets every other setting', () => {
     const { proseLock: _lock, ...agent } = everySetting.agent;
-    const op = quietly(() => operator({ ...everySetting, agent, ownSettings: 'all' }));
     for (const setting of OWN_SETTINGS) {
+      const op = quietly(() => operator(without({ ...everySetting, agent, ownSettings: 'all' }, setting.name.split('.')) as Record<string, unknown>));
+      expect(valueAt(op.recipe, setting.name)).toBeUndefined();
       const start = startOwnSettings(op, dataDir({ own: { [setting.name]: setting.example } }));
       expect([setting.name, start.check.entries[0]!.notUsed]).toEqual([setting.name, null]);
       expect(start.check.recipe).toEqual(withValue(op.recipe, setting.name.split('.'), setting.example));
     }
+  });
+
+  test('a very long name or value stops no start, and the note and the log stay short', () => {
+    const op = operator({ ownSettings: 'all' });
+    const long = 'x'.repeat(1_000_000);
+    const start = startOwnSettings(op, dataDir({ own: { [long]: 1, 'agent.proseRouting': long, 'agent.timezone': 'UTC' } }));
+    expect(start.check.recipe.agent.timezone).toBe('UTC');
+    expect(start.check.entries.map((entry) => entry.notUsed?.kind ?? null)).toEqual(['unknown', 'value', null]);
+    expect(start.note!.length).toBeLessThan(5_000);
+    expect(start.log.every((line) => line.length < 2_000)).toBe(true);
+  });
+
+  test('a value nested deeper than the host can show stops no start', () => {
+    for (const depth of [5_000, 50_000, 500_000]) {
+      const text = `{"agent.timezone": "UTC", "agent.proseRouting": ${'['.repeat(depth)}${']'.repeat(depth)}}`;
+      const start = startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own: text }));
+      expect(start.note!.length).toBeLessThan(5_000);
+      expect(start.log.every((line) => line.length < 2_000)).toBe(true);
+    }
+  });
+
+  test('a parked file comes back only where no own.json was written during the start', () => {
+    const op = operator({ ownSettings: 'all' });
+    const dir = dataDir({ parked: { 'agent.timezone': 'Asia/Tokyo' } });
+    const start = startOwnSettings(op, dir);
+    expect(start.move).toBe('put-back');
+    writeFileSync(ownFile(dir), JSON.stringify({ 'agent.timezone': 'Europe/Berlin' }));
+    expect(start.moveFile()).toEqual([`[own-settings] ${ownFile(dir)} was written during the start, so the host left ` +
+      `${ownFile(dir, 'own.not-used.json')} where it is.`]);
+    expect(JSON.parse(readFileSync(ownFile(dir), 'utf-8'))).toEqual({ 'agent.timezone': 'Europe/Berlin' });
+    expect(existsSync(ownFile(dir, 'own.not-used.json'))).toBe(true);
   });
 
   test('an unknown name in the file is not used, with the nearest name, and a later entry is in force', () => {
@@ -231,7 +283,7 @@ describe('what a start does with the file', () => {
     const start = startOwnSettings(op, dataDir({ own: { 'agent.proseRouting': 'explicit', 'agent.timezone': 'Europe/Berlin' } }));
     expect(start.check.recipe.agent.timezone).toBe('Europe/Berlin');
     expect(start.check.recipe.agent.proseRouting).toBeUndefined();
-    expect(start.note).toContain('- `agent.proseRouting` is not used: your operator\'s recipe does not let you change it.');
+    expect(start.note).toContain('- `agent.proseRouting` is not used: your operator\'s recipe does not let you change it. Remove it from the file, or ask your operator.');
   });
 
   test('"all" with one entry for each of the 23, on a recipe with each module on: all are in force (case 5)', () => {
@@ -366,7 +418,7 @@ describe('what a start does with the file', () => {
     const start = startOwnSettings(operator({ ownSettings: ['agent.clock'], agent: { timezone: 'UTC' } }), dir);
     expect(start.check.recipe.agent.timezone).toBe('UTC');
     expect(JSON.parse(readFileSync(ownFile(dir), 'utf-8'))).toEqual({ 'agent.timezone': 'Europe/Berlin' });
-    expect(start.note).toContain('`agent.timezone` is not used: your operator\'s recipe does not let you change it.');
+    expect(start.note).toContain('`agent.timezone` is not used: your operator\'s recipe does not let you change it. Remove it from the file, or ask your operator.');
   });
 
   test('the recipe\'s value changed under an entry: the resident\'s value is in force, and the tool shows both (case 17)', () => {
@@ -466,7 +518,9 @@ describe('the tool', () => {
     const text = answer(op, dir);
     expect(text).toContain('agent.timezone: "Europe/Berlin", from your file');
     expect(text).not.toContain('agent.clock');
-    expect(text).toContain('own.not-used.json is there');
+    expect(text).toContain('Your parked file _settings/own.not-used.json is there');
+    const parkedOnly = dataDir({ parked: { 'agent.timezone': 'Asia/Tokyo' } });
+    expect(answer(op, parkedOnly)).toContain('Your parked file _settings/own.not-used.json (there is no _settings/own.json)');
   });
 });
 
