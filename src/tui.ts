@@ -381,8 +381,8 @@ export async function runTui(app: AppContext): Promise<void> {
 
   const opsAlerts = new Map<string, OpsAlertEntry>();
 
-  function handleOpsAlert(kind: string, agent: string, message: string): void {
-    const line = opsAlertLine(opsAlerts, kind, agent, message);
+  function handleOpsAlert(kind: string, agent: string, message: string, key?: string): void {
+    const line = opsAlertLine(opsAlerts, kind, agent, message, key);
     if (line === null) return;
     addEvent(line.text, line.cleared ? CYAN : RED);
     updateStatus();
@@ -2186,7 +2186,7 @@ export async function runTui(app: AppContext): Promise<void> {
 
       case 'ops:alert': {
         const alert = opsAlertOf(event);
-        handleOpsAlert(alert.kind, alert.agent, alert.message);
+        handleOpsAlert(alert.kind, alert.agent, alert.message, alert.key);
         break;
       }
 
@@ -2415,7 +2415,7 @@ export async function runTui(app: AppContext): Promise<void> {
     fleetOpsUnsub = fleetMod?.onChildEvent('*', (childName, evt) => {
       if (evt.type !== 'ops:alert') return;
       const alert = opsAlertOf(evt as Record<string, unknown>, childName);
-      handleOpsAlert(alert.kind, alert.agent, alert.message);
+      handleOpsAlert(alert.kind, alert.agent, alert.message, alert.key);
     }) ?? null;
   }
   subscribeFleetOps();

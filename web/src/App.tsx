@@ -7,6 +7,7 @@ import { createTreeStore, type StreamSource, type UiNode } from './tree';
 import { TreeSidebar } from './TreeSidebar';
 import { StreamPanel } from './Stream';
 import { formatStreamEvent, withStreamLines, type StreamLine } from '@conhost/web/stream-lines';
+import { opsAlertKey } from '@conhost/state/ops-alerts';
 import { UsagePanel } from './Usage';
 import { LessonsPanel, type LessonRow } from './Lessons';
 import { McplPanel, type McplServerRow, type McplLiveRow, type ToolClassRow } from './Mcpl';
@@ -167,8 +168,9 @@ export function App() {
   const alertList = createMemo(() =>
     [...opsAlerts().values()].sort((a, b) => b.at - a.at));
 
-  const upsertOpsAlert = (kind: string, agent: string, message: string, bump = true, actions?: CredentialAction[]): void => {
-    const key = `${agent}:${kind}`;
+  const upsertOpsAlert = (kind: string, agent: string, message: string, bump = true, actions?: CredentialAction[],
+    key = opsAlertKey(kind, agent),
+  ): void => {
     setOpsAlerts((prev) => {
       const next = new Map(prev);
       const existing = next.get(key);
@@ -202,7 +204,8 @@ export function App() {
       removeOpsAlert(`${agent}:${kind.slice(0, -'-clear'.length)}`);
       return;
     }
-    upsertOpsAlert(kind, agent, message, true, readActions((e.data as { actions?: unknown } | undefined)?.actions));
+    upsertOpsAlert(kind, agent, message, true,
+      readActions((e.data as { actions?: unknown } | undefined)?.actions), opsAlertKey(kind, agent, e.data));
   };
 
   const readActions = (raw: unknown): CredentialAction[] | undefined => {

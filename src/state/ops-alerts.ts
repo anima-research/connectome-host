@@ -10,6 +10,13 @@ export interface OpsAlertLine {
   cleared: boolean;
 }
 
+export function opsAlertKey(kind: string, agent: string, data?: unknown): string {
+  const serverId = (data as { serverId?: unknown } | undefined)?.serverId;
+  return kind === 'refusal-reaction-unavailable' && typeof serverId === 'string'
+    ? JSON.stringify([agent, kind, serverId])
+    : `${agent}:${kind}`;
+}
+
 export function credentialActionHint(data: unknown): string {
   const actions = (data as { actions?: unknown } | undefined)?.actions;
   if (!Array.isArray(actions) || actions.length === 0) return '';
@@ -20,21 +27,24 @@ export function credentialActionHint(data: unknown): string {
   return ids.length > 0 ? ` — ${ids.join(' | ')}` : '';
 }
 
-export function opsAlertOf(event: Record<string, unknown>, child?: string): { kind: string; agent: string; message: string } {
+export function opsAlertOf(event: Record<string, unknown>, child?: string): { kind: string; agent: string; message: string; key: string } {
   const kind = typeof event.kind === 'string' ? event.kind : 'unknown';
   const agentName = typeof event.agentName === 'string' ? event.agentName : '?';
   const message = typeof event.message === 'string' ? event.message : '';
-  return child === undefined
-    ? { kind, agent: agentName, message: message + credentialActionHint(event.data) }
-    : { kind, agent: `${child}/${agentName}`, message };
+  const agent = child === undefined ? agentName : `${child}/${agentName}`;
+  return {
+    kind, agent, key: opsAlertKey(kind, agent, event.data),
+    message: child === undefined ? message + credentialActionHint(event.data) : message,
+  };
 }
 
-export function opsAlertLine(active: Map<string, OpsAlertEntry>, kind: string, agent: string, message: string): OpsAlertLine | null {
+export function opsAlertLine(active: Map<string, OpsAlertEntry>, kind: string, agent: string, message: string,
+  key = opsAlertKey(kind, agent),
+): OpsAlertLine | null {
   if (kind.endsWith('-clear')) {
     const baseKey = `${agent}:${kind.slice(0, -'-clear'.length)}`;
     return active.delete(baseKey) ? { text: `✓ [${agent}] ${kind}: ${message}`, cleared: true } : null;
   }
-  const key = `${agent}:${kind}`;
   const existing = active.get(key);
   active.set(key, { kind, agent, message, count: (existing?.count ?? 0) + 1 });
   const times = existing ? ` (×${existing.count + 1})` : '';

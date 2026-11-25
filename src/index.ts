@@ -849,8 +849,8 @@ async function runPiped(app: AppContext) {
     say = terminal.say;
     hostUpdate.attachNotices(terminal.say);
     const alerts = new Map<string, OpsAlertEntry>();
-    const showAlert = (alert: { kind: string; agent: string; message: string }): void => {
-      const line = opsAlertLine(alerts, alert.kind, alert.agent, alert.message);
+    const showAlert = (alert: ReturnType<typeof opsAlertOf>): void => {
+      const line = opsAlertLine(alerts, alert.kind, alert.agent, alert.message, alert.key);
       if (line !== null) terminal.say(line.text);
     };
     onAlert = (event) => {
