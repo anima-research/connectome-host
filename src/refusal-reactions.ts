@@ -264,8 +264,19 @@ export function installRefusalReactions(framework: Surface, config: RefusalReact
       if (!current() || framework.listMcplServers().find(s => s.id === origin.serverId)?.toolPrefix !== prefix
         || !schemaAccepts(advertised(toolName), args)) { report('binding-or-instance-changed'); return; }
       const result = await framework.executeToolCall({ id: randomUUID(), name: toolName, input: args, callerAgentName: refusal.agentName });
-      report(result.success && !result.isError ? 'add-acknowledged: not proof of human receipt or cause' : 'add-failed-or-unknown: no retry');
-    } catch { report('add-or-preflight-ack-unknown: no retry'); }
+      if (result.success && !result.isError && !result.refused) {
+        report('add-acknowledged: not proof of human receipt or cause');
+      } else {
+        // AF's programmatic dispatch doesn't set refused on an allowlist denial.
+        // Match its known message, but never forward returned error text.
+        const reason = result.error === `Tool '${toolName}' is not permitted by this agent's allowedTools, so the call didn't run.`
+          ? "denied by the agent's tool policy"
+          : result.refused ? 'tool call refused'
+          : result.isError || result.error ? 'tool call returned an error'
+          : 'no acknowledgement';
+        report(`add-failed-or-unknown: no retry; ${reason}`);
+      }
+    } catch { report('add-or-preflight-ack-unknown: no retry; no acknowledgement'); }
     finally { pending--; }
   });
   return () => {

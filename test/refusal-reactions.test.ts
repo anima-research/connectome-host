@@ -124,8 +124,28 @@ test('ADD only, per-turn dedup, unknown ack has no automatic retry and a new tur
   const h = harness(); h.setCall(async () => { throw Error('ack lost'); }); h.install();
   await h.emit(signal()); await h.emit(signal());
   expect(h.calls.length).toBe(1); expect(h.diagnostics[0]).toStartWith('add-or-preflight-ack-unknown: no retry');
+  expect(h.diagnostics[0]).toContain('no acknowledgement');
+  expect(h.alerts[0]?.[2]).toContain('no acknowledgement');
   await h.emit(signal('realm:009', 2)); expect(h.calls.length).toBe(2);
   expect(h.calls.every(c => c.name === 'p--add_reaction')).toBe(true);
+});
+
+test.each<[ToolResult, string]>([
+  [{ success: false, isError: true, error: "Tool 'p--add_reaction' is not permitted by this agent's allowedTools, so the call didn't run." },
+    "denied by the agent's tool policy"],
+  [{ success: false, refused: true, error: 'private detail' }, 'tool call refused'],
+  [{ success: false, isError: true, error: 'private detail' }, 'tool call returned an error'],
+  [{ success: false }, 'no acknowledgement'],
+])('ADD failure %j reports only the bounded category', async (result, category) => {
+  const h = harness();
+  h.setCall(async () => result);
+  h.install();
+  await h.emit(signal());
+  await h.emit(signal());
+  const status = `add-failed-or-unknown: no retry; ${category}`;
+  expect(h.calls.length).toBe(1);
+  expect(h.diagnostics[0]).toStartWith(`${status} {`);
+  expect(h.alerts[0]?.[2]).toBe(`Refusal marker unavailable on s: ${status}`);
 });
 
 test('handled rewind, unknown origin, unselected server, stale instance/binding/epoch do not effect', async () => {
