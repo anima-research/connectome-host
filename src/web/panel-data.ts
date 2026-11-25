@@ -693,6 +693,7 @@ type FrameworkAgent = ReturnType<AgentFramework['getAllAgents']>[number];
 
 const READ_FAILURE_MAX_CHARS = 300;
 const READ_FAILURE_UNDESCRIBED = "the read failed, and its error couldn't be described";
+const QUARANTINE_UNREADABLE = "what it holds is unknown until a read succeeds";
 
 function describeReadFailure(error: unknown): string {
   try {
@@ -736,7 +737,7 @@ function perAgentHealth(
  * The /healthz answer: agent-framework's healthSnapshot, with `credential`
  * on a host with a credential monitor; by agent, compressionQuarantine,
  * compressionDebt, loadRepair, contextComposition and runtimeSettings, and
- * readFailures naming the reads that threw; `callLedger` when a ledger is
+ * readFailures naming the reads that failed; `callLedger` when a ledger is
  * wired; and `update`. Every read is cheap: no compile, no count_tokens.
  */
 export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
@@ -745,8 +746,8 @@ export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
     throw new PanelError('framework lacks healthSnapshot()', 501);
   }
   const snapshot = fw.healthSnapshot();
-  // readFailures, when a read threw: by agent, then by section, what it threw
-  // (its message cut to 300 code points, or a fixed text when it has none).
+  // readFailures, when a read failed: by agent, then by section, why it failed
+  // (a thrown error's message cut to 300 code points, or a fixed text).
   // That agent is left out of the section, as one with nothing to report is.
   const readFailures: Record<string, Record<string, string>> = Object.create(null);
   // credential: the monitor's CredentialState, which holds no token, with
@@ -760,10 +761,16 @@ export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
   // compressionQuarantine: each agent's compression quarantine, as its
   // strategy reports it.
   try {
-    (snapshot as Record<string, unknown>).compressionQuarantine = perAgentHealth(app, 'compressionQuarantine', readFailures, (agent) =>
-      (agent.getContextManager() as unknown as {
-        getStrategy?: () => { getCompressionQuarantineStatus?: () => unknown };
-      }).getStrategy?.()?.getCompressionQuarantineStatus?.());
+    (snapshot as Record<string, unknown>).compressionQuarantine = perAgentHealth(app, 'compressionQuarantine', readFailures, (agent) => {
+      const status = (agent.getContextManager() as unknown as {
+        getStrategy?: () => { getCompressionQuarantineStatus?: () => { unreadable?: unknown } | null | undefined };
+      }).getStrategy?.()?.getCompressionQuarantineStatus?.();
+      // context-manager's status read doesn't throw when it can't read the
+      // quarantine: it marks the status `unreadable`, and its count, keys and
+      // spans then say nothing about what is held.
+      if (status?.unreadable === true) throw new Error(QUARANTINE_UNREADABLE);
+      return status;
+    });
   } catch {
   }
   // compressionDebt: each agent's compression debt as context-manager
