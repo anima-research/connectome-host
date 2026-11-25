@@ -1,15 +1,15 @@
-- A recipe's refusal names each fault that the schema finds, one line each,
-  where it named the first one alone, and a wrong value reads `Recipe <path>
-  must be <what it takes>, got <value>.` The schema's refusal prints no value
-  that came from the environment: it names the `${VAR}` reference, or the
-  kind of value where a recipe that an older release saved no longer holds
-  the reference. An object that refuses an unknown key names the keys that
-  it takes.
-- The warning of keys that the host does not read now covers the objects
-  that said nothing of one, such as `agent.thinking`, `codeExecution`, an
-  `mcpServers` entry and `modules.fleet`, where a misspelt key loaded with
-  no word. The key still loads. Some objects take any key with no warning,
-  such as the wake gate's rules, an extension's `config`, and everything
-  under a custom strategy, which goes whole to its extension. The warning
-  names the recipe as its author wrote the name, and a recipe that an older
-  release saved by no name.
+- A recipe's refusal now names each fault that the schema finds, one per
+  line. Before, it named only the first fault. A wrong value reads `Recipe
+  <path> must be <what it takes>, got <value>.` The refusal prints no value
+  that came from the environment, and names the `${VAR}` reference instead.
+  Some older releases saved a recipe with its values filled in, and for such
+  a recipe the refusal names only the kind of a value. A refusal of an
+  unknown key lists the keys that its object takes.
+- The warning of keys that the host does not read now covers more objects,
+  such as `agent.thinking`, `codeExecution`, an `mcpServers` entry and
+  `modules.fleet`. Before, a misspelt key in these objects loaded without a
+  warning. The key still loads. Some objects still take any key without a
+  warning, such as the wake gate's rules and an extension's `config`.
+  Everything under a custom strategy goes whole to its extension, so it gets
+  no warning either. The warning gives the recipe's name as its author wrote
+  it. The warning gives no name for a recipe that an older release saved.
