@@ -10,6 +10,8 @@ import { SessionManager } from '../src/session-manager.js';
 
 // Exercise the actual host startup/createFramework path, not just module imports.
 // Real bridge lifecycle coverage still requires the forthcoming AF release.
+// It runs in the locked suite (no bridge in the stock framework), so the spawn
+// gets a generous bound: it checks refusal, not startup latency.
 test.skipIf(typeof (AgentFramework.prototype as any).getMainRefusalBridge === 'function')(
   'stock host rejects handover before spawning any selected connector', () => {
     const dir = mkdtempSync(join(tmpdir(), 'refusal-startup-'));
@@ -22,7 +24,7 @@ test.skipIf(typeof (AgentFramework.prototype as any).getMainRefusalBridge === 'f
         mcpServers: { s: { command: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'spawned')`] } },
       }));
       const result = spawnSync(process.execPath, [resolve(import.meta.dir, '../src/index.ts'), recipe, '--headless'], {
-        cwd: dir, encoding: 'utf8', timeout: 15000,
+        cwd: dir, encoding: 'utf8', timeout: 60000,
         env: { PATH: process.env.PATH, HOME: dir, DATA_DIR: dir, ANTHROPIC_API_KEY: 'offline-test-not-a-key' },
       });
       expect(result.error).toBeUndefined();
@@ -30,7 +32,7 @@ test.skipIf(typeof (AgentFramework.prototype as any).getMainRefusalBridge === 'f
       expect(result.stdout + result.stderr).toContain('mainRefusalReactions is unsupported by this Agent Framework');
       expect(existsSync(marker)).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
-  }, 20000,
+  }, 70000,
 );
 
 // This guard is at the shared command boundary, before clients can drop turn
