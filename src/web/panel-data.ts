@@ -1117,7 +1117,7 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
   }
   const route = countRoute(app);
   const address = urlOf(route.base);
-  if (route.auth === null && address?.hostname === 'api.anthropic.com') {
+  if (route.auth === null && address?.hostname.replace(/\.$/, '') === 'api.anthropic.com') {
     return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_no_credential' };
   }
   const countHost = address?.host;

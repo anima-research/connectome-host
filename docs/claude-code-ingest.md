@@ -447,9 +447,12 @@ service.
    granted (`observers.json`) gets into the copy's Web UI without the check's password.
    When the host asks the API for a count, the API refuses it, as it refuses every
    request that carries the mock key. The ask still carries the copy's compiled request
-   to the API. For a copy whose provider isn't `anthropic`, `ANTHROPIC_BASE_URL` affects
-   only the count. So give the command `ANTHROPIC_BASE_URL=http://127.0.0.1:9` too, and
-   the count is refused on the machine.
+   to the API. For a copy on a provider other than `anthropic`, `ANTHROPIC_BASE_URL`
+   doesn't redirect that provider's own requests. So give the command
+   `ANTHROPIC_BASE_URL=http://127.0.0.1:9` too, and the count is refused on the machine.
+   The thinking check above also keys its saved records by this variable. So when the
+   copy's model has thinking that binds, the copy can't fall back on the record that the
+   resident's own starts saved.
    Where the host asks for no count, there is no live count either. The rest still
    compiles.
 

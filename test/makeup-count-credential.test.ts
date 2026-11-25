@@ -59,6 +59,7 @@ describe('a host with no Anthropic credential and no gateway', () => {
     ['ANTHROPIC_BASE_URL at Anthropic\'s address in capitals', { ANTHROPIC_BASE_URL: 'https://API.ANTHROPIC.COM' }],
     ['ANTHROPIC_BASE_URL at Anthropic\'s address with its port', { ANTHROPIC_BASE_URL: 'https://api.anthropic.com:443' }],
     ['ANTHROPIC_BASE_URL at Anthropic\'s address with a path', { ANTHROPIC_BASE_URL: 'https://api.anthropic.com/v1' }],
+    ['ANTHROPIC_BASE_URL at Anthropic\'s address as an absolute DNS name', { ANTHROPIC_BASE_URL: 'https://api.anthropic.com.' }],
   ] as const) {
     test(`with ${label} and nothing else, sends no count request`, async () => {
       const { makeup, sent } = await makeupWith(appOn('bedrock', 'anthropic.claude-sonnet-4-5-20250929-v1:0'), env);
