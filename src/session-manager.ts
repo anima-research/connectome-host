@@ -50,7 +50,11 @@ export function noStoreRefusal(dir: string, look: StoreLook): string | null {
 }
 
 function isThere(path: string): boolean {
-  return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+  try {
+    return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+  } catch {
+    return true;
+  }
 }
 
 function noStoreWords(dir: string, look: StoreLook, reason: string): string {
