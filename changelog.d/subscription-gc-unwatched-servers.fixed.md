@@ -4,7 +4,8 @@
   out. On such a host, cleanup now writes an `[agent-settings]` line at the
   first ambient message with text from each other server. The line says that
   cleanup closes nothing there. `agent_settings` answers with
-  `channel_idle_server` and a `channel_idle_warning`. The old
+  `channel_idle_server`, and with a `channel_idle_warning` where the host has
+  any MCPL server. The old
   `set_channel_idle_limit` and `pin_channel_idle_limit` add a sentence to their
   message. `list_channel_idle_limits` reports `active` and `serverId`. Before,
   cleanup said nothing.

@@ -2202,9 +2202,10 @@ const modulesShape = {
    * host has no server of that id, the module closes nothing, and the host
    * says so: at start when `serverId` names it, at the first ambient message
    * with text from each other server, and in `agent_settings`
-   * (`channel_idle_warning`). With `serverId` left out on a host that has
-   * `discord`, the first ambient message with text from each other server is
-   * named too. `toolPrefix` is deprecated and read by nothing.
+   * (`channel_idle_warning`, on a host with any MCPL server). With `serverId`
+   * left out on a host that has `discord`, the first ambient message with text
+   * from each other server is named too. `toolPrefix` is deprecated and read by
+   * nothing.
    */
   subscriptionGc: either(subscriptionGc, 'true, false or an object').optional(),
   /**

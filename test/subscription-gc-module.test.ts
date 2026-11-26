@@ -812,6 +812,24 @@ describe('agent_settings and the old tools say which server cleanup watches, and
     expect(off.keys).toEqual(on.keys);
   });
 
+  test('a host with no MCPL server gets no warning, and a server listed later brings it', async () => {
+    const m = new SubscriptionGcModule();
+    const live = host();
+    m.setFramework(live.framework);
+    await m.start(mockCtx().ctx);
+    const ext = m.getAgentSettingsExtension();
+    for (const answer of [
+      ext.get('agent'),
+      ext.update('agent', { channel_idle_limits: { 'portal:r1': 5000 } }),
+      ext.reset('agent'),
+    ]) {
+      expect(answer.channel_idle_server).toBe('discord');
+      expect(answer).not.toHaveProperty('channel_idle_warning');
+    }
+    live.servers.push('portal');
+    expect(ext.get('agent').channel_idle_warning).toBe(settingsWarning('discord'));
+  });
+
   test('the old tools still store and succeed where the host lacks the server, and say it is not in force', async () => {
     const m = new SubscriptionGcModule({ serverId: 'zulipp' });
     m.setFramework(host('zulip').framework);

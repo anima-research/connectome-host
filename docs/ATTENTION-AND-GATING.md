@@ -223,7 +223,8 @@ action.
   if you rename a server, change that field too. Where the host has no server
   of that id, GC closes nothing, and an `[agent-settings]` line says so at the
   first ambient message with text from each other server (and at start, when
-  the recipe names the id), as `agent_settings` does in `channel_idle_warning`.
+  the recipe names the id), as `agent_settings` does in `channel_idle_warning`
+  on a host with any MCPL server.
   With the field left out on a host that has `discord`, the first ambient
   message with text from each other server gets a line too; naming `discord`
   there keeps GC as it is, without it.

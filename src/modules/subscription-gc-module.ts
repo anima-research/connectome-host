@@ -288,7 +288,7 @@ export class SubscriptionGcModule implements Module {
       channel_idle_counters: { ...this.state.counters },
       channel_idle_pinned: Object.keys(this.state.pins),
       channel_idle_server: this.serverId,
-      ...(this.isInactive()
+      ...(this.framework !== null && this.framework.listMcplServers().length > 0 && this.isInactive()
         ? {
             channel_idle_warning:
               `Idle cleanup watches server ${JSON.stringify(this.serverId)}, which this host doesn't have, so these limits ` +
