@@ -111,11 +111,17 @@ later start, rule by rule and by name:
 
 A start that changes the file, or keeps a rule against a change in the recipe,
 writes a line to the host's stderr that says what it changed and what it kept
-(`[gate] the recipe was applied to gate.json: …`). A start that finds
-`gate.json` but no `gate.recipe.json`, as the first since agent-framework 0.27.0
-does, removes and redefines nothing: it adds the recipe's rules that the file
-lacks, and the rules that match the recipe take the recipe's order. See
-**Changing your rules** below for how to edit it safely.
+(`[gate] the recipe was applied to gate.json: …`). A TUI session prints it to
+the terminal before the TUI takes the screen, so `tui-error.log` doesn't have
+it. A fleet child's stderr goes to `startup.log` in its data directory.
+
+A start can find `gate.json` but no `gate.recipe.json`, for example the first
+start since agent-framework 0.27.0. Such a start removes and redefines nothing.
+It adds the recipe's rules that the file lacks, and it gives the recipe's order
+to the rules that match the recipe. After that start, a rule that differed from
+the recipe counts as edited. It no longer follows the recipe. To make it follow
+the recipe again, remove it, and the next start brings back the recipe's
+version. See **Changing your rules** below for how to edit the file safely.
 
 It's an ordered list — **first match wins** — plus a `default`:
 
@@ -155,9 +161,12 @@ It's an ordered list — **first match wins** — plus a `default`:
   snowflake, and none on a voice report), and where that misses, the gate tries
   the registered id it resolves for the push. So a bare `"12345"` meets only
   pushes that carry it, never the channel's open-channel messages. To keep a
-  rule to the channel's messages and edits to them, add
+  rule to the channel's messages and most edits to them, add
   `tagsAny: ["chat:ambient", "chat:addressed"]`, and
-  `tagsNone: ["chat:edited"]` as well to leave the edits out. To keep it to
+  `tagsNone: ["chat:edited"]` as well to leave the edits out. Some edits carry
+  `chat:edited` and no address tag, so the `tagsAny` rule misses them. That
+  happens in two cases: discord.js holds the edited message only in part, or a
+  reply's target has no known author. To keep it to
   open-channel messages, add `scope: ["mcpl:channel-incoming"]`.
 - `tagsAny` / `tagsAll` / `tagsNone` — event tags (see below), globs ok (`robotics:*`)
 - `mount` / `pathGlob` — workspace file events: the mount name, and a glob over

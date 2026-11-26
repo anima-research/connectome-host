@@ -257,9 +257,9 @@ systemd user unit in your home directory.
    the recipe, but one edited at run time keeps its definition, and once a
    recipe policy was moved at run time the live order stays. To change those,
    edit the **live** `gate.json`: the recipe alone doesn't reach them. Carry
-   `gate.recipe.json` over with `gate.json`. Without `gate.recipe.json`, a
-   start doesn't know which recipe policies were moved. It puts each unedited
-   recipe policy back in the recipe's order.
+   `gate.recipe.json` over with `gate.json`. A start without
+   `gate.recipe.json` can't tell edited or moved policies from the others. It
+   reorders only the policies that match the recipe, and it redefines none.
 3. **Single `membrane` instance** (see §3) — the #1 source of weird runtime errors
    if you skip the symlink wiring and end up with two copies.
 4. **Prod vs dev divergence.** Production boxes may run `@animalabs/*` as

@@ -82,9 +82,9 @@ In a shell command, put each path or value that you fill in between single quote
   each start merges the recipe in, but a policy edited at run time keeps its
   live definition, and once a recipe policy was moved at run time the file
   keeps its live order, so change those in the **live** file, not just the
-  recipe). Without `gate.recipe.json`, a start doesn't know which recipe
-  policies were moved. It puts each unedited recipe policy back in the
-  recipe's order.
+  recipe). A start without `gate.recipe.json` can't tell edited or moved
+  policies from the others. It reorders only the policies that match the
+  recipe, and it redefines none.
 
 **Start / stop / restart:**
 
