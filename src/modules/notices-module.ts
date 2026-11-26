@@ -163,7 +163,7 @@ const STATUS_WORDS: Readonly<Record<string, string>> = Object.freeze({
   'refusal-offpath': "an auxiliary model call, such as for a summary, couldn't be completed; see failures.log for details",
   'refusal': "a request couldn't be completed",
   'context-maintenance-failed': "its context maintenance didn't finish; failures.log says why",
-  'compression-quarantine': "part of its history is held back from summaries and stays whole, which takes room in its context budget; this alone does not stop it, and an operator can see what is held in the host's health report",
+  'compression-quarantine': "part of its history is held back from summaries and stays whole, which takes room in its context budget; this alone does not stop it, and the host's health report lists what is held",
   'instructions-unavailable': "its instructions couldn't be loaded, so none are injected; failures.log says why",
 });
 
