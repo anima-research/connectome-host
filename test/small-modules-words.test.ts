@@ -47,6 +47,7 @@ describe('channel-mode', () => {
       removeGatePolicy: () => { steps.push('removeGatePolicy'); return opts.ruleExists ?? true; },
     } as never);
     void m.start({
+      getModule: (name: string) => ({ name }),
       callTool: async (c: { name: string }) => {
         steps.push(c.name);
         return failing.includes(c.name) ? { success: false, error: `${c.name} refused: Server not found: discord` } : { success: true };
@@ -159,6 +160,7 @@ describe('channel-mode', () => {
     const m = new ChannelModeModule();
     m.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => { throw new Error('debounce rule refused'); }, removeGatePolicy: () => true } as never);
     await m.start({
+      getModule: (name: string) => ({ name }),
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') throw new Error('timed out');
         return { success: false, error: `${c.name} refused` };
@@ -173,6 +175,7 @@ describe('channel-mode', () => {
     const m2 = new ChannelModeModule();
     m2.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => {}, removeGatePolicy: () => true } as never);
     await m2.start({
+      getModule: (name: string) => ({ name }),
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') throw new Error('timed out');
         return { success: true };
@@ -187,6 +190,7 @@ describe('channel-mode', () => {
     const gate: string[] = [];
     m.setFramework({ listMcplServers: () => [{ id: 'discord', connected: true }], addGatePolicy: () => { gate.push('add'); }, removeGatePolicy: () => true } as never);
     await m.start({
+      getModule: (name: string) => ({ name }),
       callTool: async (c: { name: string }) => {
         if (c.name === 'channel_open') await m.stop();
         return { success: true };

@@ -307,12 +307,7 @@ export class ChannelModeModule implements Module {
       }
     }
 
-    steps.push(
-      await this.callToolStep('gc-pin', `${this.gcModuleName}--pin_channel_idle_limit`, {
-        channelId,
-        pinned: true,
-      }),
-    );
+    steps.push(...await this.pinStep('gc-pin', channelId, true));
 
     return steps;
   }
@@ -330,14 +325,14 @@ export class ChannelModeModule implements Module {
 
     steps.push(await this.callToolStep('close', 'channel_close', { channelId, serverId }));
 
-    steps.push(
-      await this.callToolStep('gc-unpin', `${this.gcModuleName}--pin_channel_idle_limit`, {
-        channelId,
-        pinned: false,
-      }),
-    );
+    steps.push(...await this.pinStep('gc-unpin', channelId, false));
 
     return steps;
+  }
+
+  private async pinStep(step: 'gc-pin' | 'gc-unpin', channelId: string, pinned: boolean): Promise<StepResult[]> {
+    if (this.ctx !== null && this.ctx.getModule(this.gcModuleName) === null) return [];
+    return [await this.callToolStep(step, `${this.gcModuleName}--pin_channel_idle_limit`, { channelId, pinned })];
   }
 
   private async callToolStep(

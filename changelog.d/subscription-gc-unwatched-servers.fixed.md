@@ -23,3 +23,8 @@
   longer adds an `Auto-closed` notice to the resident's context, and it sends no
   `subscription-gc-close` ops record. When cleanup closes a channel, the notice
   and the ops record name the server.
+- With `modules.subscriptionGc: false` and the wake gate on, `set_channel_mode`
+  no longer reports a failed pin step. Before, each call answered that pinning
+  the channel failed (`Module not found: subscription-gc`), though the open or
+  close had worked. Channel mode now skips the pin where the host has no
+  cleanup module.

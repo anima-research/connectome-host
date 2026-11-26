@@ -196,8 +196,9 @@ action.
   `"mentions"` (closed; only addressed messages reach you) and `"debounced"`
   (opens the channel, prepends a rule debouncing its `chat:ambient` traffic —
   default 180000 ms — and pins the channel so it isn't auto-closed for being
-  chatty). Pass the channel's registered id exactly, as `channel_list` shows it
-  and its channel messages carry it, `<serverId>:<channel>`: for example
+  chatty; with `modules.subscriptionGc: false` nothing auto-closes, and it
+  skips the pin). Pass the channel's registered id exactly, as `channel_list`
+  shows it and its channel messages carry it, `<serverId>:<channel>`: for example
   `zulip:backend`, `slack:C0123ABCD` or `discord:<guildId>:<channelId>`. (A
   push event's `channelId` can be the server's raw id, not the registered one.)
   The prefix before the first `:` is the MCPL server for that call: it opens and

@@ -2211,8 +2211,9 @@ const modulesShape = {
    * One-step channel attention modes (the `set_channel_mode` tool): flip a
    * channel between mentions-only and every-message-debounced. Debounced mode
    * bundles subscribe + a per-channel ambient debounce gate rule + pinning
-   * subscription-gc off; mentions mode reverses all three. On by default when
-   * the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
+   * subscription-gc off (a host with `subscriptionGc: false` has nothing to
+   * pin, and skips that step); mentions mode reverses all three. On by default
+   * when the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
    * `false` disables. Each call's MCPL server is the prefix of its channel
    * id (`zulip:backend` → `zulip`), which must name a server this host knows;
    * an id without one, or with a `*` in it, is refused. `serverId` is
