@@ -51,6 +51,17 @@ export const AVAILABILITY: Readonly<Record<AvailabilityKind, Availability>> = {
 };
 
 /**
+ * What a numeric row takes, past what the recipe's field takes: a value that
+ * the row's words describe. That is a whole number of 0 or more where the
+ * words give 0 a meaning, and of 1 or more where they don't (`least`), up to
+ * the largest safe integer. With `byName`, the row also takes an object from
+ * tool names to such numbers. The recipe's field takes more, which an
+ * operator's recipe keeps: a resident's value outside the domain can keep its
+ * host down (a `targetChunkTokens` of 0 stops the chunker's loop from moving).
+ */
+type Domain = { readonly least: 0 | 1; readonly byName?: true };
+
+/**
  * The settings that an operator can let a resident manage with the recipe's
  * `ownSettings`: each one's path in the recipe, the words that the resident
  * reads about it, and when it is available on a host.
@@ -106,6 +117,7 @@ export const OWN_SETTINGS = [
   },
   {
     name: 'agent.strategy.maxLiveImages',
+    domain: { least: 0 },
     available: 'strategy',
     example: 3,
     words: 'How many pictures stay in your view as pictures, counted from the newest.' +
@@ -115,6 +127,7 @@ export const OWN_SETTINGS = [
   },
   {
     name: 'agent.strategy.imageStripDepthTokens',
+    domain: { least: 0 },
     available: 'strategy',
     example: 50_000,
     words: 'How deep in your history a picture stays a picture, in tokens from the newest message.' +
@@ -123,6 +136,7 @@ export const OWN_SETTINGS = [
   },
   {
     name: 'agent.strategy.toolResultMaxLastN',
+    domain: { least: 0, byName: true },
     available: 'strategy',
     example: 5,
     words: 'How many of a tool\'s last results you are sent in full: one number for every tool, or a number for each tool by its name.' +
@@ -132,6 +146,7 @@ export const OWN_SETTINGS = [
   },
   {
     name: 'agent.strategy.toolUseInputMaxTokens',
+    domain: { least: 0 },
     available: 'strategy',
     example: 2_000,
     words: 'The longest that the arguments of one tool call in your view may be.' +
@@ -140,6 +155,7 @@ export const OWN_SETTINGS = [
   },
   {
     name: 'agent.strategy.maxMessageTokens',
+    domain: { least: 0 },
     available: 'strategy',
     example: 8_000,
     words: 'The longest that one message in your view may be. A longer one is cut. 0 sets no limit.' +
@@ -148,12 +164,14 @@ export const OWN_SETTINGS = [
   },
   {
     name: 'agent.strategy.summaryTargetTokens',
+    domain: { least: 1 },
     available: 'strategy',
     example: 600,
     words: 'How long each summary of your memory is. A summary that was written stays as it was written.',
   },
   {
     name: 'agent.strategy.targetChunkTokens',
+    domain: { least: 1 },
     available: 'strategy',
     example: 3_000,
     words: 'The size of one chunk of your history. Each chunk gets a summary. A summary that was written stays.',
@@ -188,6 +206,8 @@ export const OWN_SETTINGS = [
       ' Past those, it goes to the channel of an open tune-out hold, or to the channel that your operator set for turns that your own timer starts.' +
       ' With none of these the line stays private, and a notice tells you.' +
       ' `latest-inbound`: the same, and else to the channel of the newest incoming message; a message that is addressed to you in the middle of a turn moves the turn\'s channel.' +
+      ' This setting also decides where a `channel_publish` call that names no channel goes, in every mode of your plain speech but `locked`.' +
+      ' A call that names its channel is not affected.' +
       ' In the mode `locked`, this setting does nothing.',
   },
   {
@@ -198,6 +218,7 @@ export const OWN_SETTINGS = [
   },
   {
     name: 'modules.retrieval.maxInjected',
+    domain: { least: 1 },
     available: 'retrieval',
     example: 4,
     words: 'The most lessons that the host puts into your context for one turn. Each costs tokens.',
@@ -221,12 +242,35 @@ export const OWN_SETTINGS = [
     example: 'skip',
     words: 'What happens when the reply judge fails: you are woken (`wake`) or not (`skip`).',
   },
-] as const satisfies ReadonlyArray<{ readonly name: string; readonly available: AvailabilityKind; readonly example: unknown; readonly words: string }>;
+] as const satisfies ReadonlyArray<{
+  readonly name: string; readonly available: AvailabilityKind; readonly example: unknown; readonly words: string; readonly domain?: Domain;
+}>;
 
 export type OwnSettingName = (typeof OWN_SETTINGS)[number]['name'];
 export type OwnSetting = (typeof OWN_SETTINGS)[number];
 
 export const OWN_SETTING_NAMES: readonly OwnSettingName[] = OWN_SETTINGS.map((setting) => setting.name);
+
+const domainOf = (setting: OwnSetting): Domain | undefined => ('domain' in setting ? setting.domain : undefined);
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** What a numeric row takes, in words: its domain's, for the resident's tool and its refusals. Undefined for a row with no domain. */
+export function domainTakes(setting: OwnSetting): string | undefined {
+  const domain = domainOf(setting);
+  if (domain === undefined) return undefined;
+  const count = `a whole number of ${domain.least} or more`;
+  return domain.byName ? `${count}, or an object from tool names to such numbers` : count;
+}
+
+/** Whether `value` is inside the row's domain; true for a row with none. */
+export function insideDomain(setting: OwnSetting, value: unknown): boolean {
+  const domain = domainOf(setting);
+  if (domain === undefined) return true;
+  const fits = (n: unknown): boolean => typeof n === 'number' && Number.isSafeInteger(n) && n >= domain.least;
+  return domain.byName && isPlainObject(value) ? Object.values(value).every(fits) : fits(value);
+}
 
 /** The settings tool, as agent-framework names a utility of the host's `settings` module. */
 export const OWN_SETTINGS_TOOL = 'settings--own';

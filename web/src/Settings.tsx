@@ -513,7 +513,8 @@ export function SettingsPanel(props: {
             restart only
           </div>
           <div class="text-[10px] text-neutral-600 leading-relaxed">
-            These come from the recipe and are read at construction — changing them needs a
+            These come from the recipe, or from the resident's own settings file where the recipe
+            lets the resident change them, and are read at construction — changing them needs a
             restart, not this panel:
             <span class="font-mono text-neutral-500"> {RESTART_ONLY.join(', ')}</span>
           </div>

@@ -129,7 +129,7 @@ export class SettingsModule implements Module {
   async handleToolCall(call: ToolCall): Promise<ToolResult> {
     if (call.name === 'own' && this.own.answer) {
       const resident = this.own.resident();
-      if (call.callerAgentName !== undefined && call.callerAgentName !== resident) {
+      if (call.callerAgentName !== resident) {
         return {
           success: false,
           isError: true,

@@ -11,7 +11,7 @@ import { isBuiltinStrategyType } from './extensions.js';
 import { TOOL_CLASSES } from './tool-lifecycle-config.js';
 import { SERVER_PRESENTATIONS } from './server-presentation.js';
 import { buildWorkspaceMounts, workspaceConfig } from './workspace-mounts.js';
-import { OWN_SETTING_NAMES, OWN_SETTINGS_MOUNT } from './own-settings-table.js';
+import { OWN_SETTINGS_MOUNT } from './own-settings-table.js';
 
 const takes = (phrase: string) => ({
   error: (issue: { readonly code?: string }) => (issue.code === 'unrecognized_keys' ? undefined : phrase),
@@ -2575,16 +2575,13 @@ const inferenceBounds = z.union([
   }, takes('false or an object')),
 ], takes('false or an object'));
 
-const ownSettingName = z.enum(OWN_SETTING_NAMES, {
-  error: (issue) => {
-    const near = typeof issue.input === 'string' ? nearestKey(issue.input, OWN_SETTING_NAMES) : null;
-    return `a setting that a resident may manage${near ? ` (did you mean "${near}"?)` : ''}`;
-  },
-});
 const OWN_SETTINGS_FORMS = '"all", "read" or a non-empty list of setting names';
+// A name that the table doesn't hold loads, and grants nothing: a release
+// that drops a setting from the table costs a recipe that names it only that
+// setting. The start's log and doctor name it (own-settings.ts).
 const ownSettings = z.union([
   oneOf(['all', 'read'], OWN_SETTINGS_FORMS),
-  listOf(ownSettingName, OWN_SETTINGS_FORMS).min(1, takes(OWN_SETTINGS_FORMS)),
+  listOf(text('a setting name'), OWN_SETTINGS_FORMS).min(1, takes(OWN_SETTINGS_FORMS)),
 ], takes(OWN_SETTINGS_FORMS));
 
 const recipeShape = {
@@ -2660,7 +2657,9 @@ const recipeShape = {
    * manage with its own file, `own-settings/own.json` in the data directory,
    * which the host applies at each start: `"all"` lets it read and change
    * every setting of the table, `"read"` lets it read them and change none,
-   * and a list lets it read and change those it names. Left out, the host
+   * and a list lets it read and change those it names. A name in the list
+   * that the table doesn't hold grants nothing, and a start's log and doctor
+   * name it. Left out, the host
    * offers no tool and no mount for them and applies no file.
    */
   ownSettings: ownSettings.optional(),

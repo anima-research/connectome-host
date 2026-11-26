@@ -13,7 +13,8 @@ import { settingsRoute } from './modules/unknown-tool.js';
 import { PRIVATE_DIR_MODE } from './update/data-swap.js';
 import {
   AVAILABILITY, OWN_SETTING_NAMES, OWN_SETTINGS, OWN_SETTINGS_FILE, OWN_SETTINGS_MAX_BYTES, OWN_SETTINGS_MOUNT,
-  OWN_SETTINGS_SET_ASIDE, OWN_SETTINGS_TOOL, WRITE_TOOL, ownSettingsDir, ownSettingsWarnings, type OwnSetting, type OwnSettingName,
+  OWN_SETTINGS_SET_ASIDE, OWN_SETTINGS_TOOL, WRITE_TOOL, domainTakes, insideDomain, ownSettingsDir, ownSettingsWarnings,
+  type OwnSetting, type OwnSettingName,
 } from './own-settings-table.js';
 
 type Grant = Recipe['ownSettings'];
@@ -247,9 +248,33 @@ function judge(grant: Grant, recipe: Recipe, name: string, value: unknown): OwnE
   if (setting === undefined) return { name, value, notUsed: { kind: 'unknown' } };
   if (!mayChange(grant, setting.name)) return { name, value, notUsed: { kind: 'not-granted' } };
   if (!isAvailable(setting, recipe)) return { name, value, notUsed: { kind: 'not-available', when: AVAILABILITY[setting.available].when } };
-  const fault = value === null ? `${name} must be ${settingTakes(name) ?? 'a value'}, got null.` : settingFault(name, value);
+  // The recipe's check first, whose faults name the place in a value; then a numeric row's domain, which is narrower.
+  const fault = value === null ? `${name} must be ${takes(setting)}, got null.`
+    : settingFault(name, value) ?? (insideDomain(setting, value) ? undefined : `${name} must be ${takes(setting)}, got ${brief(value)}.`);
   return { name, value, notUsed: fault === undefined ? null : { kind: 'value', fault } };
 }
+
+/**
+ * The warnings about the recipe's `ownSettings` that a start's log and doctor
+ * give: one for each name in the list that the table doesn't hold, which
+ * grants nothing (a release that drops a setting leaves the name so), then
+ * the table's own (ownSettingsWarnings).
+ */
+function grantWarnings(recipe: Recipe): string[] {
+  const grant = recipe.ownSettings;
+  const unknown = Array.isArray(grant) ? grant.filter((name) => settingNamed(name) === undefined) : [];
+  return [
+    ...unknown.map((name) => {
+      const nearest = near(name);
+      return `Recipe ownSettings names ${cut(JSON.stringify(name))}, which is not a setting that a resident may manage in this release, ` +
+        `so it grants nothing${nearest ? ` (did you mean ${nearest}?)` : ''}.`;
+    }),
+    ...ownSettingsWarnings(recipe),
+  ];
+}
+
+/** What a row takes, in words: its domain's for a numeric row, else the recipe's. */
+const takes = (setting: OwnSetting): string => domainTakes(setting) ?? settingTakes(setting.name) ?? 'what the recipe takes there';
 
 const ended = (text: string): string => (text.endsWith('.') ? text : `${text}.`);
 
@@ -392,7 +417,7 @@ export function startOwnSettings(operator: OperatorRecipe, dataDir: string): Own
   const dir = ownSettingsDir(dataDir);
   const own = join(dir, OWN_SETTINGS_FILE);
   const parked = join(dir, OWN_SETTINGS_SET_ASIDE);
-  const warnings = ownSettingsWarnings(operator.recipe).map((warning) => `[own-settings] ${warning}`);
+  const warnings = grantWarnings(operator.recipe).map((warning) => `[own-settings] ${warning}`);
   const log = [...warnings];
   const warn = (line: string) => { log.push(line); warnings.push(line); };
   let move: OwnFileMove = null;
@@ -557,7 +582,7 @@ export function ownSettingsAnswer(input: {
         ? `${hostValue(setting.name, start.recipe, running)}, which the host sets, since neither the recipe nor your file sets it`
         : 'not set: the package\'s default applies';
     const may = mayChange(grant, setting.name) ? 'You may change it.' : 'You may read it, and your operator\'s recipe does not let you change it.';
-    return `${setting.name}: ${now}. ${may}\n  ${setting.words}\n  It takes ${settingTakes(setting.name) ?? 'what the recipe takes there'}.`;
+    return `${setting.name}: ${now}. ${may}\n  ${setting.words}\n  It takes ${takes(setting)}.`;
   }).join('\n\n'));
 
   const place = filePlace(dataDir, operator.recipe, OWN_SETTINGS_FILE);
@@ -573,6 +598,7 @@ export function ownSettingsAnswer(input: {
       ': one JSON object, each key a setting\'s name, and each value what the recipe would hold at that place, whole' +
       (example === undefined ? '' : `, such as {${JSON.stringify(example.name)}: ${shown(example.example)}}`) + '. ' +
       'A change takes effect when the host next starts. A key that you remove from the file follows the recipe again. ' +
+      (mounted ? `Any agent of this host that can call ${WRITE_TOOL} can write the file too, such as a subagent or a fork of yours. ` : '') +
       (running.restartOffered
         ? 'You can ask for a restart with lifecycle--restart.'
         : 'Here lifecycle--restart can\'t restart the host, so a change waits until your operator restarts it.'));
@@ -633,7 +659,7 @@ export function ownSettingsLines(operator: OperatorRecipe, dataDir: string): str
   const ownThere = exists(own);
   const parkedThere = exists(parked);
   if (grant === undefined && !ownThere && !parkedThere) return [];
-  const lines: string[] = [...ownSettingsWarnings(operator.recipe)];
+  const lines: string[] = [...grantWarnings(operator.recipe)];
   if (!changesSettings(grant)) {
     lines.push(grant === undefined ? 'The recipe has no ownSettings.' : 'The recipe\'s ownSettings is "read", so the resident changes no setting.');
     if (ownThere) {
@@ -643,6 +669,16 @@ export function ownSettingsLines(operator: OperatorRecipe, dataDir: string): str
     }
     if (parkedThere) lines.push(`${parked} is there: the resident's file, parked while the recipe lets it change no setting.`);
     return lines;
+  }
+  if (grant === 'all') {
+    lines.push(`The recipe's ownSettings is "all", which in this release covers these ${OWN_SETTING_NAMES.length} settings: ${OWN_SETTING_NAMES.join(', ')}.`);
+  }
+  const others = [
+    ...(operator.recipe.modules?.subagents ? ['its subagents (modules.subagents is on)'] : []),
+    ...(operator.recipe.conversations !== undefined ? ['its conversation forks (conversations is set)'] : []),
+  ];
+  if (others.length > 0 && filePlace(dataDir, operator.recipe, OWN_SETTINGS_FILE).startsWith(`${OWN_SETTINGS_MOUNT}/`)) {
+    lines.push(`Any agent of the host that can call ${WRITE_TOOL} can write ${OWN_SETTINGS_MOUNT}/${OWN_SETTINGS_FILE}, such as the resident's ${others.join(' and ')}.`);
   }
   const check = checkOwnSettings(operator, dataDir);
   const fromParked = resolve(check.path) === parked;
