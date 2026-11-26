@@ -6,3 +6,4 @@
   model or `COUNT_TOKENS_MODEL`. A new
   `countHost` field names the host that a count was asked at. The Context
   tab shows it under an exact count, and beside the reason when a count fails.
+  In the document view, a tooltip on "(exact)" names it.

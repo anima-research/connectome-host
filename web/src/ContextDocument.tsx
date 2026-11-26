@@ -1,5 +1,6 @@
 import { createEffect, createSignal, on, For, Show } from 'solid-js';
 import { isChildScope } from '@conhost/web/protocol';
+import { contextPageView, countedBy } from './composition-text';
 import { MediaView } from './Surgery';
 
 interface Msg { participant?: string; role?: string; content: unknown; sourceMessageId?: string }
@@ -85,6 +86,7 @@ export function ContextDocument(props: {
   const [msgsSession, setMsgsSession] = createSignal<string | null>(null);
   const [stats, setStats] = createSignal<Stats | null>(null);
   const [exact, setExact] = createSignal<number | null>(null);
+  const [exactBy, setExactBy] = createSignal<string | undefined>(undefined);
   const [err, setErr] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
 
@@ -118,6 +120,8 @@ export function ContextDocument(props: {
         const mk = await mkRes.json();
         if (superseded()) return;
         setStats(mk.stats); setExact(mk.exactTotalTokens);
+        const count = contextPageView(mk).count;
+        setExactBy('tokens' in count ? countedBy(count) : undefined);
       }
     } catch (e) {
       if (superseded()) return;
@@ -166,7 +170,7 @@ export function ContextDocument(props: {
       <div class="sticky top-0 z-10 bg-neutral-950/95 backdrop-blur border-b border-neutral-800 pb-2 mb-3 -mx-1 px-1">
         <div class="flex items-center justify-between text-[11px] font-mono text-neutral-500 mb-1">
           <span>
-            context · {fmt(exact() ?? stats()?.total.tokens ?? 0)} tokens{exact() != null ? ' (exact)' : ''} · {fmt(msgs().length)} msgs
+            context · {fmt(exact() ?? stats()?.total.tokens ?? 0)} tokens<Show when={exact() != null}><span title={exactBy()}> (exact)</span></Show> · {fmt(msgs().length)} msgs
           </span>
           <button type="button" class="px-2 py-0.5 border border-neutral-700 rounded hover:text-neutral-200" onClick={load} disabled={loading()}>
             {loading() ? '…' : 'refresh'}

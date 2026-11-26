@@ -1109,8 +1109,8 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
   let exactTotalTokens: number | null = null;
   // COUNT_TOKENS_MODEL, when set, is the model counted against in place of
   // the agent's own.
-  const countModel = process.env.COUNT_TOKENS_MODEL
-    || anthropicCountModel((agent as { model?: string }).model);
+  const countModel = nonBlank(process.env.COUNT_TOKENS_MODEL)
+    ?? anthropicCountModel((agent as { model?: string }).model);
   let countSource = 'count_tokens';
   if (!countModel) {
     return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_unsupported_model' };
@@ -1160,12 +1160,15 @@ function nonBlank(value: string | undefined): string | undefined {
 }
 
 function countRoute(app: PanelAppRef): CountRoute {
-  const bearer = nonBlank(app.credentials?.bearer()) ?? nonBlank(process.env.ANTHROPIC_AUTH_TOKEN);
+  const base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/+$/, '');
+  const login = app.credentials?.bearer();
+  if (login !== undefined) {
+    const bearer = nonBlank(login);
+    return { base, auth: bearer !== undefined ? { bearer } : null };
+  }
+  const bearer = nonBlank(process.env.ANTHROPIC_AUTH_TOKEN);
   const key = nonBlank(process.env.ANTHROPIC_API_KEY);
-  return {
-    base: (nonBlank(process.env.ANTHROPIC_BASE_URL) ?? 'https://api.anthropic.com').replace(/\/+$/, ''),
-    auth: bearer !== undefined ? { bearer } : key !== undefined ? { key } : null,
-  };
+  return { base, auth: bearer !== undefined ? { bearer } : key !== undefined ? { key } : null };
 }
 
 function urlOf(base: string): URL | undefined {
