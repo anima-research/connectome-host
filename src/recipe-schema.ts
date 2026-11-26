@@ -405,18 +405,18 @@ const strategyShape = {
    *  that tail wouldn't fit beside agent.maxTokens with overBudgetGraceRatio's
    *  grace. */
   recentWindowTokens: number().optional(),
-  compressionModel: nonBlankText().optional(),
+  compressionModel: nonBlankText('a non-empty string with a character that isn\'t a space').optional(),
   /** Cap compression `max_tokens` at the compression model's OUTPUT ceiling.
    *  Required for pre-4.x models (Claude 3 Opus caps at 4096) — without it the
    *  summarizer's 16k floor is rejected and the agent never folds. */
-  compressionMaxTokens: positiveSafeInteger().optional(),
+  compressionMaxTokens: nonNegativeSafeInteger().optional(),
   /**
    * Opt-in compatibility for a non-reasoning model that authors the complete
    * compression result inside one closed literal `<thinking>…</thinking>`
    * text wrapper. Recovers only that exact whole-response shape as prose.
    */
   recoverLiteralThinkingWrappedCompression: trueOrFalse().optional(),
-  maxMessageTokens: positiveSafeInteger().optional(),
+  maxMessageTokens: nonNegativeSafeInteger().optional(),
   /** Maximum live image count, newest-first (default 6). Zero means up to
    * context-manager's image ceiling, 500, and a larger value is held to it. */
   maxLiveImages: nonNegativeSafeInteger().optional(),
@@ -478,7 +478,7 @@ const strategyShape = {
    * more to this model, before the split rung and before quarantine. The
    * model is reached through the agent's own provider.
    */
-  compressionFallbackModel: nonBlankText().optional(),
+  compressionFallbackModel: nonBlankText('a non-empty string with a character that isn\'t a space').optional(),
   /** Token budget for prior recall-pair context in compression/merge
    * requests (Context Manager `compressionRecallBudgetTokens`). */
   compressionRecallBudgetTokens: positiveSafeInteger().optional(),
@@ -498,20 +498,20 @@ const strategyShape = {
    * inside the LIVE window as reasoning extraction.
    */
   carrierPolicy: oneOf(['full', 'live-strip']).optional(),
-  targetChunkTokens: positiveSafeInteger().optional(),
+  targetChunkTokens: nonNegativeSafeInteger().optional(),
   mergeThreshold: number().optional(),
   mergeMaxSourceSpanMessages: number().optional(),
-  summaryTargetTokens: positiveSafeInteger().optional(),
+  summaryTargetTokens: nonNegativeSafeInteger().optional(),
   /** Standing production target: keep the summary forest deep enough to fit
    *  this budget, enabling a later live-budget descent with no fold-storm and
    *  a single KV invalidation (see context-manager productionBudgetTokens). */
-  productionBudgetTokens: positiveSafeInteger().optional(),
-  l1BudgetTokens: positiveSafeInteger().optional(),
-  l2BudgetTokens: positiveSafeInteger().optional(),
-  l3BudgetTokens: positiveSafeInteger().optional(),
+  productionBudgetTokens: nonNegativeSafeInteger().optional(),
+  l1BudgetTokens: nonNegativeSafeInteger().optional(),
+  l2BudgetTokens: nonNegativeSafeInteger().optional(),
+  l3BudgetTokens: nonNegativeSafeInteger().optional(),
   toolResultMaxLastN: z.union([number(), mapOf(number(), 'a number')],
     takes('a number, or an object from tool names to numbers')).optional(),
-  toolUseInputMaxTokens: positiveSafeInteger().optional(),
+  toolUseInputMaxTokens: nonNegativeSafeInteger().optional(),
   /** Adaptive resolution (document-based gradual compression). For the
    *  'autobiographical' strategy type this defaults ON; set
    *  `adaptiveResolution: false` to opt back to the count-based
@@ -1389,8 +1389,8 @@ const bool = (phrase: string) => trueOrFalse(phrase);
 const either = <T extends z.ZodType>(object: T, phrase: string) => z.union([bool(phrase), object], takes(phrase));
 
 const subagentsShape = {
-  defaultModel: nonBlankText().optional(),
-  defaultMaxTokens: positiveSafeInteger().optional(),
+  defaultModel: text().optional(),
+  defaultMaxTokens: nonNegativeSafeInteger().optional(),
   /**
    * What a forked or spawned stream is told at its start. `'full'`
    * (default) describes the launch and the stream's place in it, and
@@ -1415,7 +1415,7 @@ const subagentsShape = {
 const subagents: z.ZodType<Exact<typeof subagentsShape>> = z.looseObject(subagentsShape, takes('an object'));
 
 const retrievalShape = {
-  model: nonBlankText().optional(),
+  model: nonBlankText('a non-empty string with a character that isn\'t a space').optional(),
   maxInjected: number().optional(),
   /**
    * Optional OpenAI Responses/Codex reasoning effort for both retrieval calls.
@@ -1480,7 +1480,7 @@ const replyJudge = z.strictObject({
   enabled: trueOrFalse().optional(),
   /** The judge's model id as this host's provider names it (e.g. an
    *  `anthropic.`/`anthropic/` prefix on Bedrock/OpenRouter). */
-  model: nonBlankText().optional(),
+  model: nonBlankText('a non-empty string with a character that isn\'t a space').optional(),
   /** The most input tokens one judge request may carry (4000 or more; default 90000). */
   maxInputTokens: numberWhere('a whole number of tokens, 4000 or more', (v) => Number.isInteger(v) && v >= 4000).optional(),
   /** How long a judge request may take, in ms. */

@@ -40,7 +40,7 @@ describe('recipe: modules.wake.judge', () => {
   test('refuses a value agent-framework would read as its default, naming the key and what it must be', () => {
     const cases: Array<[Record<string, unknown>, string]> = [
       [{ enabled: 'false' }, 'Recipe modules.wake.judge.enabled must be true or false, got "false".'],
-      [{ model: '' }, 'Recipe modules.wake.judge.model must be a non-empty string, got "".'],
+      [{ model: '' }, 'Recipe modules.wake.judge.model must be a non-empty string with a character that isn\'t a space, got "".'],
       [{ maxInputTokens: 3000 }, 'Recipe modules.wake.judge.maxInputTokens must be a whole number of tokens, 4000 or more, got 3000.'],
       [{ maxInputTokens: 90000.5 }, 'Recipe modules.wake.judge.maxInputTokens must be a whole number of tokens, 4000 or more, got 90000.5.'],
       [{ timeoutMs: 0 }, 'Recipe modules.wake.judge.timeoutMs must be a whole number of milliseconds from 1 to 2147483647, got 0.'],
