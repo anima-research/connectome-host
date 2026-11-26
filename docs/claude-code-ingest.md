@@ -405,6 +405,9 @@ service.
    instead.
    `CONNECTOME_UPDATE_CHECK=0` keeps the host from asking npm's registry for a newer
    release, as the fleet does for each child that it starts.
+   For a copy on a provider other than `anthropic`, leave `ANTHROPIC_API_KEY=mock` out
+   of the command. Only provider `anthropic` needs an Anthropic key to start. Without
+   that key, the copy doesn't send its compiled request out to be counted (below).
 
    Give the command more variables where the copy needs them:
    - Where the recipe's provider needs a key of its own to start, give that key's name
@@ -447,11 +450,8 @@ service.
    granted (`observers.json`) gets into the copy's Web UI without the check's password.
    When the host asks the API for a count, the API refuses it, as it refuses every
    request that carries the mock key. The ask still carries the copy's compiled request
-   to the API. For a copy on a provider other than `anthropic`, leave
-   `ANTHROPIC_API_KEY=mock` out of the command, since only provider `anthropic` needs
-   an Anthropic key to start. The copy then holds no Anthropic credential. So unless
-   the command gives it an `ANTHROPIC_BASE_URL`, it asks for no count, and nothing
-   leaves the machine.
+   to the API. A copy with no Anthropic credential and no `ANTHROPIC_BASE_URL` doesn't
+   ask for a count, so its compiled request stays on the machine.
    Where the host asks for no count, there is no live count either. The rest still
    compiles.
 

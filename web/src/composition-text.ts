@@ -85,7 +85,7 @@ export function countedBy(count: { model: string; host?: string }): string {
 export function notCounted(countSource: string): string {
   if (countSource === 'count_tokens_unsupported_model') return "not counted: count_tokens doesn't take this agent's model";
   if (countSource === 'count_tokens_no_credential') {
-    return "not counted: the host has no Anthropic credential, so it asked nothing. A count sends the agent's next request to Anthropic's API, or to ANTHROPIC_BASE_URL.";
+    return "not counted: the host has no Anthropic credential that the count can use, so it asked nothing. A count sends the agent's next request to Anthropic's API, or to ANTHROPIC_BASE_URL.";
   }
   const failed = /^count_tokens_failed_(\d+)$/.exec(countSource);
   if (failed) return `not counted: count_tokens answered ${failed[1]}`;
