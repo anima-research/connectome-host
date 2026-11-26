@@ -251,6 +251,15 @@ export type OwnSetting = (typeof OWN_SETTINGS)[number];
 
 export const OWN_SETTING_NAMES: readonly OwnSettingName[] = OWN_SETTINGS.map((setting) => setting.name);
 
+/**
+ * Whether the grant lets the resident change a setting: `"all"`, or a list
+ * that names at least one setting of the table. A list that names none, as
+ * after a release that drops each setting it names, changes nothing, as
+ * `"read"` does.
+ */
+export const changesSettings = (grant: Recipe['ownSettings']): boolean =>
+  grant === 'all' || (Array.isArray(grant) && grant.some((name) => OWN_SETTINGS.some((setting) => setting.name === name)));
+
 const domainOf = (setting: OwnSetting): Domain | undefined => ('domain' in setting ? setting.domain : undefined);
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
@@ -260,7 +269,7 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 export function domainTakes(setting: OwnSetting): string | undefined {
   const domain = domainOf(setting);
   if (domain === undefined) return undefined;
-  const count = `a whole number of ${domain.least} or more`;
+  const count = `a whole number from ${domain.least} to ${Number.MAX_SAFE_INTEGER}`;
   return domain.byName ? `${count}, or an object from tool names to such numbers` : count;
 }
 
@@ -289,14 +298,14 @@ export function ownSettingsWarnings(recipe: Recipe): string[] {
   if (Array.isArray(grant)) {
     for (const setting of OWN_SETTINGS) {
       if (grant.includes(setting.name) && !AVAILABILITY[setting.available].on(recipe)) {
-        warnings.push(`Recipe ownSettings names ${setting.name}, which does nothing on this host: it takes effect only ` +
-          `${AVAILABILITY[setting.available].when}.`);
+        warnings.push(`Recipe ownSettings names ${setting.name}, and that grant does nothing on this host: the host uses a resident's ` +
+          `value for it only ${AVAILABILITY[setting.available].when}.`);
       }
     }
   }
   const allowed = recipe.agent.allowedTools;
   if (Array.isArray(allowed)) {
-    const changes = grant !== 'read' && recipe.modules?.workspace !== false;
+    const changes = changesSettings(grant) && recipe.modules?.workspace !== false;
     const missing = [OWN_SETTINGS_TOOL, ...(changes ? [WRITE_TOOL] : [])].filter((tool) => !allowed.includes(tool));
     if (missing.length > 0) {
       warnings.push(`Recipe agent.allowedTools leaves out ${missing.join(' and ')}, which ownSettings needs: ` +

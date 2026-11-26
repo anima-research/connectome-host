@@ -84,7 +84,7 @@ describe('the table', () => {
   });
 });
 
-describe('the numeric rows\' domains (R1-1, R1-3)', () => {
+describe('the numeric rows\' domains', () => {
   // A value that a row's words describe: a whole number of 0 or more where they give 0 a meaning, else of 1 or more.
   const LEAST: Readonly<Record<string, 0 | 1>> = {
     'agent.strategy.maxLiveImages': 0,
@@ -102,7 +102,7 @@ describe('the numeric rows\' domains (R1-1, R1-3)', () => {
   test('the table gives these eight rows a domain, and no other row', () => {
     expect(Object.fromEntries(OWN_SETTINGS.filter((setting) => domainTakes(setting) !== undefined)
       .map((setting) => [setting.name, domainTakes(setting)]))).toEqual(Object.fromEntries(Object.entries(LEAST).map(([name, least]) => [
-      name, `a whole number of ${least} or more${name === 'agent.strategy.toolResultMaxLastN' ? ', or an object from tool names to such numbers' : ''}`,
+      name, `a whole number from ${least} to ${Number.MAX_SAFE_INTEGER}${name === 'agent.strategy.toolResultMaxLastN' ? ', or an object from tool names to such numbers' : ''}`,
     ])));
   });
 
@@ -126,11 +126,11 @@ describe('the numeric rows\' domains (R1-1, R1-3)', () => {
 
   test('a targetChunkTokens of 0 is not used, and the recipe\'s own value stays in force (the review\'s case)', () => {
     const check = checkOwnSettings(op(), dataDir({ own: { 'agent.strategy.targetChunkTokens': 0 } }));
-    expect(check.entries[0]!.notUsed).toEqual({ kind: 'value', fault: 'agent.strategy.targetChunkTokens must be a whole number of 1 or more, got 0.' });
+    expect(check.entries[0]!.notUsed).toEqual({ kind: 'value', fault: `agent.strategy.targetChunkTokens must be a whole number from 1 to ${Number.MAX_SAFE_INTEGER}, got 0.` });
     expect(check.recipe.agent.strategy?.targetChunkTokens).toBeUndefined();
   });
 
-  test('the tool tells the resident that another agent of the host with workspace--write can write its file (R1-5)', () => {
+  test('the tool tells the resident that another agent of the host with workspace--write can write its file', () => {
     expect(answer(op(), dataDir({ own: {} }))).toContain('Any agent of this host that can call workspace--write can write the file too, such as a subagent or a fork of yours. ');
   });
 
@@ -143,8 +143,8 @@ describe('the numeric rows\' domains (R1-1, R1-3)', () => {
     }
   });
 
-  test('each edge that a domain lets in, and the empty string for each row that takes a string, builds the strategy, stores a long ' +
-    'message and compiles once, within a time limit', () => {
+  test('each edge that a domain lets in, and the empty string for each row whose check takes it, builds the strategy, stores a ' +
+    'picture, a tool call and a long message, and compiles once, within a time limit', () => {
     const edges: Array<[string, unknown]> = [
       ...Object.entries(LEAST).flatMap(([name, least]): Array<[string, unknown]> => [[name, least], [name, Number.MAX_SAFE_INTEGER]]),
       ...OWN_SETTINGS.filter((setting) => typeof setting.example === 'string').map((setting): [string, unknown] => [setting.name, '']),
@@ -159,16 +159,20 @@ describe('the numeric rows\' domains (R1-1, R1-3)', () => {
 });
 
 describe('doctor\'s lines about the grant', () => {
-  test('"all" is listed with the settings that it covers in this release (R1-7)', () => {
+  test('"all" is listed with the settings that it covers in this release', () => {
     const lines = ownSettingsLines(operator({ ownSettings: 'all' }), dataDir());
     expect(lines).toContain(`The recipe's ownSettings is "all", which in this release covers these 21 settings: ${OWN_SETTING_NAMES.join(', ')}.`);
     expect(ownSettingsLines(operator({ ownSettings: ['agent.timezone'] }), dataDir()).some((line) => line.includes('covers these'))).toBe(false);
   });
 
-  test('a plain line says that other agents of the host can write the file, where subagents or conversations are on (R1-5)', () => {
+  test('a plain line says that other agents of the host can write the file, where subagents or conversations are on', () => {
     const line = (others: string) => `Any agent of the host that can call workspace--write can write _settings/own.json, such as the resident's ${others}.`;
     expect(ownSettingsLines(operator({ ownSettings: ['agent.timezone'], modules: { subagents: true } }), dataDir()))
       .toContain(line('its subagents (modules.subagents is on)'));
+    expect(ownSettingsLines(quietly(() => operator({ ownSettings: ['agent.timezone'], conversations: {} })), dataDir()))
+      .toContain(line('its conversation forks (conversations is set)'));
+    expect(ownSettingsLines(quietly(() => operator({ ownSettings: ['agent.timezone'], conversations: {}, modules: { subagents: true } })), dataDir()))
+      .toContain(line('its subagents (modules.subagents is on) and its conversation forks (conversations is set)'));
     expect(ownSettingsLines(operator({ ownSettings: ['agent.timezone'] }), dataDir()).some((each) => each.startsWith('Any agent'))).toBe(false);
     expect(ownSettingsLines(operator({ ownSettings: ['agent.timezone'], modules: { subagents: true, workspace: false } }), dataDir())
       .some((each) => each.startsWith('Any agent'))).toBe(false);
@@ -199,7 +203,7 @@ describe('the fit check', () => {
 });
 
 describe('the recipe key', () => {
-  test('a name in the list that is not in the table loads and grants nothing; the log and doctor name it with the nearest (case 24, R1-2)', () => {
+  test('a name in the list that is not in the table loads and grants nothing; the log and doctor name it with the nearest (case 24)', () => {
     const op = quietly(() => operator({ ownSettings: ['agent.timezone', 'agent.strategy.witnessedInstruction', 'agent.timezon'] }));
     const warned = [
       '[own-settings] Recipe ownSettings names "agent.strategy.witnessedInstruction", which is not a setting that a resident may manage ' +
@@ -213,6 +217,18 @@ describe('the recipe key', () => {
     expect(start.check.recipe.agent.timezone).toBe('Asia/Tokyo');
     expect(start.check.entries.map((entry) => entry.notUsed?.kind ?? 'used')).toEqual(['used', 'unknown']);
     expect(ownSettingsLines(op, dir).slice(0, 2)).toEqual(warned.map((line) => line.slice('[own-settings] '.length)));
+  });
+
+  test('a list that names no setting of the table changes nothing: the file is parked, and the tool and doctor say why', () => {
+    const op = quietly(() => operator({ ownSettings: ['agent.strategy.witnessedInstruction'], agent: { allowedTools: ['settings--own'] } }));
+    const dir = dataDir({ own: { 'agent.timezone': 'Asia/Tokyo' } });
+    const start = quietly(() => startOwnSettings(op, dir));
+    expect(start.move).toBe('park');
+    expect(start.check.recipe.agent.timezone).toBeUndefined();
+    expect(start.log.some((line) => line.includes('workspace--write'))).toBe(false);
+    expect(answer(op, dir, start.check)).toContain('Your operator\'s recipe names settings for you that this release of the host doesn\'t have: ' +
+      '"agent.strategy.witnessedInstruction". So you can read none of your own settings, and change none.');
+    expect(ownSettingsLines(op, dir)).toContain('The recipe\'s ownSettings names no setting that this release has, so the resident reads and changes none.');
   });
 
   test('a name in the list that is not a string is refused', () => {
@@ -233,7 +249,7 @@ describe('the recipe key', () => {
   test('a listed setting that does nothing here draws a warning; "all" and "read" draw none (case 11)', () => {
     const passthrough = { agent: { strategy: { type: 'passthrough' } } };
     expect(ownSettingsWarnings(quietly(() => operator({ ...passthrough, ownSettings: ['agent.strategy.maxLiveImages'] })).recipe))
-      .toEqual(['Recipe ownSettings names agent.strategy.maxLiveImages, which does nothing on this host: it takes effect only ' +
+      .toEqual(['Recipe ownSettings names agent.strategy.maxLiveImages, and that grant does nothing on this host: the host uses a resident\'s value for it only ' +
         'with the strategy "autobiographical" or "frontdesk".']);
     expect(ownSettingsWarnings(operator({ ...passthrough, ownSettings: 'all' }).recipe)).toEqual([]);
     expect(ownSettingsWarnings(operator({ ...passthrough, ownSettings: 'read' }).recipe)).toEqual([]);
@@ -244,8 +260,8 @@ describe('the recipe key', () => {
     try {
       const op = operator({ ownSettings: ['tuneOut.announce'] });
       expect(warn.mock.calls).toEqual([]);
-      expect(startOwnSettings(op, dataDir()).log).toEqual(['[own-settings] Recipe ownSettings names tuneOut.announce, which does nothing ' +
-        'on this host: it takes effect only with a reader (subconscious) on.']);
+      expect(startOwnSettings(op, dataDir()).log).toEqual(['[own-settings] Recipe ownSettings names tuneOut.announce, and that grant does ' +
+        'nothing on this host: the host uses a resident\'s value for it only with a reader (subconscious) on.']);
     } finally {
       warn.mockRestore();
     }
@@ -427,9 +443,10 @@ describe('what a start does with the file', () => {
     const start = startOwnSettings(op, dir);
     expect([start.move, start.moveFile()]).toEqual([null, null]);
     expect(start.log).toContain(`[own-settings] The recipe lets the resident change no setting, and ${ownFile(dir)} is not a plain file, so the host ` +
-      'leaves it where it is.');
+      'leaves it where it is. Each start leaves it and says so again, until it is removed or is a plain file.');
     expect(readdirSync(join(dir, 'own-settings'))).toEqual(['own.json']);
-    expect(ownSettingsLines(op, dir)).toContain(`${ownFile(dir)} is there, and it is not a plain file, so the next start leaves it where it is.`);
+    expect(ownSettingsLines(op, dir)).toContain(`${ownFile(dir)} is there, and it is not a plain file, so the next start leaves it where it is, ` +
+      'and says so. Remove it, or make it a plain file that the next start parks.');
   });
 
   test('a parked file that isn\'t a JSON object is put back, and the note asks for own.json to be written again', () => {
@@ -499,7 +516,7 @@ describe('what a start does with the file', () => {
       expect(start.note!.length).toBeLessThan(5_000);
       expect(start.log.every((line) => line.length < 2_000)).toBe(true);
     }
-  });
+  }, 20_000);
 
   test('a parked file comes back only where no own.json was written during the start', () => {
     const op = operator({ ownSettings: 'all' });
@@ -614,7 +631,7 @@ describe('what a start does with the file', () => {
     const op = operator({ ownSettings: 'all', agent: { strategy: { type: 'passthrough' } } });
     const dir = dataDir({ own: { 'agent.strategy.maxLiveImages': 3 } });
     expect(startOwnSettings(op, dir).check.entries[0]!.notUsed?.kind).toBe('not-available');
-    expect(answer(op, dir)).toContain('agent.strategy.maxLiveImages: not available on this host: it takes effect only ' +
+    expect(answer(op, dir)).toContain('agent.strategy.maxLiveImages: not available on this host: the host uses a resident\'s value for it only ' +
       'with the strategy "autobiographical" or "frontdesk".');
   });
 
@@ -833,8 +850,11 @@ describe('the settings module', () => {
         'what you need from them.',
     };
     expect(await mod.handleToolCall({ id: 'call-2', name: 'own', input: {}, callerAgentName: 'ember-fork-1' })).toEqual(refused);
-    // A call that carries no caller, as a host-side call does, is refused too (R1-8).
-    expect(await mod.handleToolCall({ id: 'call-3', name: 'own', input: {} })).toEqual(refused);
+    expect(await mod.handleToolCall({ id: 'call-3', name: 'own', input: {} })).toEqual({
+      success: false, isError: true,
+      error: 'settings--own shows ember\'s own settings, and answers a call that names ember as its caller, and this call names no ' +
+        'caller, so nothing ran. Make the call as ember.',
+    });
   });
 
   test('the note comes to the resident alone, at the first start in the process, and not at a session switch\'s start', async () => {

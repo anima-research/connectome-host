@@ -124,7 +124,8 @@ import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
 import { ownSettingsMount, workspaceConfig } from './workspace-mounts.js';
-import { changesSettings, ownSettingsAnswer, startOwnSettings, type OperatorRecipe } from './own-settings.js';
+import { ownSettingsAnswer, startOwnSettings, type OperatorRecipe } from './own-settings.js';
+import { changesSettings } from './own-settings-table.js';
 import { quarantineAlarm, type QuarantineStatus } from './web/quarantine-alert.js';
 import { wireLoadRepairAlert } from './web/load-repair-alert.js';
 import { logKeepaliveEvent } from './cache-keepalive-log.js';

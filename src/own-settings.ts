@@ -13,7 +13,7 @@ import { settingsRoute } from './modules/unknown-tool.js';
 import { PRIVATE_DIR_MODE } from './update/data-swap.js';
 import {
   AVAILABILITY, OWN_SETTING_NAMES, OWN_SETTINGS, OWN_SETTINGS_FILE, OWN_SETTINGS_MAX_BYTES, OWN_SETTINGS_MOUNT,
-  OWN_SETTINGS_SET_ASIDE, OWN_SETTINGS_TOOL, WRITE_TOOL, domainTakes, insideDomain, ownSettingsDir, ownSettingsWarnings,
+  OWN_SETTINGS_SET_ASIDE, OWN_SETTINGS_TOOL, WRITE_TOOL, changesSettings, domainTakes, insideDomain, ownSettingsDir, ownSettingsWarnings,
   type OwnSetting, type OwnSettingName,
 } from './own-settings-table.js';
 
@@ -40,8 +40,6 @@ const mayRead = (grant: Grant, name: OwnSettingName): boolean =>
   grant === 'all' || grant === 'read' || (Array.isArray(grant) && grant.includes(name));
 const mayChange = (grant: Grant, name: OwnSettingName): boolean =>
   grant === 'all' || (Array.isArray(grant) && grant.includes(name));
-/** Whether the grant lets the resident change a setting: `"all"`, or a list. */
-export const changesSettings = (grant: Grant): boolean => grant === 'all' || Array.isArray(grant);
 
 const isAvailable = (setting: OwnSetting, recipe: Recipe): boolean => AVAILABILITY[setting.available].on(recipe);
 
@@ -122,6 +120,13 @@ function publish(path: string, bytes: Buffer): void {
     }
     // A link fails where `path` is there, so a file written meanwhile is never replaced.
     linkSync(temporary, path);
+    // The new name is on disk before the caller removes the parked one, so a crash between the two leaves at least one.
+    const directory = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY);
+    try {
+      fsyncSync(directory);
+    } finally {
+      closeSync(directory);
+    }
   } finally {
     try {
       unlinkSync(temporary);
@@ -321,7 +326,7 @@ function residentReason(entry: OwnEntry): string {
     case 'not-granted':
       return `${name} is not used: your operator's recipe does not let you change it. Remove it from the file, or ask your operator.`;
     case 'not-available':
-      return `${name} is not used: it does nothing on this host, since it takes effect only ${reason.when}. Your operator's recipe decides that.`;
+      return `${name} is not used: the host uses a resident's value for it only ${reason.when}. Your operator's recipe decides that.`;
     case 'value':
       return `${name} is not used: ${brief(entry.value)} is not a value that this setting takes. The host's check says:${quoted(cut(reason.fault))}`;
     case 'check':
@@ -343,7 +348,7 @@ function operatorReason(name: string, reason: NotUsed): string {
     case 'not-granted':
       return 'the recipe\'s ownSettings does not name it';
     case 'not-available':
-      return `it takes effect only ${reason.when}`;
+      return `the host uses a resident's value for it only ${reason.when}`;
     case 'value':
       return cut(reason.fault);
     case 'check':
@@ -431,7 +436,8 @@ export function startOwnSettings(operator: OperatorRecipe, dataDir: string): Own
     move = 'park';
     log.push(`[own-settings] The recipe lets the resident change no setting, so the host parks ${own} as ${parked} once it has started.`);
   } else if (exists(own)) {
-    warn(`[own-settings] The recipe lets the resident change no setting, and ${own} is not a plain file, so the host leaves it where it is.`);
+    warn(`[own-settings] The recipe lets the resident change no setting, and ${own} is not a plain file, so the host leaves it where it is. ` +
+      'Each start leaves it and says so again, until it is removed or is a plain file.');
   }
   const check = checkOwnSettings(operator, dataDir, fileForStart(dir, grant));
   if (check.path === parked && check.file.kind !== 'unread') {
@@ -476,8 +482,8 @@ export function startOwnSettings(operator: OperatorRecipe, dataDir: string): Own
       if (move === 'put-back' && errorCode(err) === 'EEXIST') {
         return failed(`[own-settings] ${to} was written during the start, so the host left ${from} where it is.`);
       }
-      return failed(`[own-settings] The host could not move ${from} to ${to}: ${errorText(err)}. The next start decides the same, and ` +
-        'gives the resident its note again.');
+      return failed(`[own-settings] The host could not move ${from} to ${to}: ${errorText(err)}. The next start decides again ` +
+        'from the files that it finds then.');
     }
   };
   if (warnings.length > 0) noteRecipeWarning(warnings.join('\n'));
@@ -569,10 +575,10 @@ export function ownSettingsAnswer(input: {
       }).join('\n'));
   }
 
-  sections.push(readable.map((setting) => {
+  if (readable.length > 0) sections.push(readable.map((setting) => {
     const available = isAvailable(setting, operator.recipe);
     const inForce = valueAt(start.recipe, setting.name);
-    const now = !available ? `not available on this host: it takes effect only ${AVAILABILITY[setting.available].when}`
+    const now = !available ? `not available on this host: the host uses a resident's value for it only ${AVAILABILITY[setting.available].when}`
       : fromFile(setting.name)
         ? `${brief(inForce)}, from your file, and ${recipeOwn(operator, setting.name)}`
       : inForce !== undefined ? `${recipeValueShown(operator, setting.name)}, from the recipe`
@@ -603,7 +609,10 @@ export function ownSettingsAnswer(input: {
         ? 'You can ask for a restart with lifecycle--restart.'
         : 'Here lifecycle--restart can\'t restart the host, so a change waits until your operator restarts it.'));
   } else {
-    sections.push('Your operator\'s recipe lets you read these settings, and it lets you change none of them.');
+    sections.push(Array.isArray(grant)
+      ? `Your operator's recipe names settings for you that this release of the host doesn't have: ${grant.map((name) => cut(JSON.stringify(name))).join(', ')}. ` +
+        'So you can read none of your own settings, and change none.'
+      : 'Your operator\'s recipe lets you read these settings, and it lets you change none of them.');
   }
 
   const parked = resolve(ownSettingsDir(dataDir), OWN_SETTINGS_SET_ASIDE);
@@ -661,11 +670,13 @@ export function ownSettingsLines(operator: OperatorRecipe, dataDir: string): str
   if (grant === undefined && !ownThere && !parkedThere) return [];
   const lines: string[] = [...grantWarnings(operator.recipe)];
   if (!changesSettings(grant)) {
-    lines.push(grant === undefined ? 'The recipe has no ownSettings.' : 'The recipe\'s ownSettings is "read", so the resident changes no setting.');
+    lines.push(grant === undefined ? 'The recipe has no ownSettings.'
+      : Array.isArray(grant) ? 'The recipe\'s ownSettings names no setting that this release has, so the resident reads and changes none.'
+      : 'The recipe\'s ownSettings is "read", so the resident changes no setting.');
     if (ownThere) {
       lines.push(isPlainFile(own)
         ? `${own} is there, and the next start parks it as ${OWN_SETTINGS_SET_ASIDE}.`
-        : `${own} is there, and it is not a plain file, so the next start leaves it where it is.`);
+        : `${own} is there, and it is not a plain file, so the next start leaves it where it is, and says so. Remove it, or make it a plain file that the next start parks.`);
     }
     if (parkedThere) lines.push(`${parked} is there: the resident's file, parked while the recipe lets it change no setting.`);
     return lines;

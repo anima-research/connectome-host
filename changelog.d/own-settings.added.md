@@ -6,9 +6,9 @@
   the file through the mount `_settings`. The host applies the file at each
   start. It checks each entry alone first, and then checks the recipe with
   the entry in it. An entry that fails is left out, and the others still
-  apply. For a numeric setting, the file takes a whole number: one of 0 or
-  more where the setting's words say what 0 does, and one of 1 or more
-  where they don't. A value in the file gets no `${VAR}` substitution, and the saved
+  apply. For a numeric setting, the file takes a whole number: from 0
+  where the setting's words say what 0 does, and from 1 where they don't,
+  up to the largest safe integer. A value in the file gets no `${VAR}` substitution, and the saved
   recipe never holds one. The utility `settings--own` shows the resident its
   settings, and what its file changes at the next start. The host tells the
   resident when its file doesn't take effect as written. The host parks the
@@ -18,8 +18,5 @@
   5 MiB or less. `connectome doctor` prints what the next start would do
   with the file. A recipe without `ownSettings` runs as before, with one
   exception: a start parks an `own.json` that an earlier grant left, and
-  tells the resident. Before this change, the host warned that it ignores
-  a key named `ownSettings`. A recipe with that key now loads only if its
-  value is `"all"`, `"read"` or a non-empty list of setting names. A name in
-  the list that the table doesn't hold grants nothing, and the start's log
-  and `connectome doctor` name it.
+  tells the resident. A name in a list that the table doesn't hold grants
+  nothing, and the start's log and `connectome doctor` name it.

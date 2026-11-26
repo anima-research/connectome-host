@@ -133,8 +133,11 @@ export class SettingsModule implements Module {
         return {
           success: false,
           isError: true,
-          error: `settings--own shows ${resident}'s own settings, and answers ${resident} alone, so nothing ran. A call again gives the same; ` +
-            `ask ${resident} for what you need from them.`,
+          error: call.callerAgentName === undefined
+            ? `settings--own shows ${resident}'s own settings, and answers a call that names ${resident} as its caller, and this call ` +
+              `names no caller, so nothing ran. Make the call as ${resident}.`
+            : `settings--own shows ${resident}'s own settings, and answers ${resident} alone, so nothing ran. A call again gives the same; ` +
+              `ask ${resident} for what you need from them.`,
         };
       }
       return { success: true, data: this.own.answer() };
