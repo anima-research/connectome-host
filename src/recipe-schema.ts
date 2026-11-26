@@ -2570,7 +2570,7 @@ const refusalServer = z.discriminatedUnion('kind', [
     ...refusalServerShape,
     kind: z.literal('zulip'),
     realmTag: text(),
-    idMode: oneOf(['strict', 'compat', 'legacy']),
+    idMode: oneOf(['strict', 'compat']),
     emojis: mapOf(text()).refine((v): v is Record<string, string> & { unknown: string } =>
       typeof v.unknown === 'string' && v.unknown.length > 0,
     { ...takes('a non-empty string'), path: ['unknown'] }),

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { REFUSAL_REACTIONS, REFUSAL_REACTION_BASELINE } from '@animalabs/agent-framework';
-import { DISCORD_SOURCE, ZULIP_SOURCE, prepareRefusalReactions, installRefusalReactions, type RefusalReactionConfig } from '../src/refusal-reactions.js';
+import { DISCORD_SOURCE, ZULIP_SOURCE, prepareRefusalReactions, installRefusalReactions, validateRefusalReactionConfig, type RefusalReactionConfig } from '../src/refusal-reactions.js';
 
 // Optional source-backed OFFLINE qualification. No connector install, spawn,
 // bot/API/MCP calls or public listener. Point at fresh anonymous pinned caches.
@@ -36,15 +36,16 @@ describe.skipIf(!root)('reviewed connector sources, not a deployed qualification
       const { toolDefinitions } = await source('zulip', 'tools');
       const { FiltersPlane } = await source('zulip', 'filters');
       const ids = new MessageIds('realm', mode);
-      const driverConfig: RefusalReactionConfig = { ownership: 'whole-framework', servers: [{ serverId: 's', kind: 'zulip', sourceRevision: ZULIP_SOURCE, idMode: mode, realmTag: 'realm',
+      const driverConfig = { ownership: 'whole-framework', servers: [{ serverId: 's', kind: 'zulip', sourceRevision: ZULIP_SOURCE, idMode: mode, realmTag: 'realm',
         emojis: { bio: 'biohazard', unknown: 'stop_sign' }, availableEmojiNames: ['biohazard', 'stop_sign'] }] };
       const server = { id: 's', command: 'node', env: { ZULIP_ID_MODE: mode, ZULIP_REALM_TAG: 'realm' } };
       if (mode === 'legacy') {
         const add = idToolDefinitions(toolDefinitions, ids).find((t: any) => t.name === 'add_reaction');
         expect(add.inputSchema.properties.message_id.type).toBe('number');
-        expect(() => prepareRefusalReactions(driverConfig, [server])).toThrow('idMode "legacy"');
+        expect(() => validateRefusalReactionConfig(driverConfig)).toThrow('idMode must be strict or compat');
         return;
       }
+      validateRefusalReactionConfig(driverConfig);
       const prepared = prepareRefusalReactions(driverConfig, [server]);
       // Constructor only: pure suppression logic, no real or fake operator file.
       const plane = new FiltersPlane('/never-read-or-written', prepared[0]!.env);
@@ -62,7 +63,7 @@ describe.skipIf(!root)('reviewed connector sources, not a deployed qualification
           if (!plane.reactionSuppressed(call.input.emoji_name, '2623', 'unicode_emoji')) echoes.push(call.input.emoji_name);
           return { success: true };
         },
-      } as any, driverConfig, prepared, () => {});
+      } as any, driverConfig, prepared, { diagnostic: () => {} });
       await handler({ agentName: 'agent', agentInstanceId: 'instance', turnId: 1, category: 'bio', rewind: 'unhandled', origin: { serverId: 's', binding: 'binding', channelId: 'zulip:room', messageRef: 'realm:009' } });
       expect(calls).toEqual([{ message_id: 'realm:009', emoji_name: 'biohazard' }]);
       expect(echoes).toEqual([]);
@@ -92,7 +93,7 @@ describe.skipIf(!root)('reviewed connector sources, not a deployed qualification
         calls.push(call);
         return { success: true, data: { reactionSuppression: { source: 'baseline-default', status: 'active', protectionActive: true } } };
       },
-    } as any, config, prepared, () => {});
+    } as any, config, prepared, { diagnostic: () => {} });
     await handler({ agentName: 'agent', agentInstanceId: 'instance', turnId: 1, category: 'bio', rewind: 'unhandled', origin: { serverId: 's', binding: 'binding', channelId: canonical, messageRef: '34567890123456789' } });
     expect(calls.map(c => c.name)).toEqual(['p--filters_get', 'p--add_reaction']);
     expect(calls[1].input).toEqual({ channelId: canonical, messageId: '34567890123456789', emoji: REFUSAL_REACTIONS.bio });

@@ -4,7 +4,7 @@ import { assertRefusalBridgeAvailable, prepareRefusalReactions, installRefusalRe
   type MainRefusal, type RefusalReactionConfig } from '../src/refusal-reactions.js';
 
 const discordConfig = (): RefusalReactionConfig => ({ ownership: 'whole-framework', servers: [{ serverId: 's', kind: 'discord', sourceRevision: DISCORD_SOURCE }] });
-const zulipConfig = (idMode: 'strict' | 'compat' | 'legacy' = 'strict'): RefusalReactionConfig => ({ ownership: 'whole-framework', servers: [{ serverId: 's', kind: 'zulip', sourceRevision: ZULIP_SOURCE, realmTag: 'realm', idMode,
+const zulipConfig = (idMode: 'strict' | 'compat' = 'strict'): RefusalReactionConfig => ({ ownership: 'whole-framework', servers: [{ serverId: 's', kind: 'zulip', sourceRevision: ZULIP_SOURCE, realmTag: 'realm', idMode,
   emojis: { bio: 'biohazard', unknown: 'stop_sign' }, availableEmojiNames: ['biohazard', 'stop_sign'] }] });
 function servers(config: RefusalReactionConfig): McplServerConfig[] {
   const driver = config.servers[0]!;
@@ -28,8 +28,8 @@ function harness(config = zulipConfig()) {
   const tools: any[] = config.servers[0]!.kind === 'discord' ? [
     { name: 'p--add_reaction', inputSchema: { type: 'object', properties: { channelId: { type: 'string' }, messageId: { type: ['string', 'null'] }, emoji: { type: 'string' } }, required: ['channelId', 'emoji'] } },
     { name: 'p--filters_get', inputSchema: { type: 'object', properties: {} } },
-  ] : [{ name: 'p--add_reaction', inputSchema: { type: 'object', properties: { message_id: { type: config.servers[0]!.kind === 'zulip' && config.servers[0]!.idMode === 'legacy' ? 'number' : ['string'] }, emoji_name: { type: 'string' } }, required: ['message_id', 'emoji_name'] } }];
-  const serverRows = [{ id: 's', connected: true, transport: 'stdio', family: 'legacy', refused: null, toolPrefix: 'p' }];
+  ] : [{ name: 'p--add_reaction', inputSchema: { type: 'object', properties: { message_id: { type: ['string'] }, emoji_name: { type: 'string' } }, required: ['message_id', 'emoji_name'] } }];
+  const serverRows = [{ id: 's', connected: true, closedTab: false, transport: 'stdio', family: 'legacy', refused: null, toolPrefix: 'p' }];
   const framework = {
     notifyOps: (...args: unknown[]) => { alerts.push(args); },
     getMainRefusalBridge: () => ({ version: 1, isCurrent: () => current, serverBinding: () => binding, serverEpoch: () => epoch,
@@ -48,8 +48,9 @@ function harness(config = zulipConfig()) {
     },
   };
   const prepared = prepareRefusalReactions(config, servers(config));
-  const install = () => installRefusalReactions(framework as unknown as Pick<AgentFramework, 'executeToolCall' | 'getAllTools' | 'listMcplServers'>, config, prepared, d => diagnostics.push(d));
+  const install = () => installRefusalReactions(framework as unknown as Pick<AgentFramework, 'executeToolCall' | 'getAllTools' | 'listMcplServers'>, config, prepared, { diagnostic: d => diagnostics.push(d) });
   return { config, framework, prepared, tools, serverRows, calls, diagnostics, alerts, install, emit: (r: MainRefusal) => owner?.handler(r),
+    hasOwner: () => owner !== undefined,
     setCurrent: (v: boolean) => { current = v; }, setBinding: (v: string | undefined) => { binding = v; }, setEpoch: (v: string | undefined) => { epoch = v; },
     setSuppression: (v: unknown) => { suppression = v; }, setCall: (fn: typeof onCall) => { onCall = fn; } };
 }
@@ -99,11 +100,6 @@ test.each(['', '  ', ', ,,, '])('Discord seed %j preserves AF’s default', (see
   const config = discordConfig();
   const env = { DISCORD_SUPPRESSED_REACTIONS_BASELINE: seed };
   expect(prepareRefusalReactions(config, [{ ...servers(config)[0]!, env }])[0]!.env).toEqual(env);
-});
-
-test('Zulip legacy IDs fail preparation rather than taking ownership without a usable ID', () => {
-  const config = zulipConfig('legacy');
-  expect(() => prepareRefusalReactions(config, servers(config))).toThrow('Refusal server s: Zulip idMode "legacy"');
 });
 
 for (const mode of ['strict', 'compat'] as const) {
@@ -220,6 +216,7 @@ test('an epoch/instance/prefix replacement during preflight prevents ADD', async
       return { success: true, data: JSON.stringify({ reactionSuppression: { source: 'baseline-default', status: 'active', protectionActive: true } }) };
     });
     h.install(); await h.emit(discordSignal()); expect(h.calls.length).toBe(1);
+    expect(h.hasOwner()).toBe(change !== 'epoch');
   }
 });
 
@@ -259,8 +256,7 @@ test('disposing ownership during preflight prevents an unissued ADD', async () =
   disposeNext();
 });
 
-// R1-4: startup failures must not acquire ownership and disable legacy markers.
-for (const state of ['closed-tab', 'failed-connect', 'binding', 'epoch'] as const) {
+for (const state of ['binding', 'epoch'] as const) {
   test(`selected server ${state} fails before handover`, () => {
     const h = harness(discordConfig());
     if (state === 'closed-tab') h.serverRows.splice(0);
@@ -275,23 +271,41 @@ for (const state of ['closed-tab', 'failed-connect', 'binding', 'epoch'] as cons
   });
 }
 
-test('explicit closed-tab config is rejected before connect', () => {
+test('explicit closed-tab config survives preparation, without bypassing other config checks', () => {
   const c = discordConfig();
-  expect(() => prepareRefusalReactions(c, [{ ...servers(c)[0]!, presentation: 'closed-tab' }])).toThrow('s: closed-tab');
+  const server = { ...servers(c)[0]!, presentation: 'closed-tab' } as const;
+  expect(prepareRefusalReactions(c, [server])[0]!.presentation).toBe('closed-tab');
+  expect(() => prepareRefusalReactions(c, [{ ...server, inheritEnv: true }])).toThrow('known stdio');
 });
 
-test('unchanged epoch survives recovery; replacement alerts once with actionable context', async () => {
+test('one unavailable selection prevents handover even with other connected servers', () => {
+  const h = harness(discordConfig());
+  h.config.servers.push({ serverId: 'offline', kind: 'discord', sourceRevision: DISCORD_SOURCE });
+  h.prepared.push({ ...h.prepared[0]!, id: 'offline' });
+  h.serverRows.push({ ...h.serverRows[0]!, id: 'offline', connected: false, toolPrefix: 'offline' });
+  h.install();
+  expect(h.hasOwner()).toBe(false);
+  expect(h.alerts).toHaveLength(1);
+  expect(h.alerts[0]?.[3]).toEqual({ serverId: 'offline', status: 'not-connected' });
+});
+
+test('unchanged epoch survives recovery; replacement relinquishes ownership and alerts even after an earlier failure', async () => {
   const h = harness(discordConfig()); h.install();
   h.serverRows[0]!.connected = false;
-  h.serverRows[0]!.connected = true; // AF determines whether a restart preserves its epoch.
   await h.emit(discordSignal());
+  expect(h.alerts).toHaveLength(1);
+  expect(h.hasOwner()).toBe(true);
+  h.serverRows[0]!.connected = true; // AF determines whether a restart preserves its epoch.
+  await h.emit({ ...discordSignal(), turnId: 2 });
   expect(h.calls.length).toBe(2);
   h.setEpoch('deployed-config');
-  await h.emit({ ...discordSignal(), turnId: 2 });
   await h.emit({ ...discordSignal(), turnId: 3 });
+  expect(h.hasOwner()).toBe(false);
+  await h.emit({ ...discordSignal(), turnId: 4 });
   expect(h.calls.length).toBe(2);
-  expect(h.alerts.length).toBe(1);
-  expect(h.alerts[0]![3]).toEqual({ serverId: 's', agentName: 'agent', turnId: 2, category: 'bio', status: 'stale-or-unsupported-server' });
-  expect(h.diagnostics[1]).toContain('"serverId":"s"');
-  expect(h.diagnostics[1]).toContain('"turnId":2');
+  expect(h.alerts.length).toBe(2);
+  expect(h.alerts[1]?.[2]).toContain('built-in refusal reactions resumed framework-wide');
+  expect(h.alerts[1]?.[3]).toEqual({ serverId: 's', agentName: 'agent', turnId: 3, category: 'bio', status: 'stale-connection' });
+  expect(h.diagnostics[2]).toContain('"serverId":"s"');
+  expect(h.diagnostics[2]).toContain('"turnId":3');
 });

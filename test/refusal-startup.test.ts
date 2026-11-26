@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AgentFramework } from '@animalabs/agent-framework';
@@ -34,6 +34,73 @@ test.skipIf(typeof (AgentFramework.prototype as any).getMainRefusalBridge === 'f
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 70000,
 );
+
+for (const state of ['connected', 'restored closed tab', 'failed first connect'] as const) {
+  test.skipIf(typeof (AgentFramework.prototype as any).getMainRefusalBridge !== 'function')(
+    `enabled host starts and stops with a ${state}`, () => {
+      const dir = mkdtempSync(join(tmpdir(), 'refusal-enabled-startup-'));
+      try {
+        const recipe = join(dir, 'recipe.json');
+        const acquisitions = join(dir, 'ownership.log');
+        const preload = join(dir, 'observe-ownership.ts');
+        // Observe the real bridge's acquisitions, without replacing the
+        // framework, bridge decisions, connection results, or ops alerts.
+        writeFileSync(preload, `
+          import { appendFileSync } from 'node:fs';
+          import { AgentFramework } from ${JSON.stringify(import.meta.resolve('@animalabs/agent-framework'))};
+          const getBridge = AgentFramework.prototype.getMainRefusalBridge;
+          AgentFramework.prototype.getMainRefusalBridge = function () {
+            const bridge = getBridge.call(this);
+            return { ...bridge, takeOwnership(handler) {
+              const release = bridge.takeOwnership(handler);
+              appendFileSync(${JSON.stringify(acquisitions)}, 'acquired\\n');
+              return () => {
+                release();
+                appendFileSync(${JSON.stringify(acquisitions)}, 'released\\n');
+              };
+            } };
+          };
+        `);
+        const start = (opts: Record<string, unknown>) => {
+          writeFileSync(recipe, JSON.stringify({ name: 'refusal-startup',
+            agent: { name: 'agent', provider: 'mock', model: 'mock', systemPrompt: 'offline test' }, ...opts }));
+          const result = spawnSync(process.execPath, ['--preload', preload, resolve(import.meta.dir, '../src/index.ts'), recipe, '--no-tui'], {
+            cwd: dir, encoding: 'utf8', input: '', timeout: 60000,
+            env: { PATH: process.env.PATH, HOME: dir, DATA_DIR: dir },
+          });
+          expect(result.error).toBeUndefined();
+          expect({ status: result.status, fatal: result.status ? result.stderr : '' }).toEqual({ status: 0, fatal: '' });
+          expect(result.stdout).toContain('Done.');
+        };
+        if (state === 'restored closed tab') {
+          start({}); // Create a usable store, then seed its saved toolset state.
+          const sessions = new SessionManager(dir);
+          const configDir = join(sessions.getStorePath(sessions.getActiveSession()!.id), 'config');
+          mkdirSync(configDir, { recursive: true });
+          writeFileSync(join(configDir, 'toolsets.json'), JSON.stringify({ version: 1, agents: {}, closed: { s: true } }));
+        }
+        start({
+          mainRefusalReactions: { ownership: 'whole-framework', servers: [{ serverId: 's', kind: 'discord', sourceRevision: DISCORD_SOURCE }] },
+          mcpServers: { s: { command: process.execPath, args: state === 'failed first connect'
+            ? ['-e', 'process.exit(1)'] : [resolve(import.meta.dir, 'fixtures/main-refusal-server.mjs')] } },
+        });
+        const failures = join(dir, 'logs', 'failures.log');
+        const alerts = existsSync(failures) ? readFileSync(failures, 'utf8').trim().split('\n')
+          .map(line => JSON.parse(line)).filter(event => event.kind === 'refusal-reaction-unavailable') : [];
+        if (state === 'connected') {
+          expect(readFileSync(acquisitions, 'utf8')).toBe('acquired\nreleased\n');
+          expect(alerts).toEqual([]);
+        } else {
+          expect(existsSync(acquisitions)).toBe(false);
+          expect(alerts).toHaveLength(1);
+          expect(alerts[0]).toMatchObject({ agent: 'agent', serverId: 's',
+            status: state === 'restored closed tab' ? 'closed-tab' : 'not-connected' });
+          expect(alerts[0].reason).toContain('built-in refusal reactions remain enabled');
+        }
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    }, 130000,
+  );
+}
 
 // This guard is at the shared command boundary, before clients can drop turn
 // trackers or call switchSession, so it runs even with the locked framework.

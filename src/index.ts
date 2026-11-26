@@ -542,7 +542,7 @@ async function createFramework(
   if (recipe.mainRefusalReactions !== undefined) {
     assertRefusalBridgeAvailable(AgentFramework.prototype);
     mcplServers = prepareRefusalReactions(recipe.mainRefusalReactions, mcplServers);
-    refusalReactions = refusalReactionLifecycle(recipe.mainRefusalReactions, mcplServers);
+    refusalReactions = refusalReactionLifecycle(recipe.mainRefusalReactions, mcplServers, { agentName });
     moduleInstances.push(refusalReactions.module);
   }
 

@@ -37,7 +37,7 @@ async function rig(kind: 'discord' | 'zulip', enabled = true) {
     env: isDiscord ? {} : { ZULIP_ID_MODE: 'strict', ZULIP_REALM_TAG: 'realm' } }];
   const prepared = prepareRefusalReactions(enabled ? config : undefined, serverConfig);
   const diagnostics: string[] = [];
-  const lifecycle = enabled ? refusalReactionLifecycle(config, prepared, d => diagnostics.push(d)) : undefined;
+  const lifecycle = enabled ? refusalReactionLifecycle(config, prepared, { diagnostic: d => diagnostics.push(d) }) : undefined;
   let framework: AgentFramework;
   try {
     framework = await AgentFramework.create({ storePath: join(dir, 'store'), membrane: membrane.asMembrane(),
@@ -131,7 +131,7 @@ describe.skipIf(!localSource)('local AF companion + offline stdio', () => {
     } finally { await r.close(); }
   }, 20_000);
 
-  test('a selected-server restart fails closed; framework teardown releases its acquisition', async () => {
+  test('a selected-server restart releases the host owner and the next refusal uses the built-in path', async () => {
     const r = await rig('discord');
     try {
       r.lifecycle!.install(r.framework);
@@ -152,10 +152,14 @@ describe.skipIf(!localSource)('local AF companion + offline stdio', () => {
       r.incoming(b);
       await r.framework.runUntilIdle();
       await r.waitForDiagnostics(2);
-      expect(r.diagnostics[1]).toStartWith('stale-or-unsupported-server');
-      // The restarted fixture has a fresh call log. Neither owner path adds.
+      expect(r.diagnostics[1]).toStartWith('stale-connection');
+      // The detecting refusal was already handed off, so it isn't replayed.
       expect(await r.readAdds()).toEqual([]);
-      expect(r.membrane.calls).toHaveLength(2);
+      r.incoming(a);
+      await r.framework.runUntilIdle();
+      expect(await r.readAdds()).toEqual([{ channelId: '23456789012345678', messageId: a, emoji: REFUSAL_REACTIONS.bio }]);
+      expect(r.diagnostics).toHaveLength(2);
+      expect(r.membrane.calls).toHaveLength(3);
     } finally { await r.close(); }
     // Test the old facet only; a stopped framework is never reused by the host.
     expect(() => r.bridge.takeOwnership(() => {})()).not.toThrow();

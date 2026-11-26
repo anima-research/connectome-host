@@ -3,12 +3,12 @@
   bridge; the currently locked dependency does not support the option. The Zulip
   driver remains pending its upstream connector contract and currently targets a
   fork-only contract (strict or compat IDs), not a supported upstream release.
-  Opting in turns off the framework's built-in refusal reactions for all
-  servers, including unselected ones. Replacing a selected connector
-  (including with `mcpl_restart`) stops its markers until the host restarts.
-  A refusal-marker ops alert is sent once per server per host run without
-  replay. The TUI and configured notices module can retain alert state in
-  memory. Later failures on that server appear only in diagnostics.
+  Host ownership replaces built-in refusal reactions framework-wide. If a
+  selected server starts closed or unconnected, the host alerts and leaves
+  built-in reactions enabled. On detecting a stale connection (for example,
+  after `mcpl_restart`), the host releases ownership and alerts; built-in
+  reactions resume for subsequent refusals. Restart to re-enable host-selected
+  reactions. Other refusal-marker failures alert once per server per run.
   Failed reaction ADDs report a short error category without exposing raw
   error text.
   While enabled, session switches (including `/session new`) are refused
