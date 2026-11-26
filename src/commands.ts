@@ -44,6 +44,7 @@ import { EXACT_VERSION } from './update/install.js';
 import {
   HOST_STOPPING, refusedWhileSwitchQuiesced, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork,
 } from './session-switch.js';
+import { noStoreRefusal } from './session-manager.js';
 import { hostUpdate, type UpdateAnswer } from './update/update.js';
 import {
   COMMAND_WAYS, PAGE_WAYS, cliWays, goBackLines, goBackUnread, statusLines, type UpdateWays,
@@ -748,6 +749,8 @@ function handleSessionSwitch(app: AppContext, nameOrId?: string): CommandResult 
   if (app.recipe?.mainRefusalReactions !== undefined) return refusalReactionsSwitchRefused;
   const running = stillRunning(app);
   if (running) return running;
+  const noStore = noStoreRefusal(app.sessionManager.getStorePath(session.id), { kind: 'switch', session });
+  if (noStore !== null) return { lines: [{ text: noStore, style: 'system' }], refused: true };
   resetBranchState(app.branchState);
 
   return {

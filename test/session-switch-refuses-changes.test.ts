@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { join } from 'node:path';
 import type { AgentFramework } from '@animalabs/agent-framework';
 import { handleCommand } from '../src/commands.js';
 import { trackOperatorWork } from '../src/session-switch.js';
@@ -6,6 +7,8 @@ import { sessionRefusalFor, switchRefusalFor } from '../src/modules/web-ui-modul
 import { isClientMessage, type WebUiClientMessage } from '../src/web/protocol.js';
 
 type App = Parameters<typeof handleCommand>[1];
+
+const ABSENT_STORES = join(import.meta.dir, 'absent-session-stores');
 
 function switchingApp(): App {
   return new Proxy({} as App, {
@@ -114,6 +117,7 @@ describe('a session switch is not started while a command that changes the sessi
       } as unknown as AgentFramework,
       sessionManager: {
         findSession: (nameOrId: string) => sessions.find((s) => s.id === nameOrId || s.name === nameOrId),
+        getStorePath: (id: string) => join(ABSENT_STORES, id),
         getActiveSession: () => sessions[0],
         createSession: (name?: string) => {
           created.push(name ?? '');
@@ -172,6 +176,7 @@ describe('a session switch is not started while a command that changes the sessi
       framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }), getAllModules: () => [fleet] } as unknown as AgentFramework,
       sessionManager: {
         findSession: (nameOrId: string) => sessions.find((s) => s.id === nameOrId || s.name === nameOrId),
+        getStorePath: (id: string) => join(ABSENT_STORES, id),
         getActiveSession: () => sessions[0],
       } as never,
       recipe: { name: 'test' } as never,
@@ -191,6 +196,7 @@ describe('a session switch is not started while a command that changes the sessi
       ...readableApp(false),
       sessionManager: {
         findSession: (nameOrId: string) => sessions.find((s) => s.id === nameOrId || s.name === nameOrId),
+        getStorePath: (id: string) => join(ABSENT_STORES, id),
         getActiveSession: () => sessions[0],
       } as never,
       credentials: { runAction: () => { enter(); return new Promise(() => {}); } } as never,
@@ -236,6 +242,7 @@ describe("another entry's work holds off a session switch until it settles", () 
       framework: { getHostModeStatus: () => ({ quiesced: false, activeTurnAgents: [] }) } as unknown as AgentFramework,
       sessionManager: {
         findSession: (nameOrId: string) => sessions.find((s) => s.id === nameOrId || s.name === nameOrId),
+        getStorePath: (id: string) => join(ABSENT_STORES, id),
         getActiveSession: () => sessions[0],
       } as never,
       recipe: { name: 'test' } as never,
