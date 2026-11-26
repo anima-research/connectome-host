@@ -60,9 +60,10 @@ test('a real start names the missing server once, a session switch does not agai
     stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', timeout: 60_000,
   });
   const streams = { out: '', err: '' };
-  const decoder = new TextDecoder();
   const read = async (stream: ReadableStream<Uint8Array>, into: 'out' | 'err') => {
+    const decoder = new TextDecoder();
     for await (const chunk of stream) streams[into] += decoder.decode(chunk, { stream: true });
+    streams[into] += decoder.decode();
   };
   const reading = Promise.all([read(child.stdout, 'out'), read(child.stderr, 'err')]);
   const probes = () => streams.out.split('\n').filter((line) => line.startsWith('GC_PROBED=')).length;
