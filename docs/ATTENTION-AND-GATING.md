@@ -38,12 +38,13 @@ A matched rule resolves to one behavior:
 | `{ "passive_sample": { "every": n, "keyBy": "channelId" } }` | Wake on every nth matching event. |
 | `{ "judge": { "debounceMs": ms, "maxWaitMs": ms, "instructions": "…" } }` | Batch like a debounce, then ask the **reply judge**, a small, cheap model, whether now is a good time for you to reply. It reads your context (its newest part), your `instructions` and the batch, and either wakes you or lets the batch go by (the messages stay in your context, as for `defer`). `maxWaitMs` (optional) makes it decide by then even while messages keep coming. Needs an agent-framework release newer than 0.27.0; see below. |
 
-`keyBy` is optional on both counting behaviors: each distinct value gets its own
-bucket/counter (without it, one shared one). `"channelId"` counts by the
-registered id the gate resolves for the event's channel, where it resolves one,
-so a channel's messages and its pushes (reactions, edits, voice reports) share
-one. Otherwise, and for any other name, it counts by the event's metadata field
-of that name, and an event without one uses the shared one.
+`keyBy` is optional on both counting behaviors. With it, each distinct value
+gets its own bucket or counter. Without `keyBy`, all events share one bucket or
+counter. `keyBy: "channelId"` counts by the channel's registered id, as the gate
+resolves it for each event. So a channel's messages and its pushes (reactions,
+edits, voice reports) share one counter. Any other `keyBy` name counts by the
+event's metadata field of that name. `"channelId"` does the same when the gate
+resolves no registered id. An event without that field uses the shared counter.
 
 ### The reply judge
 
@@ -93,39 +94,40 @@ starting rules.
 
 ## Declarative rules — `gate.json`
 
-The file lives on disk at `<storePath>/config/gate.json` — in this host,
-`$DATA_DIR/sessions/<session-id>/config/gate.json`; `gate_status` shows the
-exact path as `configPath`. Your recipe's `modules.wake` seeds it on first
-start (a recipe with no policies there writes no file — until you add a rule,
-you have no rules and everything wakes you). agent-framework keeps the recipe it
-last applied beside it, in `gate.recipe.json`, and merges the recipe in at every
-later start, rule by rule and by name:
-- a rule as the last recipe left it follows the recipe, so one the recipe
-  redefines, renames, moves or drops changes with it;
-- a rule you edited keeps your definition, and one you added stays;
-- a recipe rule you removed comes back while the recipe declares it. The start
-  places it just before a later rule of the recipe: the first one that the file
-  still holds. To retire a recipe rule for good, don't remove it. Replace it
-  under the same name with a definition that the recipe doesn't have, such as
-  `defer`;
-- once you've moved a recipe rule, the file's order stays;
-- an unedited `default` takes the recipe's.
+The file lives on disk at `<storePath>/config/gate.json`. In this host, the path
+is `$DATA_DIR/sessions/<session-id>/config/gate.json`. `gate_status` shows the
+exact path as `configPath`. Your recipe's `modules.wake` seeds the file at the
+first start. A recipe with no policies in `modules.wake` makes the start write
+no file. Then you have no rules, and every event wakes you until you add a rule.
+agent-framework keeps the recipe that it last applied beside the file, in
+`gate.recipe.json`. At every later start it merges the recipe in, rule by rule
+and by name:
+- A recipe rule that you haven't changed follows the recipe. When the recipe
+  redefines, renames, moves or drops it, the rule changes with it.
+- A rule that you edited keeps your definition, and a rule that you added stays.
+- A recipe rule that you removed comes back, as long as the recipe still
+  declares it. The start puts it back in front of the next recipe rule that is
+  still in the file. To retire a recipe rule for good, don't remove it. Instead,
+  give its name a definition that the recipe doesn't have, such as `defer`.
+- Once you move a recipe rule, the file keeps the order that you gave it.
+- A `default` that you didn't edit follows the recipe's `default`.
 
-A start that changes the file, or keeps a rule against a change in the recipe,
-writes a line to the host's stderr that says what it changed and what it kept
-(`[gate] the recipe was applied to gate.json: …`). When a TUI starts, the host
-prints its first session's line to the terminal before the TUI takes the screen,
-so `tui-error.log` doesn't have it. A session that you switch to inside the TUI
-doesn't write its line to `tui-error.log` either. A fleet child's stderr goes to
-`startup.log` in its data directory.
+A start writes a line to the host's stderr when it changes the file, or when it
+keeps a rule against a change in the recipe. The line says what the start
+changed and what it kept (`[gate] the recipe was applied to gate.json: …`). When
+a TUI starts, the host prints this line for its first session before the TUI
+takes the screen. So `tui-error.log` doesn't have that line. A session that you
+switch to inside the TUI doesn't write its line to `tui-error.log` either. A
+fleet child's stderr goes to `startup.log` in its data directory.
 
-A start can find `gate.json` but no `gate.recipe.json`, for example the first
-start since agent-framework 0.27.0. Such a start removes and redefines nothing.
-It adds the recipe's rules that the file lacks, and it gives the recipe's order
-to the rules that match the recipe. After that start, a rule that differed from
-the recipe counts as edited. It no longer follows the recipe. To make it follow
-the recipe again, remove it, and the next start brings back the recipe's
-version. See **Changing your rules** below for how to edit the file safely.
+A start can find `gate.json` without `gate.recipe.json`, as the first start
+since agent-framework 0.27.0 does. Such a start removes no rule and redefines
+none. It adds each recipe rule that the file lacks. It also puts the rules that
+match the recipe in the recipe's order. After that start, each rule that
+differed from the recipe counts as edited, so it no longer follows the recipe.
+To make such a rule follow the recipe again, remove it. The next start then
+brings back the recipe's version. See **Changing your rules** below for how to
+edit the file safely.
 
 It's an ordered list — **first match wins** — plus a `default`:
 
@@ -148,30 +150,32 @@ It's an ordered list — **first match wins** — plus a `default`:
 `"skip"`). **If you omit it, it's `"always"`** — every unmatched event wakes you.
 
 **Match fields** (all AND together; omitted fields match anything):
-- `scope` — exact event types, e.g. `mcpl:channel-incoming` (messages in open
-  channels), `mcpl:push-event` (pushed events — heartbeat ticks, addressed
+- `scope` — exact event types, such as `mcpl:channel-incoming` (messages in open
+  channels), `mcpl:push-event` (pushed events: heartbeat ticks, addressed
   messages from closed channels, and a channel's reactions, edits, deletes,
-  voice reports and catch-ups), `workspace:created` / `workspace:modified` /
-  `workspace:deleted`
+  voice reports and catch-ups), and `workspace:created`, `workspace:modified`
+  and `workspace:deleted`
 - `source` — the event's server id: the MCPL server's name in your recipe
   (`discord`, `heartbeat`, …), glob ok
-- `channel` — the channel id, glob ok. Globs must match the **whole** id (`*` is
-  the only wildcard, and it also matches `:` and `/`). Write a Discord channel
-  in its registered form, `discord:<guildId>:<channelId>` (`"discord:*:12345"`).
-  That form meets every event in the channel: its messages, whether they
-  arrive while it's open or as pushes while it's closed, and its reactions,
-  edits, deletes, voice reports and catch-ups. Open channels' messages carry
-  that id. A push carries the integration's own id (for Discord, the raw
-  snowflake, and none on a voice report), and where that misses, the gate tries
-  the registered id it resolves for the push. So a bare `"12345"` meets only
-  pushes that carry it, never the channel's open-channel messages. To keep a
-  rule to the channel's messages and most edits to them, add
-  `tagsAny: ["chat:ambient", "chat:addressed"]`, and
-  `tagsNone: ["chat:edited"]` as well to leave the edits out. Some edits carry
-  `chat:edited` and no address tag, so the `tagsAny` rule misses them. That
-  happens in two cases: discord.js holds the edited message only in part, or a
-  reply's target has no known author. To keep it to
-  open-channel messages, add `scope: ["mcpl:channel-incoming"]`.
+- `channel` — the channel id. Globs are allowed, and a glob must match the
+  **whole** id. `*` is the only wildcard, and it also matches `:` and `/`. Write
+  a Discord channel in its registered form, `discord:<guildId>:<channelId>`
+  (`"discord:*:12345"`). The form `discord:<guildId>:<channelId>` meets every
+  event in the channel. It meets the channel's messages, both while the channel
+  is open and as pushes while it's closed. The same form also meets the
+  channel's reactions, edits, deletes, voice reports and catch-ups. Messages in
+  an open channel carry the registered id. A push carries the integration's own
+  id instead. For Discord, that is the raw snowflake, and a voice report carries
+  no id. If the pattern doesn't match that id, the gate resolves the push's
+  registered id and tries the pattern on it. So a bare `"12345"` meets only the
+  pushes that carry it, and never the messages of an open channel. To match the
+  channel's messages and most edits to them, add
+  `tagsAny: ["chat:ambient", "chat:addressed"]`. To leave the edits out as well,
+  also add `tagsNone: ["chat:edited"]`. Some edits carry `chat:edited` and no
+  address tag, so the `tagsAny` rule misses them. That happens when discord.js
+  holds the edited message only in part, or when a reply's target has no known
+  author. To match only the messages of open channels, add
+  `scope: ["mcpl:channel-incoming"]`.
 - `tagsAny` / `tagsAll` / `tagsNone` — event tags (see below), globs ok (`robotics:*`)
 - `mount` / `pathGlob` — workspace file events: the mount name, and a glob over
   the touched paths, which are **mount-prefixed** (`"project/notes/*.md"`, not

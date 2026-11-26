@@ -78,13 +78,13 @@ In a shell command, put each path or value that you fill in between single quote
   `DISCORD_SUPPRESSED_REACTIONS_BASELINE` with tokens in the host's
   environment replaces agent-framework's default. See DEV-ENVIRONMENT for
   file-defined servers.
-- `data/` — chronicle store + per-session `config/gate.json` (wake policies;
-  each start merges the recipe in, but a policy edited at run time keeps its
-  live definition, and once a recipe policy was moved at run time the file
-  keeps its live order, so change those in the **live** file, not just the
-  recipe). A start without `gate.recipe.json` can't tell edited or moved
-  policies from the others. It reorders only the policies that match the
-  recipe, and it redefines none.
+- `data/` — chronicle store + per-session `config/gate.json` (wake policies). At
+  each start, agent-framework merges the recipe into the session's `gate.json`.
+  A policy edited at run time keeps its live definition. Once you move a recipe
+  policy at run time, the file keeps the order that you gave it. So change those
+  in the **live** file, not just the recipe. A start without `gate.recipe.json`
+  can't tell edited or moved policies from the others. It reorders only the
+  policies that match the recipe, and it redefines none.
 
 **Start / stop / restart:**
 
