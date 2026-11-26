@@ -1,4 +1,3 @@
-// Run by test/own-settings.test.ts in a process of its own: an open that waits on a pipe would stop the test runner itself.
 import { substituteEnvVars, validateRecipe } from '../../src/recipe.js';
 import { startOwnSettings } from '../../src/own-settings.js';
 

@@ -1,9 +1,3 @@
-// Run by test/own-settings.test.ts in a process of its own, with a time limit: a value that keeps the
-// chunker's loop from moving would stop the test runner itself. For each entry of the JSON list in argv[2],
-// it applies the entry as a resident's file does, builds the host's strategy from the recipe in force,
-// stores a picture, a tool call with a long argument and its long result, and a long message, and
-// compiles once. It prints a line for each entry as it starts it, and one as it ends it, so a run that
-// the limit stops names the entry it was in.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,9 +14,7 @@ const written = {
 };
 const origin = { kind: 'authored' as const, document: structuredClone(written) };
 const operator = { recipe: validateRecipe(substituteEnvVars(written, 'recipe.json', {}), origin), origin };
-// Long enough that a chunk of a few tokens shards it, and short enough for one compile.
 const long = Array.from({ length: 400 }, (_, i) => `Line ${i} of the long message, with a few words in it.`).join('\n');
-// A PNG of one pixel.
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 
 const entries = JSON.parse(process.argv[2]!) as Array<[string, unknown]>;

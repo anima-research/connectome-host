@@ -2576,9 +2576,6 @@ const inferenceBounds = z.union([
 ], takes('false or an object'));
 
 const OWN_SETTINGS_FORMS = '"all", "read" or a non-empty list of setting names';
-// A name that the table doesn't hold loads, and grants nothing: a release
-// that drops a setting from the table costs a recipe that names it only that
-// setting. The start's log and doctor name it (own-settings.ts).
 const ownSettings = z.union([
   oneOf(['all', 'read'], OWN_SETTINGS_FORMS),
   listOf(text('a setting name'), OWN_SETTINGS_FORMS).min(1, takes(OWN_SETTINGS_FORMS)),

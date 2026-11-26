@@ -50,15 +50,6 @@ export const AVAILABILITY: Readonly<Record<AvailabilityKind, Availability>> = {
   },
 };
 
-/**
- * What a numeric row takes, past what the recipe's field takes: a value that
- * the row's words describe. That is a whole number of 0 or more where the
- * words give 0 a meaning, and of 1 or more where they don't (`least`), up to
- * the largest safe integer. With `byName`, the row also takes an object from
- * tool names to such numbers. The recipe's field takes more, which an
- * operator's recipe keeps: a resident's value outside the domain can keep its
- * host down (a `targetChunkTokens` of 0 stops the chunker's loop from moving).
- */
 type Domain = { readonly least: 0 | 1; readonly byName?: true };
 
 /**

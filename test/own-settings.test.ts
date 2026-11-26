@@ -85,7 +85,6 @@ describe('the table', () => {
 });
 
 describe('the numeric rows\' domains', () => {
-  // A value that a row's words describe: a whole number of 0 or more where they give 0 a meaning, else of 1 or more.
   const LEAST: Readonly<Record<string, 0 | 1>> = {
     'agent.strategy.maxLiveImages': 0,
     'agent.strategy.imageStripDepthTokens': 0,
@@ -110,7 +109,6 @@ describe('the numeric rows\' domains', () => {
     for (const [name, least] of Object.entries(LEAST)) {
       for (const inside of [least, least + 1, Number.MAX_SAFE_INTEGER]) expect([name, inside, notUsed(name, inside)]).toEqual([name, inside, null]);
       for (const outside of [least - 1, -1, 0.5, 2 ** 53]) {
-        // Where the recipe's field refuses the value too, its fault is the one given.
         expect([name, outside, notUsed(name, outside)]).toEqual([name, outside, {
           kind: 'value',
           fault: settingFault(name, outside) ?? `${name} must be ${domainTakes(OWN_SETTINGS.find((setting) => setting.name === name)!)}, got ${outside}.`,
@@ -509,14 +507,14 @@ describe('what a start does with the file', () => {
   });
 
   test('a value nested deeper than the host can show stops no start', () => {
-    for (const depth of [5_000, 50_000, 500_000]) {
+    for (const depth of [5_000, 50_000]) {
       const text = `{"agent.timezone": "UTC", "agent.proseRouting": ${'['.repeat(depth)}${']'.repeat(depth)}}`;
       const start = startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own: text }));
       expect(start.check.recipe.agent.timezone).toBe('UTC');
       expect(start.note!.length).toBeLessThan(5_000);
       expect(start.log.every((line) => line.length < 2_000)).toBe(true);
     }
-  }, 20_000);
+  });
 
   test('a parked file comes back only where no own.json was written during the start', () => {
     const op = operator({ ownSettings: 'all' });

@@ -108,7 +108,6 @@ function readPlainFile(path: string): { readonly bytes: Buffer } | Extract<OwnFi
 }
 
 function publish(path: string, bytes: Buffer): void {
-  // A name of its own, created exclusively, so that no file already in the directory is touched.
   const temporary = join(dirname(path), `.own.json.${randomBytes(8).toString('hex')}.writing`);
   const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   try {
@@ -130,9 +129,7 @@ function publish(path: string, bytes: Buffer): void {
   } finally {
     try {
       unlinkSync(temporary);
-    } catch {
-      // A name that this put-back made, which nothing reads.
-    }
+    } catch {}
   }
 }
 
@@ -253,18 +250,11 @@ function judge(grant: Grant, recipe: Recipe, name: string, value: unknown): OwnE
   if (setting === undefined) return { name, value, notUsed: { kind: 'unknown' } };
   if (!mayChange(grant, setting.name)) return { name, value, notUsed: { kind: 'not-granted' } };
   if (!isAvailable(setting, recipe)) return { name, value, notUsed: { kind: 'not-available', when: AVAILABILITY[setting.available].when } };
-  // The recipe's check first, whose faults name the place in a value; then a numeric row's domain, which is narrower.
   const fault = value === null ? `${name} must be ${takes(setting)}, got null.`
     : settingFault(name, value) ?? (insideDomain(setting, value) ? undefined : `${name} must be ${takes(setting)}, got ${brief(value)}.`);
   return { name, value, notUsed: fault === undefined ? null : { kind: 'value', fault } };
 }
 
-/**
- * The warnings about the recipe's `ownSettings` that a start's log and doctor
- * give: one for each name in the list that the table doesn't hold, which
- * grants nothing (a release that drops a setting leaves the name so), then
- * the table's own (ownSettingsWarnings).
- */
 function grantWarnings(recipe: Recipe): string[] {
   const grant = recipe.ownSettings;
   const unknown = Array.isArray(grant) ? grant.filter((name) => settingNamed(name) === undefined) : [];
@@ -278,7 +268,6 @@ function grantWarnings(recipe: Recipe): string[] {
   ];
 }
 
-/** What a row takes, in words: its domain's for a numeric row, else the recipe's. */
 const takes = (setting: OwnSetting): string => domainTakes(setting) ?? settingTakes(setting.name) ?? 'what the recipe takes there';
 
 const ended = (text: string): string => (text.endsWith('.') ? text : `${text}.`);
@@ -307,7 +296,6 @@ function listed(entries: readonly OwnEntry[], line: (entry: OwnEntry) => string,
 
 const near = (name: string): string | null => nearestKey(name, OWN_SETTING_NAMES);
 
-// Quoted, so that no character of a name from the file can start a log line of its own.
 const logName = (entry: OwnEntry): string => (entry.notUsed?.kind === 'unknown' ? cut(JSON.stringify(entry.name)) : entry.name);
 
 const quoted = (sentence: string): string =>
