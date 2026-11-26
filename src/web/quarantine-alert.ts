@@ -30,6 +30,12 @@ export function quarantineHeld(q: QuarantineCounts): string {
     : `${records} quarantine record(s) in compression quarantine (one span can hold several)`;
 }
 
+export function quarantineAlarmMessage(q: QuarantineCounts): string {
+  return `${quarantineHeld(q)} — held spans stay whole and take room in the context budget. ` +
+    "The host's health report lists them for this agent under compressionQuarantine. " +
+    'docs/DEPLOYMENTS.md, "Compression quarantine", says how to read it and what the host offers.';
+}
+
 /** context-manager's quarantine alarm calls with records held at every
  *  alarm interval, and once with none when an episode it alarmed for in this
  *  process ends (an episode alarmed before a restart gets no all-clear). The
@@ -45,8 +51,7 @@ export function quarantineAlarm(status: QuarantineStatus): { kind: string; messa
   }
   return {
     kind: 'compression-quarantine',
-    message: `${quarantineHeld(status)} — spans stay raw and WILL eventually exhaust the context budget. ` +
-      'Operator action required (inspect refusing content; branch, pin, or clear).',
+    message: quarantineAlarmMessage(status),
     data: { count: status.count, keys: status.keys },
   };
 }
