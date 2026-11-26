@@ -161,7 +161,7 @@ describe("why the Context page's next request wasn't counted", () => {
     expect(notCounted('count_tokens_error')).toBe('not counted: the count_tokens call failed');
     expect(notCounted('count_tokens')).toBe('not counted: count_tokens answered with no count');
     expect(notCounted('count_tokens_no_credential')).toBe(
-      "not counted: the host has no Anthropic credential, so it asked nothing. A count sends the agent's next request to Anthropic's API, or to ANTHROPIC_BASE_URL.",
+      "not counted: the host has no Anthropic credential that the count can use, so it asked nothing. A count sends the agent's next request to Anthropic's API, or to ANTHROPIC_BASE_URL.",
     );
     expect(notCounted('something_new')).toBe('not counted (something_new)');
   });
