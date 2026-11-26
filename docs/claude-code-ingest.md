@@ -528,7 +528,7 @@ importer writes the session index, which a running host reads as it goes. After 
 import, start the service again with its start line. Then the seed's session is the
 one that opens. To open the import's session, use `/session switch <id>` with the bare
 id that the import printed, as `AGENT-ONBOARDING.md`'s "Importing a history" says.
-Watch `/healthz` for `compressionQuarantine`, and the per-call log
+Watch `/healthz` for `compressionQuarantine` and `readFailures`, and the per-call log
 (`data/llm-calls.<iso>.jsonl`) for `stop_reason`. If you're the setup agent, the person
 watches `/healthz` in your place. The first message comes from the person, not from you, as in
 `AGENT-ONBOARDING.md`'s "Going live". They can send it over the Discord channel that
