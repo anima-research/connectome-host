@@ -327,7 +327,7 @@ Not every account binds: some still show the model such a block. So at start, th
 - `contextComposition`: the head, raw middle, summaries and tail, as the last live compile rendered them. It has no entry for an agent that has had no live compile since its context was loaded, or whose strategy keeps none (`contextCompositionNotKept` names those agents);
 - `runtimeSettings`;
 - `loadRepair`: the newest load repair that the agent's strategy made, absent while it has made none;
-- `readFailures`: present only when one of those reads threw, with what it said.
+- `readFailures`: present only when one of those reads failed, with what it said. A read fails when it throws. The read of `compressionQuarantine` also fails when context-manager marks the status `unreadable`, and such an agent has no entry in that section.
 
 ---
 

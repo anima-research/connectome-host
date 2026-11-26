@@ -693,6 +693,7 @@ type FrameworkAgent = ReturnType<AgentFramework['getAllAgents']>[number];
 
 const READ_FAILURE_MAX_CHARS = 300;
 const READ_FAILURE_UNDESCRIBED = "the read failed, and its error couldn't be described";
+const QUARANTINE_UNREADABLE = "what it holds is unknown until a read succeeds";
 
 function describeReadFailure(error: unknown): string {
   try {
@@ -760,10 +761,16 @@ export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
   // compressionQuarantine: each agent's compression quarantine, as its
   // strategy reports it.
   try {
-    (snapshot as Record<string, unknown>).compressionQuarantine = perAgentHealth(app, 'compressionQuarantine', readFailures, (agent) =>
-      (agent.getContextManager() as unknown as {
-        getStrategy?: () => { getCompressionQuarantineStatus?: () => unknown };
-      }).getStrategy?.()?.getCompressionQuarantineStatus?.());
+    (snapshot as Record<string, unknown>).compressionQuarantine = perAgentHealth(app, 'compressionQuarantine', readFailures, (agent) => {
+      const status = (agent.getContextManager() as unknown as {
+        getStrategy?: () => { getCompressionQuarantineStatus?: () => { unreadable?: unknown } | null | undefined };
+      }).getStrategy?.()?.getCompressionQuarantineStatus?.();
+      // context-manager's status read doesn't throw when it can't read the
+      // quarantine: it marks the status `unreadable`, and its count, keys and
+      // spans then say nothing about what is held.
+      if (status?.unreadable === true) throw new Error(QUARANTINE_UNREADABLE);
+      return status;
+    });
   } catch {
   }
   // compressionDebt: each agent's compression debt as context-manager
