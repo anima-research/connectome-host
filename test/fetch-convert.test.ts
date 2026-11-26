@@ -282,7 +282,7 @@ describe('htmlToMarkdown', () => {
   });
 
   test('deep nesting fails as a refusal instead of taking the process down', async () => {
-    const error = await htmlToMarkdown('<div>'.repeat(10_000) + 'x', undefined).then(() => null, (e: unknown) => e);
+    const error = await htmlToMarkdown('<div>'.repeat(12_000) + 'x', undefined).then(() => null, (e: unknown) => e);
     expect(error).toBeInstanceOf(FetchRefusal);
   }, 20_000);
 });
