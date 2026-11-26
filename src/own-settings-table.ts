@@ -77,7 +77,7 @@ export const OWN_SETTINGS = [
       ' A line with no destination named before it in the turn is not posted, and it is held for you to send again.' +
       ' The host then wakes you about the held line, up to two times in a row.' +
       ' This also happens when your line answered someone at the host\'s terminal.' +
-      ' `hybrid`: as `locus`, and `>>>destination` sends a line elsewhere.' +
+      ' `hybrid`: as `locus`, and a line that starts with `>>>destination` goes there; each later line of that turn goes there too, until another `>>>` line changes that.' +
       ' `disabled`: no plain line is posted, and only a send tool posts.' +
       ' `locked`: every plain line goes to one destination, and you move it with the tool `prose_locus`, if your operator\'s tool list lets you call it.' +
       ' A change reaches the people in your channels, and `locked` changes your tool list.',
@@ -218,10 +218,11 @@ export const OWN_SETTINGS = [
   },
   {
     name: 'modules.retrieval.maxInjected',
-    domain: { least: 1 },
+    domain: { least: 0 },
     available: 'retrieval',
     example: 4,
-    words: 'The most lessons that the host puts into your context for one turn. Each costs tokens.',
+    words: 'The most lessons that the host puts into your context for one turn. Each costs tokens. With 0, the host puts in none.' +
+      ' It still searches for lessons at each turn, and only your operator can turn the search off.',
   },
   {
     name: 'modules.subagents.orientation',

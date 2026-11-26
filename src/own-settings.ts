@@ -685,8 +685,8 @@ export function ownSettingsLines(operator: OperatorRecipe, dataDir: string): str
     lines.push(`The recipe's ownSettings is "all", which in this release covers these ${OWN_SETTING_NAMES.length} settings: ${OWN_SETTING_NAMES.join(', ')}.`);
   }
   const others = [
-    ...(operator.recipe.modules?.subagents ? ['its subagents (modules.subagents is on)'] : []),
-    ...(operator.recipe.conversations !== undefined ? ['its conversation forks (conversations is set)'] : []),
+    ...(operator.recipe.modules?.subagents ? ['subagents (modules.subagents is on)'] : []),
+    ...(operator.recipe.conversations !== undefined ? ['conversation forks (conversations is set)'] : []),
   ];
   if (others.length > 0 && filePlace(dataDir, operator.recipe, OWN_SETTINGS_FILE).startsWith(`${OWN_SETTINGS_MOUNT}/`)) {
     lines.push(`Any agent of the host that can call ${WRITE_TOOL} can write ${OWN_SETTINGS_MOUNT}/${OWN_SETTINGS_FILE}, such as the resident's ${others.join(' and ')}.`);

@@ -531,25 +531,37 @@ Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) wi
 
 ### A resident's own settings (`ownSettings`)
 
-`ownSettings`, at the top level, lets the resident read and change some of its own settings, in a file of its own that the host applies at each start. It takes one of three forms:
+The top-level key `ownSettings` lets the resident read and change some of its own settings. The resident keeps its values in a file of its own, and the host applies that file at each start. The key takes one of three forms:
 
-- **A list of setting names**, such as `["agent.proseRouting", "agent.timezone"]`: the resident may read and change those settings, and no others. A list that names no setting of the table lets the resident read and change none, and the host parks the file, as below.
-- **`"all"`**: the resident may read and change every setting of the table below. A release that adds a setting to the table adds it to `"all"`, and `connectome doctor` lists the settings that `"all"` covers.
+- **A list of setting names**, such as `["agent.proseRouting", "agent.timezone"]`: the resident may read and change those settings, and no others. If the list names no setting of the table, the resident may read and change none, and the host parks the file, as below.
+- **`"all"`**: the resident may read and change every setting of the table below. When a release adds a setting to the table, `"all"` covers it too. `connectome doctor` lists the settings that `"all"` covers.
 - **`"read"`**: the resident may read every setting of the table, and change none.
 
-Left out, the host adds no mount, offers no tool and applies no file. It parks a file that an earlier grant left, as below.
+Without the key, the host adds no mount, offers no tool and applies no file. If an earlier grant left a file, the host parks it, as below.
 
-The resident's file is `own-settings/own.json` in the data directory: one JSON object, each key a setting's name, and each value what the recipe would hold at that path, whole, such as `{"agent.proseRouting": "explicit"}`. Where the grant lets the resident change a setting and the workspace is on, the host adds the mount `_settings` over that directory, so the resident writes `_settings/own.json` with its file tools. Any agent of the host that can call `workspace--write` can write it too, such as a subagent or a fork of the resident's. The mount is direct and holds that file and `own.not-used.json`, and nothing else. A recipe that has `ownSettings` can't name a mount of its own `_settings`. Without a workspace, the resident's tool gives the file's path on disk.
+The resident's file is `own-settings/own.json` in the data directory. It holds one JSON object. Each key is a setting's name, and each value is the whole value that the recipe would hold at that path, such as `{"agent.proseRouting": "explicit"}`. Where the grant lets the resident change a setting and the workspace is on, the host adds the mount `_settings` over that directory. The resident then writes `_settings/own.json` with its file tools. Any agent of the host that can call `workspace--write` can write it too, such as a subagent or a fork of the resident's. The mount is direct, and it holds that file and `own.not-used.json` and nothing else. A recipe that has `ownSettings` can't name a mount of its own `_settings`. Without a workspace, the resident's tool gives the file's path on disk.
 
-At each start the host checks each entry: its name is in the table and in the grant, its setting is available on this host, and its value is one that the setting takes. A numeric setting takes a whole number from the file: from 0 where the setting's words say what 0 does, and from 1 where they don't, up to 9007199254740991, the largest safe integer. The recipe's own value there can be any number that the recipe takes. Then it adds the entries to the recipe one by one, and keeps each one with which the recipe still passes the load's checks. An entry that fails costs that entry alone, and the start goes on. A value of the file gets no `${VAR}` substitution. The recipe file and the saved recipe never hold a resident's value. A change takes effect at the next start. While the grant names a setting, the resident's value wins over the recipe's.
+At each start, the host checks each entry of the file:
+- Its name is in the table and in the grant.
+- Its setting is available on this host.
+- Its value is one that the setting takes. A numeric setting takes a whole number from the file, up to 9007199254740991, the largest safe integer. If the setting's words say what 0 does, the number can be 0. Otherwise it must be 1 or more. The recipe's own value can be any number that the recipe takes.
 
-The resident's tool is `settings--own`, a utility in the built-in `settings` toolset. It shows each setting that the resident may read, its value in force and where that comes from, what it takes, and what the file changes at the next start, and it changes nothing. The tool answers the recipe's agent alone. The host adds a note to that agent's conversation at a start only when the file did not take effect as written, or when the host moves it. Where the recipe gives a setting by a `${VAR}` reference, the tool and the start's log show the reference as written, and not the value.
+The host then adds the entries to the recipe one at a time. It keeps each entry with which the recipe still passes the load's checks. An entry that fails costs only that entry, and the start goes on. A value of the file gets no `${VAR}` substitution. The recipe file and the saved recipe never hold a resident's value. A change takes effect at the next start. While the grant names a setting, the resident's value wins over the recipe's.
 
-When the recipe stops letting the resident change settings (the key left out, `"read"`, or a list that names no setting of the table), the host parks `own.json` as `own.not-used.json`, and tells the resident. When a later start's recipe lets it change a setting again, and there is no `own.json`, the host applies the parked file, puts it back, and tells the resident, if it can read the parked file as a plain file of 5 MiB or less. Otherwise it leaves the parked file where it is, and its note says why. The host moves the file once the framework has started and the note is written, so a start that ends with an error before then moves nothing, and the next start does the same again, with its note.
+The resident's tool is `settings--own`, a utility in the built-in `settings` toolset. It changes nothing. For each setting that the resident may read, it shows the value in force, where that value comes from, and what the setting takes. It also shows what the file changes at the next start. The tool answers only the recipe's agent. The host adds a note to that agent's conversation at a start only when the file did not take effect as written, or when the host moves the file. Where the recipe gives a setting by a `${VAR}` reference, the tool and the start's log show the reference as written, and not its value.
 
-The operator sees the resident's values in the file, in the start's log (a line for each entry in force, with the recipe's own value, and one for each entry not used; of the entries that name no setting, the first 20, and a count of the rest), and in `connectome doctor`, which prints what the next start would do with the file, against the recipe that the service's unit names, with the host up or down. With the host up, doctor fetches a recipe given by URL only where the own-settings directory is there, so a host that has not used the key costs no fetch.
+The recipe can stop letting the resident change settings: the key is left out, it is `"read"`, or it is a list that names no setting of the table. Then the host parks `own.json` as `own.not-used.json`, and tells the resident. A later start's recipe can let the resident change a setting again. If there is then no `own.json`, the host applies the parked file, puts it back, and tells the resident. It does this only if it can read the parked file as a plain file of 5 MiB or less. Otherwise it leaves the parked file where it is, and its note says why. The host moves the file only after the framework has started and the note is written. So a start that fails before then moves nothing, and the next start does the same again, with its note.
 
-The host's start and `connectome doctor` warn where the list names a setting whose resident value the host doesn't use on this host, and of an `agent.allowedTools` list that leaves out `settings--own`, or `workspace--write` where the grant lets the resident change a setting and the workspace is on. They also name each setting in a list that the table doesn't hold, with the nearest name of the table where one is near. Such a name loads and grants nothing, so a recipe written for an earlier release, whose table held a setting that this one doesn't, still starts.
+The operator can see the resident's values in three places:
+- **The file itself.**
+- **The start's log.** It has a line for each entry in force, with the recipe's own value, and a line for each entry not used. Of the entries that name no setting, it lists the first 20 and a count of the rest.
+- **`connectome doctor`.** It prints what the next start would do with the file. It reads the recipe that the service's unit names, and it works with the host up or down. A recipe can be given by URL. With the host up, doctor fetches it only if the own-settings directory is there, so a host that has not used the key costs no fetch.
+
+The start and `connectome doctor` give these warnings:
+- The list names a setting whose resident value the host doesn't use on this host.
+- An `agent.allowedTools` list leaves out `settings--own`.
+- An `agent.allowedTools` list leaves out `workspace--write`, where the grant lets the resident change a setting and the workspace is on.
+- The list names a setting that the table doesn't hold. If a name of the table is near it, the warning gives that name. Such a name loads, and it grants nothing. So a recipe written for an earlier release still starts, even if that release's table held a setting that this one doesn't.
 
 | Setting | Available |
 | --- | --- |
@@ -561,7 +573,7 @@ The host's start and `connectome doctor` warn where the list names a setting who
 | `modules.ttsRelay.notifyOnInterruption` | with the voice relay on |
 | `modules.wake.judge.onError` | with the gate on and its reply judge not switched off |
 
-An entry never switches a module on. The words that the resident reads about each setting are in `src/own-settings-table.ts`. Two settings can leave a resident unable to read its tools' results: `agent.strategy.toolResultMaxLastN: 0`, and a small `agent.strategy.maxMessageTokens`. The resident's words for each say so.
+An entry never switches a module on. The words that the resident reads about each setting are in `src/own-settings-table.ts`. Two settings can leave a resident unable to read its tools' results: `agent.strategy.toolResultMaxLastN: 0`, and a small `agent.strategy.maxMessageTokens`. The resident's words for each setting say so.
 
 ### Code execution (`codeExecution`)
 

@@ -94,7 +94,7 @@ describe('the numeric rows\' domains', () => {
     'agent.strategy.maxMessageTokens': 0,
     'agent.strategy.summaryTargetTokens': 1,
     'agent.strategy.targetChunkTokens': 1,
-    'modules.retrieval.maxInjected': 1,
+    'modules.retrieval.maxInjected': 0,
   };
   const op = () => operator({ ownSettings: 'all', ...EVERY_MODULE });
   const notUsed = (name: string, value: unknown) => checkOwnSettings(op(), dataDir({ own: { [name]: value } })).entries[0]!.notUsed;
@@ -168,11 +168,11 @@ describe('doctor\'s lines about the grant', () => {
   test('a plain line says that other agents of the host can write the file, where subagents or conversations are on', () => {
     const line = (others: string) => `Any agent of the host that can call workspace--write can write _settings/own.json, such as the resident's ${others}.`;
     expect(ownSettingsLines(operator({ ownSettings: ['agent.timezone'], modules: { subagents: true } }), dataDir()))
-      .toContain(line('its subagents (modules.subagents is on)'));
+      .toContain(line('subagents (modules.subagents is on)'));
     expect(ownSettingsLines(quietly(() => operator({ ownSettings: ['agent.timezone'], conversations: {} })), dataDir()))
-      .toContain(line('its conversation forks (conversations is set)'));
+      .toContain(line('conversation forks (conversations is set)'));
     expect(ownSettingsLines(quietly(() => operator({ ownSettings: ['agent.timezone'], conversations: {}, modules: { subagents: true } })), dataDir()))
-      .toContain(line('its subagents (modules.subagents is on) and its conversation forks (conversations is set)'));
+      .toContain(line('subagents (modules.subagents is on) and conversation forks (conversations is set)'));
     expect(ownSettingsLines(operator({ ownSettings: ['agent.timezone'] }), dataDir()).some((each) => each.startsWith('Any agent'))).toBe(false);
     expect(ownSettingsLines(operator({ ownSettings: ['agent.timezone'], modules: { subagents: true, workspace: false } }), dataDir())
       .some((each) => each.startsWith('Any agent'))).toBe(false);
