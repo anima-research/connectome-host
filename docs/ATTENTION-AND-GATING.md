@@ -103,17 +103,21 @@ later start, rule by rule and by name:
 - a rule as the last recipe left it follows the recipe, so one the recipe
   redefines, renames, moves or drops changes with it;
 - a rule you edited keeps your definition, and one you added stays;
-- a recipe rule you removed comes back at its place while the recipe declares
-  it, so to retire one for good, replace it under the same name (e.g. with
-  `defer`) rather than removing it;
+- a recipe rule you removed comes back while the recipe declares it. The start
+  places it just before a later rule of the recipe: the first one that the file
+  still holds. To retire a recipe rule for good, don't remove it. Replace it
+  under the same name with a definition that the recipe doesn't have, such as
+  `defer`;
 - once you've moved a recipe rule, the file's order stays;
 - an unedited `default` takes the recipe's.
 
 A start that changes the file, or keeps a rule against a change in the recipe,
 writes a line to the host's stderr that says what it changed and what it kept
-(`[gate] the recipe was applied to gate.json: …`). A TUI session prints it to
-the terminal before the TUI takes the screen, so `tui-error.log` doesn't have
-it. A fleet child's stderr goes to `startup.log` in its data directory.
+(`[gate] the recipe was applied to gate.json: …`). When a TUI starts, the host
+prints its first session's line to the terminal before the TUI takes the screen,
+so `tui-error.log` doesn't have it. A session that you switch to inside the TUI
+doesn't write its line to `tui-error.log` either. A fleet child's stderr goes to
+`startup.log` in its data directory.
 
 A start can find `gate.json` but no `gate.recipe.json`, for example the first
 start since agent-framework 0.27.0. Such a start removes and redefines nothing.

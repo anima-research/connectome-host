@@ -237,7 +237,7 @@ Three things must line up — the Zulip subscription, the channel being open in 
 
 An open channel without a policy means messages arrive in context but don't wake the Clerk; a policy without an open, subscribed channel means nothing arrives at all. `wake_add_rule` applies immediately — no restart.
 
-The Clerk's own prompt covers steps 1 and 3 (`mcpl--zulip--listen`, then `wake_add_rule`) but not step 2, so if you ask the Clerk to add a channel, check `channel_list` as well as `gate_status` afterwards. A rule added this way persists in the session's `gate.json` across restarts. A recipe rule (such as `tracker-channel`) removed this way comes back at the next startup, at its place in the recipe, since the recipe still declares it.
+The Clerk's own prompt covers steps 1 and 3 (`mcpl--zulip--listen`, then `wake_add_rule`) but not step 2, so if you ask the Clerk to add a channel, check `channel_list` as well as `gate_status` afterwards. A rule added this way persists in the session's `gate.json` across restarts. A recipe rule (such as `tracker-channel`) removed this way comes back at the next startup, since the recipe still declares it. The start places it just before a later rule of the recipe: the first one that the file still holds.
 
 ### Removing a channel
 
