@@ -1,0 +1,346 @@
+import { REFUSAL_REACTIONS, REFUSAL_REACTION_BASELINE, REFUSAL_REACTION_FALLBACK } from '@animalabs/agent-framework';
+import { randomUUID } from 'node:crypto';
+import type { AgentFramework, McplServerConfig, Module, ToolDefinition, ToolResult } from '@animalabs/agent-framework';
+
+// Use AF's own types when installed. Until #1018 is released, the locked AF
+// has no declaration for this optional facet; mirror v1 for that build only.
+interface MainRefusalV1 {
+  readonly agentName: string;
+  readonly agentInstanceId: string;
+  readonly turnId: number;
+  readonly category: string;
+  readonly rewind: 'handled' | 'unhandled';
+  readonly origin?: Readonly<{ serverId: string; binding: string; channelId: string; threadId?: string; messageRef: string }>;
+}
+interface MainRefusalBridgeV1 {
+  readonly version: 1;
+  takeOwnership(handler: (refusal: MainRefusalV1) => void | Promise<void>): () => void;
+  isCurrent(refusal: MainRefusalV1): boolean;
+  serverBinding(id: string): string | undefined;
+  /** Process-local config object + connection object identity. */
+  serverEpoch(id: string): string | undefined;
+}
+type Bridge = AgentFramework extends { getMainRefusalBridge(): infer T } ? T : MainRefusalBridgeV1;
+export type MainRefusal = Parameters<Bridge['isCurrent']>[0];
+
+export const DISCORD_SOURCE = 'dc80b2fba48308fdfe13a9920ff744ead0118c01';
+export const ZULIP_SOURCE = '61298a12396c27e7cebc004f31cf67c958e35930';
+
+type Discord = { kind: 'discord'; sourceRevision: string };
+type Zulip = {
+  kind: 'zulip'; sourceRevision: string;
+  realmTag: string; idMode: 'strict' | 'compat';
+  /** Names must be preflighted by the operator for this realm; no live proof. */
+  emojis: Record<string, string> & { unknown: string };
+  availableEmojiNames: string[];
+};
+export type RefusalDriverConfig = { serverId: string } & (Discord | Zulip);
+export interface RefusalReactionConfig {
+  /** ALL Discord servers leave legacy ownership, even those not selected here. */
+  ownership: 'whole-framework';
+  servers: RefusalDriverConfig[];
+}
+type Surface = Pick<AgentFramework, 'executeToolCall' | 'getAllTools' | 'listMcplServers'> & {
+  notifyOps?: (kind: string, agent: string, message: string, data?: Record<string, unknown>) => void;
+};
+const object = (v: unknown): Record<string, unknown> | undefined =>
+  v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
+
+/** Shape checks for direct runtime callers, matching the recipe schema.
+ * Connector contract checks follow after child environments are composed. */
+export function validateRefusalReactionConfig(value: unknown): asserts value is RefusalReactionConfig | undefined {
+  if (value === undefined) return;
+  const config = object(value);
+  const fail = (path: string, requirement: string): never => { throw new Error(`Recipe mainRefusalReactions${path} ${requirement}`); };
+  if (!config) fail('', 'must be an object');
+  if (config!.ownership !== 'whole-framework') fail('.ownership', 'must be "whole-framework"');
+  if (!Array.isArray(config!.servers)) fail('.servers', 'must be an array');
+  const ids = new Set<string>();
+  for (const [index, entry] of (config!.servers as unknown[]).entries()) {
+    const driver = object(entry);
+    let path = `.servers[${index}]`;
+    if (!driver) fail(path, 'must be an object');
+    if (typeof driver!.serverId !== 'string' || !driver!.serverId.trim()) fail(path + '.serverId', 'must be a nonempty string');
+    const id = driver!.serverId as string;
+    path += ` (${JSON.stringify(id)})`;
+    if (ids.has(id)) fail(path, 'duplicates a refusal reaction server');
+    ids.add(id);
+    if (driver!.kind !== 'discord' && driver!.kind !== 'zulip') fail(path + '.kind', 'must be discord or zulip');
+    if (typeof driver!.sourceRevision !== 'string' || !driver!.sourceRevision) fail(path + '.sourceRevision', 'must be a nonempty string');
+    if (driver!.kind === 'zulip') {
+      if (typeof driver!.realmTag !== 'string') fail(path + '.realmTag', 'must be a string');
+      if (driver!.idMode !== 'strict' && driver!.idMode !== 'compat') fail(path + '.idMode', 'must be strict or compat');
+      const emojis = object(driver!.emojis);
+      if (!emojis || typeof emojis.unknown !== 'string' || !emojis.unknown || Object.values(emojis).some(e => typeof e !== 'string')) fail(path + '.emojis', 'must map categories to strings with a nonempty unknown fallback');
+      if (!Array.isArray(driver!.availableEmojiNames) || driver!.availableEmojiNames.some(e => typeof e !== 'string')) fail(path + '.availableEmojiNames', 'must be an array of strings');
+    }
+  }
+}
+
+export function assertRefusalBridgeAvailable(value: unknown): void {
+  if (typeof object(value)?.getMainRefusalBridge !== 'function') {
+    throw new Error('mainRefusalReactions is unsupported by this Agent Framework; no handover was performed. Remove mainRefusalReactions or use a build with the v1 main-refusal bridge (AF #1018).');
+  }
+}
+function bridgeOf(value: unknown): Bridge {
+  assertRefusalBridgeAvailable(value);
+  const facet = (value as { getMainRefusalBridge(): unknown }).getMainRefusalBridge();
+  const b = object(facet);
+  if (b?.version !== 1 || typeof b.takeOwnership !== 'function' || typeof b.isCurrent !== 'function' || typeof b.serverBinding !== 'function' || typeof b.serverEpoch !== 'function') {
+    throw new Error('Unsupported main refusal bridge capability');
+  }
+  return facet as Bridge;
+}
+const tokens = (raw: string | undefined) => (raw ?? '').split(',').map(s => s.trim()).filter(Boolean);
+const emojiName = (v: string) => /^[a-z0-9_+-]+$/.test(v);
+
+/** Prepare ONLY the explicit recipe's in-memory child config, never an operator
+ * filter file, grant, persisted setting, subscription or connector repository. */
+export function prepareRefusalReactions(config: RefusalReactionConfig | undefined, servers: McplServerConfig[]): McplServerConfig[] {
+  validateRefusalReactionConfig(config);
+  if (config === undefined) return servers;
+  const prepared = servers.map(s => ({ ...s, env: { ...s.env } }));
+  for (const driver of config.servers) {
+    const serverId = driver.serverId;
+    const matches = prepared.filter(s => s.id === driver.serverId);
+    const server = matches[0];
+    if (matches.length !== 1 || !server?.command || server.url || server.inheritEnv === true) throw new Error(`Refusal server ${driver.serverId}: requires one known stdio server with explicit child environment`);
+    const supportedRevision = driver.kind === 'discord' ? DISCORD_SOURCE : ZULIP_SOURCE;
+    if (driver.sourceRevision !== supportedRevision) throw new Error(`Refusal server ${serverId}: unsupported source contract (sourceRevision); use ${supportedRevision} for the reviewed connector build`);
+    if (driver.kind === 'discord') {
+      // AF treats a seed with no usable tokens as unset and injects its default.
+      const seed = tokens(String(server.env.DISCORD_SUPPRESSED_REACTIONS_BASELINE ?? ''));
+      if (seed.some(e => e.replace(/\uFE0F/g, '').trim().replace(/^:|:$/g, '') !== '')
+        && REFUSAL_REACTION_BASELINE.some(e => !seed.includes(e))) throw new Error(`Refusal server ${serverId}: Discord refusal suppression seed is incomplete; omit DISCORD_SUPPRESSED_REACTIONS_BASELINE to use the framework default`);
+    } else {
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(driver.realmTag)) throw new Error(`Refusal server ${serverId}: invalid Zulip realmTag`);
+      if (Object.values(driver.emojis).some(e => !emojiName(e) || !driver.availableEmojiNames.includes(e))) throw new Error(`Refusal server ${serverId}: Zulip emojis require explicit realm preflight in availableEmojiNames`);
+      if (server.env.ZULIP_ID_MODE !== driver.idMode || server.env.ZULIP_REALM_TAG !== driver.realmTag) throw new Error(`Refusal server ${serverId}: Zulip idMode and realmTag must match the child ID contract (ZULIP_ID_MODE and ZULIP_REALM_TAG)`);
+      // The reviewed fork ALWAYS unions this NAME baseline with operator filters.
+      server.env.ZULIP_SUPPRESSED_REACTIONS_BASELINE = [...new Set([
+        ...tokens(server.env.ZULIP_SUPPRESSED_REACTIONS_BASELINE), ...Object.values(driver.emojis),
+      ])].join(',');
+    }
+    Object.freeze(server.env);
+    if (server.args) server.args = Object.freeze([...server.args]) as string[];
+    Object.freeze(server);
+  }
+  return prepared;
+}
+
+function acceptsString(property: unknown): boolean {
+  const type = object(property)?.type;
+  return type === 'string' || (Array.isArray(type) && type.includes('string'));
+}
+function schemaAccepts(tool: ToolDefinition | undefined, args: Record<string, string>): boolean {
+  const schema = object(tool?.inputSchema);
+  const properties = object(schema?.properties);
+  if (!properties || schema?.type !== 'object' || Object.keys(schema).some(k => !['type', 'properties', 'required', 'additionalProperties', 'description', '$schema', 'title'].includes(k))) return false;
+  if (schema.required !== undefined && !Array.isArray(schema.required)) return false;
+  if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== 'boolean') return false;
+  if (Object.keys(args).some(k => !acceptsString(properties[k]) || Object.keys(object(properties[k])!).some(p => !['type', 'description', 'title'].includes(p)))) return false;
+  return !Array.isArray(schema.required) || schema.required.every(k => typeof k === 'string' && Object.hasOwn(args, k));
+}
+function zulipRef(id: string, driver: Zulip): boolean {
+  const match = /^([a-z0-9][a-z0-9_-]{0,63}):([0-9]+)$/.exec(id);
+  const digits = match ? (match[1] === driver.realmTag ? match[2] : undefined)
+    : driver.idMode === 'compat' && /^[0-9]+$/.test(id) ? id : undefined;
+  // Bound parsing resources and preserve the ORIGINAL opaque token for tools/call.
+  return digits !== undefined && digits.length <= 16 && BigInt(digits) > 0n && BigInt(digits) <= 9007199254740991n;
+}
+function payload(result: ToolResult): Record<string, unknown> | undefined {
+  if (typeof result.data === 'string') {
+    try { return object(JSON.parse(result.data)); } catch { return undefined; }
+  }
+  const direct = object(result.data);
+  if (direct) return direct;
+  if (Array.isArray(result.data) && result.data.length === 1) {
+    const block = object(result.data[0]);
+    if (block?.type === 'text' && typeof block.text === 'string') {
+      try { return object(JSON.parse(block.text)); } catch { return undefined; }
+    }
+  }
+  return undefined;
+}
+
+type InstallOptions = { diagnostic?: (status: string) => void; agentName?: string };
+
+/** ADD only. Bounded in-memory turn dedup; attempts, including unknown acks, are
+ * consumed BEFORE I/O. No retry, deletion, new inference, or persistent guarantee.
+ * Snapshots the bridge's opaque lifetime identity. A stale connection releases
+ * ownership for the run; the detecting refusal isn't replayed. */
+export function installRefusalReactions(framework: Surface, config: RefusalReactionConfig, prepared: McplServerConfig[],
+  { diagnostic = status => console.error(`[refusal-reaction] ${status}`), agentName = 'host' }: InstallOptions = {},
+): () => void {
+  const bridge = bridgeOf(framework);
+  // Revalidate and freeze operator configuration; a later recipe mutation cannot
+  // change the emitted markers without changing the child's protective seed.
+  const drivers = structuredClone(config);
+  prepareRefusalReactions(drivers, prepared);
+  const endpoints = new Map<string, { driver: RefusalDriverConfig; binding: string; epoch: string }>();
+  const startupRows = framework.listMcplServers();
+  let unavailable: { serverId: string; status: 'closed-tab' | 'not-connected' } | undefined;
+  for (const driver of drivers.servers) {
+    const rows = startupRows.filter(s => s.id === driver.serverId);
+    const server = rows[0];
+    if (rows.length !== 1 || !server || server.transport !== 'stdio' || server.refused !== null) {
+      throw new Error(`Refusal server ${driver.serverId}: requires one supported stdio server before ownership`);
+    }
+    if (server.closedTab || !server.connected) {
+      unavailable ??= { serverId: driver.serverId, status: server.closedTab ? 'closed-tab' : 'not-connected' };
+      continue;
+    }
+    const binding = bridge.serverBinding(driver.serverId);
+    const epoch = bridge.serverEpoch(driver.serverId);
+    if (binding === undefined || epoch === undefined) {
+      throw new Error(`Refusal server ${driver.serverId}: must be connected with a supported binding and epoch before ownership`);
+    }
+    endpoints.set(driver.serverId, { driver, binding, epoch });
+  }
+  if (unavailable) {
+    const { serverId, status } = unavailable;
+    const reason = status === 'closed-tab' ? 'it is a closed tab; reopen it and restart' : 'it is not connected at startup; check the connection and restart';
+    const message = `Refusal marker unavailable on ${serverId}: ${reason}. Framework-wide built-in refusal reactions remain enabled.`;
+    diagnostic(message);
+    framework.notifyOps?.('refusal-reaction-unavailable', agentName, message, unavailable);
+    return () => {};
+  }
+  const alerted = new Set<string>();
+  const seen = new Set<string>();
+  let pending = 0;
+  let active = true;
+  const dispose = () => {
+    if (!active) return;
+    active = false;
+    release();
+  };
+  const release = bridge.takeOwnership(async refusal => {
+    if (!active || refusal.rewind === 'handled') return;
+    const data = { serverId: refusal.origin?.serverId ?? null, agentName: refusal.agentName, turnId: refusal.turnId, category: refusal.category };
+    const report = (status: string) => {
+      diagnostic(`${status} ${JSON.stringify(data)}`);
+      if (active && bridge.isCurrent(refusal) && refusal.origin && !status.startsWith('add-acknowledged') && !alerted.has(refusal.origin.serverId)) {
+        alerted.add(refusal.origin.serverId);
+        framework.notifyOps?.('refusal-reaction-unavailable', refusal.agentName,
+          `Refusal marker unavailable on ${refusal.origin.serverId}: ${status}`, { ...data, status });
+      }
+    };
+    const key = JSON.stringify([refusal.agentInstanceId, refusal.turnId]);
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (seen.size > 1024) seen.delete(seen.values().next().value!);
+    if (!refusal.origin) { report('unknown-origin: local diagnostic only; no first-refusal home fallback'); return; }
+    const origin = refusal.origin;
+    const endpoint = endpoints.get(origin.serverId);
+    if (!endpoint) { report('unsupported-driver'); return; }
+    const { driver } = endpoint;
+    const currentConnection = () => {
+      const servers = framework.listMcplServers().filter(s => s.id === origin.serverId);
+      const server = servers.length === 1 ? servers[0] : undefined;
+      if (server && !server.closedTab && server.transport === 'stdio' && server.refused === null
+        && endpoint.binding === bridge.serverBinding(origin.serverId) && endpoint.epoch === bridge.serverEpoch(origin.serverId)) return server;
+      dispose();
+      // Not subject to the per-server failure throttle: this affects every
+      // driver, even if this server already reported an unrelated failure.
+      const status = 'stale-connection';
+      const reason = 'built-in refusal reactions resumed framework-wide; restart the host to re-enable host-selected reactions';
+      diagnostic(`${status}: ${reason} ${JSON.stringify(data)}`);
+      framework.notifyOps?.('refusal-reaction-unavailable', refusal.agentName,
+        `Refusal marker unavailable on ${origin.serverId}: ${status}; ${reason}`, { ...data, status });
+    };
+    if (!bridge.isCurrent(refusal)) { report('stale-or-unsupported-server'); return; }
+    const server = currentConnection();
+    if (!server) return;
+    if (!server.connected || endpoint.binding !== origin.binding) { report('stale-or-unsupported-server'); return; }
+    // The advertised tools are the framework's effective, capability-filtered
+    // surface. executeToolCall additionally enforces the named agent's allowlist.
+    const prefix = server.toolPrefix;
+    const toolName = `${prefix}--add_reaction`;
+    const advertised = (name: string) => {
+      const matches = framework.getAllTools().filter(t => t.name === name);
+      return matches.length === 1 ? matches[0] : undefined;
+    };
+    let args: Record<string, string>;
+    if (driver.kind === 'discord') {
+      // Documented canonical connector contract; NEVER blind split/last segment.
+      if (!/^discord:(?:dm|[0-9]{17,20}):[0-9]{17,20}$/.test(origin.channelId) || !/^[0-9]{17,20}$/.test(origin.messageRef)) { report('unsupported-discord-id'); return; }
+      args = { channelId: origin.channelId, messageId: origin.messageRef,
+        emoji: Object.hasOwn(REFUSAL_REACTIONS, refusal.category) ? REFUSAL_REACTIONS[refusal.category]! : REFUSAL_REACTION_FALLBACK };
+    } else {
+      if (!zulipRef(origin.messageRef, driver)) { report('unsupported-zulip-id'); return; }
+      args = { message_id: origin.messageRef,
+        emoji_name: Object.hasOwn(driver.emojis, refusal.category) ? driver.emojis[refusal.category]! : driver.emojis.unknown };
+    }
+    if (!schemaAccepts(advertised(toolName), args)) { report('unsupported-reaction-schema-or-capability'); return; }
+    if (pending >= 8) { report('effect-capacity-exhausted'); return; }
+    pending++;
+    try {
+      let preflight: ToolResult | undefined;
+      if (driver.kind === 'discord') {
+        const name = `${prefix}--filters_get`;
+        if (!schemaAccepts(advertised(name), {})) { report('unsupported-suppression-preflight'); return; }
+        try {
+          preflight = await framework.executeToolCall({ id: randomUUID(), name, input: {}, callerAgentName: refusal.agentName });
+        } catch (error) {
+          preflight = { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      }
+      if (!active) return;
+      const latest = currentConnection();
+      if (!latest) return;
+      if (preflight) {
+        if (!preflight.success || preflight.isError || preflight.refused) {
+          const reason = JSON.stringify(preflight.error?.slice(0, 512) || 'no error details');
+          report(`filters_get-${preflight.refused ? 'refused' : 'failed'}: ${reason}`);
+          return;
+        }
+        const status = object(payload(preflight)?.reactionSuppression);
+        // Source, not a count/digest: only the known injected baseline is proof.
+        // Operator-owned overrides remain opaque and are honestly unsupported.
+        if (status?.source !== 'baseline-default' || status.status !== 'active' || status.protectionActive !== true) { report('unsupported-discord-suppression-source'); return; }
+      }
+      if (!bridge.isCurrent(refusal) || !latest.connected || latest.toolPrefix !== prefix
+        || !schemaAccepts(advertised(toolName), args)) { report('binding-or-instance-changed'); return; }
+      const result = await framework.executeToolCall({ id: randomUUID(), name: toolName, input: args, callerAgentName: refusal.agentName });
+      if (result.success && !result.isError && !result.refused) {
+        report('add-acknowledged: not proof of human receipt or cause');
+      } else {
+        // AF's programmatic dispatch doesn't set refused on an allowlist denial.
+        // Match its known message, but never forward returned error text.
+        const reason = result.error === `Tool '${toolName}' is not permitted by this agent's allowedTools, so the call didn't run.`
+          ? "denied by the agent's tool policy"
+          : result.refused ? 'tool call refused'
+          : result.isError || result.error ? 'tool call returned an error'
+          : 'no acknowledgement';
+        report(`add-failed-or-unknown: no retry; ${reason}`);
+      }
+    } catch { report('add-or-preflight-ack-unknown: no retry; no acknowledgement'); }
+    finally { pending--; }
+  });
+  return dispose;
+}
+
+// The hook is registered only for an opted-in framework. Connection checks
+// and acquisition happen after create(); teardown releases that acquisition.
+export function refusalReactionLifecycle(config: RefusalReactionConfig, prepared: McplServerConfig[],
+  options?: InstallOptions,
+) {
+  let dispose: (() => void) | undefined;
+  return {
+    module: {
+      name: 'host-main-refusal-reactions',
+      async start() {},
+      async stop() {
+        const release = dispose;
+        dispose = undefined;
+        release?.();
+      },
+      getTools: () => [],
+      async onProcess() { return {}; },
+      async handleToolCall() { return { success: false, error: 'No refusal reaction tools' }; },
+    } satisfies Module,
+    install(framework: Surface) {
+      dispose = installRefusalReactions(framework, config, prepared, options);
+    },
+  };
+}

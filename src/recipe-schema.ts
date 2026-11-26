@@ -2559,6 +2559,42 @@ const inferenceBounds = z.union([
   }, takes('false or an object')),
 ], takes('false or an object'));
 
+const refusalServerShape = {
+  serverId: nonBlankText(),
+  // Connector revision pins are checked at startup, not at recipe load.
+  sourceRevision: nonEmptyText(),
+};
+const refusalServer = z.discriminatedUnion('kind', [
+  z.looseObject({ ...refusalServerShape, kind: z.literal('discord') }, takes('an object')),
+  z.looseObject({
+    ...refusalServerShape,
+    kind: z.literal('zulip'),
+    realmTag: text(),
+    idMode: oneOf(['strict', 'compat']),
+    emojis: mapOf(text()).refine((v): v is Record<string, string> & { unknown: string } =>
+      typeof v.unknown === 'string' && v.unknown.length > 0,
+    { ...takes('a non-empty string'), path: ['unknown'] }),
+    availableEmojiNames: textList(),
+  }, takes('an object')),
+], takes('an object'));
+const refusalReactionsShape = {
+  ownership: z.literal('whole-framework'),
+  servers: listOf(refusalServer, 'a list'),
+};
+const mainRefusalReactions = z.looseObject(refusalReactionsShape, takes('an object'))
+  .check(rule<Exact<typeof refusalReactionsShape>>(['servers'], ({ servers }) => {
+    const ids = new Set<string>();
+    for (const [i, { serverId }] of servers.entries()) {
+      if (ids.has(serverId)) {
+        const path = `servers.${i}.serverId`;
+        return ({ at, show }) =>
+          `Recipe ${at(path)} duplicates a refusal reaction server: ${show(path, serverId)}.`;
+      }
+      ids.add(serverId);
+    }
+    return undefined;
+  }));
+
 const recipeShape = {
   name: nonEmptyText(),
   description: text().optional(),
@@ -2627,6 +2663,8 @@ const recipeShape = {
    * agent-framework's types.
    */
   toolResultInlineMaxChars: numberWhere('a finite number of at least 1000', (v) => v >= 1000).optional(),
+  /** Optional whole-framework refusal owner; requires AF's main-refusal bridge. */
+  mainRefusalReactions: mainRefusalReactions.optional(),
 };
 type RecipeShape = Exact<typeof recipeShape>;
 

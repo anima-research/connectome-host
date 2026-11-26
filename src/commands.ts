@@ -706,8 +706,19 @@ const hostStopping: CommandResult = {
   lines: [{ text: `${HOST_STOPPING[0]!.toUpperCase()}${HOST_STOPPING.slice(1)}.`, style: 'system' }],
 };
 
+// Refuse at the command boundary, before any client can reset turn tracking
+// or start switching, and before /session new writes to the session index.
+const refusalReactionsSwitchRefused: CommandResult = {
+  refused: true,
+  lines: [{
+    text: 'Session switch refused: mainRefusalReactions is enabled. The current session is still running. Start the host with the path of a recipe without mainRefusalReactions (a bare start reloads the saved recipe), use /session switch or /session new, then re-enable the option and start the host again with the recipe path.',
+    style: 'system',
+  }],
+};
+
 function handleSessionNew(app: AppContext, name?: string): CommandResult {
   if (app.stopping) return hostStopping;
+  if (app.recipe?.mainRefusalReactions !== undefined) return refusalReactionsSwitchRefused;
   const running = stillRunning(app);
   if (running) return running;
   const session = app.sessionManager.createSession(name);
@@ -735,6 +746,7 @@ function handleSessionSwitch(app: AppContext, nameOrId?: string): CommandResult 
     return { lines: [{ text: `Already on session "${session.name}".`, style: 'system' }] };
   }
 
+  if (app.recipe?.mainRefusalReactions !== undefined) return refusalReactionsSwitchRefused;
   const running = stillRunning(app);
   if (running) return running;
   const noStore = noStoreRefusal(app.sessionManager.getStorePath(session.id), { kind: 'switch', session });

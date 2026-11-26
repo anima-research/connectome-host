@@ -70,10 +70,11 @@ export interface CommandOutputEvent {
   ts?: number;
 }
 
-/** The end of the answer to a `command` that carried a corrId, with the
- *  error when the command threw, and `refused` when `/update` answered
- *  that it didn't do what was asked; its lines say why. No other command
- *  sets it. */
+/** The end of the answer to a `command` that carried a corrId. `error` means
+ *  the command threw. `refused: true` means the command declined to act, and
+ *  its `command-output` lines say why. Examples include `/update` with no
+ *  newer release, a session change blocked by `mainRefusalReactions`, and a
+ *  switch to a session whose store directory has no usable store. */
 export interface CommandDoneEvent {
   type: 'command-done';
   corrId: string;

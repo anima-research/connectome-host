@@ -151,3 +151,34 @@ jobs:
 
       - name: Both lockfiles resolve the @animalabs packages the same way
         run: node scripts/lockfiles-agree.mjs
+
+  refusal-connectors:
+    name: Refusal connector source contracts (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22.12.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.3
+      - run: npm ci --ignore-scripts
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: anima-research/discord-mcpl
+          ref: dc80b2fba48308fdfe13a9920ff744ead0118c01
+          path: node_modules/.cache/discord-source
+          persist-credentials: false
+      # This tests the retained fork contract, not upstream Zulip compatibility.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: theaspirational/zulip_mcp
+          ref: 61298a12396c27e7cebc004f31cf67c958e35930
+          path: node_modules/.cache/zulip-source
+          persist-credentials: false
+      - run: bun test test/refusal-connector-contract.test.ts
+        env:
+          REFUSAL_CONNECTOR_SOURCE_DIR: ${{ github.workspace }}/node_modules/.cache
