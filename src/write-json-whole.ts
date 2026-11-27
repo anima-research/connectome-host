@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /**
@@ -18,7 +18,15 @@ export function writeJsonWhole(
   const target = isLink(path) ? realpathSync(path) : path;
   mkdirSync(dirname(target), { recursive: true });
   const tmp = `${target}.tmp-${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(value, options.replacer, 2) + '\n', options.mode === undefined ? {} : { mode: options.mode });
+  const fd = openSync(tmp, 'w', options.mode ?? 0o666);
+  try {
+    writeFileSync(fd, JSON.stringify(value, options.replacer, 2) + '\n');
+    // Synced before the rename, as lessons' writeShared does, so a machine
+    // that goes down finds the old file or this one, whole.
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
   renameSync(tmp, target);
 }
 
