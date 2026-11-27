@@ -37,8 +37,33 @@ export type StoreLook =
   | { kind: 'start' | 'switch'; session: Pick<SessionMeta, 'id' | 'name'> }
   | { kind: 'legacy' };
 
+/**
+ * The files Chronicle writes before the MANIFEST when it creates a store. A
+ * MANIFEST beside a missing one is a copy or a move of a store that didn't
+ * finish (rsync writes each file to a temporary name and renames it when
+ * complete, in name order, records.log the largest), never a store Chronicle
+ * made or left half-made. Chronicle opens such a directory all the same, as
+ * a store with no past, so the host refuses it first (#738).
+ */
+export const STORE_FILES_BESIDE_MANIFEST = ['records.log', 'state.bin', 'state-indexes.bin', 'branches.bin'] as const;
+
+/** Why `dir`, which holds a MANIFEST, is a torn copy of a store, or
+ *  undefined where every file a store has is beside it. */
+export function tornStoreReason(dir: string): string | undefined {
+  const missing = STORE_FILES_BESIDE_MANIFEST.filter((file) => !existsSync(join(dir, file)));
+  if (missing.length === 0) return undefined;
+  return `a MANIFEST is there and ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not: a copy or a move ` +
+    'of a store that didn\'t finish, which would open as a store with no past';
+}
+
 export function noStoreRefusal(dir: string, look: StoreLook): string | null {
-  if (!isThere(dir) || existsSync(join(dir, 'MANIFEST'))) return null;
+  if (!isThere(dir)) return null;
+  if (existsSync(join(dir, 'MANIFEST'))) {
+    // A store that is there, and may be open, isn't opened a second time;
+    // what is beside its MANIFEST says whether it is a store.
+    const torn = tornStoreReason(dir);
+    return torn === undefined ? null : noStoreWords(dir, look, torn);
+  }
   let store: JsStore;
   try {
     store = JsStore.open({ path: dir });

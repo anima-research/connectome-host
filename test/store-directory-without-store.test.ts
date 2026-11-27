@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { JsStore } from '@animalabs/chronicle';
 import { handleCommand } from '../src/commands.js';
-import { SessionManager } from '../src/session-manager.js';
+import { SessionManager, STORE_FILES_BESIDE_MANIFEST, tornStoreReason } from '../src/session-manager.js';
 import { trackOperatorWork } from '../src/session-switch.js';
 
 type App = Parameters<typeof handleCommand>[1];
@@ -275,6 +275,25 @@ describe('/session switch', () => {
     });
   }
 
+  // A torn copy of a store (#738): a real store with one of the files beside
+  // its MANIFEST removed, as an rsync cut while copying that file leaves it.
+  for (const file of STORE_FILES_BESIDE_MANIFEST) {
+    test(`/session switch to a session whose store holds a MANIFEST and no ${file} is refused, and the session that runs goes on`, () => {
+      const { app, sessions, first, other } = appOn(join(root, 'data'));
+      const dir = sessions.getStorePath(other.id);
+      makeRealStore(dir);
+      rmSync(join(dir, file));
+      const before = contents(dir);
+
+      const result = handleCommand(`/session switch ${other.id}`, app);
+
+      expect(result.lines.map((line) => line.text)).toEqual([switchWords(other, dir, tornStoreReason(dir)!)]);
+      expect(result.refused).toBe(true);
+      expect(sessions.getActiveSession()?.id).toBe(first.id);
+      expect(contents(dir)).toEqual(before);
+    });
+  }
+
   test('while other work runs, answers that the work runs before it looks at the store directory', async () => {
     const { app, sessions, other } = appOn(join(root, 'data'));
     mkdirSync(sessions.getStorePath(other.id), { recursive: true });
@@ -341,7 +360,7 @@ describe('scripts/warmup-session.ts', () => {
     return { exitCode, stderr };
   }
 
-  test('on a session whose store directory is empty, or absent, makes no store and says why, with no stack', async () => {
+  test('on a session whose store directory is empty, absent, or a torn copy, makes no store and says why, with no stack', async () => {
     const data = join(root, 'data');
     const sessions = new SessionManager(data);
     const absent = sessions.createSession('Absent');
@@ -349,9 +368,15 @@ describe('scripts/warmup-session.ts', () => {
     const emptyDir = sessions.getStorePath(empty.id);
     mkdirSync(emptyDir);
     const absentDir = sessions.getStorePath(absent.id);
+    // A torn copy (#738): Chronicle would open it, so the reason is the host's.
+    const torn = sessions.createSession('Torn');
+    const tornDir = sessions.getStorePath(torn.id);
+    makeRealStore(tornDir);
+    rmSync(join(tornDir, 'records.log'));
+    const tornBefore = contents(tornDir);
 
-    for (const [session, dir] of [[empty, emptyDir], [absent, absentDir]] as const) {
-      const reason = chronicleReason(dir);
+    for (const [session, dir] of [[empty, emptyDir], [absent, absentDir], [torn, tornDir]] as const) {
+      const reason = session === torn ? tornStoreReason(dir)! : chronicleReason(dir);
       const { exitCode, stderr } = await warmup(data, session.id);
       const lines = stderr.trimEnd().split('\n');
       expect(lines.at(-1)).toBe(
@@ -362,5 +387,50 @@ describe('scripts/warmup-session.ts', () => {
     }
     expect(contents(emptyDir)).toEqual([]);
     expect(existsSync(absentDir)).toBe(false);
+    expect(contents(tornDir)).toEqual(tornBefore);
   }, 60_000);
+});
+
+describe('a torn copy of a store (#738)', () => {
+  // A real store with one of the files Chronicle writes before the MANIFEST
+  // removed: what an rsync cut while copying that file leaves, since it
+  // renames each file into place when complete.
+  const torn = (dir: string, file: string): void => {
+    makeRealStore(dir);
+    rmSync(join(dir, file));
+  };
+
+  for (const file of STORE_FILES_BESIDE_MANIFEST) {
+    test(`a start on a session whose store holds a MANIFEST and no ${file} is refused, naming the file, and nothing is written there`, async () => {
+      const data = join(root, 'data');
+      const sessions = new SessionManager(data);
+      const session = sessions.createSession();
+      const dir = sessions.getStorePath(session.id);
+      torn(dir, file);
+      const reason = tornStoreReason(dir)!;
+      expect(reason).toBe(`a MANIFEST is there and ${file} is not: a copy or a move of a store that didn't finish, which would open as a store with no past`);
+      // Chronicle opens it all the same, as a store with no past, and writes
+      // into it: the host's refusal is the only one. A fresh torn copy for the start.
+      expect(() => JsStore.open({ path: dir }).close()).not.toThrow();
+      rmSync(dir, { recursive: true, force: true });
+      torn(dir, file);
+      const before = contents(dir);
+
+      const { exitCode, stderr, reachedSocket } = await start(data);
+
+      expect(stderr).toBe(`${startWords(session, dir, reason)}\n`);
+      expect(exitCode).toBe(1);
+      expect(reachedSocket).toBe(false);
+      expect(contents(dir)).toEqual(before);
+    }, 60_000);
+  }
+
+  test('a store with every file beside its MANIFEST is no torn copy, and a missing pair is named as a pair', () => {
+    const dir = join(root, 'whole');
+    makeRealStore(dir);
+    expect(tornStoreReason(dir)).toBeUndefined();
+    rmSync(join(dir, 'state.bin'));
+    rmSync(join(dir, 'state-indexes.bin'));
+    expect(tornStoreReason(dir)).toStartWith('a MANIFEST is there and state.bin, state-indexes.bin are not: ');
+  });
 });

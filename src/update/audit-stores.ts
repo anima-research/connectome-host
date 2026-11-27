@@ -35,7 +35,7 @@ import { buildFrameworkStrategy } from '../framework-strategy.js';
 import { fleetChildDataDir, fleetChildEnv, spawnErrorText } from '../modules/fleet-module.js';
 import { checkOwnSettings, type OperatorRecipe } from '../own-settings.js';
 import { DEFAULT_RECIPE, envText, loadRecipeDetailed, loadSavedRecipeDetailed, recipeModel, savedRecipePath, type Recipe } from '../recipe.js';
-import { SessionManager } from '../session-manager.js';
+import { SessionManager, tornStoreReason } from '../session-manager.js';
 import {
   childrenFilePath, isChildEntry, ITEM_UPDATE_DIR, readRecord, realOrResolved, writeJsonAtomic, type ChildrenFile,
 } from './contract.js';
@@ -503,6 +503,10 @@ async function auditStore(path: string, resident: Resident): Promise<Outcome> {
     return { unaudited: `it can't be reached: ${oneLine(error)}` };
   }
   endIfOrphaned();
+  // A torn copy of a store opens, as a store with no past (#738): refused
+  // before the open, as a start refuses it.
+  const torn = existsSync(join(path, 'MANIFEST')) ? tornStoreReason(path) : undefined;
+  if (torn !== undefined) return { refused: torn };
   let store: JsStore;
   try {
     store = JsStore.open({ path });
