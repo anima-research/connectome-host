@@ -225,13 +225,15 @@ describe('channel-mode pins only through a cleanup module the host has', () => {
     });
   }
 
-  test('the pin goes to the module that gcModuleName names, and only where the host has that module', async () => {
+  test('a gcModuleName that the recipe names is always pinned through, and a wrong one fails as before', async () => {
     const named = wired({ config: { gcModuleName: 'idle' }, modules: ['idle'] });
     expect((await named.set('zulip:backend')).success).toBe(true);
     expect(named.calls.map(c => c.name)).toEqual(['channel_open', 'idle--pin_channel_idle_limit']);
-    const other = wired({ config: { gcModuleName: 'idle' }, modules: ['subscription-gc'] });
-    expect((await other.set('zulip:backend')).success).toBe(true);
-    expect(other.calls.map(c => c.name)).toEqual(['channel_open']);
+    const wrong = wired({ config: { gcModuleName: 'idle' }, modules: ['subscription-gc'] });
+    const result = await wrong.set('zulip:backend');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('pinning it open failed (Module not found: idle, so nothing was done)');
+    expect(wrong.calls.map(c => c.name)).toEqual(['channel_open', 'idle--pin_channel_idle_limit']);
   });
 });
 

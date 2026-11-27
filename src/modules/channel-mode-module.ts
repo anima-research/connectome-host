@@ -43,6 +43,7 @@ export class ChannelModeModule implements Module {
   private readonly inFlight = new Set<string>();
 
   private readonly gcModuleName: string;
+  private readonly gcModuleNamed: boolean;
   private readonly defaultDebounceMs: number;
 
   constructor(config: ChannelModeConfig = {}) {
@@ -53,6 +54,7 @@ export class ChannelModeModule implements Module {
       );
     }
     this.gcModuleName = config.gcModuleName ?? 'subscription-gc';
+    this.gcModuleNamed = config.gcModuleName !== undefined;
     // agent-framework's EventGate refuses a policy whose debounce is outside its
     // bounds, and the default goes to the gate whenever a call leaves debounceMs
     // out.
@@ -331,7 +333,7 @@ export class ChannelModeModule implements Module {
   }
 
   private async pinStep(step: 'gc-pin' | 'gc-unpin', channelId: string, pinned: boolean): Promise<StepResult[]> {
-    if (this.ctx !== null && this.ctx.getModule(this.gcModuleName) === null) return [];
+    if (!this.gcModuleNamed && this.ctx !== null && this.ctx.getModule(this.gcModuleName) === null) return [];
     return [await this.callToolStep(step, `${this.gcModuleName}--pin_channel_idle_limit`, { channelId, pinned })];
   }
 
