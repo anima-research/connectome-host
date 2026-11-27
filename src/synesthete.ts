@@ -1,4 +1,6 @@
 import type { Membrane } from '@animalabs/membrane';
+import type { Recipe } from './recipe.js';
+import { auxiliaryRequest } from './auxiliary-model.js';
 import { storedInjectionMarkOf } from '@animalabs/agent-framework';
 
 const DEFAULT_EXAMPLES = [
@@ -38,11 +40,23 @@ export function namingSummary(
     .join('\n');
 }
 
+/**
+ * A name for the session from the host's auxiliary model (auxiliaryRequest:
+ * the model, cap and reasoning effort the recipe's provider takes), or null
+ * when the model's answer isn't one or the call fails. Either is said once
+ * per process, on stderr, which each runtime routes to its log (headless.log,
+ * tui-error.log, readline-error.log: the files /bug reads), so a host whose
+ * naming calls are refused, or whose
+ * model spends its cap before the name, says so instead of leaving sessions
+ * unnamed in silence.
+ */
 export async function generateSessionName(
   membrane: Membrane,
   conversationSummary: string,
-  examples?: string[],
+  examples: string[] | undefined,
+  recipe: Recipe,
 ): Promise<string | null> {
+  const request = auxiliaryRequest(recipe, 30);
   try {
     const response = await membrane.complete({
       messages: [
@@ -52,11 +66,7 @@ export async function generateSessionName(
         },
       ],
       system: buildNamingPrompt(examples),
-      config: {
-        model: 'claude-haiku-4-5-20251001',
-        maxTokens: 30,
-        temperature: 0.8,
-      },
+      ...request,
     });
 
     const text = response.content
@@ -65,9 +75,28 @@ export async function generateSessionName(
       .join('')
       .trim();
 
-    if (!text || text.length > 60 || text.includes('\n')) return null;
+    if (!text || text.length > 60 || text.includes('\n')) {
+      namingFailed(request.config.model, `its answer wasn't a name (stop reason ${response.stopReason ?? 'unknown'}, ` +
+        `${text.length} characters${text.includes('\n') ? ', with a newline' : ''})`);
+      return null;
+    }
     return text;
-  } catch {
+  } catch (error) {
+    namingFailed(request.config.model, `the call failed: ${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
+}
+
+let namingFailureLogged = false;
+
+function namingFailed(model: string, why: string): void {
+  if (namingFailureLogged) return;
+  namingFailureLogged = true;
+  process.stderr.write(`[session-naming] the naming call to ${model} gave no name, so this session keeps its default name ` +
+    `(said once per process; recipe auxiliaryModel picks the model): ${why}\n`);
+}
+
+/** Forgets that the warning was given, so a test can see it given again. */
+export function resetSessionNamingWarning(): void {
+  namingFailureLogged = false;
 }

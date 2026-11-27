@@ -140,7 +140,7 @@ export const HOST_LOG_TAGS = new Set([
   'mint-preimage', 'notices', 'nudge', 'openai-codex', 'operator', 'operator-log', 'ops-alert',
   'picker-config-drift', 'picker-dead-ids', 'picker-unrealizable', 'pins', 'prose', 'provider-admission',
   'provider-cooldown', 'puppet', 'push-event-rejected', 'reasoning', 'reasoning-effort', 'refusal-retry',
-  'refusal-rewind', 'rfc005', 'routespeech', 'routing', 'section', 'self-restart', 'self-wake', 'settings', 'shutdown',
+  'refusal-rewind', 'rfc005', 'routespeech', 'routing', 'section', 'self-restart', 'self-wake', 'session-naming', 'settings', 'shutdown',
   'sleep', 'spill', 'store-topology', 'subagent', 'subscription-gc', 'thinking', 'thinking-binding', 'tool', 'tool-boundary',
   'tool-result-guard', 'tool_result', 'tools', 'tts-relay', 'unstick', 'update', 'voice', 'webui', 'webui-observers',
   'windowed-passthrough', 'workspace',

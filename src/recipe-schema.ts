@@ -1486,7 +1486,10 @@ const wakeShape = {
    * (agent-framework's `GateOptions.judge`). Every key is optional, and
    * agent-framework's defaults apply where one is left out: Claude Haiku 5.5
    * on this host's provider, 90,000 input tokens, low effort, a 20 s timeout,
-   * and a wake when the judge fails.
+   * and a wake when the judge fails. Where the provider doesn't serve Claude
+   * ids, or the recipe sets `auxiliaryModel`, a left-out `model` is the
+   * host's auxiliary model (README, "auxiliaryModel"), and off `anthropic`
+   * and `bedrock` a left-out `effort` is `none`.
    */
   judge: replyJudge.optional(),
 };
@@ -2344,7 +2347,7 @@ const extensions = mapOf(extension, 'an object mapping names to extension entrie
     Object.hasOwn(e, '') ? () => 'Recipe extensions keys must be non-empty names.' : undefined));
 
 const sessionNamingShape = { examples: textList().optional() };
-const sessionNaming: z.ZodType<Exact<typeof sessionNamingShape>> = z.looseObject(sessionNamingShape, takes('an object'));
+const sessionNaming: z.ZodType<Exact<typeof sessionNamingShape>> = z.strictObject(sessionNamingShape, takes('an object'));
 
 const RETIRED_CODE_EXECUTION_KEYS: Readonly<Record<string, string>> = {
   pythonPath: 'scripts are JavaScript now, run by an engine built into agent-framework, so there is no interpreter to name; leave it out',
@@ -2568,7 +2571,20 @@ const recipeShape = {
   modules: modules.optional(),
   /** Deployment-specific code extensions, keyed by a human-readable name. */
   extensions: extensions.optional(),
+  /** Session naming (synesthete): example names for the prompt. */
   sessionNaming: sessionNaming.optional(),
+  /**
+   * The model the host's own small calls go to, as the provider names it:
+   * the session name, the TUI fleet view's activity summaries, and, where
+   * the recipe names none of its own, lesson retrieval
+   * (`modules.retrieval.model`), the reply judge (`modules.wake.judge.model`)
+   * and the gate's suppression review. Left out, each keeps its Claude Haiku
+   * default on the `anthropic` and `bedrock` routes, which serve it, and
+   * goes to the resident's own model on every other provider, which
+   * certainly serves that (auxiliaryModel; #649). Sent as the request's
+   * model id as written, so a space around it would go to the provider too.
+   */
+  auxiliaryModel: textWhere('a model id with no space around it', (s) => s !== '' && s === s.trim()).optional(),
   /** Client-side programmatic tool calling (code_execution tool). */
   codeExecution: codeExecution.optional(),
   /**

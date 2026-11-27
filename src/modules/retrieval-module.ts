@@ -53,9 +53,46 @@ export interface RetrievalModuleConfig {
   membrane: Membrane;
   retrievalModel?: string;
   retrievalReasoning?: RetrievalReasoningConfig;
+  /** Whether the calls set `temperature: 0`, as they always did: true for
+   *  the module's Haiku default and for a model the recipe named under
+   *  `modules.retrieval.model`; false for a model the host steered the calls
+   *  to (the resident's, or the recipe's `auxiliaryModel`), which may be one
+   *  that takes only its default temperature (every `gpt-5`+ model). */
+  deterministic?: boolean;
+  /** The cap on each call's answer: 500 unless the host steered the calls to
+   *  a model that may reason before it answers, which gets the room the
+   *  host's other small calls get (auxiliaryRequest). */
+  maxTokens?: number;
   maxInjectedLessons?: number;
   maxMessageTokens?: number;
   minConfidence?: number;
+}
+
+export const RETRIEVAL_DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
+export const RETRIEVAL_MAX_TOKENS = 500;
+
+/**
+ * The request fields of the module's two calls (concept extraction and
+ * relevance), as its config shapes them: the model (the recipe's, the host's
+ * auxiliary model where it supplied one, else the Haiku default), the cap the
+ * config set (500 unless the host sized it for a reasoning model),
+ * `temperature: 0` unless `deterministic` is false, and the reasoning
+ * effort as `providerParams` where one is set. Pure, so a test can read what
+ * goes on the wire per route.
+ */
+export function retrievalRequestFields(config: Pick<RetrievalModuleConfig, 'retrievalModel' | 'retrievalReasoning' | 'deterministic' | 'maxTokens'>): {
+  config: { model: string; maxTokens: number; temperature?: number };
+  providerParams?: Record<string, unknown>;
+} {
+  const reasoning = config.retrievalReasoning;
+  return {
+    config: {
+      model: config.retrievalModel ?? RETRIEVAL_DEFAULT_MODEL,
+      maxTokens: config.maxTokens ?? RETRIEVAL_MAX_TOKENS,
+      ...(config.deterministic === false ? {} : { temperature: 0 }),
+    },
+    ...(reasoning ? { providerParams: { reasoning: { effort: reasoning.effort } } } : {}),
+  };
 }
 
 const CONCEPT_FLAG_PROMPT = `You are a knowledge retrieval assistant. Given the recent conversation below, identify concepts, entities, topics, or themes that might benefit from background knowledge or lessons learned from previous research.
@@ -212,7 +249,7 @@ export class RetrievalModule implements Module {
       const providerParams = this.retrievalProviderParams();
       return this.traceStore.begin({
         agentName,
-        model: this.config.retrievalModel ?? 'claude-haiku-4-5-20251001',
+        model: this.config.retrievalModel ?? RETRIEVAL_DEFAULT_MODEL,
         ...(this.config.retrievalReasoning
           ? { requestedReasoning: this.config.retrievalReasoning }
           : {}),
@@ -341,17 +378,13 @@ export class RetrievalModule implements Module {
   }
 
   private retrievalProviderParams(): Record<string, unknown> | undefined {
-    const reasoning = this.config.retrievalReasoning;
-    if (!reasoning) return undefined;
-    return { reasoning: { effort: reasoning.effort } };
+    return retrievalRequestFields(this.config).providerParams;
   }
 
   private async flagConcepts(
     recentContext: string,
     trace?: RetrievalTraceRun,
   ): Promise<string[] | null> {
-    const model = this.config.retrievalModel ?? 'claude-haiku-4-5-20251001';
-    const providerParams = this.retrievalProviderParams();
     const input = `Recent conversation:\n${recentContext}`;
 
     const request: NormalizedRequest = {
@@ -362,8 +395,7 @@ export class RetrievalModule implements Module {
         },
       ],
       system: CONCEPT_FLAG_PROMPT,
-      config: { model, maxTokens: 500, temperature: 0 },
-      ...(providerParams ? { providerParams } : {}),
+      ...retrievalRequestFields(this.config),
     };
 
     trace?.startConceptExtraction(CONCEPT_FLAG_PROMPT, input);
@@ -442,9 +474,6 @@ export class RetrievalModule implements Module {
       return { lessons: candidates, validated: true };
     }
 
-    const model = this.config.retrievalModel ?? 'claude-haiku-4-5-20251001';
-    const providerParams = this.retrievalProviderParams();
-
     const candidateList = candidates.map(l =>
       `[${l.id}] (${l.confidence.toFixed(2)}) ${l.content}`
     ).join('\n');
@@ -458,8 +487,7 @@ export class RetrievalModule implements Module {
         },
       ],
       system: RELEVANCE_VALIDATION_PROMPT,
-      config: { model, maxTokens: 500, temperature: 0 },
-      ...(providerParams ? { providerParams } : {}),
+      ...retrievalRequestFields(this.config),
     };
 
     trace?.startRelevance(RELEVANCE_VALIDATION_PROMPT, input);
