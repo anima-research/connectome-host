@@ -266,14 +266,15 @@ action.
   disconnected server), the result says it is recorded, not that nothing
   changed. Subscription
   GC still watches only `modules.subscriptionGc.serverId` (default `discord`);
-  if you rename a server, change that field too. Where the host has no server
-  of that id, GC closes nothing, and an `[agent-settings]` line says so at the
-  first ambient message with text from each other server (and at start, when
-  the recipe names the id), as `agent_settings` does in `channel_idle_warning`
-  on a host with any MCPL server.
-  With the field left out on a host that has `discord`, the first ambient
-  message with text from each other server gets a line too; naming `discord`
-  there keeps GC as it is, without it.
+  if you rename a server, change that field too. A host can lack the server
+  of that id. Then GC closes nothing, and the host writes an `[agent-settings]`
+  line to say so. If the recipe names the missing id, the host writes the line
+  at start. It also writes the line at the first ambient event with text
+  from each other server. On a host with any MCPL server, the
+  `channel_idle_warning` field of `agent_settings` says so too. With the field
+  left out on a host that has `discord`, the host writes a line for each other
+  server too. If the recipe names `discord` in the field, GC works as before,
+  and the host writes no such line.
 
   **Known limit:** the contract is that a channel id's prefix *is* its MCPL
   server id, and channel mode doesn't check it against the server that
