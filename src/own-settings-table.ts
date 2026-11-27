@@ -50,7 +50,7 @@ export const AVAILABILITY: Readonly<Record<AvailabilityKind, Availability>> = {
   },
 };
 
-type Domain = { readonly least: 0 | 1; readonly byName?: true };
+type Domain = { readonly least: 0 | 1; readonly most?: number; readonly byName?: true } | { readonly longest: number };
 
 /**
  * The settings that an operator can let a resident manage with the recipe's
@@ -155,20 +155,14 @@ export const OWN_SETTINGS = [
   },
   {
     name: 'agent.strategy.summaryTargetTokens',
-    domain: { least: 1 },
+    domain: { least: 1, most: 10_666 },
     available: 'strategy',
     example: 600,
     words: 'How long each summary of your memory is. A summary that was written stays as it was written.',
   },
   {
-    name: 'agent.strategy.targetChunkTokens',
-    domain: { least: 1 },
-    available: 'strategy',
-    example: 3_000,
-    words: 'The size of one chunk of your history. Each chunk gets a summary. A summary that was written stays.',
-  },
-  {
     name: 'agent.strategy.summaryParticipant',
+    domain: { longest: 64 },
     available: 'strategy',
     example: 'Ember',
     words: 'The name under which your summaries speak.' +
@@ -177,6 +171,7 @@ export const OWN_SETTINGS = [
   },
   {
     name: 'agent.strategy.summaryContextLabel',
+    domain: { longest: 200 },
     available: 'strategy',
     example: 'Earlier, in summary:',
     words: 'The line that you read before a summary in your context.' +
@@ -184,6 +179,7 @@ export const OWN_SETTINGS = [
   },
   {
     name: 'agent.strategy.identityReminder',
+    domain: { longest: 2_000 },
     available: 'strategy',
     example: 'Write as me.',
     words: 'A reminder that is added to each instruction to your summarizer, so that a summary is written in your voice and not in another speaker\'s.',
@@ -257,19 +253,22 @@ const domainOf = (setting: OwnSetting): Domain | undefined => ('domain' in setti
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
-/** What a numeric row takes, in words: its domain's, for the resident's tool and its refusals. Undefined for a row with no domain. */
+/** What a row with a domain takes, in words, for the resident's tool and its refusals. Undefined for a row with no domain. */
 export function domainTakes(setting: OwnSetting): string | undefined {
   const domain = domainOf(setting);
   if (domain === undefined) return undefined;
-  const count = `a whole number from ${domain.least} to ${Number.MAX_SAFE_INTEGER}`;
+  if ('longest' in domain) return `text of at most ${domain.longest} characters`;
+  const count = `a whole number from ${domain.least} to ${domain.most ?? Number.MAX_SAFE_INTEGER}`;
   return domain.byName ? `${count}, or an object from tool names to such numbers` : count;
 }
 
-/** Whether `value` is inside the row's domain; true for a row with none. */
+/** Whether `value` is inside the row's domain; true for a row with none. A text's length counts its characters (code points). */
 export function insideDomain(setting: OwnSetting, value: unknown): boolean {
   const domain = domainOf(setting);
   if (domain === undefined) return true;
-  const fits = (n: unknown): boolean => typeof n === 'number' && Number.isSafeInteger(n) && n >= domain.least;
+  if ('longest' in domain) return typeof value === 'string' && [...value].length <= domain.longest;
+  const fits = (n: unknown): boolean =>
+    typeof n === 'number' && Number.isSafeInteger(n) && n >= domain.least && n <= (domain.most ?? Number.MAX_SAFE_INTEGER);
   return domain.byName && isPlainObject(value) ? Object.values(value).every(fits) : fits(value);
 }
 

@@ -544,7 +544,7 @@ The resident's file is `own-settings/own.json` in the data directory. It holds o
 At each start, the host checks each entry of the file:
 - Its name is in the table and in the grant.
 - Its setting is available on this host.
-- Its value is one that the setting takes. A numeric setting takes a whole number from the file, up to 9007199254740991, the largest safe integer. If the setting's words say what 0 does, the number can be 0. Otherwise it must be 1 or more. The recipe's own value can be any number that the recipe takes.
+- Its value is one that the setting takes. A numeric setting takes a whole number from the file, up to 9007199254740991, the largest safe integer. If the setting's words say what 0 does, the number can be 0. Otherwise it must be 1 or more. `agent.strategy.summaryTargetTokens` takes at most 10666, so that a summary request asks for no more output than the default's 16000 tokens. `agent.strategy.summaryParticipant` takes at most 64 characters, `agent.strategy.summaryContextLabel` 200, and `agent.strategy.identityReminder` 2000. The recipe's own value can be any value that the recipe takes.
 
 The host then adds the entries to the recipe one at a time. It keeps each entry with which the recipe still passes the load's checks. An entry that fails costs only that entry, and the start goes on. A value of the file gets no `${VAR}` substitution. The recipe file and the saved recipe never hold a resident's value. A change takes effect at the next start. While the grant names a setting, the resident's value wins over the recipe's.
 
@@ -554,19 +554,19 @@ The recipe can stop letting the resident change settings: the key is left out, i
 
 The operator can see the resident's values in three places:
 - **The file itself.**
-- **The start's log.** It has a line for each entry in force, with the recipe's own value, and a line for each entry not used. Of the entries that name no setting, it lists the first 20 and a count of the rest.
+- **The start's log.** It has a line for each entry in force, with the recipe's own value, and a line for each entry not used. Of the entries that are no setting of the table, it lists the first 20 and a count of the rest.
 - **`connectome doctor`.** It prints what the next start would do with the file. It reads the recipe that the service's unit names, and it works with the host up or down. A recipe can be given by URL. With the host up, doctor fetches it only if the own-settings directory is there, so a host that has not used the key costs no fetch.
 
 The start and `connectome doctor` give these warnings:
 - The list names a setting whose resident value the host doesn't use on this host.
 - An `agent.allowedTools` list leaves out `settings--own`.
 - An `agent.allowedTools` list leaves out `workspace--write`, where the grant lets the resident change a setting and the workspace is on.
-- The list names a setting that the table doesn't hold. If a name of the table is near it, the warning gives that name. Such a name loads, and it grants nothing. So a recipe written for an earlier release still starts, even if that release's table held a setting that this one doesn't.
+- The list names a setting that the table doesn't hold. If the name is a setting of the recipe, the warning says that. Otherwise, if a name of the table is near it, the warning gives that name. Such a name loads, and it grants nothing. So a recipe written for an earlier release still starts, even if that release's table held a setting that this one doesn't.
 
 | Setting | Available |
 | --- | --- |
 | `agent.proseRouting`, `agent.timezone`, `agent.autoContinue`, `agent.clock`, `agent.refusalHandling.autoRewind`, `speech.locus` | on every host |
-| `agent.strategy.maxLiveImages`, `agent.strategy.imageStripDepthTokens`, `agent.strategy.toolResultMaxLastN`, `agent.strategy.toolUseInputMaxTokens`, `agent.strategy.maxMessageTokens`, `agent.strategy.summaryTargetTokens`, `agent.strategy.targetChunkTokens`, `agent.strategy.summaryParticipant`, `agent.strategy.summaryContextLabel`, `agent.strategy.identityReminder` | with the strategy `autobiographical` (the default) or `frontdesk` |
+| `agent.strategy.maxLiveImages`, `agent.strategy.imageStripDepthTokens`, `agent.strategy.toolResultMaxLastN`, `agent.strategy.toolUseInputMaxTokens`, `agent.strategy.maxMessageTokens`, `agent.strategy.summaryTargetTokens`, `agent.strategy.summaryParticipant`, `agent.strategy.summaryContextLabel`, `agent.strategy.identityReminder` | with the strategy `autobiographical` (the default) or `frontdesk` |
 | `tuneOut.announce` | with a reader (`subconscious`) on |
 | `modules.retrieval.maxInjected` | with `modules.retrieval` and `modules.lessons` on |
 | `modules.subagents.orientation` | with `modules.subagents` on |

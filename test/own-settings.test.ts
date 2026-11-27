@@ -74,7 +74,7 @@ const EVERY_MODULE = {
 
 describe('the table', () => {
   test('each name of the table is a path of the recipe schema, the schema says what it takes, and its example passes', () => {
-    expect(OWN_SETTING_NAMES).toHaveLength(21);
+    expect(OWN_SETTING_NAMES).toHaveLength(20);
     for (const setting of OWN_SETTINGS) {
       expect(isRecipeSetting(setting.name)).toBe(true);
       expect(settingTakes(setting.name)).toEqual(expect.any(String));
@@ -84,31 +84,38 @@ describe('the table', () => {
   });
 });
 
-describe('the numeric rows\' domains', () => {
-  const LEAST: Readonly<Record<string, 0 | 1>> = {
-    'agent.strategy.maxLiveImages': 0,
-    'agent.strategy.imageStripDepthTokens': 0,
-    'agent.strategy.toolResultMaxLastN': 0,
-    'agent.strategy.toolUseInputMaxTokens': 0,
-    'agent.strategy.maxMessageTokens': 0,
-    'agent.strategy.summaryTargetTokens': 1,
-    'agent.strategy.targetChunkTokens': 1,
-    'modules.retrieval.maxInjected': 0,
+describe('the domains', () => {
+  const BOUNDS: Readonly<Record<string, readonly [0 | 1, number]>> = {
+    'agent.strategy.maxLiveImages': [0, Number.MAX_SAFE_INTEGER],
+    'agent.strategy.imageStripDepthTokens': [0, Number.MAX_SAFE_INTEGER],
+    'agent.strategy.toolResultMaxLastN': [0, Number.MAX_SAFE_INTEGER],
+    'agent.strategy.toolUseInputMaxTokens': [0, Number.MAX_SAFE_INTEGER],
+    'agent.strategy.maxMessageTokens': [0, Number.MAX_SAFE_INTEGER],
+    'agent.strategy.summaryTargetTokens': [1, 10_666],
+    'modules.retrieval.maxInjected': [0, Number.MAX_SAFE_INTEGER],
+  };
+  const LONGEST: Readonly<Record<string, number>> = {
+    'agent.strategy.summaryParticipant': 64,
+    'agent.strategy.summaryContextLabel': 200,
+    'agent.strategy.identityReminder': 2_000,
   };
   const op = () => operator({ ownSettings: 'all', ...EVERY_MODULE });
   const notUsed = (name: string, value: unknown) => checkOwnSettings(op(), dataDir({ own: { [name]: value } })).entries[0]!.notUsed;
 
-  test('the table gives these eight rows a domain, and no other row', () => {
+  test('the table gives these ten rows a domain, and no other row', () => {
     expect(Object.fromEntries(OWN_SETTINGS.filter((setting) => domainTakes(setting) !== undefined)
-      .map((setting) => [setting.name, domainTakes(setting)]))).toEqual(Object.fromEntries(Object.entries(LEAST).map(([name, least]) => [
-      name, `a whole number from ${least} to ${Number.MAX_SAFE_INTEGER}${name === 'agent.strategy.toolResultMaxLastN' ? ', or an object from tool names to such numbers' : ''}`,
-    ])));
+      .map((setting) => [setting.name, domainTakes(setting)]))).toEqual({
+      ...Object.fromEntries(Object.entries(BOUNDS).map(([name, [least, most]]) => [
+        name, `a whole number from ${least} to ${most}${name === 'agent.strategy.toolResultMaxLastN' ? ', or an object from tool names to such numbers' : ''}`,
+      ])),
+      ...Object.fromEntries(Object.entries(LONGEST).map(([name, longest]) => [name, `text of at most ${longest} characters`])),
+    });
   });
 
-  test('each takes a whole number from its least to the largest safe integer, and refuses what the recipe takes past that', () => {
-    for (const [name, least] of Object.entries(LEAST)) {
-      for (const inside of [least, least + 1, Number.MAX_SAFE_INTEGER]) expect([name, inside, notUsed(name, inside)]).toEqual([name, inside, null]);
-      for (const outside of [least - 1, -1, 0.5, 2 ** 53]) {
+  test('each numeric row takes a whole number from its least to its most, and refuses what the recipe takes past that', () => {
+    for (const [name, [least, most]] of Object.entries(BOUNDS)) {
+      for (const inside of [least, least + 1, most]) expect([name, inside, notUsed(name, inside)]).toEqual([name, inside, null]);
+      for (const outside of [least - 1, -1, 0.5, most + 1, 2 ** 53]) {
         expect([name, outside, notUsed(name, outside)]).toEqual([name, outside, {
           kind: 'value',
           fault: settingFault(name, outside) ?? `${name} must be ${domainTakes(OWN_SETTINGS.find((setting) => setting.name === name)!)}, got ${outside}.`,
@@ -122,10 +129,35 @@ describe('the numeric rows\' domains', () => {
     expect(notUsed('agent.strategy.toolResultMaxLastN', { read: 0, grep: -1 })?.kind).toBe('value');
   });
 
-  test('a targetChunkTokens of 0 is not used, and the recipe\'s own value stays in force (the review\'s case)', () => {
-    const check = checkOwnSettings(op(), dataDir({ own: { 'agent.strategy.targetChunkTokens': 0 } }));
-    expect(check.entries[0]!.notUsed).toEqual({ kind: 'value', fault: `agent.strategy.targetChunkTokens must be a whole number from 1 to ${Number.MAX_SAFE_INTEGER}, got 0.` });
-    expect(check.recipe.agent.strategy?.targetChunkTokens).toBeUndefined();
+  test('each text row takes text of at most its longest characters, counted as code points, and refuses a longer one', () => {
+    for (const [name, longest] of Object.entries(LONGEST)) {
+      for (const inside of ['', 'a'.repeat(longest), '\u{1F426}'.repeat(longest)]) expect([name, notUsed(name, inside)]).toEqual([name, null]);
+      const outside = 'a'.repeat(longest + 1);
+      expect([name, notUsed(name, outside)]).toEqual([name, {
+        kind: 'value', fault: `${name} must be text of at most ${longest} characters, got text of ${longest + 1} characters.`,
+      }]);
+    }
+  });
+
+  test('a name that is a setting of the recipe and not of the table gets no nearest name in the note, the log, doctor or the grant\'s warning', () => {
+    const name = 'agent.strategy.targetChunkTokens';
+    const granted = operator({ ownSettings: [name, 'agent.timezone'] });
+    const dir = dataDir({ own: { [name]: 3_000 } });
+    const start = startOwnSettings(granted, dir);
+    const said = [start.note ?? '', ...start.log, ...ownSettingsLines(granted, dir)].join('\n');
+    expect(said).not.toContain('did you mean');
+    expect(start.note).toContain(`\`${name}\` is not used: it is a setting of your operator's recipe, and this file cannot change it.`);
+    expect(start.log).toContain(`[own-settings] "${name}" in the resident's file is not used: it is a setting of the recipe, and not one of the table.`);
+    expect(said).toContain(`Recipe ownSettings names "${name}", which is a setting of the recipe that ownSettings cannot grant in this release, so it grants nothing.`);
+    const typo = startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own: { 'agent.timezon': 'UTC' } }));
+    expect(typo.note).toContain('did you mean `agent.timezone`?');
+  });
+
+  test('targetChunkTokens is no setting of the table: a resident\'s entry for it is unknown, and the recipe\'s value stays in force (the reviews\' case)', () => {
+    const check = checkOwnSettings(operator({ ownSettings: 'all', ...EVERY_MODULE, agent: { strategy: { targetChunkTokens: 3_000 } } }),
+      dataDir({ own: { 'agent.strategy.targetChunkTokens': 0 } }));
+    expect(check.entries[0]!.notUsed).toEqual({ kind: 'unknown' });
+    expect(check.recipe.agent.strategy?.targetChunkTokens).toBe(3_000);
   });
 
   test('the tool tells the resident that another agent of the host with workspace--write can write its file', () => {
@@ -144,8 +176,9 @@ describe('the numeric rows\' domains', () => {
   test('each edge that a domain lets in, and the empty string for each row whose check takes it, builds the strategy, stores a ' +
     'picture, a tool call and a long message, and compiles once, within a time limit', () => {
     const edges: Array<[string, unknown]> = [
-      ...Object.entries(LEAST).flatMap(([name, least]): Array<[string, unknown]> => [[name, least], [name, Number.MAX_SAFE_INTEGER]]),
+      ...Object.entries(BOUNDS).flatMap(([name, [least, most]]): Array<[string, unknown]> => [[name, least], [name, most]]),
       ...OWN_SETTINGS.filter((setting) => typeof setting.example === 'string').map((setting): [string, unknown] => [setting.name, '']),
+      ...Object.entries(LONGEST).map(([name, longest]): [string, unknown] => [name, 'a'.repeat(longest)]),
     ];
     const expected = edges.flatMap(([name, value]) => {
       const label = `${name}=${JSON.stringify(value)}`;
@@ -159,7 +192,7 @@ describe('the numeric rows\' domains', () => {
 describe('doctor\'s lines about the grant', () => {
   test('"all" is listed with the settings that it covers in this release', () => {
     const lines = ownSettingsLines(operator({ ownSettings: 'all' }), dataDir());
-    expect(lines).toContain(`The recipe's ownSettings is "all", which in this release covers these 21 settings: ${OWN_SETTING_NAMES.join(', ')}.`);
+    expect(lines).toContain(`The recipe's ownSettings is "all", which in this release covers these 20 settings: ${OWN_SETTING_NAMES.join(', ')}.`);
     expect(ownSettingsLines(operator({ ownSettings: ['agent.timezone'] }), dataDir()).some((line) => line.includes('covers these'))).toBe(false);
   });
 
@@ -204,8 +237,8 @@ describe('the recipe key', () => {
   test('a name in the list that is not in the table loads and grants nothing; the log and doctor name it with the nearest (case 24)', () => {
     const op = quietly(() => operator({ ownSettings: ['agent.timezone', 'agent.strategy.witnessedInstruction', 'agent.timezon'] }));
     const warned = [
-      '[own-settings] Recipe ownSettings names "agent.strategy.witnessedInstruction", which is not a setting that a resident may manage ' +
-        'in this release, so it grants nothing.',
+      '[own-settings] Recipe ownSettings names "agent.strategy.witnessedInstruction", which is a setting of the recipe that ownSettings ' +
+        'cannot grant in this release, so it grants nothing.',
       '[own-settings] Recipe ownSettings names "agent.timezon", which is not a setting that a resident may manage in this release, ' +
         'so it grants nothing (did you mean agent.timezone?).',
     ];
@@ -224,9 +257,9 @@ describe('the recipe key', () => {
     expect(start.move).toBe('park');
     expect(start.check.recipe.agent.timezone).toBeUndefined();
     expect(start.log.some((line) => line.includes('workspace--write'))).toBe(false);
-    expect(answer(op, dir, start.check)).toContain('Your operator\'s recipe names settings for you that this release of the host doesn\'t have: ' +
+    expect(answer(op, dir, start.check)).toContain('Your operator\'s recipe names settings for you that the host cannot give to a resident in this release: ' +
       '"agent.strategy.witnessedInstruction". So you can read none of your own settings, and change none.');
-    expect(ownSettingsLines(op, dir)).toContain('The recipe\'s ownSettings names no setting that this release has, so the resident reads and changes none.');
+    expect(ownSettingsLines(op, dir)).toContain('The recipe\'s ownSettings names no setting that it can grant in this release, so the resident reads and changes none.');
   });
 
   test('a name in the list that is not a string is refused', () => {
@@ -370,17 +403,19 @@ describe('what a start does with the file', () => {
     const start = startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own: { ...many, 'agent.timezone': 'UTC' } }));
     expect(start.check.recipe.agent.timezone).toBe('UTC');
     expect(start.note!.length).toBeLessThan(10_000);
-    expect(start.note).toContain('- and 99980 more entries that name no setting');
+    expect(start.note).toContain('- and 99980 more entries that name nothing that this file can change');
     expect(start.log.length).toBeLessThan(30);
+    expect(start.log).toContain('[own-settings] The resident\'s file has 99980 more entries that are no setting of the table.');
     const map = Object.fromEntries(Array.from({ length: 50_000 }, (_, i) => [`tool_${i}`, 1]));
     const large = startOwnSettings(operator({ ownSettings: 'all' }), dataDir({ own: { 'agent.strategy.toolResultMaxLastN': map } }));
     expect(large.check.entries[0]!.notUsed).toBeNull();
     expect(large.log.every((line) => line.length < 2_000)).toBe(true);
   });
 
-  test('a file of all 21 settings gives a log line and a doctor line for each', () => {
+  test('a file of all 20 settings gives a log line and a doctor line for each, after as many unknown names as a list shows', () => {
     const op = operator({ ownSettings: 'all', ...EVERY_MODULE });
-    const dir = dataDir({ own: GOOD });
+    const unknown = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`agent.unknown${i}`, 1]));
+    const dir = dataDir({ own: { ...unknown, ...GOOD } });
     const start = startOwnSettings(op, dir);
     const lines = ownSettingsLines(op, dir);
     for (const name of OWN_SETTING_NAMES) {
@@ -555,7 +590,7 @@ describe('what a start does with the file', () => {
     expect(start.note).toContain('- `agent.proseRouting` is not used: your operator\'s recipe does not let you change it. Remove it from the file, or ask your operator.');
   });
 
-  test('"all" with one entry for each of the 21, on a recipe with each module on: all are in force (case 5)', () => {
+  test('"all" with one entry for each of the 20, on a recipe with each module on: all are in force (case 5)', () => {
     const op = operator({ ownSettings: 'all', ...EVERY_MODULE });
     const start = startOwnSettings(op, dataDir({ own: GOOD }));
     expect(start.check.entries.filter((entry) => entry.notUsed !== null)).toEqual([]);
@@ -630,7 +665,7 @@ describe('what a start does with the file', () => {
     const dir = dataDir({ own: { 'agent.strategy.maxLiveImages': 3 } });
     expect(startOwnSettings(op, dir).check.entries[0]!.notUsed?.kind).toBe('not-available');
     expect(answer(op, dir)).toContain('agent.strategy.maxLiveImages: not available on this host: the host uses a resident\'s value for it only ' +
-      'with the strategy "autobiographical" or "frontdesk".');
+      'with the strategy "autobiographical" or "frontdesk". Your operator\'s recipe lets you change it.');
   });
 
   test('a rule: the entry is not used, its reason quotes the rule in the resident\'s frame, and a second entry is in force (case 12, 27)', () => {
@@ -802,7 +837,7 @@ describe('the tool', () => {
     expect(answer(op, dir, start)).not.toContain('Pending:');
   });
 
-  test('"read": it shows all 21, and says that none may change (case 4)', () => {
+  test('"read": it shows all 20, and says that none may change (case 4)', () => {
     const op = operator({ ownSettings: 'read' });
     const text = answer(op, dataDir());
     for (const name of OWN_SETTING_NAMES) expect(text).toContain(`${name}: `);

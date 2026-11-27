@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { resolveTimeZone } from '@animalabs/agent-framework';
 import { ENV_REFERENCE } from './recipe-document.js';
 import { DEFAULT_RECIPE_CLOCK, type Recipe, type RecipeOrigin } from './recipe.js';
-import { checkRecipe, nearestKey, settingFault, settingTakes } from './recipe-schema.js';
+import { checkRecipe, isRecipeSetting, nearestKey, settingFault, settingTakes } from './recipe-schema.js';
 import { noteRecipeWarning } from './recipe-warnings.js';
 import { strategyMessageCap } from './framework-strategy.js';
 import { shown } from './modules/shown.js';
@@ -251,7 +251,8 @@ function judge(grant: Grant, recipe: Recipe, name: string, value: unknown): OwnE
   if (!mayChange(grant, setting.name)) return { name, value, notUsed: { kind: 'not-granted' } };
   if (!isAvailable(setting, recipe)) return { name, value, notUsed: { kind: 'not-available', when: AVAILABILITY[setting.available].when } };
   const fault = value === null ? `${name} must be ${takes(setting)}, got null.`
-    : settingFault(name, value) ?? (insideDomain(setting, value) ? undefined : `${name} must be ${takes(setting)}, got ${brief(value)}.`);
+    : settingFault(name, value) ?? (insideDomain(setting, value) ? undefined
+      : `${name} must be ${takes(setting)}, got ${typeof value === 'string' ? `text of ${[...value].length} characters` : brief(value)}.`);
   return { name, value, notUsed: fault === undefined ? null : { kind: 'value', fault } };
 }
 
@@ -260,6 +261,10 @@ function grantWarnings(recipe: Recipe): string[] {
   const unknown = Array.isArray(grant) ? grant.filter((name) => settingNamed(name) === undefined) : [];
   return [
     ...unknown.map((name) => {
+      if (isRecipeSetting(name)) {
+        return `Recipe ownSettings names ${cut(JSON.stringify(name))}, which is a setting of the recipe that ownSettings cannot grant in this release, ` +
+          'so it grants nothing.';
+      }
       const nearest = near(name);
       return `Recipe ownSettings names ${cut(JSON.stringify(name))}, which is not a setting that a resident may manage in this release, ` +
         `so it grants nothing${nearest ? ` (did you mean ${nearest}?)` : ''}.`;
@@ -308,6 +313,7 @@ function residentReason(entry: OwnEntry): string {
   switch (reason.kind) {
     case 'unknown':
     {
+      if (isRecipeSetting(entry.name)) return `${name} is not used: it is a setting of your operator's recipe, and this file cannot change it.`;
       const nearest = near(entry.name);
       return `${name} is not used: it is not a setting that you can manage${nearest ? ` (did you mean \`${nearest}\`?)` : ''}.`;
     }
@@ -330,6 +336,7 @@ function residentReason(entry: OwnEntry): string {
 function operatorReason(name: string, reason: NotUsed): string {
   switch (reason.kind) {
     case 'unknown': {
+      if (isRecipeSetting(name)) return 'it is a setting of the recipe, and not one of the table';
       const nearest = near(name);
       return `it is not a setting of the table${nearest ? ` (did you mean ${nearest}?)` : ''}`;
     }
@@ -439,9 +446,9 @@ export function startOwnSettings(operator: OperatorRecipe, dataDir: string): Own
   const line = (entry: OwnEntry): string => (entry.notUsed === null
     ? `[own-settings] ${entry.name} is ${brief(entry.value)} from the resident's file; ${recipeOwn(operator, entry.name)}.`
     : `[own-settings] ${logName(entry)} in the resident's file is not used: ${ended(operatorReason(entry.name, entry.notUsed))}`);
-  log.push(...listed(check.entries, line, (count) => `[own-settings] The resident's file has ${count} more entries that name no setting.`));
+  log.push(...listed(check.entries, line, (count) => `[own-settings] The resident's file has ${count} more entries that are no setting of the table.`));
   warnings.push(...listed(check.entries.filter((entry) => entry.notUsed !== null), line,
-    (count) => `[own-settings] The resident's file has ${count} more entries that name no setting.`));
+    (count) => `[own-settings] The resident's file has ${count} more entries that are no setting of the table.`));
   const failed = (line: string): string => {
     noteRecipeWarning(line);
     return line;
@@ -489,7 +496,7 @@ function startNote(recipe: Recipe, dataDir: string, check: OwnSettingsCheck, mov
       'the recipe lets you change a setting again.');
   } else if (move === 'put-back') {
     parts.push(`Your operator's recipe lets you change your own settings again, so the host puts your parked settings file back as ${place}.` +
-      (inForce.length > 0 ? ` In force from it:\n${listed(inForce, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that name no setting`).join('\n')}` : ' Nothing of it is in force.'));
+      (inForce.length > 0 ? ` In force from it:\n${listed(inForce, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that name nothing that this file can change`).join('\n')}` : ' Nothing of it is in force.'));
   }
   if (check.file.kind === 'unread' || check.file.kind === 'not-an-object') {
     parts.push(check.file.kind === 'unread' && resolve(check.path) === resolve(ownSettingsDir(dataDir), OWN_SETTINGS_SET_ASIDE)
@@ -501,7 +508,7 @@ function startNote(recipe: Recipe, dataDir: string, check: OwnSettingsCheck, mov
   if (notUsed.length > 0) {
     parts.push(`Your settings file ${place} did not take effect as written at this start.` +
       `${inForce.length > 0 ? ' Each other entry of it is in force.' : ''}\n` +
-      listed(notUsed, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that name no setting`).join('\n'));
+      listed(notUsed, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that name nothing that this file can change`).join('\n'));
   }
   if (parts.length === 0) return undefined;
   const allowed = recipe.agent.allowedTools;
@@ -575,7 +582,8 @@ export function ownSettingsAnswer(input: {
       : hostValue(setting.name, start.recipe, running) !== undefined
         ? `${hostValue(setting.name, start.recipe, running)}, which the host sets, since neither the recipe nor your file sets it`
         : 'not set: the package\'s default applies';
-    const may = mayChange(grant, setting.name) ? 'You may change it.' : 'You may read it, and your operator\'s recipe does not let you change it.';
+    const may = !mayChange(grant, setting.name) ? 'You may read it, and your operator\'s recipe does not let you change it.'
+      : available ? 'You may change it.' : 'Your operator\'s recipe lets you change it.';
     return `${setting.name}: ${now}. ${may}\n  ${setting.words}\n  It takes ${takes(setting)}.`;
   }).join('\n\n'));
 
@@ -598,7 +606,7 @@ export function ownSettingsAnswer(input: {
         : 'Here lifecycle--restart can\'t restart the host, so a change waits until your operator restarts it.'));
   } else {
     sections.push(Array.isArray(grant)
-      ? `Your operator's recipe names settings for you that this release of the host doesn't have: ${grant.map((name) => cut(JSON.stringify(name))).join(', ')}. ` +
+      ? `Your operator's recipe names settings for you that the host cannot give to a resident in this release: ${grant.map((name) => cut(JSON.stringify(name))).join(', ')}. ` +
         'So you can read none of your own settings, and change none.'
       : 'Your operator\'s recipe lets you read these settings, and it lets you change none of them.');
   }
@@ -618,7 +626,7 @@ export function ownSettingsAnswer(input: {
   } else {
     const fromParked = resolve(next.path) === parked;
     const lines = next.file.kind === 'entries'
-      ? (next.entries.length === 0 ? ['It holds no entry.'] : listed(next.entries, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that name no setting`))
+      ? (next.entries.length === 0 ? ['It holds no entry.'] : listed(next.entries, (entry) => `- ${residentReason(entry)}`, (count) => `- and ${count} more entries that name nothing that this file can change`))
       : [];
     sections.push(fromParked
       ? (next.file.kind === 'unread'
@@ -659,7 +667,7 @@ export function ownSettingsLines(operator: OperatorRecipe, dataDir: string): str
   const lines: string[] = [...grantWarnings(operator.recipe)];
   if (!changesSettings(grant)) {
     lines.push(grant === undefined ? 'The recipe has no ownSettings.'
-      : Array.isArray(grant) ? 'The recipe\'s ownSettings names no setting that this release has, so the resident reads and changes none.'
+      : Array.isArray(grant) ? 'The recipe\'s ownSettings names no setting that it can grant in this release, so the resident reads and changes none.'
       : 'The recipe\'s ownSettings is "read", so the resident changes no setting.');
     if (ownThere) {
       lines.push(isPlainFile(own)
@@ -697,7 +705,7 @@ export function ownSettingsLines(operator: OperatorRecipe, dataDir: string): str
   lines.push(...listed(check.entries, (entry) => (entry.notUsed === null
     ? `${entry.name} would be ${brief(entry.value)} from the resident's file; ${recipeOwn(operator, entry.name)}.`
     : `${logName(entry)} in the resident's file would not be used: ${ended(operatorReason(entry.name, entry.notUsed))}`),
-  (count) => `The resident's file has ${count} more entries that name no setting.`));
+  (count) => `The resident's file has ${count} more entries that are no setting of the table.`));
   if (ownThere && parkedThere) lines.push(`${parked} is there too, and the start uses ${OWN_SETTINGS_FILE}.`);
   return lines;
 }

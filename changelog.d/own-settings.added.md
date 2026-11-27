@@ -1,6 +1,6 @@
 - A recipe's new key `ownSettings` lets the resident read some of its own
   settings, and change some of them. It takes `"all"`, `"read"`, or a list
-  of names from the table of 21 settings in `src/own-settings-table.ts`. The
+  of names from the table of 20 settings in `src/own-settings-table.ts`. The
   resident writes its settings into `own-settings/own.json` in the data
   directory. If it may change a setting and the workspace is on, it reaches
   the file through the mount `_settings`. The host applies the file at each
@@ -8,7 +8,9 @@
   the entry in it. An entry that fails is left out, and the others still
   apply. A numeric setting in the file takes a whole number, up to the
   largest safe integer. If the setting's words say what 0 does, the number
-  can be 0. Otherwise it must be 1 or more. A value in the file gets no `${VAR}` substitution, and the saved
+  can be 0. Otherwise it must be 1 or more. `summaryTargetTokens` takes at
+  most 10666, and the three text settings take at most 64, 200 and 2000
+  characters. A value in the file gets no `${VAR}` substitution, and the saved
   recipe never holds one. The utility `settings--own` shows the resident its
   settings, and what its file changes at the next start. The host tells the
   resident when its file doesn't take effect as written. The host parks the
