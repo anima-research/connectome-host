@@ -451,7 +451,7 @@ service.
    When the host asks the API for a count, the API refuses it, as it refuses every
    request that carries the mock key. The ask still carries the copy's compiled request
    to the API. A copy with no Anthropic credential and no `ANTHROPIC_BASE_URL` doesn't
-   ask for a count, so its compiled request stays on the machine.
+   send its compiled request out to be counted.
    Where the host asks for no count, there is no live count either. The rest still
    compiles.
 
