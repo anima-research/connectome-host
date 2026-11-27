@@ -1025,10 +1025,12 @@ raises the alert instead.
   thinking to everything before it, every reply after its old place loses its
   thinking.
 - `"beforeUser"` is deprecated
-  ([agent-framework#171](https://github.com/anima-research/agent-framework/issues/171)).
-  It's spliced in again before the newest user message at every compile, so
-  it moves, at `afterUser`'s cost, and it can split a tool call from its
-  result. Use `"afterUser"` or `"system"`.
+  ([anima-research/agent-framework#171](https://github.com/anima-research/agent-framework/issues/171)).
+  It is placed before the newest user-role message, and a tool result is one,
+  so a request rebuilt mid-turn (a retry) can put it between a tool call and
+  its result. It moves as `"afterUser"` does, missing the prompt cache from
+  its old place whenever a newer user message arrives, and losing the replies'
+  thinking after that place on a model that binds it.
 
 Compared to **lessons** (`modules.lessons`): lessons are a
 structured, confidence-scored store with model-driven retrieval; instructions

@@ -15,6 +15,9 @@ my-recipe.json
 # (A stray `git add -A` once published one to a public branch; this is the
 # regression test for that workflow bug.)
 knowledge-requests/
+# agent-framework's failure log, written relative to the working directory;
+# `bun test` from the repo root writes one too.
+logs/
 output/
 review-output/
 tsconfig.tsbuildinfo
