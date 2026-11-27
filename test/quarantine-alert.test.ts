@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 import { quarantineAlarm, quarantineHeld, quarantineSpans, type QuarantineStatus } from '../src/web/quarantine-alert.js';
 
@@ -46,7 +47,7 @@ describe('quarantineHeld', () => {
 
 describe('quarantineAlarm', () => {
   const keys = ['k1', 'k2', 'k3'];
-  const tail = ' — spans stay raw and WILL eventually exhaust the context budget. Operator action required (inspect refusing content; branch, pin, or clear).';
+  const tail = ' — held spans stay whole and take room in the context budget. The host\'s health report lists them for this agent under compressionQuarantine. docs/DEPLOYMENTS.md, "Compression quarantine", says how to read it and what the host offers.';
 
   test('records held, with spans listed: the alarm counts the spans, and its data is the count and keys', () => {
     expect(quarantineAlarm({ count: 3, keys, spans: [span(1, 2), span(2, 1)] })).toEqual({
@@ -80,5 +81,24 @@ describe('quarantineAlarm', () => {
       data: { count: 0 },
     });
     expect(quarantineAlarm({ count: 0, keys: [], spans: [] }).kind).toBe('compression-quarantine-clear');
+  });
+});
+
+describe('the words of a held span', () => {
+  test('name no act for the operator: no inspect, branch, pin, clear or required', () => {
+    const message = quarantineAlarm({ count: 3, keys: ['k1'], spans: [span(1, 3)] }).message;
+    expect(message).not.toMatch(/inspect|branch|pin|clear|required/i);
+  });
+
+  test('send the reader to the guide section, which docs/DEPLOYMENTS.md holds, and the guides it names hold the headings it gives', () => {
+    const message = quarantineAlarm({ count: 1, keys: ['k1'] }).message;
+    expect(message).toContain('docs/DEPLOYMENTS.md, "Compression quarantine"');
+    const docs = (name: string) => readFileSync(new URL(`../docs/${name}`, import.meta.url), 'utf8');
+    expect(docs('DEPLOYMENTS.md')).toMatch(/^### Compression quarantine$/m);
+    const section = docs('DEPLOYMENTS.md').split(/^### Compression quarantine$/m)[1]!.split(/^#{2,3} /m)[0]!;
+    expect(section).toContain('claude-code-ingest.md, "5.2 Mitigations that are already built (recipe-level)"');
+    expect(docs('claude-code-ingest.md')).toMatch(/^### 5\.2 Mitigations that are already built \(recipe-level\)$/m);
+    expect(section).toContain('webui-live-surgery.md, "Rollback to a message"');
+    expect(docs('webui-live-surgery.md')).toMatch(/^## Rollback to a message$/m);
   });
 });

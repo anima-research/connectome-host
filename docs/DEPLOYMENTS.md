@@ -78,8 +78,13 @@ In a shell command, put each path or value that you fill in between single quote
   `DISCORD_SUPPRESSED_REACTIONS_BASELINE` with tokens in the host's
   environment replaces agent-framework's default. See DEV-ENVIRONMENT for
   file-defined servers.
-- `data/` — chronicle store + per-session `config/gate.json` (wake policies;
-  append-only reconcile, so reorder the **live** file, not just the recipe).
+- `data/` — chronicle store + per-session `config/gate.json` (wake policies). At
+  each start, agent-framework merges the recipe into the session's `gate.json`.
+  A policy edited at run time keeps its live definition. Once you move a recipe
+  policy at run time, the file keeps the order that you gave it. So change those
+  in the **live** file, not just the recipe. A start without `gate.recipe.json`
+  can't tell edited or moved policies from the others. It reorders only the
+  policies that match the recipe, and it redefines none.
 
 **Start / stop / restart:**
 
@@ -319,6 +324,24 @@ Two traps. First, any open of a store with a normal strategy configuration chunk
 
 Not every account binds: some still show the model such a block. So at start, the host checks each such model that the recipe uses (the agent's model, and its subagents' default). It mints one block and replays it under a changed system text, in a few small requests that `[thinking-binding]` lines in its log report on. It skips the check when the recipe's `agent.formatter` is `anthropic-xml`, when the provider is the mock, and when `THINKING_BINDING_PROBE` is `off`, `0`, `false` or `no`. Where the account showed the block, the agent and its subagents send their thinking as stored. They send it without the drop control, since the control would have the block dropped. That holds only on the Anthropic route, for a model that takes the control. If a gateway later moves the agent to an account that refuses such a block, the first refusal turns the control on for the rest of the run, and the host sends the request again. Where the account refused or dropped the block, the agent and its subagents leave such thinking out, as above. A start at which the check can't tell uses what the check last found on the same route (`$DATA_DIR/thinking-binding.json`), or else leaves such thinking out. `THINKING_BINDING_PROBE=off` skips the check.
 
+### Compression quarantine
+
+A provider can refuse to write the summary of a span of a resident's history. If the provider refuses each attempt at that summary, context-manager holds the span in its compression quarantine. The span stays whole in the resident's context, and folding goes on around it. This alone does not stop the resident. A held span takes room, and more held spans can fill the context budget in time.
+
+The host sends a `compression-quarantine` alert for the recipe's agent, and repeats it while a span is held. The alert comes again at most every 15 minutes while new messages come in, and again after the host starts. A repeat does not mean that more is held. The health report's count says how much is held now. A page that already shows the alert can show an older count. A subagent gets no such alert from the host. The health report lists its held spans, and the Web UI builds an alert from its own host's report. A fleet parent's page builds no such alert from a child's report.
+
+**Where to read it.** The host's health report has a `compressionQuarantine` section, keyed by agent. An agent's entry has a count of quarantine records, and one span can hold several records. For each held span, it gives the span's first and last message id, its age and its latest outcome, when these are known. Read the report at `/healthz` of that host's Web UI. The Web UI's Health tab shows the count and the keys, and not the ids, ages or outcomes. Where the host has no Web UI, no `connectome` command prints the report. The alert's own text says how many spans, or how many quarantine records, are held. A headless host answers a `panel-request` for `health` on its socket (docs/fleet-protocol.md), as a fleet parent asks it. A host in the terminal interface with no Web UI opens no socket, so it has no route to the report. In a fleet, read the child's report: select the child in the Web UI, or ask the parent for `/healthz?scope=<child>`. A bare `/healthz` on the parent answers for the parent. An entry with a count of 0 says that nothing is held. An agent has no entry when its strategy keeps no quarantine, or when the read failed. `readFailures` names an agent whose read failed. The ids, where known, say what is held. Nobody needs to open the held messages to read the status.
+
+**What the host offers.**
+- The host has no command that clears a quarantine. `/clear` clears the display of the clients, and nothing else.
+- A pin over a span that is already held leaves the span held.
+- context-manager also writes a log line of its own, which names "branch, pin, or clear". Those are the library's words, and they are not commands of the host.
+- A held span can stay held. The host goes on running the resident while the span is held.
+
+**What ends a hold.** A summary of the span ends it. Two other guides describe operations that bear on that. Each operation can change more than the held span, so read its guide first.
+- A fallback model for compression (`agent.strategy.compressionFallbackModel`; claude-code-ingest.md, "5.2 Mitigations that are already built (recipe-level)") gives a held span another attempt, with another model. Its summary then ends the hold, and the span folds as other spans do.
+- After a rollback to a message before the span, that span is not held on the new branch. webui-live-surgery.md, "Rollback to a message", describes the rollback. It changes the active history of every resident on that store, and it does not undo what the resident said to others. A span that begins at the resident's first message has no message before it. No `compression-quarantine-clear` alert follows a rollback, so read the report again. If the residents on that store can answer, ask them before a rollback.
+
 ### Health
 
 `/healthz` holds these, for each agent:
@@ -327,7 +350,7 @@ Not every account binds: some still show the model such a block. So at start, th
 - `contextComposition`: the head, raw middle, summaries and tail, as the last live compile rendered them. It has no entry for an agent that has had no live compile since its context was loaded, or whose strategy keeps none (`contextCompositionNotKept` names those agents);
 - `runtimeSettings`;
 - `loadRepair`: the newest load repair that the agent's strategy made, absent while it has made none;
-- `readFailures`: present only when one of those reads threw, with what it said.
+- `readFailures`: present only when one of those reads failed, with what it said. A read fails when it throws. The read of `compressionQuarantine` also fails when context-manager marks the status `unreadable`, and such an agent has no entry in that section.
 
 ---
 
