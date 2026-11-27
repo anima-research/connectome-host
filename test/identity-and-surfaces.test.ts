@@ -1015,7 +1015,7 @@ describe('identity: what the agent reads when a call fails', () => {
     );
     expect(byHand).not.toContain('"sub":');
     // A directory where the record's temporary file goes fails its write.
-    mkdirSync(join(dir, 'k.json.tmp'));
+    mkdirSync(join(dir, `k.json.tmp-${process.pid}`));
     enroll = () => new Response(JSON.stringify({ sub: 'agent:a@guest' }), { status: 200 });
     let unrecorded: Awaited<ReturnType<IdentityModule['handleToolCall']>> | undefined;
     const lines = await logged(async () => { unrecorded = await join_(); });
@@ -1332,7 +1332,7 @@ describe('identity: what the agent reads when a call fails', () => {
   it('drops the hold for a record written by hand that differs from it, whose fields its log line kept', async () => {
     const { mod, dir } = registeredModule({ register: false });
     // A directory where the record's temporary file goes fails its write.
-    mkdirSync(join(dir, 'k.json.tmp'));
+    mkdirSync(join(dir, `k.json.tmp-${process.pid}`));
     const lines = await logged(async () => { await mod.handleToolCall(call('accept_invite', { invite: 'inv', name: 'A' })); });
     expect((await mod.handleToolCall(call('status', {}))).data).toMatchObject({ registeredAs: 'A', id: 'agent:a@guest' });
     writeFileSync(join(dir, 'k.json'), JSON.stringify({ sub: 'agent:b@guest', name: 'B', home: 'id.test', enrolledAt: '2026-10-01T00:00:00.000Z' }));

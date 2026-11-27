@@ -1,7 +1,7 @@
 /**
  * The wire statements follow archipelago-home's src/statements.ts.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import {
   createPrivateKey,
@@ -21,6 +21,7 @@ import {
   type WorkspaceModule,
 } from '@animalabs/agent-framework';
 import { settingsRoute, unknownToolResult } from './unknown-tool.js';
+import { writeJsonWhole } from '../write-json-whole.js';
 
 /** agent-framework's disk read reports a file disk lacks as not_found with
  *  ENOENT (nothing there, or a link that leads nowhere), ENOTDIR (a parent
@@ -426,8 +427,7 @@ export class IdentityModule implements Module {
   }
 
   private saveRecord(rec: IdentityRecord): void {
-    writeFileSync(this.recordPath + '.tmp', JSON.stringify(rec, null, 2) + '\n');
-    renameSync(this.recordPath + '.tmp', this.recordPath);
+    writeJsonWhole(this.recordPath, rec);
   }
 
   private async post(path: string, body: unknown): Promise<{ status: number; json: Record<string, unknown> }> {

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { agentOverlayPath } from './update/agent-overlay-path.js';
 import { namesEnvReference, type RecipeToolLifecycle } from './recipe.js';
@@ -6,6 +6,7 @@ import { parseToolLifecycle } from './recipe-schema.js';
 import { parseHandWrittenJson } from './hand-written-json.js';
 import { resolveServerBinding, serverConfigProblems } from '@animalabs/agent-framework';
 import { isServerPresentation, SERVER_PRESENTATIONS_TEXT, type ServerPresentation } from './server-presentation.js';
+import { writeJsonWhole } from './write-json-whole.js';
 
 /** Default config file path, resolved from cwd. */
 export const DEFAULT_CONFIG_PATH = resolve(process.cwd(), 'mcpl-servers.json');
@@ -490,8 +491,8 @@ function writeServersFile(path: string, servers: Record<string, unknown>): void 
     }
     if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) root = parsed as Record<string, unknown>;
   }
-  // writeFileSync's mode applies only to a file it creates.
-  writeFileSync(path, JSON.stringify({ ...root, mcplServers: servers }, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 });
+  // Whole, and 0600 on overwrite too: the renamed file is new (#740).
+  writeJsonWhole(path, { ...root, mcplServers: servers }, { mode: 0o600 });
 }
 
 /**

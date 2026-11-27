@@ -1,5 +1,5 @@
-import { readFileSync, renameSync, statSync, lstatSync, realpathSync, writeFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { readFileSync, statSync, lstatSync } from 'node:fs';
+import { writeJsonWhole } from '../write-json-whole.js';
 import { createPublicKey, verify as cryptoVerify, randomBytes } from 'node:crypto';
 import { parseHandWrittenJson } from '../hand-written-json.js';
 
@@ -218,11 +218,7 @@ function errorText(err: unknown): string {
 }
 
 export function saveObserversFile(path: string, file: ObserversFile): void {
-  const target = isLink(path) ? realpathSync(path) : path;
-  mkdirSync(dirname(target), { recursive: true });
-  const tmp = `${target}.tmp`;
-  writeFileSync(tmp, JSON.stringify(file, keepNonFinite, 2) + '\n');
-  renameSync(tmp, target); // atomic: a reader never sees half a write
+  writeJsonWhole(path, file, { replacer: keepNonFinite }); // a reader never sees half a write; a link's target is written
 }
 
 /** JSON has no Infinity: a number too large for it, such as 1e309, parses

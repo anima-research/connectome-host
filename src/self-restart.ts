@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { writeJsonWhole } from './write-json-whole.js';
 
 /** EX_TEMPFAIL: nonzero, so `Restart=on-failure` and a fleet parent's
  *  autoRestart (which retries nonzero exits only) restart it too. */
@@ -25,11 +26,6 @@ export interface SelfRestartRecord extends SelfRestartRequest {
   cleanExit: boolean;
 }
 
-function writeJsonAtomic(path: string, value: unknown): void {
-  const tmp = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n');
-  renameSync(tmp, path);
-}
 
 function readJson<T>(path: string): T | null {
   try {
@@ -66,7 +62,7 @@ export class SelfRestartState {
 
   arm(dataDir: string, request: Omit<SelfRestartRequest, 'bootId' | 'pid'>): SelfRestartRequest {
     const full: SelfRestartRequest = { ...request, pid: process.pid, bootId: this.bootId };
-    writeJsonAtomic(join(dataDir, SELF_RESTART_FILE), full);
+    writeJsonWhole(join(dataDir, SELF_RESTART_FILE), full);
     this.armed = { dataDir, request: full };
     return { ...full };
   }
@@ -91,7 +87,7 @@ export class SelfRestartState {
       exitCode,
     };
     try {
-      writeJsonAtomic(join(this.armed.dataDir, SELF_RESTART_FILE), request);
+      writeJsonWhole(join(this.armed.dataDir, SELF_RESTART_FILE), request);
     } catch {
     }
     this.armed = { ...this.armed, request };
@@ -112,7 +108,7 @@ export class SelfRestartState {
       cleanExit: typeof request.exitedAt === 'string',
     };
     try {
-      writeJsonAtomic(join(dataDir, SELF_RESTART_LAST_FILE), record);
+      writeJsonWhole(join(dataDir, SELF_RESTART_LAST_FILE), record);
       unlinkSync(path);
     } catch {
     }
