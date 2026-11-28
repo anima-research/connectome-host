@@ -4,8 +4,7 @@ This option requires a Context Manager (CM) release exporting
 `CompressionInstructions` and `validateCompressionInstructions`, with the
 matching strategy implementation. The host and agent-framework (AF) must resolve
 to the **same CM class**. A validator in only the host's copy is insufficient.
-See [dependency compatibility](#dependency-compatibility) for release prerequisites;
-this guide describes the feature, not a claim that a compatible release exists.
+See [dependency compatibility](#dependency-compatibility) for supported versions.
 
 For the built-in `autobiographical` strategy, put trusted operator-authored
 wording in `agent.strategy.compressionInstructions.templates`. No preset is
@@ -109,32 +108,10 @@ Settings are snapshotted by CM at construction, not hot-tuned.
 
 ## Dependency compatibility
 
-There are two **conditional** release routes; neither is selected here:
-
-1. A feature backport to CM **0.25.x** may satisfy existing AF ranges:
-   AF 0.33.0 declares `^0.25.0`, and AF 0.34.0 declares `^0.25.1`. If a
-   feature-containing patch is released and qualified there, the host can
-   raise its CM floor and relock to a deduplicated copy without necessarily
-   requiring an AF release. For reference, #648's initial host manifest asks
-   for `^0.25.3` and **both lockfiles resolve 0.25.3**, not 0.25.0; 0.25.0 is
-   AF 0.33.0's range floor.
-2. A feature release on a **newer CM main line** may not fit existing AF
-   ranges. It then requires AF and host dependency alignment as well as host
-   relocking; installing a newer direct CM alone is not sufficient.
-
-A textually clean application to a backport branch does not establish runtime
-or behavioral equivalence. If a backport is chosen later, main-pinned CM
-goldens need recapturing and qualification against that base. No feature
-release version or backport decision is assumed here.
-
-At dependency-bump time, maintainers must record the actual feature-containing
-CM release and compatible AF ranges, update the host CM floor (and AF floor if
-needed), both lockfiles and the dependency-range test, and rerun stock load,
-typecheck/build and integration checks **without substitutions**. Recheck this
-guide's route/range information, the docs index, resident memory guide and
-changelog wording against the chosen implementation; remove any temporary
-release staging notices. Local/PR staging must continue to track the missing
-API as a release blocker until those checks pass.
+CM 0.29.0 includes the compression-instruction API (context-manager #486).
+The host requires AF `^0.36.0` and CM `^0.29.0`; both lockfiles resolve one
+shared CM 0.29.0. AF 0.35.x requires CM `^0.28.0`, so raising only the host's
+CM dependency installs a second copy and does not enable templates.
 
 Templates are trusted instructions, not an enforcement mechanism or a security
 boundary. They do not migrate existing summaries or promise provider behavior
