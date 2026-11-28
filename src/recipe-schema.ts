@@ -313,8 +313,8 @@ const fraction = () => numberWhere('a number from 0 to 1', (v) => v >= 0 && v <=
 
 const kvUnifiedPolicyShape = {
   alpha: nonNegative(),
-  budgetLowRatio: number('a finite number'),
-  budgetHighRatio: number('a finite number'),
+  budgetLowRatio: numberWhere('a non-negative finite number', (v) => v >= 0),
+  budgetHighRatio: numberWhere('a non-negative finite number', (v) => v >= 0),
   budgetUnderLambda: nonNegative(),
   budgetOverLambda: nonNegative(),
   cacheLambda: nonNegative(),
@@ -405,18 +405,18 @@ const strategyShape = {
    *  that tail wouldn't fit beside agent.maxTokens with overBudgetGraceRatio's
    *  grace. */
   recentWindowTokens: number().optional(),
-  compressionModel: text().optional(),
+  compressionModel: nonBlankText('a non-empty string with a character that isn\'t a space').optional(),
   /** Cap compression `max_tokens` at the compression model's OUTPUT ceiling.
    *  Required for pre-4.x models (Claude 3 Opus caps at 4096) — without it the
    *  summarizer's 16k floor is rejected and the agent never folds. */
-  compressionMaxTokens: number().optional(),
+  compressionMaxTokens: nonNegativeSafeInteger().optional(),
   /**
    * Opt-in compatibility for a non-reasoning model that authors the complete
    * compression result inside one closed literal `<thinking>…</thinking>`
    * text wrapper. Recovers only that exact whole-response shape as prose.
    */
   recoverLiteralThinkingWrappedCompression: trueOrFalse().optional(),
-  maxMessageTokens: number().optional(),
+  maxMessageTokens: nonNegativeSafeInteger().optional(),
   /** Maximum live image count, newest-first (default 6). Zero means up to
    * context-manager's image ceiling, 500, and a larger value is held to it. */
   maxLiveImages: nonNegativeSafeInteger().optional(),
@@ -478,7 +478,7 @@ const strategyShape = {
    * more to this model, before the split rung and before quarantine. The
    * model is reached through the agent's own provider.
    */
-  compressionFallbackModel: nonEmptyText().optional(),
+  compressionFallbackModel: nonBlankText('a non-empty string with a character that isn\'t a space').optional(),
   /** Token budget for prior recall-pair context in compression/merge
    * requests (Context Manager `compressionRecallBudgetTokens`). */
   compressionRecallBudgetTokens: positiveSafeInteger().optional(),
@@ -498,20 +498,20 @@ const strategyShape = {
    * inside the LIVE window as reasoning extraction.
    */
   carrierPolicy: oneOf(['full', 'live-strip']).optional(),
-  targetChunkTokens: number().optional(),
+  targetChunkTokens: nonNegativeSafeInteger().optional(),
   mergeThreshold: number().optional(),
   mergeMaxSourceSpanMessages: number().optional(),
-  summaryTargetTokens: number().optional(),
+  summaryTargetTokens: nonNegativeSafeInteger().optional(),
   /** Standing production target: keep the summary forest deep enough to fit
    *  this budget, enabling a later live-budget descent with no fold-storm and
    *  a single KV invalidation (see context-manager productionBudgetTokens). */
-  productionBudgetTokens: number().optional(),
-  l1BudgetTokens: number().optional(),
-  l2BudgetTokens: number().optional(),
-  l3BudgetTokens: number().optional(),
+  productionBudgetTokens: nonNegativeSafeInteger().optional(),
+  l1BudgetTokens: nonNegativeSafeInteger().optional(),
+  l2BudgetTokens: nonNegativeSafeInteger().optional(),
+  l3BudgetTokens: nonNegativeSafeInteger().optional(),
   toolResultMaxLastN: z.union([number(), mapOf(number(), 'a number')],
     takes('a number, or an object from tool names to numbers')).optional(),
-  toolUseInputMaxTokens: number().optional(),
+  toolUseInputMaxTokens: nonNegativeSafeInteger().optional(),
   /** Adaptive resolution (document-based gradual compression). For the
    *  'autobiographical' strategy type this defaults ON; set
    *  `adaptiveResolution: false` to opt back to the count-based
@@ -520,10 +520,10 @@ const strategyShape = {
   adaptiveResolution: trueOrFalse().optional(),
   /** kv-stable: trust region P on per-turn perturbation (tokens re-read).
    *  See context-manager adaptive-resolution-design.md §13. */
-  kvStableReachTokens: number().optional(),
+  kvStableReachTokens: nonNegativeSafeInteger().optional(),
   /** kv-stable: quality-gap override threshold (§13.4). Default 0.35. */
-  kvStableQualityGapRatio: number().optional(),
-  compressionSlackRatio: number().optional(),
+  kvStableQualityGapRatio: numberWhere('a non-negative finite number', (v) => v >= 0).optional(),
+  compressionSlackRatio: numberWhere('a non-negative finite number', (v) => v >= 0).optional(),
   /** Adaptive-resolution fold planner. An omitted value is 'kv-unified', the
    *  cost-aware solver (see buildFrameworkStrategy). A resident whose store
    *  was built under 'kv-stable' pins it here. 'flat-profile' /
@@ -1390,7 +1390,7 @@ const either = <T extends z.ZodType>(object: T, phrase: string) => z.union([bool
 
 const subagentsShape = {
   defaultModel: text().optional(),
-  defaultMaxTokens: number().optional(),
+  defaultMaxTokens: nonNegativeSafeInteger().optional(),
   /**
    * What a forked or spawned stream is told at its start. `'full'`
    * (default) describes the launch and the stream's place in it, and
@@ -1415,7 +1415,7 @@ const subagentsShape = {
 const subagents: z.ZodType<Exact<typeof subagentsShape>> = z.looseObject(subagentsShape, takes('an object'));
 
 const retrievalShape = {
-  model: text().optional(),
+  model: nonBlankText('a non-empty string with a character that isn\'t a space').optional(),
   maxInjected: number().optional(),
   /**
    * Optional OpenAI Responses/Codex reasoning effort for both retrieval calls.
@@ -1480,7 +1480,7 @@ const replyJudge = z.strictObject({
   enabled: trueOrFalse().optional(),
   /** The judge's model id as this host's provider names it (e.g. an
    *  `anthropic.`/`anthropic/` prefix on Bedrock/OpenRouter). */
-  model: nonEmptyText().optional(),
+  model: nonBlankText('a non-empty string with a character that isn\'t a space').optional(),
   /** The most input tokens one judge request may carry (4000 or more; default 90000). */
   maxInputTokens: numberWhere('a whole number of tokens, 4000 or more', (v) => Number.isInteger(v) && v >= 4000).optional(),
   /** How long a judge request may take, in ms. */
@@ -2594,7 +2594,8 @@ const ownSettings = z.union([
   listOf(text('a setting name'), OWN_SETTINGS_FORMS).min(1, takes(OWN_SETTINGS_FORMS)),
 ], takes(OWN_SETTINGS_FORMS));
 
-const recipeShape = {
+/** The recipe's fields, for a test that walks them by name (test/recipe-values-by-rule.test.ts). */
+export const recipeShape = {
   name: nonEmptyText(),
   description: text().optional(),
   version: text().optional(),
