@@ -11,7 +11,7 @@ export async function switchSessionSteps<F extends { stop(): Promise<void> }>(
   app: { stopping?: boolean; switching?: boolean; switchSettled?: Promise<{ madeStopFailed: boolean }> },
   steps: {
     stopOld(): Promise<void>;
-    make(): Promise<F>;
+    make(onCleanupStopFailed: () => void): Promise<F>;
     install(next: F): Promise<void> | void;
     stopServer(): Promise<void>;
   },
@@ -28,7 +28,7 @@ export async function switchSessionSteps<F extends { stop(): Promise<void> }>(
     if (app.stopping) return false;
     let next: F;
     try {
-      next = await steps.make();
+      next = await steps.make(() => { madeStopFailed = true; });
     } catch (error) {
       if (app.stopping) {
         const reason = error instanceof Error ? error.message : String(error);

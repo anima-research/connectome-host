@@ -1,12 +1,13 @@
 import type { AgentFramework } from '@animalabs/agent-framework';
 import { FleetModule } from './modules/fleet-module.js';
 import type { ExtensionRegistry } from './extensions.js';
+import { stopAfterFailedSetup } from './stop-after-failed-setup.js';
 import { auditBeforeCommit } from './update/audit-stores.js';
 import { commitRelease, currentForStart, type ReleaseHere } from './update/host.js';
 import { resumeIfSwitch, resumeLeftChildren } from './update/quiesce.js';
 
 export async function startFramework(
-  framework: Pick<AgentFramework, 'start' | 'stop' | 'getModule' | 'listMcplServers' | 'notifyOps' | 'quiesce' | 'resume' | 'getHostModeStatus'>,
+  framework: Pick<AgentFramework, 'start' | 'stop' | 'getStore' | 'getModule' | 'listMcplServers' | 'notifyOps' | 'quiesce' | 'resume' | 'getHostModeStatus'>,
   here: ReleaseHere | null,
   trial?: { dataDir: string; activeStore: string; places: () => string[] | null; extensions?: ExtensionRegistry },
 ): Promise<void> {
@@ -21,9 +22,7 @@ export async function startFramework(
         unconnectedServers: () => framework.listMcplServers().filter((server) => !server.connected && !server.closedTab).map((server) => server.id),
       });
     } catch (error) {
-      await framework.stop().catch((stopping: unknown) => {
-        console.error(`[update] stopping the framework after its start ended failed too: ${stopping instanceof Error ? stopping.message : String(stopping)}`);
-      });
+      await stopAfterFailedSetup(framework);
       throw error;
     }
     if (moved !== undefined) {

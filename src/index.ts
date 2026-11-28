@@ -89,6 +89,7 @@ import { TURN_SETTLED_TRACES } from './state/turn-trace.js';
 import { readHostVersions, setCallLogPath, type HostVersions } from './bug-report.js';
 import { SessionManager, noStoreRefusal } from './session-manager.js';
 import { startFramework } from './start-framework.js';
+import { stopAfterFailedSetup } from './stop-after-failed-setup.js';
 import { StartRefusal, currentForStart, releaseHere, type ReleaseHere } from './update/host.js';
 import { installCommandAt } from './update/install-command-name.js';
 import { childrenFilePath, trialPlaces } from './update/contract.js';
@@ -278,6 +279,7 @@ async function createFramework(
   credentials: CredentialMonitor | null,
   subscriptionUnmetered = false,
   extensions?: ExtensionRegistry,
+  onCleanupStopFailed?: () => void,
 ): Promise<AgentFramework> {
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
@@ -574,84 +576,89 @@ agents: [agentConfig],
     toolResultInlineMaxChars: recipe.toolResultInlineMaxChars,
   });
 
-  // An agent-framework without the heartbeat ignores modules.heartbeat: the
-  // agent then has no heartbeat or reminders at all, which is said here.
-  if (heartbeatOptions && !framework.getAllTools().some((tool) => tool.name.startsWith('heartbeat--'))) {
-    console.warn('[heartbeat] modules.heartbeat is on, but this agent-framework has no heartbeat (it came after 0.27.0), so the '
-      + 'agent has no heartbeat or reminders. Update agent-framework, or turn modules.heartbeat off and run heartbeat-mcpl '
-      + 'under mcpServers.heartbeat.');
-  }
-
-  if (historyModule) {
-    const cm = framework.getAgent(agentName)?.getContextManager();
-    if (cm) {
-      historyModule.bind(cm, framework.channels ?? undefined);
-    }
-  }
-
-  const autoContinueWarning = autoContinueSupportWarning(recipe, framework.getAgent(agentName) ?? undefined);
-  if (autoContinueWarning) console.warn(autoContinueWarning);
-
-  {
-    const alarmCapable = strategy as unknown as {
-      setQuarantineAlarmHandler?: (fn: (status: QuarantineStatus) => void) => void;
-    };
-    const notify = (framework as unknown as {
-      notifyOps?: (kind: string, agent: string, message: string, data?: Record<string, unknown>) => void;
-    }).notifyOps?.bind(framework);
-    if (alarmCapable.setQuarantineAlarmHandler && notify) {
-      alarmCapable.setQuarantineAlarmHandler((status) => {
-        const alert = quarantineAlarm(status);
-        notify(alert.kind, agentName, alert.message, alert.data);
-      });
+  try {
+    // An agent-framework without the heartbeat ignores modules.heartbeat: the
+    // agent then has no heartbeat or reminders at all, which is said here.
+    if (heartbeatOptions && !framework.getAllTools().some((tool) => tool.name.startsWith('heartbeat--'))) {
+      console.warn('[heartbeat] modules.heartbeat is on, but this agent-framework has no heartbeat (it came after 0.27.0), so the '
+        + 'agent has no heartbeat or reminders. Update agent-framework, or turn modules.heartbeat off and run heartbeat-mcpl '
+        + 'under mcpServers.heartbeat.');
     }
 
-    wireLoadRepairAlert(strategy, framework, agentName, storePath);
-  }
+    if (historyModule) {
+      const cm = framework.getAgent(agentName)?.getContextManager();
+      if (cm) {
+        historyModule.bind(cm, framework.channels ?? undefined);
+      }
+    }
 
-  aboutModule.setFramework(framework);
+    const autoContinueWarning = autoContinueSupportWarning(recipe, framework.getAgent(agentName) ?? undefined);
+    if (autoContinueWarning) console.warn(autoContinueWarning);
 
-  if (subagentModule) {
-    subagentModule.setFramework(framework);
-  }
+    {
+      const alarmCapable = strategy as unknown as {
+        setQuarantineAlarmHandler?: (fn: (status: QuarantineStatus) => void) => void;
+      };
+      const notify = (framework as unknown as {
+        notifyOps?: (kind: string, agent: string, message: string, data?: Record<string, unknown>) => void;
+      }).notifyOps?.bind(framework);
+      if (alarmCapable.setQuarantineAlarmHandler && notify) {
+        alarmCapable.setQuarantineAlarmHandler((status) => {
+          const alert = quarantineAlarm(status);
+          notify(alert.kind, agentName, alert.message, alert.data);
+        });
+      }
 
-  subscriptionGcModule?.setFramework(framework);
-  if (noticesModule) {
-    noticesModule.setKnownServers(finalServers.map((server) => server.id));
-    noticesModule.setFramework(framework);
-  }
-  if (activityModule) {
-    activityModule.setFramework(framework);
-  }
+      wireLoadRepairAlert(strategy, framework, agentName, storePath);
+    }
 
-  if (channelModeModule) {
-    channelModeModule.setFramework(framework);
-  }
+    aboutModule.setFramework(framework);
 
-  for (const instance of extensionModules) {
-    const hooked = instance as unknown as { setFramework?: (f: AgentFramework) => void };
-    hooked.setFramework?.(framework);
-  }
+    if (subagentModule) {
+      subagentModule.setFramework(framework);
+    }
 
-  if (mcplAdminModule) {
-    mcplAdminModule.setFramework(framework);
-    mcplAdminModule.setOperatorServers(allServers);
-    if (identityModule) mcplAdminModule.setIdentity(identityModule);
-  }
+    subscriptionGcModule?.setFramework(framework);
+    if (noticesModule) {
+      noticesModule.setKnownServers(finalServers.map((server) => server.id));
+      noticesModule.setFramework(framework);
+    }
+    if (activityModule) {
+      activityModule.setFramework(framework);
+    }
 
-  if (workspaceModule) {
-    workspaceModule.initStore(framework.getStore());
-  }
+    if (channelModeModule) {
+      channelModeModule.setFramework(framework);
+    }
 
-  if (fleetModule) {
-    fleetModule.setStoreSync(() => framework.getStore().sync());
-  }
+    for (const instance of extensionModules) {
+      const hooked = instance as unknown as { setFramework?: (f: AgentFramework) => void };
+      hooked.setFramework?.(framework);
+    }
 
-  if (webUiModule) {
-    (framework as unknown as Record<symbol, WebUiModule>)[webUiModuleSymbol] = webUiModule;
-  }
+    if (mcplAdminModule) {
+      mcplAdminModule.setFramework(framework);
+      mcplAdminModule.setOperatorServers(allServers);
+      if (identityModule) mcplAdminModule.setIdentity(identityModule);
+    }
 
-  return framework;
+    if (workspaceModule) {
+      workspaceModule.initStore(framework.getStore());
+    }
+
+    if (fleetModule) {
+      fleetModule.setStoreSync(() => framework.getStore().sync());
+    }
+
+    if (webUiModule) {
+      (framework as unknown as Record<symbol, WebUiModule>)[webUiModuleSymbol] = webUiModule;
+    }
+
+    return framework;
+  } catch (error) {
+    await stopAfterFailedSetup(framework, onCleanupStopFailed);
+    throw error;
+  }
 }
 
 const webUiModuleSymbol = Symbol.for('connectome-host:web-ui-module');
@@ -1287,9 +1294,10 @@ async function main() {
           handleExport(this);
           await stopForSessionSwitch(this.framework, id);
         },
-        make: () => {
+        make: (onCleanupStopFailed) => {
           sessionManager.setActiveSession(id);
-          return createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter, credentials, !!codexGate);
+          return createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter,
+            credentials, !!codexGate, undefined, onCleanupStopFailed);
         },
         install: async (next) => {
           this.framework = next;
