@@ -67,6 +67,36 @@ export function warnTransportSettings(recipe: Recipe): string | undefined {
   return warning;
 }
 
+export function serverBoundModuleWarnings(recipe: Recipe, configuredServerIds: readonly string[]): string[] {
+  const configured = new Set(configuredServerIds);
+  const servers = configuredServerIds.length === 0
+    ? 'it has no MCPL servers'
+    : `its servers: ${configuredServerIds.map((id) => JSON.stringify(id)).join(', ')}`;
+  const gc = recipe.modules?.subscriptionGc;
+  const tts = recipe.modules?.ttsRelay;
+  return [
+    ...(typeof gc === 'object' && gc.serverId !== undefined && !configured.has(gc.serverId)
+      ? [`[agent-settings] modules.subscriptionGc.serverId is ${JSON.stringify(gc.serverId)}, and this host has no server ` +
+        `${JSON.stringify(gc.serverId)} (${servers}), so subscription cleanup closes no channel. Name the server it is to ` +
+        'watch, or set modules.subscriptionGc to false.']
+      : []),
+    ...(typeof tts === 'object' && tts.editServerId !== undefined && !configured.has(tts.editServerId)
+      ? [`[agent-settings] modules.ttsRelay.editServerId is ${JSON.stringify(tts.editServerId)}, and this host has no server ` +
+        `${JSON.stringify(tts.editServerId)} (${servers}), so the relay voices none of the agent's published messages. ` +
+        'Name the server whose messages it is to voice.']
+      : []),
+  ];
+}
+
+export function warnServerBoundModules(recipe: Recipe, configuredServerIds: readonly string[]): string[] {
+  const warnings = serverBoundModuleWarnings(recipe, configuredServerIds);
+  for (const warning of warnings) {
+    console.warn(warning);
+    noteRecipeWarning(warning);
+  }
+  return warnings;
+}
+
 export type FrameworkAgentConfig = AgentConfig & {
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';

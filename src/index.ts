@@ -118,7 +118,7 @@ import {
   runningFit,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
-import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption, warnTransportSettings } from './framework-agent-config.js';
+import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption, warnServerBoundModules, warnTransportSettings } from './framework-agent-config.js';
 import { probeAccountBinding } from './thinking-binding-probe.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
@@ -265,6 +265,8 @@ let terminalAsker: SecretAsker | null = null;
 
 let startedWith: HostVersions | null = null;
 
+let serverBoundModulesWarned = false;
+
 async function createFramework(
   membrane: Membrane,
   storePath: string,
@@ -404,16 +406,16 @@ async function createFramework(
     moduleInstances.push(noticesModule);
   }
 
+  let subscriptionGcModule: SubscriptionGcModule | null = null;
   if (modules.subscriptionGc !== false) {
     const gcConfig =
       typeof modules.subscriptionGc === 'object' ? modules.subscriptionGc : {};
-    moduleInstances.push(
-      new SubscriptionGcModule({
-        defaultLimitChars: gcConfig.defaultLimitChars,
-        serverId: gcConfig.serverId,
-        toolPrefix: gcConfig.toolPrefix,
-      }),
-    );
+    subscriptionGcModule = new SubscriptionGcModule({
+      defaultLimitChars: gcConfig.defaultLimitChars,
+      serverId: gcConfig.serverId,
+      toolPrefix: gcConfig.toolPrefix,
+    });
+    moduleInstances.push(subscriptionGcModule);
   }
 
   let channelModeModule: ChannelModeModule | null = null;
@@ -539,6 +541,10 @@ async function createFramework(
   // left out beside it.
   const heartbeatOptions = heartbeatOptionsFor(modules.heartbeat, config.dataDir);
   const mcplServers = heartbeatOptions ? withoutHeartbeatMcpl(finalServers, (line) => console.warn(line)) : finalServers;
+  if (!serverBoundModulesWarned) {
+    serverBoundModulesWarned = true;
+    warnServerBoundModules(recipe, mcplServers.map((server) => server.id));
+  }
 
   const framework = await AgentFramework.create({
     storePath,
@@ -609,6 +615,7 @@ agents: [agentConfig],
     subagentModule.setFramework(framework);
   }
 
+  subscriptionGcModule?.setFramework(framework);
   if (noticesModule) {
     noticesModule.setKnownServers(finalServers.map((server) => server.id));
     noticesModule.setFramework(framework);

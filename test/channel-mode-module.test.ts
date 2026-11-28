@@ -15,6 +15,7 @@ function wired(options: {
   failing?: string[];
   gateFails?: boolean;
   entries?: Array<{ serverId: string; descriptor: { id: string } }>;
+  modules?: string[];
 } = {}) {
   const calls: ToolCall[] = [];
   const rules = new Map<string, Rule>();
@@ -33,9 +34,12 @@ function wired(options: {
     },
     removeGatePolicy: (name: string) => { gates.push(`remove ${name}`); removed.push(name); return rules.delete(name); },
   } as unknown as AgentFramework);
-  void m.start({ callTool: async (call: ToolCall) => {
+  const modules = options.modules ?? ['subscription-gc'];
+  void m.start({ getModule: (name: string) => modules.includes(name) ? { name } : null, callTool: async (call: ToolCall) => {
     calls.push(call);
     if (hold) await hold;
+    const owner = call.name.includes('--') ? call.name.slice(0, call.name.indexOf('--')) : null;
+    if (owner !== null && !modules.includes(owner)) return { success: false, error: `Module not found: ${owner}, so nothing was done` };
     return options.failing?.includes(call.name) ? { success: false, error: `${call.name} refused` } : { success: true };
   } } as unknown as ModuleContext);
   const set = (channelId: unknown, mode = 'debounced', extra: Record<string, unknown> = {}) => m.handleToolCall({
@@ -211,6 +215,28 @@ describe('channel-mode refuses before any step', () => {
   });
 });
 
+describe('channel-mode pins only through a cleanup module the host has', () => {
+  for (const mode of ['debounced', 'mentions']) {
+    test(`${mode}: with no cleanup module (modules.subscriptionGc: false), it calls no pin and succeeds`, async () => {
+      const w = wired({ modules: [] });
+      const result = await w.set('zulip:backend', mode);
+      expect(result).toMatchObject({ success: true, isError: false });
+      expect(w.calls.map(c => c.name)).toEqual([mode === 'debounced' ? 'channel_open' : 'channel_close']);
+    });
+  }
+
+  test('a gcModuleName that the recipe names is always pinned through, and a wrong one fails as before', async () => {
+    const named = wired({ config: { gcModuleName: 'idle' }, modules: ['idle'] });
+    expect((await named.set('zulip:backend')).success).toBe(true);
+    expect(named.calls.map(c => c.name)).toEqual(['channel_open', 'idle--pin_channel_idle_limit']);
+    const wrong = wired({ config: { gcModuleName: 'idle' }, modules: ['subscription-gc'] });
+    const result = await wrong.set('zulip:backend');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('pinning it open failed (Module not found: idle, so nothing was done)');
+    expect(wrong.calls.map(c => c.name)).toEqual(['channel_open', 'idle--pin_channel_idle_limit']);
+  });
+});
+
 describe('channel-mode closes only what the call targets', () => {
   test('debounced never closes or rolls back when a later step fails', async () => {
     for (const options of [{ gateFails: true }, { failing: ['subscription-gc--pin_channel_idle_limit'] }]) {
@@ -236,7 +262,7 @@ describe('channel-mode closes only what the call targets', () => {
       channels, listMcplServers: () => servers.map(s => ({ id: s.id, connected: true })),
       addGatePolicy: () => {}, removeGatePolicy: () => true,
     } as unknown as AgentFramework);
-    await m.start({ callTool: async (call: ToolCall) => call.name.startsWith('subscription-gc--')
+    await m.start({ getModule: (name: string) => ({ name }), callTool: async (call: ToolCall) => call.name.startsWith('subscription-gc--')
       ? { success: true }
       : channels.handleChannelToolCall(call.name, call.input, { kind: 'module' }),
     } as unknown as ModuleContext);
@@ -280,8 +306,8 @@ describe('channel-mode closes only what the call targets', () => {
         addGatePolicy: () => { throw new Error('gate.json is not JSON'); },
         removeGatePolicy: () => { throw new Error('gate.json is not JSON'); },
       } as unknown as AgentFramework);
-      await m.start({ callTool: async (call: ToolCall) => call.name.startsWith('subscription-gc--')
-        ? { success: false, error: 'Module not found: subscription-gc' }
+      await m.start({ getModule: (name: string) => ({ name }), callTool: async (call: ToolCall) => call.name.startsWith('subscription-gc--')
+        ? { success: false, error: 'pin_channel_idle_limit refused' }
         : channels.handleChannelToolCall(call.name, call.input, { kind: 'module' }),
       } as unknown as ModuleContext);
       const before = channels.getDesiredState('discord', 'discord:123:456');
@@ -334,7 +360,7 @@ describe('channel-mode with real framework parts', () => {
     m.setFramework({ listMcplServers: () => [{ id: 'zulip', connected: true }],
       addGatePolicy: fw.addGatePolicy.bind(fw), removeGatePolicy: fw.removeGatePolicy.bind(fw),
     } as unknown as AgentFramework);
-    await m.start({ callTool: async () => ({ success: true }) } as unknown as ModuleContext);
+    await m.start({ getModule: (name: string) => ({ name }), callTool: async () => ({ success: true }) } as unknown as ModuleContext);
     const set = (mode: string) => m.handleToolCall({ id: 'real', name: 'set_channel_mode', input: { channelId: 'zulip:backend', mode } });
     try {
       expect((await set('debounced')).success).toBe(true);
@@ -368,7 +394,7 @@ describe('channel-mode with real framework parts', () => {
       try {
         expect(gate.probe(event).policyName).toBe(name);
         m.setFramework({ listMcplServers: () => [{ id: 'zulip', connected: true }], addGatePolicy: gate.addPolicy.bind(gate), removeGatePolicy: gate.removePolicy.bind(gate) } as unknown as AgentFramework);
-        await m.start({ callTool: async () => ({ success: true }) } as unknown as ModuleContext);
+        await m.start({ getModule: (name: string) => ({ name }), callTool: async () => ({ success: true }) } as unknown as ModuleContext);
         expect((await m.handleToolCall({ id: 'reapply', name: 'set_channel_mode', input: { channelId, mode } })).success).toBe(true);
         expect(gate.probe(event).policyName).toBeNull();
         expect(gate.probe({ ...event, serverId: 'zulip' }).policyName).toBe(mode === 'debounced' ? name : null);
@@ -396,7 +422,7 @@ describe('channel-mode with real framework parts', () => {
       addGatePolicy: fw.addGatePolicy.bind(fw), removeGatePolicy: fw.removeGatePolicy.bind(fw),
     } as unknown as AgentFramework);
     const calls: string[] = [];
-    await m.start({ callTool: async (call: ToolCall) => { calls.push(call.name); return { success: true }; } } as unknown as ModuleContext);
+    await m.start({ getModule: (name: string) => ({ name }), callTool: async (call: ToolCall) => { calls.push(call.name); return { success: true }; } } as unknown as ModuleContext);
     const probe = (serverId: string, channelId: string) => gate.probe({
       content: 'ambient', eventType: 'mcpl:channel-incoming', serverId, channelId, tags: ['chat:ambient'],
     }).policyName;

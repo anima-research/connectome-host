@@ -2200,8 +2200,9 @@ const modulesShape = {
     takes('false or an object ({ url, token, ... })')).optional(),
   /**
    * Auto-unsubscribe noisy ambient channels. On by default. Per subscribed
-   * channel, the host counts ambient (non-mention, non-DM) characters since the
-   * agent's last activation; when a channel crosses its limit before the next
+   * channel, the host counts ambient characters since the agent's last
+   * activation. A mention, a DM and an event tagged `chat:addressed` aren't
+   * ambient. When a channel crosses its limit before the next
    * activation, it's auto-unsubscribed (delivery stops, and the surface starts
    * tracking what's then missed). A channel the agent opened itself stays open
    * unless a limit is configured for it, and a tuned-out channel is left alone.
@@ -2211,17 +2212,25 @@ const modulesShape = {
    * `channel_idle_limits`).
    *
    * `false` disables entirely. `defaultLimitChars` sets the global default
-   * (20000 if omitted). `serverId` names the MCPL server that owns
-   * subscriptions (default `discord`); `toolPrefix` is deprecated and read by
-   * nothing.
+   * (20000 if omitted). `serverId` names the one MCPL server that the module
+   * watches (default `discord`). The module counts that server's ambient
+   * traffic and closes its channels. Use the server's id from `mcpServers` or
+   * `mcpl-servers.json`. A host can lack the server of that id. Then the module
+   * closes nothing, and the host says so in three places. If `serverId` names
+   * the missing id, the host says so at start. The host writes a line at the
+   * first ambient event with text from each other server. And `agent_settings`
+   * carries `channel_idle_warning` on a host with any MCPL server. With
+   * `serverId` left out on a host that has `discord`, the host writes a line
+   * for each other server too. `toolPrefix` is deprecated and read by nothing.
    */
   subscriptionGc: either(subscriptionGc, 'true, false or an object').optional(),
   /**
    * One-step channel attention modes (the `set_channel_mode` tool): flip a
    * channel between mentions-only and every-message-debounced. Debounced mode
    * bundles subscribe + a per-channel ambient debounce gate rule + pinning
-   * subscription-gc off; mentions mode reverses all three. On by default when
-   * the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
+   * subscription-gc off (a host with `subscriptionGc: false` has nothing to
+   * pin, and skips that step); mentions mode reverses all three. On by default
+   * when the gate (`wake`) is enabled — it only ADDS a tool, inert until called.
    * `false` disables. Each call's MCPL server is the prefix of its channel
    * id (`zulip:backend` → `zulip`), which must name a server this host knows;
    * an id without one, or with a `*` in it, is refused. `serverId` is
@@ -2229,7 +2238,11 @@ const modulesShape = {
    * server for every call.
    * `toolPrefix` is deprecated and read by nothing.
    * `defaultDebounceMs` sets the debounced-mode quiet window (180000 if
-   * omitted).
+   * omitted). `gcModuleName` names the cleanup module that the pin step calls
+   * (`subscription-gc` if omitted). Left out, the pin is skipped on a host
+   * without that module. If the recipe names `gcModuleName`, channel mode
+   * always calls that module. So if no module has that name, each pin step
+   * fails.
    */
   channelMode: either(channelMode, 'true, false or an object').optional(),
   /**

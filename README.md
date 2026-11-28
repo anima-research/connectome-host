@@ -811,8 +811,10 @@ unknown-key warning, like those at the other levels.
   spent window
 - **Attention** — the wake gate (`modules.wake`, on) decides which events
   start a turn; agents edit their own rules. `subscriptionGc` (on) closes
-  channels that flood context; `channelMode` (on) switches a channel between
-  mentions-only and debounced ambient. See
+  channels that flood context, on one server (`discord` unless its `serverId`
+  names another), and says so where the host has no such server;
+  `channelMode` (on) switches a channel between mentions-only and debounced
+  ambient. See
   [`docs/ATTENTION-AND-GATING.md`](docs/ATTENTION-AND-GATING.md)
 - **Workspace** (`modules.workspace`, on) — mounted directories backed by
   Chronicle: the agent's durable, verbatim notes. Default mounts `input`
