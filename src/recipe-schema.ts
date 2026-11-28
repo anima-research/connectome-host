@@ -2594,6 +2594,16 @@ const ownSettings = z.union([
   listOf(text('a setting name'), OWN_SETTINGS_FORMS).min(1, takes(OWN_SETTINGS_FORMS)),
 ], takes(OWN_SETTINGS_FORMS));
 
+const messageQuietPeriodShape = {
+  quietMs: numberWhere('a finite number of ms, 0 or more', (v) => v >= 0),
+  maxWaitMs: numberWhere('a finite number of ms, 0 or more', (v) => v >= 0).optional(),
+};
+// Refuses at load what agent-framework's create would refuse (a quiet period
+// that isn't finite numbers of ms, 0 or more), and a key it would ignore, such
+// as a misspelt maxWaitMs, which would leave the 30 s default in force unseen.
+const messageQuietPeriod: z.ZodType<Exact<typeof messageQuietPeriodShape>> =
+  z.strictObject(messageQuietPeriodShape, takes('an object { quietMs, maxWaitMs? }'));
+
 const recipeShape = {
   name: nonEmptyText(),
   description: text().optional(),
@@ -2652,6 +2662,17 @@ const recipeShape = {
    */
   inferenceBounds: inferenceBounds.optional(),
   /**
+   * A message quiet period (agent-framework FrameworkConfig.messageQuietPeriod,
+   * agent-framework#856): an idle agent's turn waits while message wakes for
+   * it keep arriving, so a burst (a caption and its attachments, a reply
+   * split into several messages) starts one turn, not one per part. `quietMs`
+   * is how long after the burst's newest message the turn starts; `maxWaitMs`
+   * (default 30000) caps the wait from its oldest. Each channel's burst is
+   * held on its own clock. Passed to the framework as written; an
+   * agent-framework without the option ignores it. Left out, no wait.
+   */
+  messageQuietPeriod: messageQuietPeriod.optional(),
+  /**
    * The residence's inline cap for tool results, in characters, passed to
    * agent-framework as FrameworkConfig.toolResultInlineMaxChars. Left out,
    * agent-framework's default stands. A resident's own `agent_settings` value
@@ -2696,6 +2717,13 @@ const recipeSchema: z.ZodType<RecipeShape> = z.looseObject(recipeShape, takes('a
           'the model that answers a fetch prompt defaults to a Claude id this provider doesn\'t take. Set modules.fetch.model to one it serves.'
         : undefined;
     }),
+    // agent-framework refuses the pair at create (agent-framework#856): under
+    // latest-inbound a held message would become a turn's fallback locus.
+    rule<RecipeShape>(['messageQuietPeriod', 'speech.locus'], (r) =>
+      r.messageQuietPeriod !== undefined && r.speech?.locus === 'latest-inbound'
+        ? () => 'Recipe messageQuietPeriod can\'t be used with speech.locus "latest-inbound": a held message would become ' +
+          'a turn\'s fallback locus. Use the default "delivery" locus.'
+        : undefined),
     rule<RecipeShape>(['modules.heartbeat', 'mcpServers'], (r) =>
       on(r.modules?.heartbeat) && r.mcpServers !== undefined && Object.hasOwn(r.mcpServers, 'heartbeat')
         ? () => 'Recipe turns modules.heartbeat on and names mcpServers.heartbeat (heartbeat-mcpl): both would wake the agent, and ' +
