@@ -33,7 +33,8 @@ import { AUDIT_POINTER, loadRepairAlert, loadRepairLines, type LoadRepairReport 
 import { loadExtensions, type ExtensionRegistry } from '../extensions.js';
 import { buildFrameworkStrategy } from '../framework-strategy.js';
 import { fleetChildDataDir, fleetChildEnv, spawnErrorText } from '../modules/fleet-module.js';
-import { DEFAULT_RECIPE, envText, loadRecipeDetailed, loadSavedRecipe, recipeModel, savedRecipePath, type Recipe } from '../recipe.js';
+import { checkOwnSettings, type OperatorRecipe } from '../own-settings.js';
+import { DEFAULT_RECIPE, envText, loadRecipeDetailed, loadSavedRecipeDetailed, recipeModel, savedRecipePath, type Recipe } from '../recipe.js';
 import { SessionManager } from '../session-manager.js';
 import {
   childrenFilePath, isChildEntry, ITEM_UPDATE_DIR, readRecord, realOrResolved, writeJsonAtomic, type ChildrenFile,
@@ -596,8 +597,9 @@ const MODEL_CALLED = 'its strategy called a model while opening it, and the audi
 
 type RecipeRead = { recipe: Recipe | null } | { error: unknown };
 
-/** The recipe the directory's start would load: `source`, or the one saved
- *  in it. A refusal names the file, which for a saved recipe is a hidden
+/** The recipe the directory's start would run: `source`, or the one saved
+ *  in it, with the resident's own settings that the start applies
+ *  (checkOwnSettings, which writes nothing). A refusal names the file, which for a saved recipe is a hidden
  *  one (.recipe.json), unless its own words name it already: resolved (a
  *  missing or unparsable file), as given in quotes (substituteEnvVars'
  *  `Recipe "<source>" references …`), or as given with a directory (a URL
@@ -605,9 +607,14 @@ type RecipeRead = { recipe: Recipe | null } | { error: unknown };
  *  it can be one of the refusal's words ("Recipe", "tuneOut.enabled"). */
 async function readRecipe(dataDir: string, source: string | undefined): Promise<RecipeRead> {
   try {
-    return source !== undefined
-      ? { recipe: (await loadRecipeDetailed(source, { fetchSystemPrompt: false })).recipe }
-      : { recipe: await loadSavedRecipe(dataDir, { fetchSystemPrompt: false }) };
+    let operator: OperatorRecipe | null;
+    if (source !== undefined) {
+      const loaded = await loadRecipeDetailed(source, { fetchSystemPrompt: false });
+      operator = { recipe: loaded.recipe, origin: { kind: 'authored', document: loaded.persistable } };
+    } else {
+      operator = await loadSavedRecipeDetailed(dataDir, { fetchSystemPrompt: false });
+    }
+    return { recipe: operator === null ? null : checkOwnSettings(operator, dataDir).recipe };
   } catch (error) {
     const path = source ?? savedRecipePath(dataDir);
     const said = oneLine(error);

@@ -16,6 +16,7 @@ import { recipeModel } from '../src/recipe.js';
 import { buildFrameworkStrategy, standardKvUnifiedConfig, dendriteCreateOptions } from '../src/framework-strategy.js';
 import { loadExtensions } from '../src/extensions.js';
 import { DEFAULT_RECIPE, loadSavedRecipe, saveRecipe, validateRecipe } from '../src/recipe.js';
+import { OWN_SETTINGS_FILE, ownSettingsDir } from '../src/own-settings-table.js';
 import { SessionManager } from '../src/session-manager.js';
 import { startFramework } from '../src/start-framework.js';
 import { auditStores, childAuditLimitMs, fleetChildRepair, type AuditOptions } from '../src/update/audit-stores.js';
@@ -1400,7 +1401,7 @@ describe("what a strategy's open and an index can do", () => {
 });
 
 describe("a fleet child's audit, in a process of its own", () => {
-  async function parentOf(children: Array<{ name: string; extension?: string; dir?: string }>) {
+  async function parentOf(children: Array<{ name: string; extension?: string; dir?: string }>, own?: { grant: string[]; file: Record<string, unknown> }) {
     const parent = await makeDataDir('parent', [{ namespace: 'agents/agent', crossed: false }]);
     const entries = [];
     const dirs: Record<string, { dir: string; stores: string[] }> = {};
@@ -1414,9 +1415,31 @@ describe("a fleet child's audit, in a process of its own", () => {
       }));
       entries.push({ name: child.name, recipe, dataDir: dirs[child.name]!.dir });
     }
-    saveRecipe(parent.dir, { ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, timezone: 'Pacific/Auckland' }, modules: { ...DEFAULT_RECIPE.modules, fleet: { children: entries } } });
+    saveRecipe(parent.dir, {
+      ...DEFAULT_RECIPE, agent: { ...DEFAULT_RECIPE.agent, timezone: 'Pacific/Auckland' }, modules: { ...DEFAULT_RECIPE.modules, fleet: { children: entries } },
+      ...(own === undefined ? {} : { ownSettings: own.grant }),
+    });
+    if (own !== undefined) {
+      mkdirSync(ownSettingsDir(parent.dir), { recursive: true });
+      writeFileSync(join(ownSettingsDir(parent.dir), OWN_SETTINGS_FILE), JSON.stringify(own.file));
+    }
     return { parent, dirs };
   }
+
+  test("the audit reads the recipe that the start runs, with the resident's own settings in it", async () => {
+    const receipt = join(root, 'own-receipt.json');
+    const { parent } = await parentOf([{
+      name: 'recorder',
+      extension: [
+        "import { writeFileSync } from 'node:fs';",
+        `writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ timeZone: process.env.AGENT_TIMEZONE }));`,
+        'export function register() {}',
+      ].join('\n'),
+    }], { grant: ['agent.timezone'], file: { 'agent.timezone': 'Asia/Tokyo' } });
+    const result = await audit([parent.dir]);
+    expect(JSON.parse(readFileSync(receipt, 'utf8'))).toEqual({ timeZone: 'Asia/Tokyo' });
+    expect(result.status).toBe(0);
+  });
 
   test("runs with the environment the fleet gives the child, and its exit status, a signal included, decides whether it failed", async () => {
     const receipt = join(root, 'receipt.json');

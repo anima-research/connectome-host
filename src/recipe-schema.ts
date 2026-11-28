@@ -11,6 +11,7 @@ import { isBuiltinStrategyType } from './extensions.js';
 import { TOOL_CLASSES } from './tool-lifecycle-config.js';
 import { SERVER_PRESENTATIONS } from './server-presentation.js';
 import { buildWorkspaceMounts, workspaceConfig } from './workspace-mounts.js';
+import { OWN_SETTINGS_MOUNT } from './own-settings-table.js';
 
 const takes = (phrase: string) => ({
   error: (issue: { readonly code?: string }) => (issue.code === 'unrecognized_keys' ? undefined : phrase),
@@ -102,23 +103,30 @@ function editDistance(a: string, b: string): number {
   return prev[b.length]!;
 }
 
-function nearestKey(key: string, known: readonly string[]): string | null {
+/** The name in `known` nearest to `key` by edit distance, when it is near enough to be what `key` meant. */
+export function nearestKey(key: string, known: readonly string[]): string | null {
+  const near = Math.max(2, Math.floor(key.length / 3));
+  const lower = key.toLowerCase();
+  if (lower.length - Math.max(0, ...known.map((name) => name.toLowerCase().length)) > near) return null;
   let best: string | null = null;
   let bestDistance = Infinity;
   for (const candidate of known) {
-    const d = editDistance(key.toLowerCase(), candidate.toLowerCase());
+    const d = editDistance(lower, candidate.toLowerCase());
     if (d < bestDistance) { bestDistance = d; best = candidate; }
   }
-  return best !== null && bestDistance <= Math.max(2, Math.floor(key.length / 3)) ? best : null;
+  return best !== null && bestDistance <= near ? best : null;
 }
 
+const UNKNOWN_KEYS_NAMED = 20;
+
 function unknownKeysWords(keys: readonly string[], known: readonly string[], instead: Readonly<Record<string, string>> = {}): string {
-  const named = keys.map((key) => {
+  const named = keys.slice(0, UNKNOWN_KEYS_NAMED).map((key) => {
     const hint = Object.hasOwn(instead, key) ? instead[key] : undefined;
     const near = hint === undefined ? nearestKey(key, known) : null;
     return `${JSON.stringify(key)}${hint !== undefined ? ` (${hint})` : near ? ` (did you mean "${near}"?)` : ''}`;
   });
-  return `has unknown key${keys.length > 1 ? 's' : ''} ${named.join(', ')}; it takes ${inProse(known)}`;
+  const more = keys.length > UNKNOWN_KEYS_NAMED ? `, and ${keys.length - UNKNOWN_KEYS_NAMED} more` : '';
+  return `has unknown key${keys.length > 1 ? 's' : ''} ${named.join(', ')}${more}; it takes ${inProse(known)}`;
 }
 
 const shapeKeys = (inst: unknown): string[] => (inst instanceof z.ZodObject ? Object.keys(inst.shape) : []);
@@ -242,15 +250,16 @@ function leavingOutBreaksARule(root: z.core.$ZodType, input: unknown, paths: rea
 }
 
 /**
- * The refusal's sentences. A null may be left out where its field is
- * optional, and where leaving it out together with each key offered so far
- * (`offered`, in the refusal's order) breaks no rule that reads one of
- * them, so that the offers hold together.
+ * The refusal's sentences, at most `limit` of them. A null may be left out
+ * where its field is optional, and where leaving it out together with each
+ * key offered so far (`offered`, in the refusal's order) breaks no rule that
+ * reads one of them, so that the offers hold together.
  */
 function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyKey[], input: unknown, origin: RecipeOrigin, subject: Subject, root: z.core.$ZodType,
-  offered: PropertyKey[][]): string[] {
+  offered: PropertyKey[][], limit: number): string[] {
   const out: string[] = [];
   for (const issue of issues) {
+    if (out.length >= limit) break;
     const path = [...base, ...issue.path];
     const at = dotted(path);
     const name = subject(at);
@@ -258,7 +267,10 @@ function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyK
     if (issue.code === 'invalid_union') {
       if (issue.errors.length > 0) {
         const meant = issue.errors.filter((arm) => !refusesKind(arm, valueAt(input, path)));
-        if (meant.length === 1) { out.push(...sentences(meant[0]!, path, input, origin, subject, root, offered)); continue; }
+        if (meant.length === 1) {
+          for (const inner of sentences(meant[0]!, path, input, origin, subject, root, offered, limit - out.length)) out.push(inner);
+          continue;
+        }
       } else if (issue.discriminator !== undefined) {
         const options = 'options' in issue ? issue.options ?? [] : [];
         out.push(`${name} must be ${listed(options.filter((o) => o !== null && o !== undefined))}, got ${got()}.`);
@@ -286,10 +298,14 @@ function sentences(issues: readonly z.core.$ZodIssue[], base: readonly PropertyK
   return out;
 }
 
-function faultMessage(issues: readonly z.core.$ZodIssue[], input: unknown, origin: RecipeOrigin, root: z.core.$ZodType, subject: Subject = recipeSubject, whole = 'The recipe'): string {
-  const all = [...new Set(sentences(issues, [], input, origin, subject, root, []))];
+function faultMessage(issues: readonly z.core.$ZodIssue[], input: unknown, origin: RecipeOrigin, root: z.core.$ZodType, subject: Subject = recipeSubject, whole = 'The recipe',
+  limit = Infinity): string {
+  const all = [...new Set(sentences(issues, [], input, origin, subject, root, [], limit + 1))];
+  if (all.length > limit) return `${whole} has more than ${limit} faults. The first ${limit}:\n${all.slice(0, limit).map((s) => `- ${s}`).join('\n')}`;
   return all.length === 1 ? all[0]! : `${whole} has ${all.length} faults:\n${all.map((s) => `- ${s}`).join('\n')}`;
 }
+
+const SETTING_FAULTS_NAMED = 5;
 
 const nonNegative = (phrase = 'a finite number of 0 or more') => numberWhere(phrase, (v) => v >= 0);
 const aboveZero = (phrase = 'a finite number above 0') => numberWhere(phrase, (v) => v > 0);
@@ -2572,6 +2588,12 @@ const inferenceBounds = z.union([
   }, takes('false or an object')),
 ], takes('false or an object'));
 
+const OWN_SETTINGS_FORMS = '"all", "read" or a non-empty list of setting names';
+const ownSettings = z.union([
+  oneOf(['all', 'read'], OWN_SETTINGS_FORMS),
+  listOf(text('a setting name'), OWN_SETTINGS_FORMS).min(1, takes(OWN_SETTINGS_FORMS)),
+], takes(OWN_SETTINGS_FORMS));
+
 const recipeShape = {
   name: nonEmptyText(),
   description: text().optional(),
@@ -2640,6 +2662,17 @@ const recipeShape = {
    * agent-framework's types.
    */
   toolResultInlineMaxChars: numberWhere('a finite number of at least 1000', (v) => v >= 1000).optional(),
+  /**
+   * The settings of the table in own-settings-table.ts that the resident may
+   * manage with its own file, `own-settings/own.json` in the data directory,
+   * which the host applies at each start: `"all"` lets it read and change
+   * every setting of the table, `"read"` lets it read them and change none,
+   * and a list lets it read and change those it names. A name in the list
+   * that the table doesn't hold grants nothing, and a start's log and doctor
+   * name it. Left out, the host
+   * offers no tool and no mount for them and applies no file.
+   */
+  ownSettings: ownSettings.optional(),
 };
 type RecipeShape = Exact<typeof recipeShape>;
 
@@ -2684,6 +2717,14 @@ const recipeSchema: z.ZodType<RecipeShape> = z.looseObject(recipeShape, takes('a
           'speak in their home channel, as in locus mode, so the lock would not govern their replies. ' +
           'Remove conversations, or choose another proseRouting, removing agent.proseLock if it\'s set, since only "locked" takes it.'
         : undefined),
+    rule<RecipeShape>(['ownSettings', 'modules.workspace'], (r) => {
+      const workspace = r.modules?.workspace;
+      if (r.ownSettings === undefined || typeof workspace !== 'object') return undefined;
+      const i = workspace.mounts.findIndex((m) => m.name === OWN_SETTINGS_MOUNT);
+      return i < 0 ? undefined
+        : ({ at }) => `Recipe ${at(`modules.workspace.mounts.${i}`)} is named "${OWN_SETTINGS_MOUNT}". A recipe with ownSettings keeps that ` +
+          'name for the host\'s mount of the resident\'s settings file, which a grant to change a setting adds. Give this mount another name.';
+    }),
     rule<RecipeShape>(['agent.toolPresentation', 'modules.workspace'], (r) => {
       const tp = r.agent.toolPresentation;
       if (tp === undefined) return undefined;
@@ -2794,10 +2835,62 @@ export function validateRecipe(raw: unknown, origin: RecipeOrigin = { kind: 'lit
   const named = isPlainObject(raw) && raw.name !== undefined && origin.kind !== 'resolved' ? ` ${printed(raw.name, ['name'], origin)}` : '';
   const warning = unknownKeys.length > 0 ? `Recipe${named} has keys the host does not read (ignored): ${unknownKeys.join(', ')}.` : undefined;
   if (warning !== undefined) console.warn(warning);
-  const result = recipeSchema.safeParse(raw, { error: words });
-  if (!result.success) throw new Error(faultMessage(result.error.issues, raw, origin, recipeSchema));
+  const checked = checkRecipe(raw, origin);
+  if (!checked.ok) throw new Error(checked.fault);
   if (warning !== undefined) noteRecipeWarning(warning);
-  return result.data;
+  return checked.recipe;
+}
+
+export type RecipeCheck = { readonly ok: true; readonly recipe: Recipe } | { readonly ok: false; readonly fault: string };
+
+/**
+ * validateRecipe's checks of `raw`, with no warning line: the recipe that it
+ * would give, or the message of the error that it would throw.
+ */
+export function checkRecipe(raw: unknown, origin: RecipeOrigin = { kind: 'literal' }): RecipeCheck {
+  const result = recipeSchema.safeParse(raw, { error: words });
+  return result.success
+    ? { ok: true, recipe: result.data }
+    : { ok: false, fault: faultMessage(result.error.issues, raw, origin, recipeSchema) };
+}
+
+function fieldAt(name: string): z.core.$ZodType | undefined {
+  let schema: z.core.$ZodType = recipeSchema;
+  for (const key of name.split('.')) {
+    const at = bare(schema);
+    const arms = at instanceof z.ZodUnion ? at.options.map((arm) => bare(arm)) : [at];
+    const holder = arms.find((arm) => arm instanceof z.ZodObject && Object.hasOwn(arm.shape, key));
+    if (!(holder instanceof z.ZodObject)) return undefined;
+    schema = holder.shape[key];
+  }
+  return schema;
+}
+
+/** Whether `name`, a recipe path with dots between its keys, is a key of the recipe's schema. */
+export function isRecipeSetting(name: string): boolean {
+  return fieldAt(name) !== undefined;
+}
+
+/**
+ * The message of the schema's check of `value` at the recipe path `name`,
+ * alone, with the path as its subject, or undefined when the check takes the
+ * value. It prints the value as it is.
+ */
+export function settingFault(name: string, value: unknown): string | undefined {
+  const field = fieldAt(name);
+  if (field === undefined) return `${name} is not a key of the recipe.`;
+  const result = z.safeParse(field, value, { error: words });
+  if (result.success) return undefined;
+  const subject: Subject = (at) => (at === '' ? name : at.startsWith('[') ? `${name}${at}` : `${name}.${at}`);
+  return faultMessage(result.error.issues, value, { kind: 'literal' }, field, subject, name, SETTING_FAULTS_NAMED);
+}
+
+/** What the schema takes at the recipe path `name`, in its own words, such as `"locus", "explicit" or "hybrid"`. */
+export function settingTakes(name: string): string | undefined {
+  const field = fieldAt(name);
+  if (field === undefined) return undefined;
+  const result = z.safeParse(field, Symbol('nothing'), { error: words });
+  return result.success ? undefined : result.error.issues[0]?.message;
 }
 
 export function parseToolLifecycle(value: unknown, where: string): RecipeToolLifecycle {
