@@ -17,7 +17,7 @@ import { buildFrameworkStrategy, standardKvUnifiedConfig, dendriteCreateOptions 
 import { loadExtensions } from '../src/extensions.js';
 import { DEFAULT_RECIPE, loadSavedRecipe, saveRecipe, validateRecipe } from '../src/recipe.js';
 import { OWN_SETTINGS_FILE, ownSettingsDir } from '../src/own-settings-table.js';
-import { SessionManager } from '../src/session-manager.js';
+import { SessionManager, STORE_FILES_BESIDE_MANIFEST, tornStoreReason } from '../src/session-manager.js';
 import { startFramework } from '../src/start-framework.js';
 import { auditStores, childAuditLimitMs, fleetChildRepair, type AuditOptions } from '../src/update/audit-stores.js';
 import { StartRefusal } from '../src/update/host.js';
@@ -979,6 +979,31 @@ describe('the store audit', () => {
         reason = error instanceof Error ? error.message : String(error);
       }
       expect(reason).not.toBe('');
+      const { status, lines, failed } = await audit([dir]);
+      expect(lines).toEqual([`${stores[0]} (agents/agent): opens`, `${stores[1]} (agents/agent): refused: ${reason}`]);
+      expect(failed).toEqual([`${stores[1]} (agents/agent): refused: ${reason}`]);
+      expect(status).toBe(1);
+      expect(contents()).toEqual(before);
+    });
+  }
+
+  // A torn copy of a store (#738): a real store with one of the files beside
+  // its MANIFEST removed, as an rsync cut while copying that file leaves it.
+  // Chronicle opens it, as a store with no past, so the reason is the host's.
+  for (const file of STORE_FILES_BESIDE_MANIFEST) {
+    test(`a listed session whose store holds a MANIFEST and no ${file} is refused as a torn copy, before any open, and nothing is made there`, async () => {
+      const { dir, stores } = await makeDataDir('data', [
+        { namespace: 'agents/agent', crossed: false },
+        { namespace: 'agents/agent', crossed: false },
+      ]);
+      rmSync(join(stores[1]!, file));
+      const contents = () => fs.readdirSync(stores[1]!, { recursive: true }).map(String).sort().map((entry) => {
+        const path = join(stores[1]!, entry);
+        return statSync(path).isFile() ? `${entry}: ${readFileSync(path, 'hex')}` : `${entry}/`;
+      });
+      const before = contents();
+      const reason = tornStoreReason(stores[1]!);
+      expect(reason).toBe(`a MANIFEST is there and ${file} is not: a copy or a move of a store that didn't finish, which would open as a store with no past`);
       const { status, lines, failed } = await audit([dir]);
       expect(lines).toEqual([`${stores[0]} (agents/agent): opens`, `${stores[1]} (agents/agent): refused: ${reason}`]);
       expect(failed).toEqual([`${stores[1]} (agents/agent): refused: ${reason}`]);

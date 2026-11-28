@@ -32,12 +32,13 @@
  *   --merge-threshold <n>  L1→L2 / L2→L3 merge threshold (default: 6)
  */
 
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { JsStore } from '@animalabs/chronicle';
 import { ContextManager } from '@animalabs/context-manager';
 import { AutobiographicalStrategy } from '@animalabs/agent-framework';
 import { Membrane, AnthropicAdapter, BedrockAdapter, type NormalizedResponse } from '@animalabs/membrane';
-import { SessionManager } from '../src/session-manager.js';
+import { SessionManager, tornStoreReason } from '../src/session-manager.js';
 import { resolveAgentName } from '../src/agent-name.js';
 
 const PRICING: Record<string, { input: number; output: number }> = {
@@ -216,6 +217,10 @@ async function main() {
 
   let store: JsStore;
   try {
+    // A torn copy of a store opens, as a store with no past (#738): refused
+    // before the open, as a start refuses it.
+    const torn = existsSync(join(storePath, 'MANIFEST')) ? tornStoreReason(storePath) : undefined;
+    if (torn !== undefined) throw new Error(torn);
     store = JsStore.open({ path: storePath });
   } catch (error) {
     console.error(
