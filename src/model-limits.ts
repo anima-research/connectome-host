@@ -1,3 +1,5 @@
+import { modelFacts } from './model-facts.js';
+
 /** A model's window and maximum output, in tokens, as its provider's API enforces them. */
 export interface ModelLimits {
   maxContextTokens: number;
@@ -50,12 +52,19 @@ export const LIMITS_TABLE: readonly LimitsRow[] = [
 ];
 
 /**
- * The window and maximum output Anthropic's API enforces for `modelId`, from
- * the row whose id it is, alone or followed by a snapshot date (`-YYYYMMDD`);
- * undefined for any other id. The table holds Claude models on Anthropic's
- * own API: other providers' limits for the same id can differ.
+ * The window and maximum output Anthropic's API enforces for `modelId`: what
+ * the Models API said of it (`max_input_tokens`, `max_tokens`, read at start
+ * and kept in the data directory; model-facts.ts), else the row whose id it
+ * is, alone or followed by a snapshot date (`-YYYYMMDD`); undefined for any
+ * other id. The table holds Claude models on Anthropic's own API, as read on
+ * the dates above, and stands where the API couldn't be read: other
+ * providers' limits for the same id can differ.
  */
 export function getDefaultModelLimits(modelId: string): ModelLimits | undefined {
+  const read = modelFacts(modelId);
+  if (read?.maxInputTokens !== undefined && read.maxOutputTokens !== undefined) {
+    return { maxContextTokens: read.maxInputTokens, maxOutputTokens: read.maxOutputTokens };
+  }
   const row = LIMITS_TABLE.find((r) =>
     modelId === r.id || (modelId.startsWith(`${r.id}-`) && /^\d{8}$/.test(modelId.slice(r.id.length + 1))));
   return row && { maxContextTokens: row.maxContextTokens, maxOutputTokens: row.maxOutputTokens };
