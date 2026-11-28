@@ -11,13 +11,14 @@
  *   - Built-in default (generic assistant)
  */
 
-import { readFileSync, writeFileSync, lstatSync, statSync, mkdirSync, rmSync, chmodSync } from 'node:fs';
+import { readFileSync, lstatSync, statSync, mkdirSync, rmSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import type { ClockConfig } from '@animalabs/agent-framework';
 import { ENV_REFERENCE, readRecipeDocument, substituteEnvVars, type RecipeDocument, type RecipeSourceBase } from './recipe-document.js';
 export { readRecipeDocument, substituteEnvVars, type RecipeDocument } from './recipe-document.js';
 import { recipeFit, type RecipeFit } from './recipe-fit.js';
 import { validateRecipe, type Recipe, type RecipeAgent, type RecipeConversations, type RecipeModules, type RecipeOrigin } from './recipe-schema.js';
+import { writeJsonWhole } from './write-json-whole.js';
 export {
   unknownRecipeKeys, validateRecipe, type Recipe, type RecipeAgent, type RecipeAutoContinue, type RecipeCodeExecution,
   type RecipeConversations, type RecipeCredentialFile, type RecipeCredentialFileField, type RecipeDendrite, type RecipeExtension,
@@ -222,9 +223,8 @@ export function saveRecipe(dataDir: string, unresolvedRecipe: Record<string, unk
   mkdirSync(dataDir, { recursive: true });
   const path = savedRecipePath(dataDir);
   const withMarker = { [SAVED_RECIPE_UNRESOLVED_KEY]: true, ...unresolvedRecipe };
-  writeFileSync(path, JSON.stringify(withMarker, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 });
-  // writeFileSync's mode only applies on creation — enforce on overwrite too.
-  chmodSync(path, 0o600);
+  // Whole, and 0600 on overwrite too: the renamed file is new (#740).
+  writeJsonWhole(path, withMarker, { mode: 0o600 });
 }
 
 /**

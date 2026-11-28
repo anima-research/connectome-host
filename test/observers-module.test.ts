@@ -478,12 +478,12 @@ describe('what grant and revoke say', () => {
     try {
       const grant = await m.handleToolCall(call('grant', { key: key('C'), label: 'new', scopes: ['health'] }));
       expect(grant.error).toBe(
-        `Nothing was granted: the grants file, ${path}, couldn't be written (ENOSPC: no space left on device, rename '${path}.tmp'), and it's as it was. ` +
+        `Nothing was granted: the grants file, ${path}, couldn't be written (ENOSPC: no space left on device, rename '${path}.tmp-${process.pid}'), and it's as it was. ` +
         'Whoever runs this host can fix that; call observers--grant again once they have.',
       );
       const revoke = await m.handleToolCall(call('revoke', { label: 'antra-phone' }));
       expect(revoke.error).toBe(
-        `Nothing was revoked: the grants file, ${path}, couldn't be written (ENOSPC: no space left on device, rename '${path}.tmp'), and it's as it was. ` +
+        `Nothing was revoked: the grants file, ${path}, couldn't be written (ENOSPC: no space left on device, rename '${path}.tmp-${process.pid}'), and it's as it was. ` +
         'Whoever runs this host can fix that; call observers--revoke again once they have.',
       );
     } finally { spy.mockRestore(); }
@@ -520,12 +520,12 @@ describe('what grant and revoke say', () => {
       try {
         const grant = await m.handleToolCall(call('grant', { key: key('C'), label: 'new', scopes: ['health'] }));
         expect(grant.error).toBe(
-          `Nothing was granted: the grants file, ${path}, couldn't be written (${code}: ${words}, rename '${path}.tmp'), and it's as it was. ` +
+          `Nothing was granted: the grants file, ${path}, couldn't be written (${code}: ${words}, rename '${path}.tmp-${process.pid}'), and it's as it was. ` +
           'This host has too many files open, which can pass: call observers--grant again shortly, and if it fails the same way, ask whoever runs this host.',
         );
         const revoke = await m.handleToolCall(call('revoke', { label: 'antra-phone' }));
         expect(revoke.error).toBe(
-          `Nothing was revoked: the grants file, ${path}, couldn't be written (${code}: ${words}, rename '${path}.tmp'), and it's as it was. ` +
+          `Nothing was revoked: the grants file, ${path}, couldn't be written (${code}: ${words}, rename '${path}.tmp-${process.pid}'), and it's as it was. ` +
           'This host has too many files open, which can pass: call observers--revoke again shortly, and if it fails the same way, ask whoever runs this host.',
         );
       } finally { spy.mockRestore(); }

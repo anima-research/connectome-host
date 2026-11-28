@@ -1,9 +1,10 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { JsStore } from '@animalabs/chronicle';
 import { PRIVATE_DIR_MODE } from './update/data-swap.js';
 import { StartRefusal } from './update/host.js';
+import { writeJsonWhole } from './write-json-whole.js';
 
 export interface SessionMeta {
   id: string;
@@ -96,12 +97,27 @@ export class SessionManager {
       return { version: 1, activeSessionId: '', sessions: {} };
     }
     const raw = readFileSync(this.indexPath, 'utf-8');
-    return JSON.parse(raw) as SessionIndex;
+    try {
+      return JSON.parse(raw) as SessionIndex;
+    } catch (error) {
+      // A host or a machine that stopped while the index was being written
+      // left it empty or cut short (#740). Named, with the way out, as a
+      // refusal: the stack of a parse error names no file.
+      throw new StartRefusal(
+        `The sessions index, ${this.indexPath}, isn't the JSON the host wrote ` +
+        `(${error instanceof Error ? error.message : String(error)}; ${raw.length === 0 ? 'the file is empty' : `${raw.length} characters`}). ` +
+        'Nothing was started; the index is as it was, and the sessions\' stores are untouched in ' +
+        `${this.sessionsDir}. Restore the index from a backup (an update keeps one beside the data directory), ` +
+        'or move it aside and start again: the host then begins a new session, and the sessions on disk stay ' +
+        'unlisted until an index names them.',
+      );
+    }
   }
 
+  /** Written whole, so a stop mid-write leaves the index as it was (#740). */
   save(index: SessionIndex): void {
     mkdirSync(this.dataDir, { recursive: true, mode: PRIVATE_DIR_MODE });
-    writeFileSync(this.indexPath, JSON.stringify(index, null, 2) + '\n');
+    writeJsonWhole(this.indexPath, index);
   }
 
   private generateId(): string {
