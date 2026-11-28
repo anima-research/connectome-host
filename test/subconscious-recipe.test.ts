@@ -52,9 +52,9 @@ describe('validateRecipe — subconscious schema', () => {
 
   test('enabled must be a boolean', () => {
     expect(() => validateRecipe(baseRecipe({ subconscious: { enabled: 'yes', systemPrompt: MODE } })))
-      .toThrow(/subconscious\.enabled must be a boolean/);
+      .toThrow(/subconscious\.enabled must be true or false, got /);
     expect(() => validateRecipe(baseRecipe({ subconscious: { systemPrompt: MODE } })))
-      .toThrow(/subconscious\.enabled must be a boolean/);
+      .toThrow(/subconscious\.enabled must be true or false, got /);
   });
 
   test('systemPrompt is required and non-empty — the mode block is the whole character', () => {
@@ -66,7 +66,7 @@ describe('validateRecipe — subconscious schema', () => {
 
   test('unknown fields are refused by name', () => {
     expect(() => validateRecipe(baseRecipe({ subconscious: { enabled: true, systemPrompt: MODE, cadence: 30 } })))
-      .toThrow(/unknown field "cadence"/);
+      .toThrow(/Recipe subconscious has unknown key "cadence"/);
   });
 
   test('name and model must be non-empty strings when present', () => {
@@ -78,7 +78,7 @@ describe('validateRecipe — subconscious schema', () => {
 
   test('allowChannelSpeech must be a boolean; reAnchorFraction must be in (0, 1]', () => {
     expect(() => validateRecipe(baseRecipe({ subconscious: { enabled: true, systemPrompt: MODE, allowChannelSpeech: 'no' } })))
-      .toThrow(/allowChannelSpeech must be a boolean/);
+      .toThrow(/allowChannelSpeech must be true or false, got /);
     for (const bad of [0, 1.5, -0.2, 'half']) {
       expect(() => validateRecipe(baseRecipe({ subconscious: { enabled: true, systemPrompt: MODE, reAnchorFraction: bad } })))
         .toThrow(/reAnchorFraction must be a number in \(0, 1\]/);
@@ -91,7 +91,7 @@ describe('validateRecipe — subconscious schema', () => {
     const forks = { enabled: true, reader: 'forks', model: 'claude-sonnet-4-5', voice: 'You are reading for sherlock.' };
     expect(validateRecipe(baseRecipe({ subconscious: forks })).subconscious).toEqual(forks);
     expect(() => validateRecipe(baseRecipe({ subconscious: { enabled: true, reader: 'forks', voice: 'v' } })))
-      .toThrow(/subconscious\.model is required for reader "forks"/);
+      .toThrow(/subconscious\.model must be a non-empty string for reader "forks": say whose weights run the fork/);
     expect(() => validateRecipe(baseRecipe({ subconscious: { enabled: true, reader: 'forks', model: 'm' } })))
       .toThrow(/subconscious\.voice must be a non-empty string/);
     expect(() => validateRecipe(baseRecipe({ subconscious: { ...forks, systemPrompt: MODE } })))
@@ -102,9 +102,9 @@ describe('validateRecipe — subconscious schema', () => {
 
   test('reader "forks": a blank model or voice is refused like a missing one', () => {
     expect(() => validateRecipe(baseRecipe({ subconscious: { enabled: true, reader: 'forks', model: '  ', voice: 'v' } })))
-      .toThrow(/subconscious\.model is required for reader "forks"/);
+      .toThrow(/subconscious\.model must be a non-empty string for reader "forks": say whose weights run the fork/);
     expect(() => validateRecipe(baseRecipe({ subconscious: { enabled: true, reader: 'forks', model: 7, voice: 'v' } })))
-      .toThrow(/subconscious\.model is required for reader "forks"/);
+      .toThrow(/subconscious\.model must be a non-empty string for reader "forks": say whose weights run the fork/);
     expect(() => validateRecipe(baseRecipe({ subconscious: { enabled: true, reader: 'forks', model: 'm', voice: '\n' } })))
       .toThrow(/subconscious\.voice must be a non-empty string/);
   });
@@ -123,15 +123,15 @@ describe('validateRecipe — subconscious schema', () => {
     const forks = { enabled: true, reader: 'forks', model: 'm', voice: 'v' };
     for (const [key, value] of [['name', 'Reader'], ['reAnchorFraction', 0.5]] as const) {
       expect(() => validateRecipe(baseRecipe({ subconscious: { ...forks, [key]: value } })))
-        .toThrow(`Recipe subconscious.${key} is for reader "persistent", and this recipe's reader is "forks". Remove ${key}, or set subconscious.reader to "persistent" and remove voice, which only reader "forks" takes.`);
+        .toThrow(`Recipe subconscious.${key} is for reader "persistent", and this recipe's reader is "forks". Remove ${key}, or set subconscious.reader to "persistent" and give systemPrompt, which reader "persistent" needs, and remove voice, which only reader "forks" takes. Reader "forks" takes enabled, reader, model, voice, allowChannelSpeech and forkIdleTimeoutMs.`);
     }
     expect(() => validateRecipe(baseRecipe({ subconscious: { ...forks, forkIdleTimeoutMs: 1000, name: 'Reader' } })))
-      .toThrow('Recipe subconscious.name is for reader "persistent", and this recipe\'s reader is "forks". Remove name, or set subconscious.reader to "persistent" and remove voice and forkIdleTimeoutMs, which only reader "forks" takes.');
+      .toThrow('Recipe subconscious.name is for reader "persistent", and this recipe\'s reader is "forks". Remove name, or set subconscious.reader to "persistent" and give systemPrompt, which reader "persistent" needs, and remove voice and forkIdleTimeoutMs, which only reader "forks" takes.');
     expect(() => validateRecipe(baseRecipe({ subconscious: { ...forks, name: 'Reader', systemPrompt: 'p' } })))
       .toThrow('Recipe subconscious.name and subconscious.systemPrompt are for reader "persistent", and this recipe\'s reader is "forks". Remove name and systemPrompt, or set subconscious.reader to "persistent" and remove voice, which only reader "forks" takes.');
     for (const [key, value] of [['strategyFactory', 'x'], ['framing', 'x']] as const) {
       expect(() => validateRecipe(baseRecipe({ subconscious: { ...forks, [key]: value } })))
-        .toThrow(new RegExp(`unknown field "${key}".*for reader "forks"`));
+        .toThrow(`Recipe subconscious has unknown key "${key}"; it takes enabled, reader, model, voice, allowChannelSpeech and forkIdleTimeoutMs.`);
     }
   });
 
@@ -160,7 +160,7 @@ describe('validateRecipe — subconscious schema', () => {
     expect(() => validateRecipe(baseRecipe({ subconscious: { enabled: true, reader: 'persistent', voice: 'v', model: 'm' } })))
       .toThrow('Recipe subconscious.voice is for reader "forks", and this recipe\'s reader is "persistent". Remove voice, or set subconscious.reader to "forks".');
     expect(() => validateRecipe(baseRecipe({ subconscious: { enabled: true, systemPrompt: MODE, forkIdleTimeoutMs: 1000 } })))
-      .toThrow('Recipe subconscious.forkIdleTimeoutMs is for reader "forks", and this recipe\'s reader is "persistent". Remove forkIdleTimeoutMs, or set subconscious.reader to "forks" and remove systemPrompt, which only reader "persistent" takes.');
+      .toThrow('Recipe subconscious.forkIdleTimeoutMs is for reader "forks", and this recipe\'s reader is "persistent". Remove forkIdleTimeoutMs, or set subconscious.reader to "forks" and give model and voice, which reader "forks" needs, and remove systemPrompt, which only reader "persistent" takes.');
   });
 
   test('reader "persistent", stated: the value rules are the same as when it is implied', () => {
@@ -231,7 +231,7 @@ describe('validateRecipe — speech and tuneOut (Dendrite admission options)', (
     expect(validateRecipe(baseRecipe({ speech: { locus: 'delivery' } })).speech).toEqual({ locus: 'delivery' });
     expect(validateRecipe(baseRecipe({ speech: { locus: 'latest-inbound' } })).speech).toEqual({ locus: 'latest-inbound' });
     expect(() => validateRecipe(baseRecipe({ speech: { locus: 'sticky' } }))).toThrow(/speech\.locus must be "delivery" or "latest-inbound"/);
-    expect(() => validateRecipe(baseRecipe({ speech: { fallback: 'x' } }))).toThrow(/speech has unknown field "fallback"/);
+    expect(() => validateRecipe(baseRecipe({ speech: { fallback: 'x' } }))).toThrow(/Recipe speech has unknown key "fallback"; it takes locus\./);
     expect(() => validateRecipe(baseRecipe({ speech: 'delivery' }))).toThrow(/speech must be an object/);
   });
 
@@ -257,9 +257,9 @@ describe('validateRecipe — speech and tuneOut (Dendrite admission options)', (
 
   test('tuneOut.enabled: false still loads, as the framework still accepts it and does nothing with it', () => {
     expect(validateRecipe(baseRecipe({ tuneOut: { enabled: false } })).tuneOut).toEqual({ enabled: false });
-    expect(() => validateRecipe(baseRecipe({ tuneOut: { enabled: 'yes' } }))).toThrow(/tuneOut\.enabled must be a boolean/);
+    expect(() => validateRecipe(baseRecipe({ tuneOut: { enabled: 'yes' } }))).toThrow(/tuneOut\.enabled must be true or false, got /);
     expect(() => validateRecipe(baseRecipe({ tuneOut: { silent: true } })))
-      .toThrow('Recipe tuneOut has unknown field "silent" (expected: announce).');
+      .toThrow('Recipe tuneOut has unknown key "silent"; it takes enabled and announce.');
   });
 
   test('dendrite.collapseDerivationNoticesAfter sets when a source hears counts instead of lines (agent-framework#270)', () => {
@@ -268,14 +268,14 @@ describe('validateRecipe — speech and tuneOut (Dendrite admission options)', (
       .toEqual({ announceOrphans: false, collapseDerivationNoticesAfter: 0 });
     expect(() => validateRecipe(baseRecipe({ dendrite: { collapseDerivationNoticesAfter: -1 } }))).toThrow(/collapseDerivationNoticesAfter must be a non-negative integer/);
     expect(() => validateRecipe(baseRecipe({ dendrite: { collapseDerivationNoticesAfter: 2.5 } }))).toThrow(/non-negative integer/);
-    expect(() => validateRecipe(baseRecipe({ dendrite: { announceOrphans: 'no' } }))).toThrow(/dendrite\.announceOrphans must be a boolean/);
-    expect(() => validateRecipe(baseRecipe({ dendrite: { quiet: true } }))).toThrow(/dendrite has unknown field "quiet"/);
+    expect(() => validateRecipe(baseRecipe({ dendrite: { announceOrphans: 'no' } }))).toThrow(/dendrite\.announceOrphans must be true or false, got /);
+    expect(() => validateRecipe(baseRecipe({ dendrite: { quiet: true } }))).toThrow(/Recipe dendrite has unknown key "quiet"/);
     expect(() => validateRecipe(baseRecipe({ dendrite: 10 }))).toThrow(/dendrite must be an object/);
   });
 
   test('tuneOut.announce turns the excepted-channel announcement off', () => {
     expect(validateRecipe(baseRecipe({ tuneOut: { announce: false } })).tuneOut).toEqual({ announce: false });
-    expect(() => validateRecipe(baseRecipe({ tuneOut: { announce: 'no' } }))).toThrow(/tuneOut\.announce must be a boolean/);
+    expect(() => validateRecipe(baseRecipe({ tuneOut: { announce: 'no' } }))).toThrow(/tuneOut\.announce must be true or false, got /);
   });
 });
 

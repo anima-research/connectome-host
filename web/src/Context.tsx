@@ -1,5 +1,5 @@
 import { createEffect, createSignal, on, onCleanup, onMount, For, Show } from 'solid-js';
-import { contextPageView } from './composition-text';
+import { contextPageView, countedBy } from './composition-text';
 import { LatestRead, READ_TIMEOUT_MS, readFigure } from './latest-read';
 
 interface Seg { messages: number; tokens: number }
@@ -18,6 +18,7 @@ interface Makeup {
   exactTotalTokens: number | null;
   countModel: string;
   countSource: string;
+  countHost?: string;
   error?: string;
 }
 
@@ -333,7 +334,7 @@ export function ContextPanel(props: {
           <div>
             <div class="text-2xl text-neutral-100">{fmt(count().tokens)}</div>
             <div class="text-neutral-500">tokens (exact): the next request as a preview builds it, without what modules add at each turn</div>
-            <div class="text-neutral-600">counted by count_tokens for {count().model}</div>
+            <div class="text-neutral-600">{countedBy(count())}</div>
           </div>
         )}
       </Show>

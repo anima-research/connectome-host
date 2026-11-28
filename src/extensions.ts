@@ -42,8 +42,9 @@ import type { ContextStrategy, Module } from '@animalabs/agent-framework';
 import type { Recipe, RecipeExtension, RecipeStrategy } from './recipe.js';
 
 export interface StrategyFactoryContext {
-  /** The recipe's `agent.strategy` block verbatim — including keys the
-   *  built-in schema doesn't know about. */
+  /** The recipe's `agent.strategy` block as the load gives it, with every
+   *  key and value it holds — including keys the built-in schema doesn't
+   *  know about. */
   config: RecipeStrategy & Record<string, unknown>;
   /** Resolved agent model id (recipe/env fallback chain already applied). */
   model: string;

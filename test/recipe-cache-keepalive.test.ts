@@ -29,19 +29,19 @@ describe('recipe agent.cacheKeepalive validation', () => {
   });
 
   test('rejects a refresh interval at or past the 1h TTL (every poke would be a cache WRITE)', () => {
-    expect(() => validateRecipe(recipeWith({ refreshAfterMinutes: 60 }, '1h'))).toThrow(/less than the 1h cache TTL/);
-    expect(() => validateRecipe(recipeWith({ refreshAfterMinutes: 90 }, '1h'))).toThrow(/less than the 1h cache TTL/);
+    expect(() => validateRecipe(recipeWith({ refreshAfterMinutes: 60 }, '1h'))).toThrow(/less than the "1h" cache TTL/);
+    expect(() => validateRecipe(recipeWith({ refreshAfterMinutes: 90 }, '1h'))).toThrow(/less than the "1h" cache TTL/);
   });
 
   test('rejects a refresh interval at or past the 5m TTL', () => {
-    expect(() => validateRecipe(recipeWith({ refreshAfterMinutes: 45 }, '5m'))).toThrow(/less than the 5m cache TTL/);
+    expect(() => validateRecipe(recipeWith({ refreshAfterMinutes: 45 }, '5m'))).toThrow(/less than the "5m" cache TTL/);
     expect(validateRecipe(recipeWith({ refreshAfterMinutes: 4 }, '5m')).agent.cacheKeepalive?.refreshAfterMinutes).toBe(4);
   });
 
   test('rejects non-positive and non-numeric values', () => {
     expect(() => validateRecipe(recipeWith({ refreshAfterMinutes: 0 }))).toThrow(/positive number/);
     expect(() => validateRecipe(recipeWith({ refreshAfterMinutes: '45' }))).toThrow(/positive number/);
-    expect(() => validateRecipe(recipeWith({ refreshAfterMinutes: JSON.parse('-1e309') }))).toThrow('refreshAfterMinutes must be a positive number, got -Infinity.');
+    expect(() => validateRecipe(recipeWith({ refreshAfterMinutes: JSON.parse('-1e309') }))).toThrow('Recipe agent.cacheKeepalive.refreshAfterMinutes must be a positive number, got -Infinity.');
     expect(() => validateRecipe(recipeWith({ maxIdleHours: -1 }))).toThrow(/positive number/);
     expect(() => validateRecipe(recipeWith({ maxIdleHours: 'lots' }))).toThrow(/positive number/);
   });

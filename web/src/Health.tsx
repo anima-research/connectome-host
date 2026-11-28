@@ -517,8 +517,9 @@ export function HealthPanel(props: {
 
             <Show when={quarantine(a.name) && (quarantine(a.name)!.count ?? 0) > 0}>
               <div class="text-rose-300 bg-rose-950/30 border border-rose-900/50 rounded px-2 py-1">
-                ⚠ {quarantineHeld(quarantine(a.name)!)} — raw spans
-                accumulate until the window can't fit. Inspect, then branch, pin, or clear.
+                ⚠ {quarantineHeld(quarantine(a.name)!)} — held spans stay whole and take room in
+                the context budget. docs/DEPLOYMENTS.md, "Compression quarantine", says how to read
+                the status and what the host offers.
                 <Show when={(quarantine(a.name)!.keys?.length ?? 0) > 0}>
                   <div class="text-rose-400/70 truncate" title={quarantine(a.name)!.keys!.join(', ')}>
                     {quarantine(a.name)!.keys!.join(', ')}

@@ -34,6 +34,7 @@ import { type IncomingCommand, matchesSubscription } from './modules/fleet-types
 import { AgentTreeReducer } from './state/agent-tree-reducer.js';
 import { takeRecipeWarnings } from './recipe-warnings.js';
 import { workspaceReadFields } from './workspace-read-result.js';
+import { VIEWER_SHOWS_MOUNTS, namesOutsideMounts } from './workspace-mounts.js';
 import { SELF_RESTART_EXIT_CODE, selfRestart } from './self-restart.js';
 import { RESTART_EXIT_CODE } from './update/contract.js';
 import { hostUpdate } from './update/update.js';
@@ -526,6 +527,10 @@ export async function runHeadless(app: AppContext, argv: string[] = [], testing:
           return;
         }
         const LIMIT = 5000;
+        if (namesOutsideMounts(cmd.path)) {
+          reply({ type: 'workspace-file-snapshot', corrId: cmd.corrId, path: cmd.path, totalLines: 0, fromLine: 1, toLine: 0, content: '', truncated: false, error: VIEWER_SHOWS_MOUNTS });
+          return;
+        }
         try {
           const result = await mod.handleToolCall({
             name: 'read', input: { path: cmd.path, limit: LIMIT }, id: `headless-read-${Date.now()}`,

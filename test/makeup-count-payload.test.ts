@@ -2,6 +2,9 @@ import { describe, test, expect } from 'bun:test';
 import { NativeFormatter, AnthropicXmlFormatter } from '@animalabs/membrane';
 import type { NormalizedMessage } from '@animalabs/membrane';
 import { buildContextMakeup, buildCountTokensPayload } from '../src/web/panel-data.js';
+import { withCountEnv } from './count-env.js';
+
+const COUNTING = { COUNT_TOKENS_MODEL: 'claude-haiku-4-5', ANTHROPIC_API_KEY: 'key-test' };
 
 const SIG = 'A'.repeat(4000);
 type Block = { type: string; text?: string; signature?: string; id?: string; tool_use_id?: string; source?: unknown };
@@ -226,18 +229,14 @@ for (const [label, systemPrompt, where] of [
     };
     const sent: Array<Record<string, unknown>> = [];
     const realFetch = globalThis.fetch;
-    const priorModel = process.env.COUNT_TOKENS_MODEL;
-    process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
     globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
       sent.push(JSON.parse(init?.body ?? '{}'));
       return new Response(JSON.stringify({ input_tokens: 1 }), { status: 200 });
     }) as unknown as typeof fetch;
     try {
-      await buildContextMakeup(app as never, 'agent');
+      await withCountEnv(COUNTING, () => buildContextMakeup(app as never, 'agent'));
     } finally {
       globalThis.fetch = realFetch;
-      if (priorModel === undefined) delete process.env.COUNT_TOKENS_MODEL;
-      else process.env.COUNT_TOKENS_MODEL = priorModel;
     }
     expect(sent).toHaveLength(1);
     expect(JSON.stringify(sent[0]![where])).toContain('Read a file from the workspace');
@@ -259,18 +258,14 @@ for (const [label, provider, sendsServerBlocks] of [
     };
     const sent: Array<Record<string, unknown>> = [];
     const realFetch = globalThis.fetch;
-    const priorModel = process.env.COUNT_TOKENS_MODEL;
-    process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
     globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
       sent.push(JSON.parse(init?.body ?? '{}'));
       return new Response(JSON.stringify({ input_tokens: 1 }), { status: 200 });
     }) as unknown as typeof fetch;
     try {
-      await buildContextMakeup(app as never, 'agent');
+      await withCountEnv(COUNTING, () => buildContextMakeup(app as never, 'agent'));
     } finally {
       globalThis.fetch = realFetch;
-      if (priorModel === undefined) delete process.env.COUNT_TOKENS_MODEL;
-      else process.env.COUNT_TOKENS_MODEL = priorModel;
     }
     expect(sent).toHaveLength(1);
     const assistantTypes = blocksOf((sent[0]!.messages as unknown[])[1]).map((b) => b.type);
@@ -295,18 +290,14 @@ test("a subagent's context count places its tools as the primary agent's model d
   };
   const sent: Array<Record<string, unknown>> = [];
   const realFetch = globalThis.fetch;
-  const priorModel = process.env.COUNT_TOKENS_MODEL;
-  process.env.COUNT_TOKENS_MODEL = 'claude-haiku-4-5';
   globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
     sent.push(JSON.parse(init?.body ?? '{}'));
     return new Response(JSON.stringify({ input_tokens: 1 }), { status: 200 });
   }) as unknown as typeof fetch;
   try {
-    await buildContextMakeup(app as never, 'sub');
+    await withCountEnv(COUNTING, () => buildContextMakeup(app as never, 'sub'));
   } finally {
     globalThis.fetch = realFetch;
-    if (priorModel === undefined) delete process.env.COUNT_TOKENS_MODEL;
-    else process.env.COUNT_TOKENS_MODEL = priorModel;
   }
   expect(sent).toHaveLength(1);
   expect(JSON.stringify(sent[0]!.system)).toContain('Read a file from the workspace');

@@ -1,10 +1,16 @@
 import { describe, test, expect } from 'bun:test';
 import { buildHealthSnapshot, type PanelAppRef } from '../src/web/panel-data.js';
 import { healthEntry } from '../src/web/health-lookup.js';
+import { HEALTH_STRINGS, keepNamedStrings } from '../src/modules/web-ui-observers.js';
+import { planHealthAlerts } from '../web/src/health-alerts';
+import type { HealthSnapshot } from '../web/src/Health';
 
 const NOT_READY = 'context manager is not initialized';
 const UNDESCRIBED = "the read failed, and its error couldn't be described";
 const notReady = (): never => { throw new Error(NOT_READY); };
+const QUARANTINE_UNREADABLE = 'what it holds is unknown until a read succeeds';
+const unreadable = () => ({ count: 0, keys: [], spans: [], unreadable: true });
+const readableEmpty = () => ({ count: 0, keys: [], spans: [] });
 
 type Reads = { quarantine?: () => unknown; debt?: () => unknown; render?: () => unknown; settings?: () => unknown };
 
@@ -141,6 +147,56 @@ describe('health snapshot per agent', () => {
     const failures = snapshot.readFailures as Record<string, Record<string, string>>;
     expect(failures.noisy!.compressionDebt).toBe('x'.repeat(300));
     expect(failures.wide!.compressionDebt).toBe('\u{1F600}'.repeat(300));
+  });
+});
+
+describe('a compression quarantine that its strategy marks unreadable', () => {
+  test('is a failed read: the agent is left out of compressionQuarantine and named in readFailures, and a readable empty one stays', () => {
+    const snapshot = buildHealthSnapshot(appWith([
+      agentStub('unknown', { quarantine: unreadable }),
+      agentStub('empty', { quarantine: readableEmpty }),
+    ]));
+    expect(snapshot.compressionQuarantine).toEqual({ empty: { count: 0, keys: [], spans: [] } });
+    expect(snapshot.readFailures).toEqual({ unknown: { compressionQuarantine: QUARANTINE_UNREADABLE } });
+    expect(snapshot.compressionDebt).toEqual({ unknown: { level: 'healthy' }, empty: { level: 'healthy' } });
+  });
+
+  test('reaches an observer without the ops scope as a failed read whose text is blanked', () => {
+    const snapshot = buildHealthSnapshot(appWith([agentStub('unknown', { quarantine: unreadable })]));
+    const seen = keepNamedStrings(snapshot, HEALTH_STRINGS) as Record<string, Record<string, unknown>>;
+    expect(seen.compressionQuarantine).toEqual({});
+    expect(seen.readFailures).toEqual({ unknown: { compressionQuarantine: '' } });
+  });
+
+  test("keeps a standing alert while it can't be read, raises none, and clears it once a read finds it empty", () => {
+    const status = { main: readableEmpty as () => unknown, sub: unreadable as () => unknown };
+    const agents = [
+      agentStub('main', { quarantine: () => status.main() }),
+      agentStub('sub', { quarantine: () => status.sub() }),
+    ];
+    const alerts = new Map<string, { message: string }>();
+    const poll = () => {
+      const page = JSON.parse(JSON.stringify(buildHealthSnapshot(appWith(agents)))) as HealthSnapshot;
+      const plan = planHealthAlerts(page, alerts);
+      for (const key of plan.remove) alerts.delete(key);
+      for (const u of plan.upsert) alerts.set(`${u.agent}:${u.kind}`, { message: u.message });
+    };
+    status.main = () => ({ count: 2, keys: ['a', 'b'], spans: [{}] });
+    poll();
+    const raised = alerts.get('main:compression-quarantine')?.message;
+    expect(raised).toBeString();
+
+    expect(alerts.has('sub:compression-quarantine')).toBe(false);
+
+    status.main = unreadable;
+    poll();
+    poll();
+    expect(alerts.get('main:compression-quarantine')?.message).toBe(raised!);
+    expect(alerts.has('sub:compression-quarantine')).toBe(false);
+
+    status.main = readableEmpty;
+    poll();
+    expect(alerts.has('main:compression-quarantine')).toBe(false);
   });
 });
 

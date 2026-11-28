@@ -4,6 +4,7 @@
  * holds two rows, and its window's undone ones are the test's to set.
  */
 import { mock } from 'bun:test';
+import { join } from 'node:path';
 import * as core from '@opentui/core';
 import { createTestRenderer } from '@opentui/core/testing';
 
@@ -166,6 +167,7 @@ const app = {
   sessionManager: {
     getActiveSession: () => active,
     findSession: (nameOrId: string) => sessions.find(s => s.id === nameOrId || s.name === nameOrId) ?? null,
+    getStorePath: (id: string) => join(import.meta.dir, 'absent-session-stores', id),
   },
   framework: first as ReturnType<typeof fakeFramework>,
   switchSession(sessionId: string): Promise<void> {

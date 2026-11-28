@@ -73,7 +73,7 @@ bun run build:web     # the Web UI; the host runs without it
 bun src/index.ts      # and the rest as above, with the clone's own paths
 ```
 
-A clone updates by hand, as [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md), "Updating an install", says under "By hand", and builds the Web UI again after each update. The rest of this README writes commands as they run in a clone: from an npm install, put `node_modules/@animalabs/connectome-host/` before `src/`, `recipes/` and `scripts/`.
+A clone updates by hand, as [`docs/DEPLOYMENTS.md`](docs/DEPLOYMENTS.md), "Updating an install", says under "By hand", and builds the Web UI again after each update. A clone that runs a resident can also move to an install, as ["Moving from a clone to an install"](docs/DEPLOYMENTS.md#moving-from-a-clone-to-an-install) says. The rest of this README writes commands as they run in a clone: from an npm install, put `node_modules/@animalabs/connectome-host/` before `src/`, `recipes/` and `scripts/`.
 
 ## Recipes
 
@@ -110,15 +110,15 @@ A recipe is a JSON file that configures everything specific to one agent:
 Every string value may reference the environment as `${VAR}` or
 `${VAR:-default}`; a missing required variable fails the load, naming it.
 Values and combinations are validated at load time and fail loudly, naming
-the key. An unrecognized key at the recipe's top level or in `agent`,
-`agent.mock`, `agent.strategy.kvUnified` and its `policy`, or `modules`
-(`mcplServers`, a leftover `modules.files`) doesn't stop the load: the host
-warns, naming it and, where one is close, the key it was probably meant to
-be. Keys inside other objects aren't checked this way, so check spelling
-against this README and `src/recipe.ts`. Some objects refuse a key they
-don't have, naming it, such as `modules.workspace` and each of its mounts,
-`modules.history`, `agent.retry` and `agent.clock`; `agent.toolPresentation`
-refuses one without naming it.
+the key, with each fault on its own line. An unrecognized key (`mcplServers`,
+a leftover `modules.files`) doesn't stop the load: the host warns, naming
+it and, where one is close, the key it was probably meant to be. Some
+objects refuse a key they don't have, naming it and the keys they take,
+such as `modules.workspace` and each of its mounts, `modules.history`,
+`agent.retry`, `agent.clock` and `agent.toolPresentation`. A custom
+strategy's own options, the wake gate's rules, and an extension's `config`,
+`source` and `sourceMeta` and a server's `sourceMeta` aren't checked this
+way. `src/recipe-schema.ts` holds every key.
 
 `agent.timezone` is an IANA zone used only for times rendered to the agent.
 Chronicle and MCPL protocol timestamps remain epoch/UTC. If the recipe omits
@@ -529,13 +529,59 @@ Each MCPL server can also be presented as a tab. `presentation` on its entry set
 
 Set it in the recipe, in `mcpl-servers.json`, or (for an agent's own servers) with `mcpl-admin--mcpl_deploy`'s `presentation`. A value other than those three stops the load, or in the agent's own overlay is left out, named in a startup line.
 
+### A resident's own settings (`ownSettings`)
+
+The top-level key `ownSettings` lets the resident read and change some of its own settings. The resident keeps its values in a file of its own, and the host applies that file at each start. The key takes one of three forms:
+
+- **A list of setting names**, such as `["agent.proseRouting", "agent.timezone"]`: the resident may read and change those settings, and no others. If the list names no setting of the table, the resident may read and change none, and the host parks the file, as below.
+- **`"all"`**: the resident may read and change every setting of the table below. When a release adds a setting to the table, `"all"` covers it too. `connectome doctor` lists the settings that `"all"` covers.
+- **`"read"`**: the resident may read every setting of the table, and change none.
+
+Without the key, the host adds no mount, offers no tool and applies no file. If an earlier grant left a file, the host parks it, as below.
+
+The resident's file is `own-settings/own.json` in the data directory. It holds one JSON object. Each key is a setting's name, and each value is the whole value that the recipe would hold at that path, such as `{"agent.proseRouting": "explicit"}`. Where the grant lets the resident change a setting and the workspace is on, the host adds the mount `_settings` over that directory. The resident then writes `_settings/own.json` with its file tools. Any agent of the host that can call `workspace--write` can write it too, such as a subagent or a fork of the resident's. The mount is direct, and it holds that file and `own.not-used.json` and nothing else. A recipe that has `ownSettings` can't name a mount of its own `_settings`. Without a workspace, the resident's tool gives the file's path on disk.
+
+At each start, the host checks each entry of the file:
+- Its name is in the table and in the grant.
+- Its setting is available on this host.
+- Its value is one that the setting takes. A numeric setting takes a whole number from the file, up to 9007199254740991, the largest safe integer. If the setting's words say what 0 does, the number can be 0. Otherwise it must be 1 or more. `agent.strategy.summaryTargetTokens` takes at most 10666, so that a summary request asks for no more output than the default's 16000 tokens. `agent.strategy.summaryParticipant` takes at most 64 characters, `agent.strategy.summaryContextLabel` 200, and `agent.strategy.identityReminder` 2000. The recipe's own value can be any value that the recipe takes.
+
+The host then adds the entries to the recipe one at a time. It keeps each entry with which the recipe still passes the load's checks. An entry that fails costs only that entry, and the start goes on. A value of the file gets no `${VAR}` substitution. The recipe file and the saved recipe never hold a resident's value. A change takes effect at the next start. While the grant names a setting, the resident's value wins over the recipe's.
+
+The resident's tool is `settings--own`, a utility in the built-in `settings` toolset. It changes nothing. For each setting that the resident may read, it shows the value in force, where that value comes from, and what the setting takes. It also shows what the file changes at the next start. The tool answers only the recipe's agent. The host adds a note to that agent's conversation at a start only when the file did not take effect as written, or when the host moves the file. Where the recipe gives a setting by a `${VAR}` reference, the tool and the start's log show the reference as written, and not its value.
+
+The recipe can stop letting the resident change settings: the key is left out, it is `"read"`, or it is a list that names no setting of the table. Then the host parks `own.json` as `own.not-used.json`, and tells the resident. A later start's recipe can let the resident change a setting again. If there is then no `own.json`, the host applies the parked file, puts it back, and tells the resident. It does this only if it can read the parked file as a plain file of 5 MiB or less. Otherwise it leaves the parked file where it is, and its note says why. The host moves the file only after the framework has started and the note is written. So a start that fails before then moves nothing, and the next start does the same again, with its note.
+
+The operator can see the resident's values in three places:
+- **The file itself.**
+- **The start's log.** It has a line for each entry in force, with the recipe's own value, and a line for each entry not used. Of the entries that are no setting of the table, it lists the first 20 and a count of the rest.
+- **`connectome doctor`.** It prints what the next start would do with the file. It reads the recipe that the service's unit names, and it works with the host up or down. A recipe can be given by URL. With the host up, doctor fetches it only if the own-settings directory is there, so a host that has not used the key costs no fetch.
+
+The start and `connectome doctor` give these warnings:
+- The list names a setting whose resident value the host doesn't use on this host.
+- An `agent.allowedTools` list leaves out `settings--own`.
+- An `agent.allowedTools` list leaves out `workspace--write`, where the grant lets the resident change a setting and the workspace is on.
+- The list names a setting that the table doesn't hold. If the name is a setting of the recipe, the warning says that. Otherwise, if a name of the table is near it, the warning gives that name. Such a name loads, and it grants nothing. So a recipe written for an earlier release still starts, even if that release's table held a setting that this one doesn't.
+
+| Setting | Available |
+| --- | --- |
+| `agent.proseRouting`, `agent.timezone`, `agent.autoContinue`, `agent.clock`, `agent.refusalHandling.autoRewind`, `speech.locus` | on every host |
+| `agent.strategy.maxLiveImages`, `agent.strategy.imageStripDepthTokens`, `agent.strategy.toolResultMaxLastN`, `agent.strategy.toolUseInputMaxTokens`, `agent.strategy.maxMessageTokens`, `agent.strategy.summaryTargetTokens`, `agent.strategy.summaryParticipant`, `agent.strategy.summaryContextLabel`, `agent.strategy.identityReminder` | with the strategy `autobiographical` (the default) or `frontdesk` |
+| `tuneOut.announce` | with a reader (`subconscious`) on |
+| `modules.retrieval.maxInjected` | with `modules.retrieval` and `modules.lessons` on |
+| `modules.subagents.orientation` | with `modules.subagents` on |
+| `modules.ttsRelay.notifyOnInterruption` | with the voice relay on |
+| `modules.wake.judge.onError` | with the gate on and its reply judge not switched off |
+
+An entry never switches a module on. The words that the resident reads about each setting are in `src/own-settings-table.ts`. Two settings can leave a resident unable to read its tools' results: `agent.strategy.toolResultMaxLastN: 0`, and a small `agent.strategy.maxMessageTokens`. The resident's words for each setting say so.
+
 ### Code execution (`codeExecution`)
 
 `"codeExecution": { "enabled": true }`, at the top level beside `modules`, gives the agent agent-framework's `code_execution` tool. The agent writes JavaScript that calls its own tools by name, such as `await tools["module--tool"]({...})`. Only what the script writes or returns comes back, with how each call ended. The calls, and the results between them, stay out of the context. So reading ten files, querying every channel or paging through a log takes one tool round instead of ten. The window keeps the answer, not the haystack.
 
 A script that runs long yields and keeps going. The agent can wait on it, stop it, or leave it running past its turn. A script can wake the agent with `wake_agent(payload)`. The agent is also woken if the script fails or reaches its lifetime.
 
-Each script starts fresh, and reaches nothing but the agent's tools: no network, files, timers or packages. So by design it adds no authority: anything a script does, the agent could already do one call at a time. That holds as far as the engine holds. The script runs in QuickJS's WebAssembly sandbox, inside a child process of the host, as the host's user. No operating-system sandbox is around it. agent-framework claims no containment beyond its engine and its glue (see the security note on `RecipeCodeExecution` in `src/recipe.ts`). A resident that already has a shell tool can already do far more than a script can. For a resident without one, weigh that before you turn code execution on.
+Each script starts fresh, and reaches nothing but the agent's tools: no network, files, timers or packages. So by design it adds no authority: anything a script does, the agent could already do one call at a time. That holds as far as the engine holds. The script runs in QuickJS's WebAssembly sandbox, inside a child process of the host, as the host's user. No operating-system sandbox is around it. agent-framework claims no containment beyond its engine and its glue (see the security note on `RecipeCodeExecution` in `src/recipe-schema.ts`). A resident that already has a shell tool can already do far more than a script can. For a resident without one, weigh that before you turn code execution on.
 
 There is nothing to install. The engine, QuickJS in a child process, ships with agent-framework 0.24 and later. Releases before that ran Python and took other keys (`pythonPath`, `idleReclaimMs`, `env`, `scriptTimeoutMs` …). In a block with `"enabled": true`, current hosts refuse those keys, with a message that says what replaced each. Every limit has a default (`yieldMs`, `maxYieldMs`, `scriptLifetimeMs`, `maxRunningScripts`, `maxScriptChildren`, `toolCallTimeoutMs`, `wakeMinIntervalMs`, `maxWakesPerScript`, `memoryMaxBytes`). So `{ "enabled": true }` is the whole setting. Code execution is off unless the recipe turns it on. The host's built-in default recipe leaves it off, so an agent started with no recipe has none. Turning it on for a running resident adds one tool. So the resident's first turn after the restart is one full cache write.
 
@@ -616,8 +662,10 @@ Memory sizing and compression-model settings are covered in
 
 ### ChatGPT subscription provider
 
-Install the Codex CLI, sign in with `codex login`, then select the subscription
-transport in a recipe:
+Install the Codex CLI and sign in with ChatGPT using
+`codex -c 'cli_auth_credentials_store="file"' login`, then select the
+subscription transport in a recipe. Use the host's `CODEX_BINARY` executable
+and `CODEX_HOME` directory if configured:
 
 ```json
 {
@@ -630,8 +678,36 @@ transport in a recipe:
 }
 ```
 
-Connectome asks the Codex app-server to refresh the ChatGPT login and starts a
-device-code flow if needed. No `OPENAI_API_KEY` is used for this provider. Use
+Connectome asks the Codex app-server to refresh the ChatGPT login. By default,
+it starts a device-code flow if needed on first token acquisition (a model call or an earlier `/auth refresh`). With
+`CODEX_REQUIRE_EXISTING_LOGIN=1` (or `true`), local app-server auth refuses a
+missing or API-key account before starting device-code login. This check runs
+on the first token acquisition (the first model call or an earlier `/auth refresh`),
+not at boot; the credential monitor can show `credential ok` until then. Host login actions are disabled, so they cannot
+log out the existing session. Existing-session refresh still runs, including
+after a 401. Refresh remains available until the app-server establishes that
+there is no usable account or refresh token. A missing account or unusable
+credential file then offers Re-check with external-login recovery guidance.
+After an external CLI login, restart the host process (or its service), then
+retry a model call. The running app-server caches its login state; this recovery
+also applies when an existing session becomes unusable.
+
+The host forces `cli_auth_credentials_store="file"` and reads
+`CODEX_HOME/auth.json` (default `~/.codex/auth.json`). A keyring-only login is
+insufficient. Use the same executable and directory when signing in, for example
+`CODEX_HOME=/absolute/path/to/.codex /path/to/codex -c 'cli_auth_credentials_store="file"' login`.
+The refusal message names the configured executable and directory.
+
+For library callers, adapter `requireExistingLogin: true` also restricts a
+supplied `CodexAppServerAuth`. Configure the restriction before starting auth or
+logout; if an operation is in progress, wait for it to finish and retry configuration.
+Earlier adapters sharing that app-server also honor its tightened policy.
+An arbitrary custom `authProvider.getAccessToken`
+callback owns its internal login and refresh policy; the adapter disables host
+login actions but cannot control flows inside that callback. Gate-token auth
+keeps its existing behavior and starts no local CLI.
+
+No `OPENAI_API_KEY` is used for this provider. Use
 `/fast on` or `/fast off` at runtime. Connectome requests Codex's Fast tier and
 warns if the service reports that it fell back to Standard; Fast mode consumes
 subscription credits at a higher rate when applied. Quota windows are shown
@@ -735,8 +811,10 @@ unknown-key warning, like those at the other levels.
   spent window
 - **Attention** — the wake gate (`modules.wake`, on) decides which events
   start a turn; agents edit their own rules. `subscriptionGc` (on) closes
-  channels that flood context; `channelMode` (on) switches a channel between
-  mentions-only and debounced ambient. See
+  channels that flood context, on one server (`discord` unless its `serverId`
+  names another), and says so where the host has no such server;
+  `channelMode` (on) switches a channel between mentions-only and debounced
+  ambient. See
   [`docs/ATTENTION-AND-GATING.md`](docs/ATTENTION-AND-GATING.md)
 - **Workspace** (`modules.workspace`, on) — mounted directories backed by
   Chronicle: the agent's durable, verbatim notes. Default mounts `input`
@@ -760,9 +838,24 @@ unknown-key warning, like those at the other levels.
   `gate.json`, `gate.js` or `gate.recipe.json`, the names of the gate's
   files, anywhere in the session's config directory, subdirectories
   included. `_config` is
-  the host's mount's name, so no mount of the recipe's own takes it. See
+  the host's mount's name, so no mount of the recipe's own takes it.
+  `"outsideMounts": "read-only"` lets `read` and `read_image` take an
+  absolute path, or one from the home directory (`~/…`), for a file outside
+  every mount, and `"read-write"` lets `write` take one too; left out, every
+  path is a mount's. Such a file is reached as the host's own user, through
+  no mount's boundary, so the setting gives the agent every file that user
+  reaches: this process's own `.env` and keys, and under `"read-write"` the
+  Web UI's files and the host's checkout. The workspace keeps no copy of it,
+  so an undo leaves a write on disk; what the agent reads of it is in its
+  history, and in whatever shows its tool results, as any tool result is.
+  `fetch` with `local` reads through the same `read`, so it takes those paths
+  too. The file viewers (the Web UI's and the control socket's) don't: they
+  show the mounts' files only. An absolute path that lies
+  in a mount is that mount's file, so a read-only mount stays read-only. The
+  tools' descriptions say what the setting allows, so setting it changes
+  them. The setting came in Agent Framework 0.35.3. See
   `RecipeWorkspaceMount` in
-  `src/recipe.ts`
+  `src/recipe-schema.ts`
 - **History** (opt-in, `modules.history`) — the agent searches and extracts
   from its own uncompressed record. The object form
   `{ "semantic": { "url": … } }` adds `history--semantic_search`:
@@ -804,7 +897,7 @@ unknown-key warning, like those at the other levels.
 - **Headless mode** — `--headless`: no terminal, JSONL over a Unix socket; how residents run under a supervisor
 - **Self-restart** (opt-in, `modules.selfRestart`) — `lifecycle--restart`: the agent restarts its own host, for an edited recipe or rebuilt code. It happens once the asking turn has ended; the host exits with code 75 for its supervisor to start it again, so enable it only under one that does (launchd `KeepAlive`, systemd `Restart=on-failure`, a fleet parent's `autoRestart`, which is off unless the child's entry sets it, and which counts a self-restart toward its cap of 3 restarts in 60 s). A fleet parent's own self-restart stops its children as any shutdown does, and the restarted parent starts again only its `autoStart` children. `cooldownMinutes` (default 10) spaces restarts out
 - **Self-update** (opt-in, `modules.selfUpdate`) — `lifecycle--update`: the agent's own `/update`. It checks what's out, installs a release beside the running one, and arms a restart onto it for the host's first quiet moment. A restart arms only on a headless host that started with `CONNECTOME_SUPERVISED=1`. `connectome service install` sets that only for a service that restarts the host when it exits with 75 and when it exits with 1. Anywhere else, the restart refuses and says why. The changelog's entry has the rest
-- **Versions** — `about--versions`, on every host: the agent reads the host's version and the Connectome packages' versions, as the host started with them, and each MCPL server's own name and version, as the server gave them when it connected. It's a utility of the built-in `settings` toolset, so no agent request's tool list carries it, and an agent reaches it as it reaches any module utility. The servers' names and versions came in Agent Framework 0.35.2, and this host's dependency range starts there
+- **Versions** — `about--versions`, on every host: the agent reads the host's version and the Connectome packages' versions, as the host started with them, and each MCPL server's own name and version, as the server gave them when it connected. It's a utility of the built-in `settings` toolset, so no agent request's tool list carries it, and an agent reaches it as it reaches any module utility. The servers' names and versions came in Agent Framework 0.35.2
 - **Time-travel** — undo/redo on the agent's window; Chronicle-backed checkpoints, rollback and branch exploration; in the web UI, rolling back to a message and suppressing messages
 - **Session management** — isolated sessions with auto-naming
 - **Ops alerts** — compression quarantine, refusal streaks, inference exhaustion and more surface as `ops:alert` traces, `logs/failures.log` records, and an optional webhook (`CONNECTOME_OPS_WEBHOOK`)
@@ -815,7 +908,7 @@ unknown-key warning, like those at the other levels.
 - **Fleets** (opt-in, `modules.fleet`) — a conductor launches and supervises other recipes as headless child processes; one agent tree across processes in both UIs ([`docs/fleet-protocol.md`](docs/fleet-protocol.md))
 - **Subagent forking** (opt-in, `modules.subagents`) — spawn/fork parallel in-process agents, shown in the fleet tree (Tab)
 - **Persistent lessons** (opt-in, `modules.lessons`) — knowledge store with confidence scores and tags. Automatic retrieval-injection of lessons into context (`modules.retrieval`) is a separate opt-in — it adds per-turn context churn and retrieval-model calls, so enable it only for agents that actually curate a lesson library
-- **Fetch** (opt-in, `modules.fetch`) — `fetch--fetch` reads a web page as text, with HTML turned into markdown, whole or through a small model that answers a prompt. Set `local: true` to let it read workspace files too, within what the mounts allow. See [below](#the-fetch-tool)
+- **Fetch** (opt-in, `modules.fetch`) — `fetch--fetch` reads a web page as text, with HTML turned into markdown, whole or through a small model that answers a prompt. Set `local: true` to let it read workspace files too, within what the workspace's own `read` takes. See [below](#the-fetch-tool)
 
 For `openai-responses` and `openai-codex`, an object-valued
 `modules.retrieval` can set `reasoningEffort` (`none`, `minimal`, `low`,
@@ -855,7 +948,7 @@ says which part was read and gives the `offset` to read on from.
 | Option | Default | What it does |
 |---|---|---|
 | `model` | `claude-haiku-4-5-20251001` | The model that answers `prompt`. A recipe whose `agent.provider` is neither `anthropic` nor `mock` must set it, and is refused at load without it |
-| `local` | `false` | Lets `source` be a workspace path. The file is read with the workspace's own `read`, so the agent gets the copy `workspace--read` shows, a write not yet on disk included, under the same mounts, includes, symlink policy and size limit. Needs `modules.workspace`. It makes fetch a reader of those files in its own right: an agent whose `allowedTools` lists `fetch--fetch` reads them with it, whether or not `workspace--read` is on that list |
+| `local` | `false` | Lets `source` be a workspace path. The file is read with the workspace's own `read`, so the agent gets the copy `workspace--read` shows, a write not yet on disk included, under the same mounts, includes, symlink policy and size limit, and where `modules.workspace.outsideMounts` is set, a file outside the mounts by its absolute path, as `read` takes one. Needs `modules.workspace`. It makes fetch a reader of those files in its own right: an agent whose `allowedTools` lists `fetch--fetch` reads them with it, whether or not `workspace--read` is on that list |
 | `allowPrivateNetwork` | `false` | Lets web addresses reach private and local addresses, such as loopback, the LAN or a tailnet |
 | `images` | `false` | Lets the model that answers `prompt` look at a web page's images. See [below](#looking-at-images) |
 | `maxBytes` | 5 MiB | Most bytes of one document to read, up to 64 MiB. Past it, the tool reads the start and says the rest is out of reach. A workspace file is read whole by the workspace, up to its mount's `maxFileSize`, and the tool keeps the first `maxBytes` of it |
@@ -1019,6 +1112,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `BEDROCK_BASE_URL` | — | Route Bedrock calls through a gateway |
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |
 | `CODEX_HOME` | `~/.codex` | Codex credential/config directory |
+| `CODEX_REQUIRE_EXISTING_LOGIN` | off | `1`/`true` (case-insensitive, whitespace trimmed): require an existing file-backed ChatGPT login on first token acquisition (a model call or an earlier `/auth refresh`); disable host login actions. Existing-session refresh and gate-token auth are unchanged. Unset, empty, `0`/`false`: off; other values warn and leave it off. Custom callbacks own their internal auth policy |
 | `CODEX_BASE_URL` | ChatGPT Codex backend | Optional subscription transport override |
 | `CODEX_GATE_TOKEN` | — | `openai-codex` through an inference gate that holds the ChatGPT logins (gate's `/codex` leg): no Codex CLI or login on this host. Requires `CODEX_BASE_URL` pointing at the gate |
 | `MODEL` | from recipe, else `claude-opus-4-6` (`gpt-5.4` for `openai-codex`) | Override model (wins over the recipe) |
@@ -1029,7 +1123,7 @@ From npm, `bun add @animalabs/connectome-host` or `npm install @animalabs/connec
 | `OBSERVERS_FILE` | `$DATA_DIR/observers.json` | Web UI observer grants |
 | `IDENTITY_KEY_FILE`, `IDENTITY_HOME` | `$DATA_DIR/identity-key.pem`, `id.animalabs.ai` | `modules.identity` |
 | `CONNECTOME_OPS_WEBHOOK` | — | Webhook for ops alerts |
-| `COUNT_TOKENS_MODEL` | the agent's model | Override the model used for exact token counts in the context-makeup panel |
+| `COUNT_TOKENS_MODEL` | the agent's model | Override the model used for exact token counts in the context-makeup panel. To make an exact count, the host sends the agent's next request to Anthropic's API, or to `ANTHROPIC_BASE_URL` when that is set |
 | `LLM_CALLS_FULL_PAYLOADS` | off | `1`/`true`: keep the full request on every llm-calls log entry (large; a line over 16 MiB drops it) |
 | `THINKING_BINDING_PROBE` | on | `off`: skip the start-up check of what the account does with a signed thinking block whose earlier conversation changed (see `docs/DEPLOYMENTS.md`'s "Refusals and signed thinking"); agents on a model whose thinking binds then leave such thinking out, as on an account that refuses it |
 | `GATE_TELEMETRY` | off | `1`: send `x-gate-*` telemetry headers — only when `ANTHROPIC_BASE_URL` is also set |
@@ -1137,7 +1231,7 @@ headless socket.
 | `/branches` | List Chronicle branches and checkpoints |
 | `/checkout <name>` | Switch to branch |
 | `/branchto <msgId>` | Roll the record back to a message, on a new branch; the old branch keeps the rest |
-| `/history [n]` | Show the last n messages (20 by default) |
+| `/history [n]` | Show the last n messages (20 by default, at most 500; `/find` for older) |
 | `/find <text>` | Search messages for text |
 | `/mcp list` | List servers in `mcpl-servers.json` |
 | `/mcp add <id> <cmd> [args...]` | Add or overwrite a registry server (keeps its env) |

@@ -25,16 +25,16 @@ describe('recipe modules.notices validation', () => {
 
   test('rejects malformed shapes with a path-naming error', () => {
     const bad: Array<[unknown, RegExp]> = [
-      [[], /must be a boolean or object/],
-      [null, /must be a boolean or object/],
-      [{ bogus: 1 }, /unknown field "bogus"/],
-      [{ statusChannels: 'zulip:ops' }, /statusChannels must be an array/],
-      [{ statusChannels: [''] }, /statusChannels must be an array of non-empty strings/],
+      [[], /^Recipe modules\.notices must be true, false or an object, got an empty list\.$/],
+      [null, /^Recipe modules\.notices must be true, false or an object, got null; give it a value, or leave the key out\.$/],
+      [{ bogus: 1 }, /modules\.notices has unknown key "bogus"/],
+      [{ statusChannels: 'zulip:ops' }, /statusChannels must be a list of non-empty strings, got "zulip:ops"/],
+      [{ statusChannels: [''] }, /statusChannels\[0\] must be a non-empty string, got ""/],
       [{ reply: ['zulip:*'] }, /reply must be an object/],
-      [{ reply: { on: ['zulip:*'] } }, /reply has unknown field "on"/],
-      [{ reply: { in: [1] } }, /reply\.in must be an array/],
+      [{ reply: { on: ['zulip:*'] } }, /reply has unknown key "on"/],
+      [{ reply: { in: [1] } }, /reply\.in\[0\] must be a non-empty string, got 1/],
       [{ kinds: ['hard-down'] }, /kinds must be an object/],
-      [{ kinds: { 'hard-down': 'loud' } }, /kinds\["hard-down"\] must be 'silent', 'status', or 'reply'/],
+      [{ kinds: { 'hard-down': 'loud' } }, /kinds\.hard-down must be "silent", "status" or "reply", got "loud"/],
       [{ quietMs: -1 }, /quietMs must be a non-negative number/],
       [{ renotifyMs: 'soon' }, /renotifyMs must be a non-negative number/],
     ];

@@ -1,5 +1,6 @@
 import { test, expect } from 'bun:test';
 import { planHealthAlerts } from '../web/src/health-alerts';
+import { quarantineAlarm } from '../src/web/quarantine-alert.js';
 import type { HealthSnapshot } from '../web/src/Health';
 
 type Alerts = Map<string, { message: string }>;
@@ -12,16 +13,18 @@ function apply(h: HealthSnapshot, alerts: Alerts): void {
 
 const SUB = 'spawn-reader-1760000000';
 
-test("a quarantine row counts records as records, and spans once the snapshot lists them", () => {
+test("a quarantine row counts records as records, and spans once the snapshot lists them, in the live alert's words", () => {
   const alerts: Alerts = new Map();
   apply({
     agents: [{ name: 'main' }, { name: SUB }],
     compressionQuarantine: { main: { count: 3 }, [SUB]: { count: 3, spans: [{}, {}] } },
   }, alerts);
   expect(alerts.get('main:compression-quarantine')!.message)
-    .toBe('3 quarantine record(s) in compression quarantine (one span can hold several) — spans stay raw and will eventually exhaust the context budget.');
+    .toBe(quarantineAlarm({ count: 3, keys: [] }).message);
   expect(alerts.get(`${SUB}:compression-quarantine`)!.message)
-    .toBe('2 span(s) in compression quarantine (3 record(s)) — spans stay raw and will eventually exhaust the context budget.');
+    .toBe(quarantineAlarm({ count: 3, keys: [], spans: [{}, {}] }).message);
+  expect(alerts.get('main:compression-quarantine')!.message).toStartWith('3 quarantine record(s) in compression quarantine (one span can hold several) — ');
+  expect(alerts.get(`${SUB}:compression-quarantine`)!.message).toStartWith('2 span(s) in compression quarantine (3 record(s)) — ');
 });
 
 test('a subagent quarantine row clears when the subagent leaves the snapshot', () => {

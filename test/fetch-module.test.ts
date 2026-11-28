@@ -1319,12 +1319,12 @@ describe('the recipe', () => {
   });
 
   test.each([
-    [{ fetch: 'yes' }, 'must be a boolean or object'],
-    [{ fetch: [] }, 'must be a boolean or object'],
+    [{ fetch: 'yes' }, 'Recipe modules.fetch must be true, false or an object, got "yes".'],
+    [{ fetch: [] }, 'Recipe modules.fetch must be true, false or an object, got an empty list.'],
     [{ fetch: { model: '' } }, 'modules.fetch.model'],
     [{ fetch: { local: 'yes' } }, 'modules.fetch.local'],
     [{ fetch: { allowPrivateNetwork: 1 } }, 'modules.fetch.allowPrivateNetwork'],
-    [{ fetch: { images: 'yes' } }, 'modules.fetch.images is "yes"; it must be a boolean'],
+    [{ fetch: { images: 'yes' } }, 'Recipe modules.fetch.images must be true or false, got "yes".'],
     [{ fetch: { maxBytes: 0 } }, 'modules.fetch.maxBytes'],
     [{ fetch: { maxBytes: 1.5 } }, 'modules.fetch.maxBytes'],
     [{ fetch: { maxBytes: 64 * 1024 * 1024 + 1 } }, 'modules.fetch.maxBytes'],
@@ -1333,8 +1333,8 @@ describe('the recipe', () => {
   });
 
   test('a refusal shows the value it refuses', () => {
-    expect(() => validateRecipe(recipe({ fetch: { maxBytes: 1.5 } }))).toThrow('modules.fetch.maxBytes is 1.5; it must be');
-    expect(() => validateRecipe(recipe({ fetch: { local: 'yes' } }))).toThrow('modules.fetch.local is "yes"; it must be');
+    expect(() => validateRecipe(recipe({ fetch: { maxBytes: 1.5 } }))).toThrow('Recipe modules.fetch.maxBytes must be a whole number from 1 to 67108864, got 1.5.');
+    expect(() => validateRecipe(recipe({ fetch: { local: 'yes' } }))).toThrow('Recipe modules.fetch.local must be true or false, got "yes".');
   });
 
   test('a server named fetch stands beside it: its tools are mcpl--fetch--…, not fetch--…', () => {

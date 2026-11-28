@@ -37,7 +37,7 @@ import {
   OpenAICompatibleAdapter,
   OpenRouterAdapter,
 } from '@animalabs/membrane';
-import { LoggingAnthropicAdapter, offPathRefusalAlert } from './logging-adapter.js';
+import { LoggingAnthropicAdapter, createOffPathRefusalCallback } from './logging-adapter.js';
 import { recipeFormatter } from './recipe-formatter.js';
 import { gateOptionsFor } from './gate-options.js';
 import { heartbeatOptionsFor, withoutHeartbeatMcpl } from './heartbeat-options.js';
@@ -47,7 +47,7 @@ import { LoggingProviderAdapter } from './logging-provider-wrapper.js';
 import { mockAdapterConfig } from './mock-provider.js';
 import { gateTelemetryHeaders, stampedTrigger, type TurnTrigger } from './gate-telemetry.js';
 import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
-import { CodexSubscriptionAdapter, codexGateAuth } from './codex-subscription-adapter.js';
+import { CodexSubscriptionAdapter, codexGateAuth, parseCodexRequireExistingLogin } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
 import { AgentFramework, WorkspaceModule, resolveTimeZone, HistoryModule, type Module } from '@animalabs/agent-framework';
@@ -87,7 +87,7 @@ import { openReadlineTerminal, type ReadlineTerminal, type ShownPrompt } from '.
 import { opsAlertLine, opsAlertOf, type OpsAlertEntry } from './state/ops-alerts.js';
 import { TURN_SETTLED_TRACES } from './state/turn-trace.js';
 import { readHostVersions, setCallLogPath, type HostVersions } from './bug-report.js';
-import { SessionManager } from './session-manager.js';
+import { SessionManager, noStoreRefusal } from './session-manager.js';
 import { startFramework } from './start-framework.js';
 import { stopAfterFailedSetup } from './stop-after-failed-setup.js';
 import { StartRefusal, currentForStart, releaseHere, type ReleaseHere } from './update/host.js';
@@ -103,9 +103,10 @@ import { generateSessionName, namingSummary } from './synesthete.js';
 import {
   type Recipe,
   DEFAULT_RECIPE,
+  envText,
   loadRecipeDetailed,
   saveRecipe,
-  loadSavedRecipe,
+  loadSavedRecipeDetailed,
   SavedRecipeDirectoryError,
   savedRecipeDirectory,
   savedRecipePath,
@@ -118,12 +119,14 @@ import {
   runningFit,
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
-import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption } from './framework-agent-config.js';
+import { buildFrameworkAgentConfig, membraneCachingOverride, autoContinueSupportWarning, codeExecutionOption, warnServerBoundModules, warnTransportSettings } from './framework-agent-config.js';
 import { probeAccountBinding } from './thinking-binding-probe.js';
 import { buildFrameworkStrategy, buildConversationsConfig, dendriteCreateOptions } from './framework-strategy.js';
 import { holdBootTraces, type BootTraceHold } from './boot-traces.js';
 import { AUDIT_STORES_FLAG, auditStoresFromEntry, checkActiveStore, placesOnTrial } from './update/audit-stores.js';
-import { buildWorkspaceMounts } from './workspace-mounts.js';
+import { ownSettingsMount, workspaceConfig } from './workspace-mounts.js';
+import { ownSettingsAnswer, startOwnSettings, type OperatorRecipe } from './own-settings.js';
+import { changesSettings } from './own-settings-table.js';
 import { quarantineAlarm, type QuarantineStatus } from './web/quarantine-alert.js';
 import { wireLoadRepairAlert } from './web/load-repair-alert.js';
 import { logKeepaliveEvent } from './cache-keepalive-log.js';
@@ -152,6 +155,7 @@ const config = {
   // used in its place, since the recipe names the endpoint.
   openaiCompatibleApiKey: process.env.OPENAI_COMPATIBLE_API_KEY,
   codexBinary: process.env.CODEX_BINARY,
+  codexRequireExistingLogin: parseCodexRequireExistingLogin(process.env.CODEX_REQUIRE_EXISTING_LOGIN),
   model: process.env.MODEL,
   dataDir: process.env.DATA_DIR || './data',
 };
@@ -187,7 +191,7 @@ interface AppContext {
   switchSession(id: string): Promise<boolean>;
 }
 
-async function resolveRecipe(): Promise<Recipe> {
+async function resolveRecipe(): Promise<OperatorRecipe> {
   const { source, noRecipe } = parseRecipeArg(process.argv);
 
   if (noRecipe) {
@@ -197,7 +201,7 @@ async function resolveRecipe(): Promise<Recipe> {
       stopAtSavedRecipe('clear the saved recipe', err);
     }
     console.log('Starting with default recipe.');
-    return DEFAULT_RECIPE;
+    return { recipe: DEFAULT_RECIPE, origin: { kind: 'literal' } };
   }
 
   if (source) {
@@ -215,13 +219,13 @@ async function resolveRecipe(): Promise<Recipe> {
     }
     const { recipe } = loaded;
     console.log(`Loaded recipe: ${recipe.name}${recipe.description ? ` — ${recipe.description}` : ''}`);
-    return recipe;
+    return { recipe, origin: { kind: 'authored', document: loaded.persistable } };
   }
 
   try {
-    const saved = await loadSavedRecipe(config.dataDir);
+    const saved = await loadSavedRecipeDetailed(config.dataDir);
     if (saved) {
-      console.log(`Resuming recipe: ${saved.name}`);
+      console.log(`Resuming recipe: ${saved.recipe.name}`);
       return saved;
     }
   } catch (err) {
@@ -235,7 +239,7 @@ async function resolveRecipe(): Promise<Recipe> {
     process.exit(1);
   }
 
-  return DEFAULT_RECIPE;
+  return { recipe: DEFAULT_RECIPE, origin: { kind: 'literal' } };
 }
 
 const SAVED_RECIPE_DIRECTORY_LINE =
@@ -261,6 +265,8 @@ let installHere: ReleaseHere | null = null;
 let terminalAsker: SecretAsker | null = null;
 
 let startedWith: HostVersions | null = null;
+
+let serverBoundModulesWarned = false;
 
 async function createFramework(
   membrane: Membrane,
@@ -322,7 +328,7 @@ async function createFramework(
           autoStart: c.autoStart !== false,
         };
         if (c.dataDir !== undefined) entry.dataDir = c.dataDir;
-        if (c.env !== undefined) entry.env = c.env;
+        if (c.env !== undefined) entry.env = envText(c.env);
         if (c.subscription !== undefined) entry.subscription = c.subscription;
         if (c.autoRestart !== undefined) entry.autoRestart = c.autoRestart;
         return entry;
@@ -356,9 +362,10 @@ async function createFramework(
   const gateOptions = gateOptionsFor(modules.wake, storePath);
 
   let workspaceModule: WorkspaceModule | null = null;
-  const workspaceMounts = buildWorkspaceMounts(modules.workspace, storePath);
-  if (workspaceMounts) {
-    workspaceModule = new WorkspaceModule({ mounts: workspaceMounts });
+  const workspaceSettings = workspaceConfig(modules.workspace, storePath);
+  if (workspaceSettings && changesSettings(recipe.ownSettings)) workspaceSettings.mounts.push(ownSettingsMount(config.dataDir));
+  if (workspaceSettings) {
+    workspaceModule = new WorkspaceModule(workspaceSettings);
     moduleInstances.push(workspaceModule);
   }
 
@@ -401,16 +408,16 @@ async function createFramework(
     moduleInstances.push(noticesModule);
   }
 
+  let subscriptionGcModule: SubscriptionGcModule | null = null;
   if (modules.subscriptionGc !== false) {
     const gcConfig =
       typeof modules.subscriptionGc === 'object' ? modules.subscriptionGc : {};
-    moduleInstances.push(
-      new SubscriptionGcModule({
-        defaultLimitChars: gcConfig.defaultLimitChars,
-        serverId: gcConfig.serverId,
-        toolPrefix: gcConfig.toolPrefix,
-      }),
-    );
+    subscriptionGcModule = new SubscriptionGcModule({
+      defaultLimitChars: gcConfig.defaultLimitChars,
+      serverId: gcConfig.serverId,
+      toolPrefix: gcConfig.toolPrefix,
+    });
+    moduleInstances.push(subscriptionGcModule);
   }
 
   let channelModeModule: ChannelModeModule | null = null;
@@ -474,8 +481,8 @@ async function createFramework(
     webUiModule = new WebUiModule({
       port: webuiConfig.port,
       host: webuiConfig.host,
-      basicAuth: webuiConfig.basicAuth,
-      allowedOrigins: webuiConfig.allowedOrigins,
+      basicAuth: webuiConfig.basicAuth ?? undefined,
+      allowedOrigins: webuiConfig.allowedOrigins ?? undefined,
       observersPath,
       ...(callLedger ? { callLedger } : {}),
       ...(quotaMeter ? { quotaMeter } : {}),
@@ -536,6 +543,10 @@ async function createFramework(
   // left out beside it.
   const heartbeatOptions = heartbeatOptionsFor(modules.heartbeat, config.dataDir);
   const mcplServers = heartbeatOptions ? withoutHeartbeatMcpl(finalServers, (line) => console.warn(line)) : finalServers;
+  if (!serverBoundModulesWarned) {
+    serverBoundModulesWarned = true;
+    warnServerBoundModules(recipe, mcplServers.map((server) => server.id));
+  }
 
   const framework = await AgentFramework.create({
     storePath,
@@ -607,6 +618,7 @@ agents: [agentConfig],
       subagentModule.setFramework(framework);
     }
 
+    subscriptionGcModule?.setFramework(framework);
     if (noticesModule) {
       noticesModule.setKnownServers(finalServers.map((server) => server.id));
       noticesModule.setFramework(framework);
@@ -942,10 +954,17 @@ async function main() {
     console.error('Set DATA_DIR to a path where this user has or can make a directory, or fix what the error names.');
     process.exit(1);
   }
-  const recipe = await resolveRecipe();
+  const operator = await resolveRecipe();
+  const own = startOwnSettings(operator, config.dataDir);
+  for (const line of own.log) console.log(line);
+  const recipe = own.check.recipe;
   const provider = resolveProvider(recipe);
   const fit = runningFit(recipe, config.model);
   if (!fit.checked) console.log(fit.line);
+  // Once per process, before the runtimes own stderr, and into their logs:
+  // a session switch builds the framework again, and the warning depends on
+  // the recipe alone.
+  warnTransportSettings(recipe);
 
   if (provider === 'openrouter' && !config.openrouterApiKey) {
     console.error('Missing OPENROUTER_API_KEY for recipe provider "openrouter".');
@@ -964,7 +983,26 @@ async function main() {
     process.exit(1);
   }
 
-  const settingsModule = new SettingsModule(recipe.agent.thinking?.effort);
+  const settingsModule = new SettingsModule(recipe.agent.thinking?.effort, {
+    note: own.note,
+    resident: () => agentName,
+    answer: operator.recipe.ownSettings === undefined ? null : () => {
+      const framework = appRefForDebt?.framework;
+      const agent = framework?.getAgent(agentName);
+      return ownSettingsAnswer({
+        operator,
+        start: own.check,
+        dataDir: config.dataDir,
+        running: {
+          name: agentName,
+          proseRouting: agent?.proseRouting,
+          restartOffered: headless
+            && (framework?.getAllTools().some((tool) => tool.name === 'lifecycle--restart') ?? false)
+            && (agent?.canUseTool('lifecycle--restart') ?? false),
+        },
+      });
+    },
+  });
 
   // One JSONL call log per process lifetime.
   const llmLogPath = join(
@@ -985,6 +1023,7 @@ async function main() {
   const codexAdapter = provider === 'openai-codex'
     ? new CodexSubscriptionAdapter({
         codexBinary: config.codexBinary,
+        requireExistingLogin: config.codexRequireExistingLogin,
         fastMode: recipe.agent.codex?.fastMode ?? false,
         onLoginRequired: ({ verificationUrl, userCode }) => {
           console.error('\nOpenAI Codex subscription login required.');
@@ -1178,6 +1217,8 @@ async function main() {
   });
 
   const storePath = sessionManager.getStorePath(activeSession.id);
+  const noStore = noStoreRefusal(storePath, { kind: 'start', session: activeSession });
+  if (noStore !== null) throw new StartRefusal(noStore);
   let placesForTrial: string[] | null = null;
   if (installHere !== null) {
     const install = installHere;
@@ -1278,13 +1319,7 @@ async function main() {
   appForAlerts = app;
 
   if (adapter instanceof LoggingAnthropicAdapter) {
-    adapter.onRefusal = (info) => {
-      const fw = app.framework as unknown as {
-        notifyOpsAlert?: (kind: string, agent: string, msg: string, data?: Record<string, unknown>) => void;
-      };
-      const alert = offPathRefusalAlert(info);
-      fw.notifyOpsAlert?.(alert.kind, app.agentName, alert.message, alert.data);
-    };
+    adapter.onRefusal = createOffPathRefusalCallback(() => app.framework);
   }
 
   // The headless sink attaches inside runHeadless, after start() has
@@ -1297,6 +1332,8 @@ async function main() {
     extensions,
     places: () => placesForTrial ?? (installHere === null ? null : trialPlaces(installHere.root)),
   });
+  const moved = own.moveFile();
+  if (moved !== null) console.log(moved);
   setupSynesthete(app);
   setupMcplStderrLog(app, storePath);
   hostUpdate.configure({

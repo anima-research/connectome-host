@@ -39,16 +39,16 @@ describe('validateRecipe — fleet schema', () => {
   test('rejects mid-string * in allowedRecipes', () => {
     expect(() => validateRecipe(baseRecipe({
       modules: { fleet: { allowedRecipes: ['recipes/*.json'] } },
-    }))).toThrow(/mid-string "\*"/);
+    }))).toThrow(/allowedRecipes\[\d\] must be a recipe path, with a "\*" only at its end \(prefix match\) or alone \(allow all\)/);
     expect(() => validateRecipe(baseRecipe({
       modules: { fleet: { allowedRecipes: ['rec*/miner.json'] } },
-    }))).toThrow(/mid-string "\*"/);
+    }))).toThrow(/allowedRecipes\[\d\] must be a recipe path, with a "\*" only at its end \(prefix match\) or alone \(allow all\)/);
   });
 
   test('children must be an array', () => {
     expect(() => validateRecipe(baseRecipe({
       modules: { fleet: { children: 'not-an-array' } },
-    }))).toThrow(/children must be an array/);
+    }))).toThrow(/fleet\.children must be a list, got /);
   });
 
   test('each child must have a non-empty name', () => {
@@ -79,22 +79,22 @@ describe('validateRecipe — fleet schema', () => {
   test('allowedRecipes must be an array of strings', () => {
     expect(() => validateRecipe(baseRecipe({
       modules: { fleet: { allowedRecipes: 'recipes/*.json' } },
-    }))).toThrow(/allowedRecipes must be an array/);
+    }))).toThrow(/fleet\.allowedRecipes must be a list of strings, got "recipes\/\*\.json"/);
     expect(() => validateRecipe(baseRecipe({
       modules: { fleet: { allowedRecipes: [1, 2, 3] } },
-    }))).toThrow(/allowedRecipes must be an array of strings/);
+    }))).toThrow(/fleet\.allowedRecipes\[0\] must be a recipe path/);
   });
 
   test('subscription must be an array when present', () => {
     expect(() => validateRecipe(baseRecipe({
       modules: { fleet: { children: [{ name: 'x', recipe: 'r.json', subscription: 'not-array' }] } },
-    }))).toThrow(/subscription must be an array/);
+    }))).toThrow(/children\[0\]\.subscription must be a list of strings, got "not-array"/);
   });
 
   test('autoStart must be boolean when present', () => {
     expect(() => validateRecipe(baseRecipe({
       modules: { fleet: { children: [{ name: 'x', recipe: 'r.json', autoStart: 'yes' }] } },
-    }))).toThrow(/autoStart must be a boolean/);
+    }))).toThrow(/children\[0\]\.autoStart must be true or false, got "yes"/);
   });
 });
 

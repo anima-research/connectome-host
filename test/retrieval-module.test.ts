@@ -185,6 +185,19 @@ describe('RetrievalModule observability', () => {
     expect(mod.getRetrievalTraces()[0].completedAt).toBeDefined();
   });
 
+  test('with maxInjected 0, a turn with relevant lessons puts in none, and its search still runs', async () => {
+    const lessons = [1, 2, 3, 4].map(n => lesson(`l${n}`, `memory detail ${n}`));
+    const h = harness(['["memory"]', '["l1", "l3"]'], lessons);
+    const mod = new RetrievalModule(buildRetrievalModuleConfig(h.membrane, { model: TEST_RETRIEVAL_MODEL, maxInjected: 0 }, 'anthropic'));
+    h.installContext(mod);
+
+    expect(await mod.gatherContext(TEST_AGENT)).toEqual([]);
+    const [trace] = mod.getRetrievalTraces();
+    expect(trace.config.maxInjectedLessons).toBe(0);
+    expect(trace.relevantLessonIds).toEqual(['l1', 'l3']);
+    expect(h.calls).toHaveLength(2);
+  });
+
   test('records candidates, selector outputs, selected IDs, and the exact injection', async () => {
     const lessons = [1, 2, 3, 4].map(n => lesson(`l${n}`, `memory detail ${n}`));
     const h = harness(['["memory"]', '["l1", "l3"]'], lessons);

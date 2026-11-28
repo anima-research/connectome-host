@@ -1,4 +1,5 @@
 import { mock } from 'bun:test';
+import { join } from 'node:path';
 import * as core from '@opentui/core';
 import { createTestRenderer } from '@opentui/core/testing';
 import { switchSessionSteps } from '../src/session-switch.js';
@@ -92,6 +93,7 @@ const app = {
   sessionManager: {
     getActiveSession: () => { if (stopSignalled) activeAfterStop++; return null; },
     findSession: (name: string) => (name === 'other' ? { id: 'other-id', name: 'other' } : undefined),
+    getStorePath: (id: string) => join(import.meta.dir, 'absent-session-stores', id),
   },
   framework: framework as ReturnType<typeof mockFramework>,
   stopping: undefined as boolean | undefined,

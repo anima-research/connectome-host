@@ -254,7 +254,9 @@ IPC). Unknown `/debug/*` paths get a JSON `404`.
 The SPA's files (`dist/web`, or the module's `staticDir`) are the Web UI's
 own code and are served without `/files/`'s sandbox, so keep them, and the
 host's checkout, out of any workspace mount an agent can write: an HTML file
-an agent wrote there would run with the operator's authority.
+an agent wrote there would run with the operator's authority. A recipe whose
+`modules.workspace.outsideMounts` is `"read-write"` lets its agent write them
+wherever they are, as it lets it write any file the host's user can.
 
 ## Verifying the deployment
 

@@ -168,13 +168,13 @@ describe('toolResultInlineMaxChars', () => {
   });
 
   const refused: Array<[string, unknown, string]> = [
-    ['999', 999, 'Recipe toolResultInlineMaxChars is 999; it must be a finite number of at least 1000.'],
-    ['999.5', 999.5, 'Recipe toolResultInlineMaxChars is 999.5; it must be a finite number of at least 1000.'],
-    ['0', 0, 'Recipe toolResultInlineMaxChars is 0; it must be a finite number of at least 1000.'],
-    ['Infinity', Infinity, 'Recipe toolResultInlineMaxChars is Infinity; it must be a finite number of at least 1000.'],
-    ['a number given as a string', '30000', 'Recipe toolResultInlineMaxChars is "30000"; it must be a finite number of at least 1000.'],
-    ['null', null, 'Recipe toolResultInlineMaxChars is null; it must be a finite number of at least 1000.'],
-    ['true', true, 'Recipe toolResultInlineMaxChars is true; it must be a finite number of at least 1000.'],
+    ['999', 999, 'Recipe toolResultInlineMaxChars must be a finite number of at least 1000, got 999.'],
+    ['999.5', 999.5, 'Recipe toolResultInlineMaxChars must be a finite number of at least 1000, got 999.5.'],
+    ['0', 0, 'Recipe toolResultInlineMaxChars must be a finite number of at least 1000, got 0.'],
+    ['Infinity', Infinity, 'Recipe toolResultInlineMaxChars must be a finite number of at least 1000, got Infinity.'],
+    ['a number given as a string', '30000', 'Recipe toolResultInlineMaxChars must be a finite number of at least 1000, got "30000".'],
+    ['null', null, 'Recipe toolResultInlineMaxChars must be a finite number of at least 1000, got null; give it a value, or leave the key out.'],
+    ['true', true, 'Recipe toolResultInlineMaxChars must be a finite number of at least 1000, got true.'],
   ];
   for (const [what, value, message] of refused) {
     test(`${what} stops the load, naming the key and the value`, () => {

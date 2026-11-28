@@ -1,5 +1,6 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import { handleCommand, createBranchState } from '../src/commands.js';
 import { DEFAULT_CONFIG_PATH } from '../src/mcpl-config.js';
 import { clearAccountBindings, recordAccountBinding } from '../src/logging-adapter.js';
@@ -80,6 +81,7 @@ function makeStubWorld(agentStatus: string | null = 'idle') {
       getActiveSession: () => sessions[1],
       findSession: (nameOrId: string) =>
         sessions.find(s => s.id === nameOrId || s.id.startsWith(nameOrId) || s.name === nameOrId),
+      getStorePath: (id: string) => join(import.meta.dir, 'absent-session-stores', id),
       deleteSession: (id: string) => { deleted.push(id); },
     },
     branchState: createBranchState(),

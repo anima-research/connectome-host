@@ -66,6 +66,14 @@ const OWN_TURN_KINDS: ReadonlySet<string> = new Set(['hard-down', 'context-refus
  *  agent. */
 const COMPONENT_KINDS: ReadonlySet<string> = new Set(['mcpl-down']);
 
+function isProcessRefusal(key: string, kind: string): boolean {
+  // Only this host/kind pair is a process notice; other host alerts still
+  // follow the configured agent filter and their existing lifecycle.
+  return key === 'host' && kind === 'refusal-offpath';
+}
+
+const PROCESS_REFUSAL = Symbol('process-refusal');
+
 type MarkerForm = 'unanswered' | 'status';
 
 const DEFAULT_QUIET_MS = 60_000;
@@ -81,6 +89,7 @@ interface ActiveKind {
 }
 
 interface Episode {
+  id: string | symbol;
   key: string;
   kinds: Map<string, ActiveKind>;
   since: number;
@@ -151,10 +160,10 @@ const STATUS_WORDS: Readonly<Record<string, string>> = Object.freeze({
   'quota-unreadable': "its subscription quota couldn't be read, so no spent-quota hold is possible; an operator's Re-read quota reads it again",
   'auth-expiring': 'its provider credential expires soon',
   'credential-unsaved': "its provider credential couldn't be saved to its file, so a restart may not find the credential in use; an operator's Re-check writes it again",
-  'refusal-offpath': "a request outside its own turns, such as for a summary, couldn't be completed",
+  'refusal-offpath': "an auxiliary model call, such as for a summary, couldn't be completed; see failures.log for details",
   'refusal': "a request couldn't be completed",
   'context-maintenance-failed': "its context maintenance didn't finish; failures.log says why",
-  'compression-quarantine': 'part of its history is held back from summaries and stays whole, which in time fills its context budget; an operator can inspect what is held, then branch, pin or clear it',
+  'compression-quarantine': "part of its history is held back from summaries and stays whole, which takes room in its context budget; this alone does not stop it, and the host's health report lists what is held",
   'instructions-unavailable': "its instructions couldn't be loaded, so none are injected; failures.log says why",
 });
 
@@ -235,7 +244,8 @@ export class NoticesModule implements Module {
   private readonly quietMs: number;
   private readonly renotifyMs: number;
   private readonly wakerWindowMs: number;
-  private episodes = new Map<string, Episode>();
+  private episodes = new Map<string | symbol, Episode>();
+  private processLastSuccess = new Map<string, number>();
   private currentWake: string | undefined;
   private failedWake: { channelId: string; at: number } | undefined;
   private unsubscribe: (() => void) | null = null;
@@ -277,6 +287,7 @@ export class NoticesModule implements Module {
 
   setFramework(framework: AgentFramework): void {
     this.framework = framework;
+    this.reconnectEpoch++;
     this.unsubscribe?.();
     this.unsubscribe = framework.onTrace((event: TraceEvent) => this.onTrace(event as unknown as Record<string, unknown>));
     for (const ep of this.episodes.values()) this.scheduleStatus(ep);
@@ -404,6 +415,8 @@ export class NoticesModule implements Module {
     const base = kind.endsWith('-clear') ? kind.slice(0, -'-clear'.length) : null;
 
     if (base !== null) {
+      // A process refusal reports a call, not an outage with a recovery signal.
+      if (isProcessRefusal(key, base)) return;
       const ep = this.episodes.get(key);
       if (!ep || !ep.kinds.has(base)) return;
       this.removeKind(ep, base, { superseded: /^superseded by /.test(message) });
@@ -411,28 +424,34 @@ export class NoticesModule implements Module {
     }
 
     const component = COMPONENT_KINDS.has(kind);
-    if (!component && this.config.agentName && key && key !== this.config.agentName) return;
+    if (!component && !isProcessRefusal(key, kind) && this.config.agentName && key && key !== this.config.agentName) return;
     let tier = this.tierFor(kind);
-    if (component && tier === 'reply') tier = 'status';
+    if ((component || isProcessRefusal(key, kind)) && tier === 'reply') tier = 'status';
     if (tier === 'silent') return;
 
     const data = (event.data ?? {}) as { until?: unknown };
     const until = typeof data.until === 'number' && Number.isFinite(data.until) ? data.until : undefined;
 
-    const existing = this.episodes.get(key);
+    const process = isProcessRefusal(key, kind);
+    const id = process ? PROCESS_REFUSAL : key;
+    const existing = this.episodes.get(id);
     if (existing) {
       const prior = existing.kinds.get(kind);
-      existing.kinds.set(kind, { tier, until, at: prior?.at ?? this.now(), seq: prior?.seq ?? existing.nextSeq++ });
-      if (prior) return;
+      const now = this.now();
+      const at = process && prior && prior.at + this.quietMs <= now ? now : prior?.at ?? now;
+      const seq = prior && !process ? prior.seq : existing.nextSeq++;
+      existing.kinds.set(kind, { tier, until, at, seq });
+      if (prior && !process) return;
+      if (process) for (const heard of existing.statusHeard.values()) heard.delete(kind);
       this.scheduleStatus(existing);
       void this.replyToWaker();
       return;
     }
     const ep: Episode = {
-      key, kinds: new Map([[kind, { tier, until, at: this.now(), seq: 0 }]]), since: this.now(),
+      id, key, kinds: new Map([[kind, { tier, until, at: this.now(), seq: 0 }]]), since: this.now(),
       notified: new Map(), replyPosting: new Set(), pending: new Set(), statusHeard: new Map(), statusPosting: new Map(), statusOwedClear: new Map(), nextSeq: 1, markedForms: new Set(),
     };
-    this.episodes.set(key, ep);
+    this.episodes.set(id, ep);
     this.scheduleStatus(ep);
     void this.replyToWaker();
   }
@@ -441,7 +460,7 @@ export class NoticesModule implements Module {
     const ep = this.config.agentName ? this.episodes.get(this.config.agentName) : undefined;
     if (ep) return ep;
     if (this.config.agentName) return undefined;
-    for (const e of this.episodes.values()) if (![...e.kinds.keys()].some((k) => COMPONENT_KINDS.has(k))) return e;
+    for (const e of this.episodes.values()) if (e.id !== PROCESS_REFUSAL && ![...e.kinds.keys()].some((k) => COMPONENT_KINDS.has(k))) return e;
     return undefined;
   }
 
@@ -452,7 +471,7 @@ export class NoticesModule implements Module {
     const stillReply = open && episodeTier(ep) === 'reply';
     if (!open) {
       this.cancelQuiet(ep);
-      this.episodes.delete(ep.key);
+      this.episodes.delete(ep.id);
       ep.pending.clear();
     }
     const subject = ep.key || this.config.agentName || 'the agent';
@@ -473,19 +492,31 @@ export class NoticesModule implements Module {
     ep.notified.clear();
   }
 
+  private consumeProcessRefusal(ep: Episode): void {
+    const kind = 'refusal-offpath';
+    if (ep.id === PROCESS_REFUSAL && ep.kinds.has(kind) &&
+        this.statusChannels.every((ch) => ep.statusHeard.get(ch)?.has(kind))) {
+      this.removeKind(ep, kind, { superseded: true });
+    }
+  }
+
   private scheduleStatus(ep: Episode): void {
+    this.consumeProcessRefusal(ep);
     if (this.statusChannels.length === 0) return;
-    if (this.episodes.get(ep.key) !== ep) return;
+    if (this.episodes.get(ep.id) !== ep) return;
     const now = this.now();
     this.deliverStatus(ep);
     let next: number | undefined;
     for (const [kind, k] of ep.kinds) {
-      const due = k.at + this.quietMs;
-      if (due <= now) continue;
-      const settled = this.statusChannels.every((ch) =>
-        ep.statusHeard.get(ch)?.has(kind) || ep.statusPosting.get(ch)?.get(kind) === k.seq);
-      if (settled) continue;
-      if (next === undefined || due < next) next = due;
+      for (const ch of this.statusChannels) {
+        const posting = ep.statusPosting.get(ch);
+        if (ep.statusHeard.get(ch)?.has(kind) ||
+            (ep.id === PROCESS_REFUSAL ? posting?.has(kind) : posting?.get(kind) === k.seq)) continue;
+        const due = this.statusDue(ep, ch, k);
+        // Failed sends wait for an event, rather than a timer retry loop.
+        if (due <= now) continue;
+        if (next === undefined || due < next) next = due;
+      }
     }
     if (next === undefined) { this.cancelQuiet(ep); return; }
     if (ep.quietTimer !== undefined && ep.quietDue !== undefined && ep.quietDue <= next) return;
@@ -494,9 +525,14 @@ export class NoticesModule implements Module {
     ep.quietTimer = this.timers.setTimeout(() => {
       ep.quietTimer = undefined;
       ep.quietDue = undefined;
-      if (this.episodes.get(ep.key) !== ep) return;
+      if (this.episodes.get(ep.id) !== ep) return;
       this.scheduleStatus(ep);
-    }, next - now);
+    }, Math.min(next - now, 2_147_483_647));
+  }
+
+  private statusDue(ep: Episode, channelId: string, k: ActiveKind): number {
+    const last = ep.id === PROCESS_REFUSAL ? this.processLastSuccess.get(channelId) : undefined;
+    return Math.max(k.at + this.quietMs, last === undefined ? -Infinity : last + this.renotifyMs);
   }
 
   private deliverStatus(ep: Episode): void {
@@ -542,21 +578,40 @@ export class NoticesModule implements Module {
 
   private async postStatus(ep: Episode, channelId: string, kind: string): Promise<void> {
     const k = ep.kinds.get(kind);
-    if (!k) return;
+    if (!k || this.episodes.get(ep.id) !== ep) return;
+    if (this.statusDue(ep, channelId, k) > this.now()) return;
+    const process = ep.id === PROCESS_REFUSAL;
     const heard = getSet(ep.statusHeard, channelId);
     let posting = ep.statusPosting.get(channelId);
     if (!posting) { posting = new Map(); ep.statusPosting.set(channelId, posting); }
-    if (heard.has(kind) || posting.get(kind) === k.seq) return;
+    if (heard.has(kind) || (process ? posting.has(kind) : posting.get(kind) === k.seq)) return;
     posting.set(kind, k.seq);
     const subject = ep.key || this.config.agentName || 'the agent';
+    const epoch = this.reconnectEpoch;
     const r = await this.post(channelId, statusNoticeText(subject, { kind, ...(k.until !== undefined ? { until: k.until } : {}) }), ep, { track: true, kind });
     if (posting.get(kind) === k.seq) posting.delete(kind);
+    if (process && r.ok) this.processLastSuccess.set(channelId, this.now());
     if (r.reflush) this.reflush(ep, channelId);
+    const live = this.episodes.get(ep.id) === ep ? ep.kinds.get(kind) : undefined;
+    if (process) {
+      if (live && live.seq !== k.seq) { this.scheduleStatus(ep); return; }
+      if (!r.ok) {
+        // Retain even non-parked failures for the next real alert or reconnect;
+        // do not start an automatic retry loop.
+        if (live) {
+          ep.pending.add(channelId);
+          // A replacement may have flushed before this unknown result arrived.
+          if (!r.reflush && this.reconnectEpoch !== epoch) this.reflush(ep, channelId);
+        }
+        return;
+      }
+      if (live) { heard.add(kind); this.consumeProcessRefusal(ep); }
+      return;
+    }
     if (!r.ok) return;
-    const live = this.episodes.get(ep.key) === ep ? ep.kinds.get(kind) : undefined;
     if (live?.seq === k.seq) { heard.add(kind); return; }
     if (live) { this.scheduleStatus(ep); return; }
-    const still = this.episodes.get(ep.key) === ep && ep.kinds.size > 0 ? primaryKind(ep).kind : undefined;
+    const still = this.episodes.get(ep.id) === ep && ep.kinds.size > 0 ? primaryKind(ep).kind : undefined;
     void this.post(channelId, statusClearText(subject, kind, still), ep, { track: false, owe: { key: ep.key, clearedKind: kind } });
   }
 
@@ -581,7 +636,7 @@ export class NoticesModule implements Module {
   }
 
   private reflush(ep: Episode, channelId: string): void {
-    if (this.episodes.get(ep.key) === ep) ep.pending.add(channelId);
+    if (this.episodes.get(ep.id) === ep) ep.pending.add(channelId);
     void this.flushPending();
   }
 
@@ -595,12 +650,16 @@ export class NoticesModule implements Module {
     await this.flushOwed();
     for (const ep of [...this.episodes.values()]) {
       for (const channelId of [...ep.pending]) {
-        if (this.episodes.get(ep.key) !== ep) break;
+        if (this.episodes.get(ep.id) !== ep) break;
         ep.pending.delete(channelId);
         if (this.statusChannels.includes(channelId)) {
           const now = this.now();
           for (const [kind, k] of [...ep.kinds]) {
-            if (k.at + this.quietMs <= now) await this.postStatus(ep, channelId, kind);
+            if (k.at + this.quietMs > now) continue;
+            // Per-channel guards serialize process sends. Sends here do not
+            // block this loop, but reaching them can wait for earlier owed lines.
+            if (ep.id === PROCESS_REFUSAL) void this.postStatus(ep, channelId, kind);
+            else await this.postStatus(ep, channelId, kind);
           }
         } else {
           await this.replyIfDown(channelId);
@@ -661,7 +720,7 @@ export class NoticesModule implements Module {
     }
     if (result.success) {
       ep?.pending.delete(channelId);
-      if (ep && opts.track && opts.kind !== undefined && !COMPONENT_KINDS.has(opts.kind)) {
+      if (ep && opts.track && opts.kind !== undefined && !COMPONENT_KINDS.has(opts.kind) && ep.id !== PROCESS_REFUSAL) {
         const form = this.markerForm(opts.kind);
         if (!ep.markedForms.has(form)) {
           ep.markedForms.add(form);
@@ -677,7 +736,7 @@ export class NoticesModule implements Module {
     }
     const reflush = this.reconnectEpoch !== epoch;
     if (opts.track) {
-      if (ep && this.episodes.get(ep.key) === ep) ep.pending.add(channelId);
+      if (ep && this.episodes.get(ep.id) === ep) ep.pending.add(channelId);
       return { ok: false, reflush };
     }
     if (reflush) return this.post(channelId, text, ep, opts);

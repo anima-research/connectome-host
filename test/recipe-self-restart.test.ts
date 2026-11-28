@@ -32,7 +32,7 @@ describe('recipe modules.selfRestart validation', () => {
       [null, /modules\.selfRestart must be true, false or an object/],
       [[], /modules\.selfRestart must be true, false or an object/],
       ['yes', /modules\.selfRestart must be true, false or an object/],
-      [{ cooldown: 5 }, /modules\.selfRestart has unknown field "cooldown"/],
+      [{ cooldown: 5 }, /modules\.selfRestart has unknown key "cooldown"/],
       [{ cooldownMinutes: -1 }, /cooldownMinutes must be a non-negative number/],
       [{ cooldownMinutes: '10' }, /cooldownMinutes must be a non-negative number/],
       [{ cooldownMinutes: Number.POSITIVE_INFINITY }, /cooldownMinutes must be a non-negative number/],
