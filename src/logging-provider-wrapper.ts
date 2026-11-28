@@ -2,12 +2,29 @@
 // request, response, usage, timing, and any error to the same
 // `llm-calls.<iso>.jsonl` file the Anthropic and Bedrock paths use.
 //
-// Contents: full raw request and a summarized-but-complete response record
+// Contents: a request summary and a summarized-but-complete response record
 // (stop reason, usage, per-block shape, full text) on every call, plus the
-// raw provider response.
+// raw provider response. The raw request is kept:
+//   - on every failure that isn't a cancellation (membrane's `abort`), each
+//     retry attempt included: unlike the Anthropic writer, this wrapper
+//     keeps no run of failures per lineage, dedups nothing by hash and has
+//     no copy budget, so a host whose calls fail repeatedly writes the full
+//     request once per attempt (#642 tracks sharing the Anthropic writer's policy);
+//   - on a refusal, and on an anomalous response (responseAnomaly, and
+//     anomalousToolCall: a client tool call whose arguments didn't parse as
+//     an object, on any provider, or one in a Responses response whose
+//     status is `incomplete`); the row carries `anomaly` and nothing is
+//     printed to stderr for it, unlike the Anthropic writer's ANOMALY line;
+//   - on a cancelled call only with LLM_CALLS_FULL_PAYLOADS=1, which keeps
+//     the request on every call.
+// On the OpenAI Responses path a request carries the whole compiled context,
+// so keeping it on every success put ~3 MB per call into the file whose last
+// ~64 MiB /bug reads on these hosts (#341); the call ledger reads the file
+// only on an Anthropic host, so these rows reach it only if the data
+// directory is later served by one.
 //
 // Each line: { type: 'call'|'error', provider, kind: 'complete'|'stream',
-//   timestamp, durationMs, requestSummary?, response?, rawRequest?,
+//   timestamp, durationMs, requestSummary?, response?, anomaly?, rawRequest?,
 //   rawResponse?, error?, errorType?, httpStatus?, providerErrorCode?,
 //   retryable?, errorChars?, truncated?, summaryUnavailable? }
 // A record whose request or response couldn't be summarized keeps only the
@@ -24,6 +41,8 @@ import type {
   StreamCallbacks,
 } from '@animalabs/membrane';
 import { appendFileSync } from 'node:fs';
+import { summarizeCacheControls } from './call-ledger.js';
+import { envFlag, responseAnomaly } from './logging-adapter.js';
 import { describeError } from './logging-error-fields.js';
 import { serializeRecord } from './logging-record.js';
 
@@ -37,10 +56,19 @@ function summarizeRequest(request: ProviderRequest): Record<string, unknown> {
           .map((b) => (b?.type === 'text' ? (b.text ?? '').slice(0, 120) : `[${b?.type}]`))
           .join(' | ').slice(0, 300)
       : undefined;
+  // The ledger reads cache flags from the summary first and from the raw
+  // request only as a fallback, and counts `messages`; both are here so a
+  // record without its raw request restores as it did with it. The cache
+  // walk visits the whole request, so a request it can't walk (a cycle)
+  // keeps the rest of its summary and no cache fields.
+  let cache: { count: number; ttls: string[] } | undefined;
+  try { cache = summarizeCacheControls(request); } catch { cache = undefined; }
   return {
     model: request.model,
     maxTokens: request.maxTokens,
     messageCount: msgs.length,
+    messages: msgs.length,
+    ...(cache ? { cacheBreakpoints: cache.count, cacheTtls: cache.ttls } : {}),
     systemChars: typeof request.system === 'string'
       ? request.system.length
       : Array.isArray(request.system)
@@ -68,17 +96,66 @@ function summarizeResponse(response: ProviderResponse, convention: ProviderAdapt
   };
 }
 
+/** A response the provider ended as a refusal, by membrane's stop reason or the raw one. */
+function isRefusal(response: ProviderResponse): boolean {
+  const raw = (response as { raw?: { stop_reason?: unknown } | null }).raw;
+  return response.stopReason === 'refusal' || raw?.stop_reason === 'refusal';
+}
+
+/**
+ * A client tool call the response shows was not what the model meant to send,
+ * which responseAnomaly can't see: on the Responses path membrane reports
+ * `tool_use` whenever the output holds a function_call, before it reads
+ * `status: 'incomplete'`, so a call cut under max_output_tokens survives only
+ * as the response's `status` (and `incomplete_details`); and on any adapter a
+ * tool_use block whose arguments didn't parse as an object carries membrane's
+ * `unparseableInput` marker, which a cut and a model's malformed JSON both
+ * produce. The two signs get their own kinds, since an operator reads them
+ * differently: `tool_use_cut_off` when the response's status says so (with or
+ * without the marker), `tool_use_unparseable_input` when only the marker fired.
+ * A response with no tool_use block is never one of these: a text or reasoning
+ * cut-off at the token limit is an ordinary row.
+ */
+function anomalousToolCall(response: ProviderResponse): Record<string, unknown> | undefined {
+  const r = response as {
+    content?: unknown;
+    providerStopReason?: unknown;
+    raw?: { status?: unknown; incomplete_details?: { reason?: unknown } | null } | null;
+  };
+  const blocks = Array.isArray(r.content) ? r.content as Array<{ type?: unknown; name?: unknown; unparseableInput?: unknown } | null> : [];
+  const tools = blocks.filter((b) => !!b && typeof b === 'object' && b.type === 'tool_use');
+  if (tools.length === 0) return undefined;
+  const nameOf = (b: { name?: unknown } | null): string => (typeof b?.name === 'string' ? b.name : '?');
+  const unparseableToolNames = tools.filter((b) => b!.unparseableInput !== undefined).map(nameOf);
+  const raw = r.raw && typeof r.raw === 'object' ? r.raw : undefined;
+  const incomplete = raw?.status === 'incomplete';
+  if (unparseableToolNames.length === 0 && !incomplete) return undefined;
+  return {
+    kind: incomplete ? 'tool_use_cut_off' : 'tool_use_unparseable_input',
+    toolNames: tools.map(nameOf),
+    ...(unparseableToolNames.length > 0 ? { unparseableToolNames } : {}),
+    ...(incomplete ? { status: 'incomplete', reason: typeof raw?.incomplete_details?.reason === 'string' ? raw.incomplete_details.reason : null } : {}),
+    ...('providerStopReason' in r ? { providerStopReason: typeof r.providerStopReason === 'string' ? r.providerStopReason : null } : {}),
+  };
+}
+
 export class LoggingProviderAdapter implements ProviderAdapter {
   readonly name: string;
 
   onProviderError?: (error: unknown, kind: 'complete' | 'stream') => void;
   onProviderSuccess?: (kind: 'complete' | 'stream') => void;
 
+  /** Keep the raw request on successful calls too. Off unless the constructor
+   *  says otherwise or LLM_CALLS_FULL_PAYLOADS is set to 1/true; read once. */
+  private readonly fullPayloads: boolean;
+
   constructor(
     private readonly inner: ProviderAdapter,
     private readonly logPath: string,
+    options: { fullPayloads?: boolean } = {},
   ) {
     this.name = inner.name;
+    this.fullPayloads = options.fullPayloads ?? envFlag(process.env.LLM_CALLS_FULL_PAYLOADS);
   }
 
   get usageCacheConvention(): ProviderAdapter['usageCacheConvention'] {
@@ -126,14 +203,24 @@ export class LoggingProviderAdapter implements ProviderAdapter {
     };
     let record: Record<string, unknown>;
     try {
+      const errorFields = failed ? describeError(outcome.error) : undefined;
+      const anomaly = failed ? undefined : (responseAnomaly(outcome.response) ?? anomalousToolCall(outcome.response));
+      // Which calls keep the raw request (the header has the rule): every
+      // failure except a cancellation (membrane types it `abort`), which is
+      // never the request's doing; a refusal; an anomalous response; and,
+      // with the opt-in, every call, cancellations included, as the
+      // Anthropic writer's opt-in keeps them.
+      const keepRaw = this.fullPayloads
+        || (failed ? errorFields?.errorType !== 'abort' : anomaly !== undefined || isRefusal(outcome.response));
       record = {
         ...head,
         requestSummary: summarizeRequest(request),
-        rawRequest: request,
+        ...(keepRaw ? { rawRequest: request } : {}),
         ...('response' in outcome
           ? { response: summarizeResponse(outcome.response, this.usageCacheConvention), rawResponse: outcome.response.raw ?? null }
           : {}),
-        ...(failed ? describeError(outcome.error) : {}),
+        ...(anomaly ? { anomaly } : {}),
+        ...(errorFields ?? {}),
       };
     } catch {
       record = { ...head, summaryUnavailable: true, ...(failed ? describeError(outcome.error) : {}) };
