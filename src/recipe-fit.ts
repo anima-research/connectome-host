@@ -280,9 +280,22 @@ export function recipeFit(recipe: Recipe, model: string): RecipeFit {
   const window = modelWindow(recipe, model);
   if (!window) {
     const provider = resolveProvider(recipe);
-    return notChecked(provider === 'anthropic'
+    // Two facts need no window, and both are said here as they are where the
+    // window is known: an agent.maxTokens that isn't a positive number, which
+    // ends the fit before readNumbers, and a budget no greater than
+    // agent.maxTokens, which the 'room' check refuses and the framework refuses
+    // as a live change, while here either loaded without a word (#653, #654).
+    const unreadable = unreadableMaxTokens(recipe) ? readNumbers(recipe) : undefined;
+    const budget = recipe.agent.contextBudgetTokens;
+    const reply = effectiveMaxTokens(recipe);
+    const noRoom = unreadable === undefined && typeof budget === 'number' && budget - reply <= 0
+      ? ` Recipe agent.contextBudgetTokens (${n(budget)}) is no more than agent.maxTokens (${n(reply)}), which the host keeps ` +
+        'out of the budget for the reply, so the conversation gets no room.'
+      : '';
+    return notChecked((provider === 'anthropic'
       ? `The host has no window for ${JSON.stringify(model)}.`
-      : `The host knows windows only on provider "anthropic", and this recipe's is "${provider}".`);
+      : `The host knows windows only on provider "anthropic", and this recipe's is "${provider}".`)
+      + (typeof unreadable === 'string' ? ` ${unreadable}` : '') + noRoom);
   }
   const thinking = thinkingOf(recipe);
   const overOutput = (value: number) => `Recipe agent.maxTokens (${n(value)}) is over ${model}'s maximum output of ` +

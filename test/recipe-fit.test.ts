@@ -734,4 +734,43 @@ describe('where the host knows no window', () => {
       expect(own).toMatchObject({ maxTokens: 200_000, contextBudgetTokens: 900_000, maxStreamTokens: 150_000 });
     });
   }
+
+  test('an agent.maxTokens that isn\'t a positive number is named in the line all the same, as it is where the window is known', async () => {
+    for (const [agent, model] of [
+      [{ provider: 'openrouter', model: 'anthropic/claude-haiku-4-5' }, 'anthropic/claude-haiku-4-5'],
+      [{ model: 'claude-unknown-9' }, 'claude-unknown-9'],
+    ] as const) {
+      const fit = recipeFit(await loadRecipe(recipeFile({ ...agent, maxTokens: 0 })), model);
+      expect(fit.checked).toBe(false);
+      expect(fit.checked === false && fit.line).toContain(model);
+      expect(fit.checked === false && fit.line).toContain('agent.maxTokens is 0, not a positive number of tokens.');
+    }
+    const fine = recipeFit(await loadRecipe(recipeFile({ provider: 'openrouter', model: 'anthropic/claude-haiku-4-5', maxTokens: 16_384 })), 'anthropic/claude-haiku-4-5');
+    expect(fine.checked === false && fine.line).not.toContain('not a positive number');
+  });
+
+  test('a budget no greater than agent.maxTokens is named without a window, as the room check refuses it with one', async () => {
+    const noRoom = (budget: number, reply: number) =>
+      `Recipe agent.contextBudgetTokens (${budget.toLocaleString('en-US')}) is no more than agent.maxTokens (${reply.toLocaleString('en-US')}), ` +
+      'which the host keeps out of the budget for the reply, so the conversation gets no room.';
+    for (const [agent, sentence] of [
+      [{ contextBudgetTokens: 0 }, noRoom(0, 16_384)],
+      [{ contextBudgetTokens: -1 }, noRoom(-1, 16_384)],
+      [{ contextBudgetTokens: 0.5 }, noRoom(0.5, 16_384)],
+      [{ contextBudgetTokens: 8_000 }, noRoom(8_000, 16_384)],
+      [{ contextBudgetTokens: 20_000, maxTokens: 20_000 }, noRoom(20_000, 20_000)],
+    ] as const) {
+      const fit = recipeFit(await loadRecipe(recipeFile({ provider: 'openrouter', model: 'anthropic/claude-haiku-4-5', ...agent })), 'anthropic/claude-haiku-4-5');
+      expect(fit.checked).toBe(false);
+      expect(fit.checked === false && fit.line).toContain(sentence);
+    }
+    const unknown = recipeFit(await loadRecipe(recipeFile({ model: 'claude-unknown-9', contextBudgetTokens: -1 })), 'claude-unknown-9');
+    expect(unknown.checked === false && unknown.line).toContain(noRoom(-1, 16_384));
+    const room = recipeFit(await loadRecipe(recipeFile({ provider: 'openrouter', model: 'anthropic/claude-haiku-4-5', contextBudgetTokens: 16_385 })), 'anthropic/claude-haiku-4-5');
+    expect(room.checked === false && room.line).not.toContain('no more than');
+    // With agent.maxTokens unreadable the line has that one sentence; the budget's reading waits for a readable one.
+    const unreadable = recipeFit(await loadRecipe(recipeFile({ provider: 'openrouter', model: 'anthropic/claude-haiku-4-5', maxTokens: 0, contextBudgetTokens: 0 })), 'anthropic/claude-haiku-4-5');
+    expect(unreadable.checked === false && unreadable.line).toContain('agent.maxTokens is 0');
+    expect(unreadable.checked === false && unreadable.line).not.toContain('no more than');
+  });
 });
