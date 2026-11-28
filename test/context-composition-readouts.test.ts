@@ -7,6 +7,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { buildContextMakeup, buildHealthSnapshot, type PanelAppRef } from '../src/web/panel-data.js';
 import { HEALTH_STRINGS, keepNamedStrings } from '../src/modules/web-ui-observers.js';
+import { withCountEnv } from './count-env.js';
 
 const words = () => import('../web/src/composition-text');
 
@@ -55,6 +56,28 @@ describe("the Context page's figures", () => {
     expect(contextPageView({ ...makeup, exactTotalTokens: 0 }).count).toEqual({ tokens: 0, model: 'claude-haiku-4-5' });
     expect(contextPageView({ ...makeup, exactTotalTokens: null, countSource: 'count_tokens_failed_429' }).count)
       .toEqual({ reason: 'not counted: count_tokens answered 429' });
+  });
+
+  test('the line under a count names the address that counted, where the answer gives it', async () => {
+    const { contextPageView, countedBy } = await words();
+    const makeup = { stats: null, statsKept: true, exactTotalTokens: 4_242, countModel: 'claude-haiku-4-5', countSource: 'count_tokens' };
+    const counted = contextPageView({ ...makeup, countHost: 'gateway.example:8443' }).count;
+    expect(counted).toEqual({ tokens: 4_242, model: 'claude-haiku-4-5', host: 'gateway.example:8443' });
+    if (!('tokens' in counted)) throw new Error('expected a count');
+    expect(countedBy(counted)).toBe('counted by count_tokens at gateway.example:8443 for claude-haiku-4-5');
+    const fromAnOlderHost = contextPageView(makeup).count;
+    if (!('tokens' in fromAnOlderHost)) throw new Error('expected a count');
+    expect(countedBy(fromAnOlderHost)).toBe('counted by count_tokens for claude-haiku-4-5');
+  });
+
+  test('a count that was asked and failed names the address that it was asked at', async () => {
+    const { contextPageView } = await words();
+    const failed = { stats: null, statsKept: true, exactTotalTokens: null, countModel: 'claude-haiku-4-5', countSource: 'count_tokens_failed_429', countHost: 'gateway.example:8443' };
+    expect(contextPageView(failed).count).toEqual({ reason: 'not counted: count_tokens answered 429 (asked at gateway.example:8443)' });
+    expect(contextPageView({ ...failed, countSource: 'count_tokens_error' }).count)
+      .toEqual({ reason: 'not counted: the count_tokens call failed (asked at gateway.example:8443)' });
+    const { countHost: _none, ...fromAnOlderHost } = failed;
+    expect(contextPageView(fromAnOlderHost).count).toEqual({ reason: 'not counted: count_tokens answered 429' });
   });
 
   test("it shows the last live compile's stats, else the line, taking a response without statsKept as a strategy that keeps them", async () => {
@@ -137,6 +160,9 @@ describe("why the Context page's next request wasn't counted", () => {
     expect(notCounted('count_tokens_failed_429')).toBe('not counted: count_tokens answered 429');
     expect(notCounted('count_tokens_error')).toBe('not counted: the count_tokens call failed');
     expect(notCounted('count_tokens')).toBe('not counted: count_tokens answered with no count');
+    expect(notCounted('count_tokens_no_credential')).toBe(
+      "not counted: the host has no Anthropic credential that the count can use, so it asked nothing. A count sends the agent's next request to Anthropic's API, or to ANTHROPIC_BASE_URL.",
+    );
     expect(notCounted('something_new')).toBe('not counted (something_new)');
   });
 });
@@ -151,15 +177,12 @@ function cmWith(stats: unknown, statsKept: boolean) {
 }
 
 describe('the makeup endpoint', () => {
-  const priorModel = process.env.COUNT_TOKENS_MODEL;
   const realFetch = globalThis.fetch;
   beforeAll(() => {
     globalThis.fetch = (async () => new Response(JSON.stringify({ input_tokens: 4_242 }), { status: 200 })) as unknown as typeof fetch;
   });
   afterAll(() => {
     globalThis.fetch = realFetch;
-    if (priorModel === undefined) delete process.env.COUNT_TOKENS_MODEL;
-    else process.env.COUNT_TOKENS_MODEL = priorModel;
   });
 
   function appWith(cm: ReturnType<typeof cmWith>, model: string) {
@@ -176,9 +199,9 @@ describe('the makeup endpoint', () => {
     ['a model count_tokens takes', 'claude-haiku-4-5', 4_242],
     ["a model count_tokens doesn't take", 'gpt-6', null],
   ] as const) {
-    test(`with ${path}, it tells a strategy that keeps no render stats from one with none yet, and gives the stats after a compile`, async () => {
-      if (count === null) delete process.env.COUNT_TOKENS_MODEL;
-      else process.env.COUNT_TOKENS_MODEL = model;
+    test(`with ${path}, it tells a strategy that keeps no render stats from one with none yet, and gives the stats after a compile`, () => withCountEnv({
+      ANTHROPIC_API_KEY: 'key-test', ...(count === null ? {} : { COUNT_TOKENS_MODEL: model }),
+    }, async () => {
       const none = await buildContextMakeup(appWith(cmWith(null, true), model), 'agent');
       expect(none.stats).toBeNull();
       expect(none.statsKept).toBe(true);
@@ -190,7 +213,7 @@ describe('the makeup endpoint', () => {
       const compiled = await buildContextMakeup(appWith(cmWith(stats, true), model), 'agent');
       expect(compiled.stats).toBe(stats);
       expect(compiled.statsKept).toBe(true);
-    });
+    }));
   }
 });
 
