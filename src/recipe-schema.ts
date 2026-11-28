@@ -1,7 +1,9 @@
 import { isAbsolute } from 'node:path';
 import * as z from 'zod';
 import { resolveClockConfig, WorkspaceModule } from '@animalabs/agent-framework';
+import type { CompressionInstructions } from '@animalabs/context-manager';
 import { ENV_REFERENCE } from './recipe-document.js';
+import { validateBuiltinStrategy } from './recipe-strategy.js';
 import { shown } from './modules/shown.js';
 import { noteRecipeWarning } from './recipe-warnings.js';
 import { REASONING_EFFORTS } from './modules/settings-module.js';
@@ -547,6 +549,11 @@ const strategyShape = {
    *  participant surfaces in the compiled prompt as another voice speaking in
    *  first person about the agent. */
   summaryParticipant: text().optional(),
+  /** Per-phase CM summarizer instructions, for the built-in autobiographical
+   * strategy only. Templates need no preset; omitted slots keep built-ins.
+   * The built-in boundary delegates validation to CM; extensions own this key.
+   * See docs/compression-instructions.md. */
+  compressionInstructions: z.custom<CompressionInstructions>().optional(),
   summarySystemPrompt: text().optional(),
   summaryUserPrompt: text().optional(),
   /** The `Context Manager` turn before a summary in the compiled context,
@@ -2822,20 +2829,28 @@ export function unknownRecipeKeys(raw: unknown): string[] {
   return found;
 }
 
+function checkRecipeStrategy(raw: unknown): void {
+  const strategy = valueAt(raw, ['agent', 'strategy']);
+  if (isPlainObject(strategy)) validateBuiltinStrategy(strategy);
+}
+
 /**
  * The recipe that `raw` holds, as the load gives it: a new object, with
  * `agent.systemPrompt` and `agent.cacheTtl` written where they are left out.
  * It writes one warning line naming the keys that unknownRecipeKeys gives,
  * if it gives any, and notes it for the session's log only where the recipe
- * loads. It throws one error whose message names every fault that one parse
- * can judge, printing values as `origin` allows.
+ * loads. An invalid built-in compression instruction setting is refused
+ * before parsing. Otherwise a schema refusal names every fault that one
+ * parse can judge, printing values as `origin` allows.
  */
 export function validateRecipe(raw: unknown, origin: RecipeOrigin = { kind: 'literal' }): Recipe {
+  // Reject invalid templates before warnings can echo arbitrary recipe keys.
+  checkRecipeStrategy(raw);
   const unknownKeys = unknownRecipeKeys(raw);
   const named = isPlainObject(raw) && raw.name !== undefined && origin.kind !== 'resolved' ? ` ${printed(raw.name, ['name'], origin)}` : '';
   const warning = unknownKeys.length > 0 ? `Recipe${named} has keys the host does not read (ignored): ${unknownKeys.join(', ')}.` : undefined;
   if (warning !== undefined) console.warn(warning);
-  const checked = checkRecipe(raw, origin);
+  const checked = checkRecipeShape(raw, origin);
   if (!checked.ok) throw new Error(checked.fault);
   if (warning !== undefined) noteRecipeWarning(warning);
   return checked.recipe;
@@ -2848,6 +2863,16 @@ export type RecipeCheck = { readonly ok: true; readonly recipe: Recipe } | { rea
  * would give, or the message of the error that it would throw.
  */
 export function checkRecipe(raw: unknown, origin: RecipeOrigin = { kind: 'literal' }): RecipeCheck {
+  try {
+    checkRecipeStrategy(raw);
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    return { ok: false, fault: error.message };
+  }
+  return checkRecipeShape(raw, origin);
+}
+
+function checkRecipeShape(raw: unknown, origin: RecipeOrigin): RecipeCheck {
   const result = recipeSchema.safeParse(raw, { error: words });
   return result.success
     ? { ok: true, recipe: result.data }

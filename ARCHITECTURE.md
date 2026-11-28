@@ -126,7 +126,9 @@ A recipe is JSON; the full key set is typed and validated by one schema in
 - **One schema gives the recipe's type and its checks** (`src/recipe-schema.ts`,
   zod). Wrong values, impossible combinations (e.g. an instructions path on a
   mount that can't be written) and partial policies are refused at load,
-  naming the key, and one refusal names each fault that the schema finds.
+  naming the key. Built-in compression instructions are checked first; if
+  that check fails, no schema faults are reported until it passes. A schema
+  refusal names each fault that one parse finds.
   The schema's refusal prints no value that came from the environment: it
   names the `${VAR}` reference, or the kind of value where a recipe that an
   older release saved no longer holds the reference. Messages after the

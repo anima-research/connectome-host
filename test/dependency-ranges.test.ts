@@ -28,12 +28,10 @@
  * the exports the host imports fails the host's load, and membrane's range
  * starts at 0.10.4, the release the stack's lockfiles and suites run on,
  * within what agent-framework and context-manager admit. Each range is also
- * asked to admit the release the host needs first (agent-framework 0.35.3;
- * chronicle 0.7.0; context-manager 0.28.0), which no install layout
- * changes. context-manager's floor is above its presentation release,
- * 0.25.0: 0.28.0 is the release agent-framework 0.35.0 takes, so a lower one
- * of the host's own would be a second copy, and the first with what a
- * recipe's `compressionFallbackModel` and `carryStrandedSummaries` set.
+ * asked to admit the release the host needs first (agent-framework 0.36.0;
+ * chronicle 0.7.0; context-manager 0.29.0), which no install layout
+ * changes. Agent-framework 0.36.0 takes context-manager ^0.29.0, so a host
+ * install that selected 0.28.x or earlier would need a second copy.
  * agent-framework's floor is above its presentation release, 0.33.0.
  * 0.34.0 is the first release with `inference:held`, `inference:hold_ended`
  * and the failed ephemeral turn's framework-written rejection with its
@@ -43,9 +41,10 @@
  * longer names; 0.35.2 is the first whose `listMcplServers()` rows carry the
  * `serverInfo` that `about--versions` and `mcpl_list` read; 0.35.3 is the
  * first whose workspace takes `outsideMounts`, which a recipe's key of that
- * name sets. chronicle's floor is above its presentation release, 0.6.0:
- * 0.7.0 is the release the stack's lockfiles and suites run on, and it
- * opens a store 0.6.0 wrote.
+ * name sets. CM 0.29.0 adds recipe compression instructions, and AF 0.36.0
+ * is the first AF that shares that CM. chronicle's floor is above its
+ * presentation release, 0.6.0: 0.7.0 is the release the stack's lockfiles
+ * and suites run on, and it opens a store 0.6.0 wrote.
  */
 import { describe, test, expect } from 'bun:test';
 import { lstatSync, readFileSync } from 'node:fs';
@@ -98,18 +97,18 @@ const within = (inner: string, outer: string): boolean =>
   Bun.semver.satisfies(floorOf(inner), outer) && Bun.semver.satisfies(topOf(inner), outer);
 
 describe("the host's dependency ranges (#291's release set)", () => {
-  test("takes agent-framework from 0.35.3, the first whose workspace takes outsideMounts: not 0.35.2, the first whose listMcplServers rows carry each server's serverInfo, nor 0.35.1, the first whose sameRoundSkipReplyTextPolicy 'ask' holds text on the XML tool path and which agent_settings switches, nor 0.35.0, the first with sendSilencing and primaryWaitsForAuxiliary", () => {
+  test('takes agent-framework from 0.36.0, the first to share CM 0.29', () => {
     const range = ours.dependencies?.['@animalabs/agent-framework'];
-    for (const published of ['0.29.0', '0.30.0', '0.31.0', '0.32.0', '0.33.0', '0.33.1', '0.33.2', '0.33.3', '0.34.0', '0.35.0', '0.35.1', '0.35.2']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
-    expect(floorOf(range!)).toBe('0.35.3');
-    admitsRelease('@animalabs/agent-framework', range!, '0.35.3');
+    for (const published of ['0.29.0', '0.30.0', '0.31.0', '0.32.0', '0.33.0', '0.33.1', '0.33.2', '0.33.3', '0.34.0', '0.35.0', '0.35.1', '0.35.2', '0.35.3', '0.35.4']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    expect(floorOf(range!)).toBe('0.36.0');
+    admitsRelease('@animalabs/agent-framework', range!, '0.36.0');
     admitsInstalled('@animalabs/agent-framework', range!);
   });
 
-  test("takes context-manager from 0.28.0, the release agent-framework 0.35.0 takes and the first with what a recipe's compressionFallbackModel and carryStrandedSummaries set: not main's 0.23.0 or 0.24.0, which have no window APIs, nor 0.25.0 to 0.27.0, which would be a second copy beside the framework's", () => {
+  test('takes context-manager from 0.29.0, the first with recipe compression instructions', () => {
     const range = ours.dependencies?.['@animalabs/context-manager'];
-    for (const published of ['0.23.0', '0.24.0', '0.25.0', '0.25.1', '0.25.2', '0.25.3', '0.26.0', '0.27.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
-    admitsRelease('@animalabs/context-manager', range!, '0.28.0');
+    for (const published of ['0.23.0', '0.24.0', '0.25.0', '0.25.1', '0.25.2', '0.25.3', '0.26.0', '0.27.0', '0.28.0']) expect(Bun.semver.satisfies(published, range!)).toBe(false);
+    admitsRelease('@animalabs/context-manager', range!, '0.29.0');
     // agent-framework's create() refuses a ContextManager without presentRows.
     const proto = ContextManager.prototype as unknown as Record<string, unknown>;
     for (const method of ['windowStatusOf', 'retractRows', 'getPresentedMessages']) {

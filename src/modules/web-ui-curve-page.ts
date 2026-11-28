@@ -122,7 +122,8 @@ document.getElementById('meta').textContent =
   'branch ' + payload.branch + ' · compiled ' + payload.generatedAt.slice(0, 16).replace('T', ' ') +
   'Z · budget ' + Math.round(payload.budget.maxTokens / 1000) + 'k (hard ' +
   Math.round((payload.budget.maxTokens - payload.budget.reserveForResponse) / 1000) + 'k)' +
-  // A dry compile plots a plan that won't fit instead of failing, so say so.
+  // The verdict comes from a separate feasibility preview, which may use
+  // the descent target. The dry compile itself refuses past the hard budget.
   (V && V.fitsRequested === false && typeof V.plannedTokens === 'number'
     ? ' · OVER BUDGET' + (V.atDescentTarget ? " at the descent's target" : '') + ': plan ' +
       Math.round(V.plannedTokens / 1000) + 'k > ' + Math.round(V.effectiveBudgetTokens / 1000) + 'k' +

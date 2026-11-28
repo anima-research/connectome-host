@@ -64,6 +64,7 @@ export const everySetting = {
       },
       speculativeProduction: true, l1HoldbackChunks: 1, summaryParticipant: 'agent', summarySystemPrompt: 's',
       summaryUserPrompt: 'u', summaryContextLabel: 'l', witnessedBeforeSequence: 1, witnessedInstruction: 'w',
+      compressionInstructions: { templates: { chunk: 'Recall this stretch in {targetTokens} tokens.' } },
       identityReminder: 'i', witnessedIdentityReminder: 'wi',
     },
     thinking: { enabled: true, budgetTokens: 1000, type: 'enabled', display: 'summarized', effort: 'low' },
@@ -166,7 +167,10 @@ export const everySetting = {
 
 export const variants: Readonly<Record<string, readonly Edit[]>> = {
   base: [],
-  passthrough: [['agent.strategy.type', 'passthrough'], ['agent.strategy.foldingStrategy', DELETE], ['agent.strategy.kvUnified', DELETE]],
+  passthrough: [
+    ['agent.strategy.type', 'passthrough'], ['agent.strategy.compressionInstructions', DELETE],
+    ['agent.strategy.foldingStrategy', DELETE], ['agent.strategy.kvUnified', DELETE],
+  ],
   customStrategy: [['agent.strategy.type', 'mine'], ['extensions.mine', { kind: 'strategy', path: '/abs/mine.js' }]],
   noStrategyType: [['agent.strategy.type', DELETE]],
   codeExecutionOff: [['codeExecution.enabled', false]],
@@ -205,6 +209,7 @@ export const variants: Readonly<Record<string, readonly Edit[]>> = {
   ],
   otherForms: [
     ['agent.strategy.type', 'frontdesk'], ['agent.autoContinue', false], ['agent.clock', { intervalSeconds: 30, precision: 'seconds' }],
+    ['agent.strategy.compressionInstructions', DELETE],
     ['modules.instructions', true], ['modules.setup', true], ['modules.selfUpdate', true],
     ['mcpServers.srv.args', ['a', 1, true]], ['mcpServers.srv.env', { K: 'v', N: 1, B: false }],
     ['modules.fleet.children.0.env', { K: 'v', N: 1, B: true }],

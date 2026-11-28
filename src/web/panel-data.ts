@@ -1269,10 +1269,9 @@ function curveVerdict(
  * cooldown isn't applied. A dry run commits no fold resolutions, queues no
  * compression, and leaves the hot settings, calibration and render stats
  * as the last committing compile left them; as any compile does, it
- * releases a compression hold whose deadline has passed. It skips only
- * context-manager's post-pick check, so a plan over budget there is
- * plotted beside the verdict, while a budget the context can't fit at all
- * still throws. No inference of its own, no message writes.
+ * releases a compression hold whose deadline has passed. A plan over the
+ * hard budget is refused before entries can be plotted; the settings
+ * preview can still report why. No inference of its own, no message writes.
  */
 export async function buildContextCurve(app: PanelAppRef, agentName: string): Promise<Record<string, unknown>> {
   requireAgent(app, agentName);
@@ -1289,8 +1288,8 @@ export async function buildContextCurve(app: PanelAppRef, agentName: string): Pr
     transition = settings?.transition;
   } catch { }
   const reserveForResponse = effectiveMaxTokens(app.recipe);
-  // A dry run: a committing compile on every render would persist its fold
-  // resolutions and queue compression from its plan, mid-stream included.
+  // Dry runs don't persist fold resolutions or queue compression, but still
+  // refuse plans over the hard budget.
   const compiled = await cm.compile({ maxTokens, reserveForResponse }, undefined, { dryRun: true });
   const verdict = curveVerdict(app, agentName, maxTokens, reserveForResponse, transition);
 
@@ -1420,8 +1419,9 @@ function projectDryEntries(result: unknown): unknown {
 
 /**
  * The /debug/context/preview answer: the fold plan at a hypothetical budget
- * and tail, committing nothing. A budget that can't work is reported in the
- * diagnostics, not as an error.
+ * and tail, committing nothing. If the plan exceeds the hard budget, this
+ * reports the budget refusal without rendered entries or stats, even with
+ * render requested.
  *
  * params: { budget: number; tail?: number; render?: boolean }
  */

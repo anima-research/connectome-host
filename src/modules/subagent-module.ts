@@ -2069,8 +2069,7 @@ export class SubagentModule implements Module {
     let lastMessageSnippet = '';
     try {
       // A dry compile: unlike a real one, it commits none of the stream's fold
-      // state, queues no compression, and returns a plan over the budget it
-      // compiles at rather than refusing it.
+      // state and queues no compression. It still refuses a plan over the hard budget.
       const compiled = await live.contextManager.compile(undefined, undefined, { dryRun: true });
       const said = compiledWithoutStoredInjections(compiled);
       messageCount = said.length;
@@ -3523,8 +3522,8 @@ export class SubagentModule implements Module {
           if (parentAgent) {
             const parentCM = parentAgent.getContextManager();
             // A dry compile: unlike a real one, it commits none of the
-            // parent's fold state, queues no compression on its behalf, and
-            // returns a plan over the budget rather than refusing it.
+            // parent's fold state and queues no compression on its behalf.
+            // It still refuses a parent plan over the hard budget.
             const compiled = compiledWithoutStoredInjections(await Promise.race([
               parentCM.compile(undefined, undefined, { dryRun: true }),
               cancel.promise,
