@@ -121,28 +121,45 @@ const ERROR_CLASSES = new Set([
 ]);
 
 /**
- * The bracketed tags our own code starts a log line with (connectome-host,
- * agent-framework, membrane, context-manager). An MCP server's stderr lands
- * in the same log and can start with any bracketed text, so only these are
- * named; every other tag is counted as "other".
+ * The bracketed tags our own code starts a log line with: connectome-host's,
+ * and those of the @animalabs packages it depends on (agent-framework,
+ * membrane, context-manager, chronicle). An MCP server's stderr lands in the
+ * same log and can start with any bracketed text, so only these are named;
+ * every other tag is counted as "other". Two tests keep the list whole:
+ * bug-report.test.ts reads the host's own src for tags it starts strings
+ * with, and log-tags-by-source.test.ts reads each package's built code for
+ * the tags its logging calls start with.
  */
 export const HOST_LOG_TAGS = new Set([
-  'agent-settings', 'anthropic-credentials', 'autobiographical', 'batch', 'budget-preflight',
-  'cache-keepalive', 'channel', 'cm-cache', 'coalescing', 'compression-quarantine', 'context-maintenance',
-  'credential', 'credential-monitor', 'deprecated', 'diagnostics', 'discord', 'discord-awareness', 'echo',
-  'estimator-calibration', 'fit', 'fleet', 'framework', 'gate', 'gate-telemetry', 'heartbeat', 'host', 'host-command',
-  'host-mode', 'host-notice', 'identity', 'image', 'inference-dropped', 'inference-failed',
-  'inference-hard-down', 'inference-refusal', 'inference-rewind', 'inference-stale', 'interrupt',
+  'addmessage', 'agent', 'agent-framework-mcp', 'agent-framework-recover', 'agent-settings',
+  'anthropic-credentials', 'anthropicxmlformatter', 'api', 'assistant-persist', 'autobiographical',
+  'autobiographicalstrategy', 'batch', 'beforeinference', 'budget-hold', 'budget-preflight', 'cache-keepalive',
+  'channel', 'channel-decline', 'channel-incoming-dropped', 'channel-incoming-refused',
+  'channel-incoming-rejected', 'channel-open-substituted', 'checkpointmanager', 'checkpoints', 'clock',
+  'closed-channel-note', 'cm-cache', 'coalescing', 'code_execution', 'completionsformatter',
+  'compression-debt', 'compression-quarantine', 'context-maintenance', 'context-manager', 'continue',
+  'conversation', 'credential', 'credential-monitor', 'debuglogcontext', 'deferral', 'dendrite', 'deprecated',
+  'diag', 'diagnostics', 'discord', 'discord-awareness', 'drafts', 'echo', 'ephemeral',
+  'estimator-calibration', 'fit', 'fleet', 'fold-diff', 'fold-journal', 'framework', 'gate', 'gate-telemetry',
+  'health', 'heartbeat', 'history', 'history/semantic', 'host', 'host-command', 'host-mode', 'host-notice',
+  'identity', 'image', 'inbound', 'inference-dropped', 'inference-failed', 'inference-hard-down',
+  'inference-rearm', 'inference-refusal', 'inference-rewind', 'inference-stale', 'injection', 'interrupt',
   'kv-continuity-relaxation', 'kv-diag', 'kv-escalation', 'kv-overlap', 'kv-timing', 'kv-unified',
-  'lessons', 'liveness-watchdog', 'llm-calls', 'mcp', 'mcpl', 'membrane', 'membrane-oversize', 'membrane:bedrock',
-  'membrane:content', 'membrane:cost', 'membrane:gemini', 'membrane:normalize-tool-pairs',
-  'membrane:openrouter', 'membrane:usage', 'merge-quarantine', 'merge-topology', 'message-store',
-  'mint-preimage', 'notices', 'nudge', 'openai-codex', 'operator', 'operator-log', 'ops-alert', 'own-settings',
-  'picker-config-drift', 'picker-dead-ids', 'picker-unrealizable', 'pins', 'prose', 'provider-admission',
-  'provider-cooldown', 'puppet', 'push-event-rejected', 'reasoning', 'reasoning-effort', 'refusal-retry',
-  'refusal-rewind', 'rfc005', 'routespeech', 'routing', 'section', 'self-restart', 'self-wake', 'settings', 'shutdown',
-  'sleep', 'spill', 'store-topology', 'subagent', 'subscription-gc', 'thinking', 'thinking-binding', 'tool', 'tool-boundary',
-  'tool-result-guard', 'tool_result', 'tools', 'tts-relay', 'unstick', 'update', 'voice', 'webui', 'webui-observers',
+  'kvu-subtree', 'lessons', 'liveness-watchdog', 'llm-calls', 'mcp', 'mcpl', 'membrane', 'membrane-oversize',
+  'membrane:anthropic', 'membrane:bedrock', 'membrane:content', 'membrane:cost', 'membrane:gemini',
+  'membrane:normalize-tool-pairs', 'membrane:openai-responses', 'membrane:openrouter', 'membrane:tool-parser',
+  'membrane:usage', 'merge-quarantine', 'merge-topology', 'message-store', 'mint-preimage', 'nativeformatter',
+  'notice', 'notices', 'nudge', 'openai-codex', 'openaicompletionsadapter', 'operator', 'operator-log',
+  'ops-alert', 'own-settings', 'picker-config-drift', 'picker-dead-ids', 'picker-unrealizable', 'pins', 'presentation',
+  'process', 'process-response-refused', 'profile', 'prose', 'provider-admission', 'provider-cooldown',
+  'provider-wait', 'puppet', 'push-event-dropped', 'push-event-refused', 'push-event-rejected',
+  'push-render-failed', 'reasoning', 'reasoning-effort', 'refs', 'refusal-retry', 'refusal-rewind',
+  'request-only-rows', 'rfc005', 'route-failure', 'routespeech', 'routing', 'save_recent_image', 'section',
+  'self-restart', 'self-wake', 'settings', 'shutdown', 'skip-reply', 'sleep', 'speech-not-posted', 'spill',
+  'stop', 'store', 'store-topology', 'stored-digest-as-given', 'stream', 'subagent', 'subscription-gc',
+  'surgery', 'thinking', 'thinking-binding', 'tool', 'tool-boundary', 'tool-result-guard', 'tool-results',
+  'tool_result', 'tools', 'toolsets', 'tts-relay', 'tune-out', 'turn', 'turn-continuation', 'turn-inputs',
+  'turn-interrupted', 'unstick', 'update', 'usage', 'voice', 'wake', 'webui', 'webui-observers',
   'windowed-passthrough', 'workspace',
 ]);
 
