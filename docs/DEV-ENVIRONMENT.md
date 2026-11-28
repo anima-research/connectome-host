@@ -232,7 +232,9 @@ systemd user unit in your home directory.
 - macOS: launchd agent (e.g. `cc.<agent>.agent`) — stop with `launchctl bootout`,
   restart with `launchctl kickstart -k gui/$(id -u)/<label>`.
 - Linux: systemd-user (e.g. `<agent>-agent.service`) —
-  `systemctl --user restart <unit>`; needs lingering enabled.
+  `systemctl --user restart <unit>`; needs lingering enabled. Set `KillMode=mixed`
+  in the unit, so a stop's SIGTERM reaches the host alone and it closes its MCP
+  servers itself (`webui-deployment.md` has the reasoning).
 
 ---
 
