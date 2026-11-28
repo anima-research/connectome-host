@@ -1,6 +1,27 @@
 import { isAbsolute, join, resolve } from 'node:path';
 import type { MountConfig, WorkspaceConfig } from '@animalabs/agent-framework';
 import type { RecipeModules, RecipeWorkspaceMount } from './recipe.js';
+import {
+  OWN_SETTINGS_FILE, OWN_SETTINGS_MAX_BYTES, OWN_SETTINGS_MOUNT, OWN_SETTINGS_SET_ASIDE, ownSettingsDir,
+} from './own-settings-table.js';
+
+/**
+ * The host's mount of the resident's own settings directory, for a recipe
+ * whose ownSettings lets the resident change a setting. It is direct, so a
+ * write is on disk when it answers and a start reads it, and it holds the two
+ * files of that directory and no other.
+ */
+export function ownSettingsMount(dataDir: string): MountConfig {
+  return {
+    name: OWN_SETTINGS_MOUNT,
+    path: resolve(ownSettingsDir(dataDir)),
+    mode: 'read-write',
+    backend: 'direct',
+    watch: 'never',
+    include: [`/${OWN_SETTINGS_FILE}`, `/${OWN_SETTINGS_SET_ASIDE}`],
+    maxFileSize: OWN_SETTINGS_MAX_BYTES,
+  };
+}
 
 export function buildWorkspaceMounts(
   workspace: RecipeModules['workspace'],
@@ -31,8 +52,7 @@ export function buildWorkspaceMounts(
   // gate.recipe.json beside gate.json and reads it at each start, so a rewind
   // takes it back with gate.json. The include keeps editors' and recovery
   // files out (anima-research/connectome-host#278); each name covers that
-  // name in any directory beneath as well, since agent-framework's include
-  // has no form for the root alone.
+  // name in any directory beneath as well.
   const wantConfigMount = typeof workspace === 'object' && workspace.configMount;
   if (wantConfigMount) {
     mounts.push({

@@ -17,7 +17,7 @@ import type { ClockConfig } from '@animalabs/agent-framework';
 import { ENV_REFERENCE, readRecipeDocument, substituteEnvVars, type RecipeDocument, type RecipeSourceBase } from './recipe-document.js';
 export { readRecipeDocument, substituteEnvVars, type RecipeDocument } from './recipe-document.js';
 import { recipeFit, type RecipeFit } from './recipe-fit.js';
-import { validateRecipe, type Recipe, type RecipeAgent, type RecipeConversations, type RecipeModules } from './recipe-schema.js';
+import { validateRecipe, type Recipe, type RecipeAgent, type RecipeConversations, type RecipeModules, type RecipeOrigin } from './recipe-schema.js';
 export {
   unknownRecipeKeys, validateRecipe, type Recipe, type RecipeAgent, type RecipeAutoContinue, type RecipeCodeExecution,
   type RecipeConversations, type RecipeCredentialFile, type RecipeCredentialFileField, type RecipeDendrite, type RecipeExtension,
@@ -246,6 +246,12 @@ export function savedRecipeDirectory(dataDir: string): string | null {
 }
 
 export async function loadSavedRecipe(dataDir: string, options: { fetchSystemPrompt?: boolean } = {}): Promise<Recipe | null> {
+  return (await loadSavedRecipeDetailed(dataDir, options))?.recipe ?? null;
+}
+
+/** The saved recipe with the origin of its values: its author's document, or a legacy snapshot's. */
+export async function loadSavedRecipeDetailed(dataDir: string, options: { fetchSystemPrompt?: boolean } = {}):
+  Promise<{ recipe: Recipe; origin: RecipeOrigin } | null> {
   const path = savedRecipePath(dataDir);
   let text: string;
   try {
@@ -273,14 +279,16 @@ export async function loadSavedRecipe(dataDir: string, options: { fetchSystemPro
   }
 
   if (!(SAVED_RECIPE_UNRESOLVED_KEY in raw)) {
-    const legacy = validateRecipe(raw, { kind: 'resolved' });
-    return options.fetchSystemPrompt === false ? legacy : refuseUnfit(legacy);
+    const origin: RecipeOrigin = { kind: 'resolved' };
+    const legacy = validateRecipe(raw, origin);
+    return { recipe: options.fetchSystemPrompt === false ? legacy : refuseUnfit(legacy), origin };
   }
 
   const { [SAVED_RECIPE_UNRESOLVED_KEY]: _marker, ...unresolved } = raw as Record<string, unknown>;
   const substituted = substituteEnvVars(unresolved, path);
-  const recipe = validateRecipe(substituted, { kind: 'authored', document: unresolved });
-  return options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe));
+  const origin: RecipeOrigin = { kind: 'authored', document: unresolved };
+  const recipe = validateRecipe(substituted, origin);
+  return { recipe: options.fetchSystemPrompt === false ? recipe : refuseUnfit(await resolveSystemPrompt(recipe)), origin };
 }
 
 /**

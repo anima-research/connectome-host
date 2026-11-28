@@ -712,3 +712,50 @@ describe('connectome doctor: the closing line', () => {
     expect(r.lines.at(-1)).toBe('Doctor found no problem.');
   });
 });
+
+describe('connectome doctor: the resident\'s own settings (case 22)', () => {
+  const ownRecipe = JSON.stringify({
+    name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hello' }, ownSettings: ['agent.timezone'],
+  });
+  const withFile = () => {
+    const at = install({ recipe: ownRecipe });
+    mkdirSync(join(at.data, 'own-settings'));
+    writeFileSync(join(at.data, 'own-settings', 'own.json'), JSON.stringify({ 'agent.timezone': 'Europe/Berlin', 'agent.clock': false }));
+    return at;
+  };
+  const lines = (at: Install) => [
+    `The resident's own settings, in ${join(at.data, 'own-settings')}:`,
+    '  agent.timezone would be "Europe/Berlin" from the resident\'s file; the recipe sets none.',
+    '  agent.clock in the resident\'s file would not be used: the recipe\'s ownSettings does not name it.',
+  ];
+
+  test('with the host down, it prints what the next start would do with the file, after the recipe loads', async () => {
+    const at = withFile();
+    const r = await run(at, { states: { [HOST]: 'inactive/dead' } });
+    const at5 = r.lines.indexOf(`✓ ${join(at.work, 'recipe.json')} loads.`);
+    expect(r.lines.slice(at5 + 1, at5 + 4)).toEqual(lines(at));
+  });
+
+  test('with the host up, it loads the recipe that the unit names and prints the same', async () => {
+    const at = withFile();
+    const r = await run(at, { states: RUNNING, health: HEALTHY });
+    const loaded = r.lines.indexOf('✓ The host loaded Ember when it started.');
+    expect(r.lines.slice(loaded + 1, loaded + 4)).toEqual(lines(at));
+    expect(r.lines).toContain('Doctor found no problem.');
+  });
+
+  test('with the host up, a recipe that grants settings is checked before the resident has written a file', async () => {
+    const at = install({ recipe: ownRecipe });
+    const r = await run(at, { states: RUNNING, health: HEALTHY });
+    const loaded = r.lines.indexOf('✓ The host loaded Ember when it started.');
+    expect(r.lines.slice(loaded + 1, loaded + 3)).toEqual([
+      `The resident's own settings, in ${join(at.data, 'own-settings')}:`,
+      `  There is no ${join(at.data, 'own-settings', 'own.json')}.`,
+    ]);
+  });
+
+  test('a recipe without the key and no file prints nothing of it', async () => {
+    const r = await run(install(), { states: RUNNING, health: HEALTHY });
+    expect(r.out).not.toContain('own settings');
+  });
+});
