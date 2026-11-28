@@ -84,7 +84,11 @@ is optional, and agent-framework's defaults apply to what's left out:
 ```
 
 `model` is the id as this host's provider names it, so an OpenRouter or Bedrock
-host gives its own form. `maxInputTokens` (4000 or more; a small one reads only a short tail of the room) caps one judge request;
+host gives its own form. Where the provider doesn't serve Claude ids, or the
+recipe sets a top-level `auxiliaryModel`, a left-out `model` is the host's
+auxiliary model (README, "auxiliaryModel"), and off `anthropic` and `bedrock` a
+left-out `effort` is `none`; the 90,000-token default then costs what that
+model costs. `maxInputTokens` (4000 or more; a small one reads only a short tail of the room) caps one judge request;
 the default keeps it under the 100K-token line past which Claude Haiku 5.5
 costs five times as much. `effort: "none"` sends no effort, for a provider
 that doesn't take Anthropic's `output_config`. `enabled: false` leaves the judge
