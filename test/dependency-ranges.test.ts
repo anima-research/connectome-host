@@ -30,10 +30,8 @@
  * within what agent-framework and context-manager admit. Each range is also
  * asked to admit the release the host needs first (agent-framework 0.36.0;
  * chronicle 0.7.0; context-manager 0.29.0), which no install layout
- * changes. context-manager's floor is above its presentation release,
- * 0.25.0: 0.28.0 is the release agent-framework 0.35.0 takes, so a lower one
- * of the host's own would be a second copy, and the first with what a
- * recipe's `compressionFallbackModel` and `carryStrandedSummaries` set.
+ * changes. Agent-framework 0.36.0 takes context-manager ^0.29.0, so a host
+ * install that selected 0.28.x or earlier would need a second copy.
  * agent-framework's floor is above its presentation release, 0.33.0.
  * 0.34.0 is the first release with `inference:held`, `inference:hold_ended`
  * and the failed ephemeral turn's framework-written rejection with its

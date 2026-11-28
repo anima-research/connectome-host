@@ -69,6 +69,8 @@ export function validateBuiltinStrategy(strategy: Record<string, unknown>): void
   validateCompressionInstructions(strategy.compressionInstructions);
   // CM's cross-option constructor conflict is outside its nested validator.
   if (strategy.witnessedInstruction && strategy.compressionInstructions.templates?.witnessedChunk !== undefined) {
-    throw new TypeError('Conflicting witnessed instruction configuration');
+    throw new TypeError(
+      'Recipe agent.strategy.witnessedInstruction and agent.strategy.compressionInstructions.templates.witnessedChunk conflict. Remove one.',
+    );
   }
 }

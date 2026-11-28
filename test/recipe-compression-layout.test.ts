@@ -73,7 +73,8 @@ for (const [label, nestedSource] of nestedPackages) {
         for (const type of ['frontdesk', 'passthrough']) assert.throws(() => build(raw({ type, compressionInstructions: {} })),
           /requires an autobiographical strategy/);
         assert.throws(() => build(raw({ witnessedInstruction: 'VALUE_SENTINEL', compressionInstructions: { templates: { witnessedChunk: 'SECRET' } } })),
-          /Conflicting witnessed instruction configuration/);
+          { name: 'TypeError', message:
+            'Recipe agent.strategy.witnessedInstruction and agent.strategy.compressionInstructions.templates.witnessedChunk conflict. Remove one.' });
         const registry = emptyExtensionRegistry();
         const custom = raw({ type: 'custom', compressionInstructions: 'extension-owned' });
         custom.extensions = { custom: { kind: 'strategy', path: './synthetic.ts' } };

@@ -2839,8 +2839,9 @@ function checkRecipeStrategy(raw: unknown): void {
  * `agent.systemPrompt` and `agent.cacheTtl` written where they are left out.
  * It writes one warning line naming the keys that unknownRecipeKeys gives,
  * if it gives any, and notes it for the session's log only where the recipe
- * loads. It throws one error whose message names every fault that one parse
- * can judge, printing values as `origin` allows.
+ * loads. An invalid built-in compression instruction setting is refused
+ * before parsing. Otherwise a schema refusal names every fault that one
+ * parse can judge, printing values as `origin` allows.
  */
 export function validateRecipe(raw: unknown, origin: RecipeOrigin = { kind: 'literal' }): Recipe {
   // Reject invalid templates before warnings can echo arbitrary recipe keys.

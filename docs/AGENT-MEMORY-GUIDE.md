@@ -67,8 +67,9 @@ sees is your own context, reconstructed:
 - your head, verbatim;
 - your earlier memories, replayed **as your own messages** — each one as a
   small exchange where you are asked to recall memory `L1-3` and answer with
-  that memory, in your voice. These are "things I already remember", not
-  external notes;
+  that memory. The defaults request your voice, but the wording of each memory
+  reflects the instructions used to write it, which may ask for another
+  perspective;
 - an in-band marker, worded as a recurring event rather than a fresh system
   instruction: *"System: You will soon form a new memory, get ready. The
   messages that follow are the slice of recent experience you are about to
@@ -286,6 +287,13 @@ Your `agent.strategy` block in your recipe defines the starting values, and
 recipe). The library *fallbacks* are deliberately conservative; real
 deployments override them — above all the tail, which is what does the
 KV-continuity work described above.
+
+`compressionInstructions` is set when the strategy starts and isn't shown
+in `agent_settings`. To see which wording is configured, check
+[`agent.strategy.compressionInstructions.templates`](./compression-instructions.md)
+in the recipe you started with, or ask your operator if you can't see that
+recipe. Slots without a custom template use the built-in wording; changing
+templates does not rewrite older summaries.
 
 | Knob | Default here | Typical large-tail recipe | What it controls |
 |---|---|---|---|

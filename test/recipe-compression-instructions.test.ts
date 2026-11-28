@@ -180,7 +180,9 @@ describe('recipe compression instructions: admission before construction/provide
         compressionInstructions: { templates: { witnessedChunk: 'new' } } });
       for (const run of [() => validateRecipe(input), () => buildFrameworkStrategy(input, 'mock-only', 'UTC')]) {
         expect(run).toThrow(TypeError);
-        expect(errorMessage(run)).toBe('Conflicting witnessed instruction configuration');
+        expect(errorMessage(run)).toBe(
+          'Recipe agent.strategy.witnessedInstruction and agent.strategy.compressionInstructions.templates.witnessedChunk conflict. Remove one.',
+        );
       }
     }
     expect(() => build({ witnessedInstruction: '', compressionInstructions: { templates: { witnessedChunk: 'new' } } })).not.toThrow();

@@ -7,3 +7,6 @@
   dropping templates. Custom extension factories keep their own contract.
   See `docs/compression-instructions.md` for slot usage, scope and dependency
   compatibility.
+- The agent memory guide now advises all residents to read summaries with
+  their framing in mind rather than to trust them as genuinely theirs. The
+  built-in instructions are unchanged for recipes without templates.

@@ -116,7 +116,7 @@ describe('the context curve', () => {
     expect([entry.dateFirst, entry.dateLast]).toEqual([new Date(0), friday]);
   });
 
-  test('reports the feasibility preview\'s verdict, so an over-budget plot says it won\'t fit (sw-ch234 I12)', async () => {
+  test('reports the separate feasibility verdict when the dry compile succeeds (sw-ch234 I12)', async () => {
     const compile = async () => ({ messages: [{ participant: 'scout', content: [{ type: 'text', text: 'hello' }], sourceMessageId: 'm1' }] });
     const asked: unknown[][] = [];
     for (const [finalTokens, expected] of [

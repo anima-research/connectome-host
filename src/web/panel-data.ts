@@ -1288,8 +1288,8 @@ export async function buildContextCurve(app: PanelAppRef, agentName: string): Pr
     transition = settings?.transition;
   } catch { }
   const reserveForResponse = effectiveMaxTokens(app.recipe);
-  // A dry run: a committing compile on every render would persist its fold
-  // resolutions and queue compression from its plan, mid-stream included.
+  // Dry runs don't persist fold resolutions or queue compression, but still
+  // refuse plans over the hard budget.
   const compiled = await cm.compile({ maxTokens, reserveForResponse }, undefined, { dryRun: true });
   const verdict = curveVerdict(app, agentName, maxTokens, reserveForResponse, transition);
 
@@ -1419,8 +1419,9 @@ function projectDryEntries(result: unknown): unknown {
 
 /**
  * The /debug/context/preview answer: the fold plan at a hypothetical budget
- * and tail, committing nothing. A budget that can't work is reported in the
- * diagnostics, not as an error.
+ * and tail, committing nothing. If the plan exceeds the hard budget, this
+ * reports the budget refusal without rendered entries or stats, even with
+ * render requested.
  *
  * params: { budget: number; tail?: number; render?: boolean }
  */
