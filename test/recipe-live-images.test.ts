@@ -41,12 +41,12 @@ describe('live-image recipe limits', () => {
     });
   }
 
-  test('custom strategies receive their own image conventions unchanged', () => {
+  test('custom strategies receive their image limits unchanged', () => {
     const custom = {
       type: 'custom-images',
-      maxLiveImages: -1,
-      imageStripDepthTokens: 'all',
-      maxLiveImageBytes: null,
+      maxLiveImages: 3,
+      imageStripDepthTokens: 0,
+      maxLiveImageBytes: 100,
     };
     const parsed = validateRecipe({
       name: 'custom-image-policy',
@@ -64,17 +64,27 @@ describe('live-image recipe limits', () => {
     expect(received).toEqual([custom]);
   });
 
-  test('passthrough does not impose limits it never consumes', () => {
-    expect(() => recipe({
-      type: 'passthrough', maxLiveImages: -1, imageStripDepthTokens: 'all', maxLiveImageBytes: null,
-    })).not.toThrow();
+  test('passthrough and a custom type hold the limits to the kinds a built-in takes', () => {
+    const wrong = { maxLiveImages: -1, imageStripDepthTokens: 'all', maxLiveImageBytes: null };
+    const faults = [
+      'Recipe agent.strategy.maxLiveImages must be a non-negative safe integer, got -1.',
+      'Recipe agent.strategy.imageStripDepthTokens must be a non-negative safe integer, got "all".',
+      'Recipe agent.strategy.maxLiveImageBytes must be a non-negative safe integer, got null; give it a value, or leave the key out.',
+    ];
+    const message = `The recipe has 3 faults:\n${faults.map((f) => `- ${f}`).join('\n')}`;
+    expect(() => recipe({ type: 'passthrough', ...wrong })).toThrow(message);
+    expect(() => validateRecipe({
+      name: 'custom-image-policy',
+      agent: { systemPrompt: 'sys', strategy: { type: 'custom-images', ...wrong } },
+      extensions: { images: { kind: 'strategy', path: './images.ts' } },
+    })).toThrow(message);
   });
 
   test('omitted strategy type validates and forwards autobiographical limits', () => {
     expect(config({ type: undefined, ...limits }).maxLiveImages).toBe(limits.maxLiveImages);
     for (const key of Object.keys(limits)) {
       expect(() => recipe({ type: undefined, [key]: -1 })).toThrow(
-        `Recipe agent.strategy.${key} must be a non-negative safe integer.`,
+        `Recipe agent.strategy.${key} must be a non-negative safe integer, got -1.`,
       );
     }
   });
@@ -104,7 +114,7 @@ describe('live-image recipe limits', () => {
     test(`${key} rejects malformed limits at recipe load`, () => {
       for (const value of [-1, 0.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1, '6', true, null, {}, []]) {
         expect(() => recipe({ [key]: value })).toThrow(
-          `Recipe agent.strategy.${key} must be a non-negative safe integer.`,
+          `Recipe agent.strategy.${key} must be a non-negative safe integer, got `,
         );
       }
     });

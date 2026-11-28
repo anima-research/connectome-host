@@ -1,4 +1,5 @@
 import type {
+  AgentFramework,
   Module,
   ModuleContext,
   ProcessEvent,
@@ -44,6 +45,9 @@ export class SubscriptionGcModule implements Module {
 
   private readonly defaultLimitChars: number;
   private readonly serverId: string;
+  private readonly serverIdNamed: boolean;
+  private framework: Pick<AgentFramework, 'listMcplServers'> | null = null;
+  private readonly said = new Set<string>();
 
   private state: GcState = { overrides: {}, pins: {}, counters: {} };
 
@@ -53,6 +57,22 @@ export class SubscriptionGcModule implements Module {
         ? Math.round(config.defaultLimitChars)
         : 20000;
     this.serverId = config.serverId ?? 'discord';
+    this.serverIdNamed = config.serverId !== undefined;
+  }
+
+  setFramework(framework: Pick<AgentFramework, 'listMcplServers'>): void {
+    this.framework = framework;
+  }
+
+  private isInactive(): boolean {
+    return this.framework !== null && !this.framework.listMcplServers().some((server) => server.id === this.serverId);
+  }
+
+  private inactiveNote(): string {
+    return this.isInactive()
+      ? ` Idle cleanup isn't in force on this host: it watches server ${JSON.stringify(this.serverId)}, which this host doesn't have. ` +
+        "Only the host's operator can change the server."
+      : '';
   }
 
   async start(ctx: ModuleContext): Promise<void> {
@@ -127,7 +147,7 @@ export class SubscriptionGcModule implements Module {
           };
         }
         this.persistNow();
-        return ok(`Idle limit for ${channelId} set to ${desc}.`);
+        return ok(`Idle limit for ${channelId} set to ${desc}.${this.inactiveNote()}`);
       }
       case 'pin_channel_idle_limit': {
         const channelId = input.channelId;
@@ -144,9 +164,10 @@ export class SubscriptionGcModule implements Module {
         }
         this.persistNow();
         return ok(
-          input.pinned
+          (input.pinned
             ? `Channel ${channelId} pinned open (never auto-close).`
-            : `Channel ${channelId} unpinned; its agent override or the default limit applies again.`,
+            : `Channel ${channelId} unpinned; its agent override or the default limit applies again.`) +
+          this.inactiveNote(),
         );
       }
       case 'list_channel_idle_limits':
@@ -158,6 +179,8 @@ export class SubscriptionGcModule implements Module {
             overrides: this.state.overrides,
             pins: Object.keys(this.state.pins),
             counters: this.state.counters,
+            active: !this.isInactive(),
+            serverId: this.serverId,
           },
         };
       default:
@@ -264,12 +287,25 @@ export class SubscriptionGcModule implements Module {
       channel_idle_default: this.defaultLimitChars,
       channel_idle_counters: { ...this.state.counters },
       channel_idle_pinned: Object.keys(this.state.pins),
+      channel_idle_server: this.serverId,
+      ...(this.framework !== null && this.framework.listMcplServers().length > 0 && this.isInactive()
+        ? {
+            channel_idle_warning:
+              `Idle cleanup watches server ${JSON.stringify(this.serverId)}, which this host doesn't have, so these limits ` +
+              "are stored and not in force, and no channel auto-closes. Only the host's operator can change the server " +
+              '(modules.subscriptionGc.serverId in the recipe): tell them if these limits matter to you.',
+          }
+        : {}),
     };
   }
 
   async onProcess(event: ProcessEvent, _state: ProcessState): Promise<EventResponse> {
     const ambient = this.extractAmbient(event);
     if (!ambient || ambient.chars <= 0) return {};
+    if (ambient.serverId !== this.serverId) {
+      this.sayUnwatched(ambient.serverId);
+      return {};
+    }
 
     const { channelId, chars } = ambient;
     const limit = this.limitFor(channelId);
@@ -300,6 +336,8 @@ export class SubscriptionGcModule implements Module {
         }));
 
       if (result && result.success) {
+        const data = 'data' in result ? result.data : undefined;
+        if (typeof data === 'object' && data !== null && 'status' in data && data.status === 'already closed') return {};
         // ModuleContext.notifyOps is optional, and agent-framework's implementation
         // reads `this`, so it's called through the context.
         const opsCtx = this.ctx as unknown as {
@@ -308,11 +346,12 @@ export class SubscriptionGcModule implements Module {
         opsCtx?.notifyOps?.(
           'subscription-gc-close',
           this.ctx?.getAgents()[0]?.name ?? 'unknown',
-          `subscription-gc auto-closed channel ${channelId} (over ${limit} ambient chars ` +
+          `subscription-gc auto-closed channel ${channelId} on server ${this.serverId} (over ${limit} ambient chars ` +
           `since last activation${hasConfiguredLease ? ', configured per-channel budget' : ', default budget'}). ` +
           `Restore: channel_open ${channelId}, or agent_settings channel_idle_limits.`,
           {
             channelId,
+            serverId: this.serverId,
             limitChars: limit,
             decisionSource: 'subscription-gc',
             lease: hasConfiguredLease ? 'configured-budget' : 'default',
@@ -327,7 +366,7 @@ export class SubscriptionGcModule implements Module {
                 {
                   type: 'text',
                   text:
-                    `[subscription-gc] Auto-closed channel ${channelId}: it emitted ` +
+                    `[subscription-gc] Auto-closed channel ${channelId} on server ${this.serverId}: it emitted ` +
                     `over ${limit} characters of ambient traffic since your last activation without ` +
                     `engagement. Direct addresses there still reach you. Reopen with channel_open, ` +
                     `or raise/disable its limit via agent_settings (field channel_idle_limits); reach it with ` +
@@ -362,21 +401,39 @@ export class SubscriptionGcModule implements Module {
     return this.defaultLimitChars;
   }
 
-  private extractAmbient(event: ProcessEvent): { channelId: string; chars: number } | null {
+  private sayUnwatched(from: string): void {
+    const inactive = this.isInactive();
+    if (!inactive && this.serverIdNamed) return;
+    const watched = JSON.stringify(this.serverId);
+    const other = JSON.stringify(from);
+    const line = inactive
+      ? `[agent-settings] modules.subscriptionGc watches server ${watched}, ` +
+        `${this.serverIdNamed ? 'which modules.subscriptionGc.serverId names' : 'its default'}, and this host has no ` +
+        `server ${watched}, so it closes no channel. Ambient traffic from server ${other} isn't counted. ` +
+        'modules.subscriptionGc.serverId names the one server it watches, and modules.subscriptionGc: false turns it off.'
+      : `[agent-settings] modules.subscriptionGc watches only server ${watched}, its default, so ambient traffic from ` +
+        `server ${other} isn't counted, and no channel of ${other} auto-closes. modules.subscriptionGc.serverId names ` +
+        `the one server it watches. Setting it to ${watched} keeps cleanup as it is, without this line.`;
+    if (this.said.has(line)) return;
+    this.said.add(line);
+    console.warn(line);
+  }
+
+  private extractAmbient(event: ProcessEvent): { serverId: string; channelId: string; chars: number } | null {
     if (event.type === 'mcpl:push-event') {
-      if (event.serverId !== this.serverId) return null;
+      if (typeof event.serverId !== 'string' || addressed(event)) return null;
       const origin = (event.origin ?? {}) as Record<string, unknown>;
       if (origin.isMention || origin.isDM) return null;
       const channelId = origin.mcplChannelId ?? origin.channelId;
       if (typeof channelId !== 'string' || channelId.length === 0) return null;
-      return { channelId, chars: textLen(event.content) };
+      return { serverId: event.serverId, channelId, chars: textLen(event.content) };
     }
     if (event.type === 'mcpl:channel-incoming') {
-      if (event.serverId !== this.serverId) return null;
+      if (typeof event.serverId !== 'string' || addressed(event)) return null;
       const md = (event.metadata ?? {}) as Record<string, unknown>;
       if (md.isMention || md.isDM) return null;
       if (typeof event.channelId !== 'string' || event.channelId.length === 0) return null;
-      return { channelId: event.channelId, chars: textLen(event.content) };
+      return { serverId: event.serverId, channelId: event.channelId, chars: textLen(event.content) };
     }
     return null;
   }
@@ -396,6 +453,12 @@ export class SubscriptionGcModule implements Module {
       this.ctx?.setState(this.state);
     }, FLUSH_DEBOUNCE_MS);
   }
+}
+
+/** agent-framework adds chat:addressed to every chat:mention, chat:reply and
+ *  chat:dm as an event enters, on both MCPL paths. */
+function addressed(event: ProcessEvent): boolean {
+  return 'tags' in event && Array.isArray(event.tags) && event.tags.includes('chat:addressed');
 }
 
 function textLen(content: unknown): number {

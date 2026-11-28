@@ -35,6 +35,7 @@ import {
 } from '../mcpl-config.js';
 import { unknownToolResult } from './unknown-tool.js';
 import { shown } from './shown.js';
+import { nameAndVersion } from './about-module.js';
 import { isServerPresentation, SERVER_PRESENTATIONS, SERVER_PRESENTATIONS_TEXT } from '../server-presentation.js';
 
 export interface McplAdminModuleConfig {
@@ -444,8 +445,9 @@ export class McplAdminModule implements Module {
       const hostCommands = s.allowHostCommands === undefined
         ? 'unknown'
         : s.allowHostCommands ? 'allow' : 'deny';
+      const server = s.serverInfo ? JSON.stringify(nameAndVersion(s.serverInfo)) : 'unknown';
       lines.push(
-        `${s.id}: ${connectionState} — policy=${policyState}, ` +
+        `${s.id}: ${connectionState} — server=${server}, policy=${policyState}, ` +
         `grant=${formatCapabilityList(s.effectiveGrant)}, ` +
         `masked=${formatCapabilityList(s.maskedCapabilities)}, ` +
         `denied=${formatCapabilityList(s.deniedCapabilities)}, ` +

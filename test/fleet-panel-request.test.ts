@@ -59,6 +59,16 @@ describe('FleetModule.requestPanel', () => {
     expect(waiting?.size).toBe(0);
   });
 
+  test("panel answers reach their requests and leave the child's buffer, its event count and its last event's time as they were", async () => {
+    const child = fleet.getChildren().get('panelkid')!;
+    const before = { events: [...child.events], lastEventAt: child.lastEventAt };
+    expect(before.events.length).toBeGreaterThan(0);
+    const answers = await Promise.all(Array.from({ length: 20 }, (_, n) => fleet.requestPanel('panelkid', 'health', { n })));
+    expect(answers.map((answer) => answer.ok)).toEqual(Array.from({ length: 20 }, () => true));
+    expect(child.events).toEqual(before.events);
+    expect(child.lastEventAt).toBe(before.lastEventAt);
+  });
+
   test('child-reported failure passes error and status through', async () => {
     const result = await fleet.requestPanel('panelkid', 'fail');
     expect(result.ok).toBe(false);

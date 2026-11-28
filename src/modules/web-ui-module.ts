@@ -18,6 +18,7 @@ import type {
 import { WorkspaceReadError } from '@animalabs/agent-framework';
 import { unknownToolResult } from './unknown-tool.js';
 import { workspaceReadFields } from '../workspace-read-result.js';
+import { VIEWER_SHOWS_MOUNTS, namesOutsideMounts } from '../workspace-mounts.js';
 import { audienceOf, storedInjectionMarkOf } from '@animalabs/agent-framework';
 import { continuesBody } from '@animalabs/context-manager';
 import { storedInjectionLabel } from '../stored-injection.js';
@@ -75,6 +76,7 @@ import {
   type RequestOperatorLogMessage,
   type OperatorLogEntryWire,
   type UndoneMarksMessage,
+  HISTORY_PAGE_MAX,
 } from '../web/protocol.js';
 import {
   readMcplServersFile,
@@ -317,7 +319,6 @@ function panelParamsFromUrl(url: URL): Record<string, unknown> {
 const WELCOME_HISTORY_LIMIT = 200;
 const AUTOSTART_RECORD_WAIT_MS = 1_000;
 const HISTORY_PAGE_DEFAULT = 200;
-const HISTORY_PAGE_MAX = 500;
 const HISTORY_READ_BACK_WINDOWS = 10;
 
 export { buildContextCoverageSnapshot, type ContextCoverageSnapshot } from '../web/panel-data.js';
@@ -2333,6 +2334,10 @@ export class WebUiModule implements Module {
     }
     const LINE_LIMIT = 5000;
     const BYTE_LIMIT = 256 * 1024;
+    if (namesOutsideMounts(path)) {
+      this.send(client, { type: 'error', message: `read ${path} failed: ${VIEWER_SHOWS_MOUNTS}` });
+      return;
+    }
     try {
       const result = await mod.handleToolCall({
         name: 'read',

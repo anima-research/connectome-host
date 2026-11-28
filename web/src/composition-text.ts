@@ -32,16 +32,17 @@ export interface MakeupFigures<S> {
   exactTotalTokens: number | null;
   countModel: string;
   countSource: string;
+  countHost?: string;
 }
 
 export function contextPageView<S>(makeup: MakeupFigures<S>): {
-  count: { tokens: number; model: string } | { reason: string };
+  count: { tokens: number; model: string; host?: string } | { reason: string };
   composition: CompositionView<S>;
 } {
   return {
     count: makeup.exactTotalTokens != null
-      ? { tokens: makeup.exactTotalTokens, model: makeup.countModel }
-      : { reason: notCounted(makeup.countSource) },
+      ? { tokens: makeup.exactTotalTokens, model: makeup.countModel, ...(makeup.countHost ? { host: makeup.countHost } : {}) }
+      : { reason: notCounted(makeup.countSource) + (makeup.countHost ? ` (asked at ${makeup.countHost})` : '') },
     composition: compositionView(makeup.stats, makeup.statsKept !== false),
   };
 }
@@ -77,8 +78,15 @@ export function latestInferenceError(last: (LastInference & { lastError?: string
   return lastInferenceState(last)?.word === 'failed' && last?.lastError ? last.lastError : undefined;
 }
 
+export function countedBy(count: { model: string; host?: string }): string {
+  return `counted by count_tokens${count.host ? ` at ${count.host}` : ''} for ${count.model}`;
+}
+
 export function notCounted(countSource: string): string {
   if (countSource === 'count_tokens_unsupported_model') return "not counted: count_tokens doesn't take this agent's model";
+  if (countSource === 'count_tokens_no_credential') {
+    return "not counted: the host has no Anthropic credential that the count can use, so it asked nothing. A count sends the agent's next request to Anthropic's API, or to ANTHROPIC_BASE_URL.";
+  }
   const failed = /^count_tokens_failed_(\d+)$/.exec(countSource);
   if (failed) return `not counted: count_tokens answered ${failed[1]}`;
   if (countSource === 'count_tokens_error') return 'not counted: the count_tokens call failed';

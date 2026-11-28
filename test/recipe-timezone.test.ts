@@ -15,6 +15,6 @@ describe('recipe agent.timezone validation', () => {
   });
 
   test('rejects invalid timezone names', () => {
-    expect(() => validateRecipe(recipe('Pacific/Definitely_Not'))).toThrow(/valid IANA time zone/);
+    expect(() => validateRecipe(recipe('Pacific/Definitely_Not'))).toThrow('Recipe agent.timezone must be an IANA time zone, such as "Europe/Berlin", got "Pacific/Definitely_Not".');
   });
 });

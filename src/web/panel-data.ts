@@ -693,6 +693,7 @@ type FrameworkAgent = ReturnType<AgentFramework['getAllAgents']>[number];
 
 const READ_FAILURE_MAX_CHARS = 300;
 const READ_FAILURE_UNDESCRIBED = "the read failed, and its error couldn't be described";
+const QUARANTINE_UNREADABLE = "what it holds is unknown until a read succeeds";
 
 function describeReadFailure(error: unknown): string {
   try {
@@ -760,10 +761,16 @@ export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
   // compressionQuarantine: each agent's compression quarantine, as its
   // strategy reports it.
   try {
-    (snapshot as Record<string, unknown>).compressionQuarantine = perAgentHealth(app, 'compressionQuarantine', readFailures, (agent) =>
-      (agent.getContextManager() as unknown as {
-        getStrategy?: () => { getCompressionQuarantineStatus?: () => unknown };
-      }).getStrategy?.()?.getCompressionQuarantineStatus?.());
+    (snapshot as Record<string, unknown>).compressionQuarantine = perAgentHealth(app, 'compressionQuarantine', readFailures, (agent) => {
+      const status = (agent.getContextManager() as unknown as {
+        getStrategy?: () => { getCompressionQuarantineStatus?: () => { unreadable?: unknown } | null | undefined };
+      }).getStrategy?.()?.getCompressionQuarantineStatus?.();
+      // context-manager's status read doesn't throw when it can't read the
+      // quarantine: it marks the status `unreadable`, and its count, keys and
+      // spans then say nothing about what is held.
+      if (status?.unreadable === true) throw new Error(QUARANTINE_UNREADABLE);
+      return status;
+    });
   } catch {
   }
   // compressionDebt: each agent's compression debt as context-manager
@@ -1109,23 +1116,26 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
   let exactTotalTokens: number | null = null;
   // COUNT_TOKENS_MODEL, when set, is the model counted against in place of
   // the agent's own.
-  const countModel = process.env.COUNT_TOKENS_MODEL
-    || anthropicCountModel((agent as { model?: string }).model);
+  const countModel = nonBlank(process.env.COUNT_TOKENS_MODEL)
+    ?? anthropicCountModel((agent as { model?: string }).model);
   let countSource = 'count_tokens';
   if (!countModel) {
     return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_unsupported_model' };
   }
+  const route = countRoute(app);
+  const target = route.base + '/v1/messages/count_tokens';
+  const address = urlOf(target);
+  if (route.auth === null && address?.hostname.replace(/\.$/, '') === 'api.anthropic.com') {
+    return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource: 'count_tokens_no_credential' };
+  }
+  const countHost = address?.host;
   try {
-    const base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/$/, '');
-    const res = await fetch(base + '/v1/messages/count_tokens', {
+    const res = await fetch(target, {
       method: 'POST',
       headers: {
-        ...((app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN)
-          ? {
-              authorization: `Bearer ${app.credentials?.bearer() ?? process.env.ANTHROPIC_AUTH_TOKEN}`,
-              'anthropic-beta': 'oauth-2025-04-20',
-            }
-          : { 'x-api-key': process.env.ANTHROPIC_API_KEY ?? '' }),
+        ...(route.auth !== null && 'bearer' in route.auth
+          ? { authorization: `Bearer ${route.auth.bearer}`, 'anthropic-beta': 'oauth-2025-04-20' }
+          : { 'x-api-key': route.auth?.key ?? '' }),
         'anthropic-version': '2023-06-01',
         'content-type': 'application/json',
         'user-agent': 'conhost/1.0',
@@ -1133,8 +1143,9 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
       body: JSON.stringify({ model: countModel, ...payload }),
     });
     if (res.ok) {
-      const j = (await res.json()) as { input_tokens?: number };
-      exactTotalTokens = j.input_tokens ?? null;
+      const answer: unknown = await res.json();
+      const counted = typeof answer === 'object' && answer !== null && 'input_tokens' in answer ? answer.input_tokens : undefined;
+      exactTotalTokens = typeof counted === 'number' && Number.isSafeInteger(counted) && counted >= 0 ? counted : null;
     } else {
       countSource = `count_tokens_failed_${res.status}`;
     }
@@ -1142,7 +1153,37 @@ export async function buildContextMakeup(app: PanelAppRef, agentName: string): P
     countSource = 'count_tokens_error';
   }
 
-  return { agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource };
+  return {
+    agent: agentName, stats, statsKept, exactTotalTokens, lastBilledInputTokens, countModel, countSource,
+    ...(countHost !== undefined ? { countHost } : {}),
+  };
+}
+
+type CountRoute = { base: string; auth: { bearer: string } | { key: string } | null };
+
+function nonBlank(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function countRoute(app: PanelAppRef): CountRoute {
+  const base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/+$/, '');
+  const login = app.credentials?.bearer();
+  if (login !== undefined) {
+    const bearer = nonBlank(login);
+    return { base, auth: bearer !== undefined ? { bearer } : null };
+  }
+  const bearer = nonBlank(process.env.ANTHROPIC_AUTH_TOKEN);
+  const key = nonBlank(process.env.ANTHROPIC_API_KEY);
+  return { base, auth: bearer !== undefined ? { bearer } : key !== undefined ? { key } : null };
+}
+
+function urlOf(base: string): URL | undefined {
+  try {
+    return new URL(base);
+  } catch {
+    return undefined;
+  }
 }
 
 /**

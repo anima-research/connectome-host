@@ -33,20 +33,20 @@ describe('recipe: modules.wake.judge', () => {
 
   test('refuses an unknown key, naming it and the keys it takes', () => {
     expect(() => validateRecipe(recipe({ judge: { modle: 'x' } }))).toThrow(
-      'Recipe modules.wake.judge has unknown key "modle"; it takes enabled, model, maxInputTokens, timeoutMs, onError, effort and cacheTtl.',
+      'Recipe modules.wake.judge has unknown key "modle" (did you mean "model"?); it takes enabled, model, maxInputTokens, timeoutMs, onError, effort and cacheTtl.',
     );
   });
 
   test('refuses a value agent-framework would read as its default, naming the key and what it must be', () => {
     const cases: Array<[Record<string, unknown>, string]> = [
-      [{ enabled: 'false' }, 'Recipe modules.wake.judge.enabled is "false"; it must be true or false.'],
-      [{ model: '' }, 'Recipe modules.wake.judge.model is ""; it must be a non-empty string.'],
-      [{ maxInputTokens: 3000 }, 'Recipe modules.wake.judge.maxInputTokens is 3000; it must be a whole number of tokens, 4000 or more.'],
-      [{ maxInputTokens: 90000.5 }, 'Recipe modules.wake.judge.maxInputTokens is 90000.5; it must be a whole number of tokens, 4000 or more.'],
-      [{ timeoutMs: 0 }, 'Recipe modules.wake.judge.timeoutMs is 0; it must be a whole number of milliseconds from 1 to 2147483647.'],
-      [{ onError: 'quiet' }, 'Recipe modules.wake.judge.onError is "quiet"; it must be "wake" or "skip".'],
-      [{ effort: 'max' }, 'Recipe modules.wake.judge.effort is "max"; it must be "low", "medium", "high" or "none".'],
-      [{ cacheTtl: '10m' }, 'Recipe modules.wake.judge.cacheTtl is "10m"; it must be "5m" or "1h".'],
+      [{ enabled: 'false' }, 'Recipe modules.wake.judge.enabled must be true or false, got "false".'],
+      [{ model: '' }, 'Recipe modules.wake.judge.model must be a non-empty string, got "".'],
+      [{ maxInputTokens: 3000 }, 'Recipe modules.wake.judge.maxInputTokens must be a whole number of tokens, 4000 or more, got 3000.'],
+      [{ maxInputTokens: 90000.5 }, 'Recipe modules.wake.judge.maxInputTokens must be a whole number of tokens, 4000 or more, got 90000.5.'],
+      [{ timeoutMs: 0 }, 'Recipe modules.wake.judge.timeoutMs must be a whole number of milliseconds from 1 to 2147483647, got 0.'],
+      [{ onError: 'quiet' }, 'Recipe modules.wake.judge.onError must be "wake" or "skip", got "quiet".'],
+      [{ effort: 'max' }, 'Recipe modules.wake.judge.effort must be "low", "medium", "high" or "none", got "max".'],
+      [{ cacheTtl: '10m' }, 'Recipe modules.wake.judge.cacheTtl must be "5m" or "1h", got "10m".'],
     ];
     for (const [judge, message] of cases) {
       expect(() => validateRecipe(recipe({ judge }))).toThrow(message);

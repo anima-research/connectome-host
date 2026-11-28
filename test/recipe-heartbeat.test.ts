@@ -39,11 +39,11 @@ describe('recipe: modules.heartbeat', () => {
 
   test('refuses a value agent-framework would read past, naming the key and what it must be', () => {
     const cases: Array<[unknown, string]> = [
-      [{ defaults: { intervalSeconds: 30 } }, 'Recipe modules.heartbeat.defaults.intervalSeconds is 30; it must be a number of seconds, 60 or more.'],
-      [{ defaults: { deliveryMode: 'loud' } }, 'Recipe modules.heartbeat.defaults.deliveryMode is "loud"; it must be "message" or "silent".'],
-      [{ defaults: { paused: 'no' } }, 'Recipe modules.heartbeat.defaults.paused is "no"; it must be true or false.'],
-      [{ importFrom: { configPath: '' } }, 'Recipe modules.heartbeat.importFrom.configPath is ""; it must be a non-empty string.'],
-      [{ statePath: 3 }, 'Recipe modules.heartbeat.statePath is 3; it must be a non-empty string.'],
+      [{ defaults: { intervalSeconds: 30 } }, 'Recipe modules.heartbeat.defaults.intervalSeconds must be a number of seconds, 60 or more, got 30.'],
+      [{ defaults: { deliveryMode: 'loud' } }, 'Recipe modules.heartbeat.defaults.deliveryMode must be "message" or "silent", got "loud".'],
+      [{ defaults: { paused: 'no' } }, 'Recipe modules.heartbeat.defaults.paused must be true or false, got "no".'],
+      [{ importFrom: { configPath: '' } }, 'Recipe modules.heartbeat.importFrom.configPath must be a non-empty string, got "".'],
+      [{ statePath: 3 }, 'Recipe modules.heartbeat.statePath must be a non-empty string, got 3.'],
       ['on', 'Recipe modules.heartbeat must be true, false or an object'],
     ];
     for (const [heartbeat, message] of cases) {

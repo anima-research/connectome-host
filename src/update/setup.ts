@@ -87,7 +87,8 @@ export function installHolding(hostRoot: string): string | null {
 
 function notInstalled(hostRoot: string): string {
   return `This connectome-host (${hostRoot}) isn't installed in a node_modules. Setup makes an npm install update ` +
-    'itself; a clone keeps the hand procedure in docs/DEPLOYMENTS.md.';
+    'itself. A clone updates by hand, or moves to an install as "Moving from a clone to an install" in ' +
+    `${join(hostRoot, 'docs', 'DEPLOYMENTS.md')} says.`;
 }
 
 export function linksOutside(install: string): string[] {

@@ -375,4 +375,9 @@ describe('a host not started through an install', () => {
     expect(setup).not.toBeNull();
     expect(existsSync(join(import.meta.dir, '..', setup![2]!))).toBe(true);
   });
+
+  test('/update names the section that moves a clone to an install', () => {
+    expect(statusLines({ ...base, install: false }).join('\n')).toContain('A clone updates by hand: docs/DEPLOYMENTS.md, ' +
+      '"Updating an install", "By hand". Or it moves to an install: "Moving from a clone to an install" in the same doc.');
+  });
 });

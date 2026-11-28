@@ -17,9 +17,12 @@ describe('locked prose routing recipe wiring', () => {
   });
 
   test('refuses a proseLock that names nothing', () => {
-    for (const proseLock of ['', '   ', 7, null, ['#lounge']]) {
+    const cases: Array<[unknown, string]> = [
+      ['', '""'], ['   ', '"   "'], [7, '7'], [null, 'null; give it a value, or leave the key out'], [['#lounge'], 'a list'],
+    ];
+    for (const [proseLock, got] of cases) {
       expect(() => validateRecipe(recipe({ proseRouting: 'locked', proseLock }))).toThrow(
-        `Recipe agent.proseLock must be "#channel", "@person", a channel id or "drafts", got ${JSON.stringify(proseLock)}.`,
+        `Recipe agent.proseLock must be "#channel", "@person", a channel id or "drafts", got ${got}.`,
       );
     }
   });
@@ -62,7 +65,7 @@ describe('locked prose routing recipe wiring', () => {
 
   test('names locked among the modes it refuses another for', () => {
     expect(() => validateRecipe(recipe({ proseRouting: 'pinned' }))).toThrow(
-      `Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', 'disabled', or 'locked', got "pinned".`,
+      'Recipe agent.proseRouting must be "locus", "explicit", "hybrid", "disabled" or "locked", got "pinned".',
     );
   });
 

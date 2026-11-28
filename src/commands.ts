@@ -8,7 +8,7 @@
  *   /branches      — List all Chronicle branches
  *   /checkout N    — Switch to named branch
  *   /branchto M    — Roll the record back to a message, on a new branch
- *   /history [n]   — Show the last n messages (20 by default)
+ *   /history [n]   — Show the last n messages (20 by default, at most 500; /find for older)
  *   /lessons       — Show current lesson library
  *   /status        — Show agent/module status
  *   /clear         — Clear conversation display
@@ -44,11 +44,14 @@ import { EXACT_VERSION } from './update/install.js';
 import {
   HOST_STOPPING, refusedWhileSwitchQuiesced, refusedWhileSwitching, sessionChangesRunning, trackOperatorWork,
 } from './session-switch.js';
+import { noStoreRefusal } from './session-manager.js';
 import { hostUpdate, type UpdateAnswer } from './update/update.js';
 import {
   COMMAND_WAYS, PAGE_WAYS, cliWays, goBackLines, goBackUnread, statusLines, type UpdateWays,
 } from './web/update-text.js';
+import { HISTORY_PAGE_MAX } from './web/protocol.js';
 import { agentActivity, type AgentBudgetHold, type AgentRetrying } from './web/agent-activity.js';
+import { CREDENTIAL_STRINGS, keepNamedStrings } from './modules/web-ui-observers.js';
 
 interface AppContext {
   framework: AgentFramework;
@@ -363,7 +366,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
           { text: '  /restore [name]        Roll back to a checkpoint on a new branch, or to its branch head (no name: list checkpoints)', style: 'system' },
           { text: '  /branches              List Chronicle branches and checkpoints', style: 'system' },
           { text: '  /checkout <name>       Switch to branch', style: 'system' },
-          { text: '  /history [n]           Show the last n messages (20 by default)', style: 'system' },
+          { text: '  /history [n]           Show the last n messages (20 by default, at most 500; /find for older)', style: 'system' },
           { text: '  /find <text>           Search messages for text', style: 'system' },
           { text: '  /branchto <msgId>      Roll back to a message, on a new branch', style: 'system' },
           { text: '  /mcp list              List MCPL servers', style: 'system' },
@@ -451,7 +454,7 @@ function dispatchCommand(command: string, cmd: string, change: string | null, ap
       return handleFast(app, args[0]);
 
     case 'auth':
-      return handleAuth(app, args);
+      return handleAuth(app, args, requester);
 
     case 'session':
       return handleSession(app, args);
@@ -525,7 +528,7 @@ function handleUpdate(args: string[], ways: UpdateWays): CommandResult {
 
 function credentialLines(state: CredentialState): Line[] {
   const lines: Line[] = [
-    { text: `Credential (${state.provider}): ${state.kind}${state.kind === 'ok' ? '' : ` — ${state.message}`}`, style: 'system' },
+    { text: `Credential (${state.provider}): ${state.kind}${state.kind === 'ok' || !state.message ? '' : ` — ${state.message}`}`, style: 'system' },
   ];
   if (state.expiresAt !== undefined) {
     lines.push({ text: `  expires ${new Date(state.expiresAt).toISOString()}${state.rotatable ? ' (host can refresh)' : ' (no refresh token — paste a new one when it expires)'}`, style: 'system' });
@@ -545,12 +548,13 @@ function credentialLines(state: CredentialState): Line[] {
     lines.push({ text: `  actions: ${state.actions.map((a) => `/auth ${a.id === 'set-token' ? 'token <tok>' : a.id}`).join(', ')}`, style: 'system' });
   }
   if (state.lastAction) {
-    lines.push({ text: `  last action: ${state.lastAction.id} ${state.lastAction.ok ? 'ok' : 'FAILED'} — ${state.lastAction.message}`, style: 'system' });
+    const outcome = state.lastAction.message || state.lastAction.said;
+    lines.push({ text: `  last action: ${state.lastAction.id} ${state.lastAction.ok ? 'ok' : 'FAILED'}${outcome ? ` — ${outcome}` : ''}`, style: 'system' });
   }
   return lines;
 }
 
-function handleAuth(app: AppContext, args: string[]): CommandResult {
+function handleAuth(app: AppContext, args: string[], requester: OperatorRequester): CommandResult {
   const monitor = app.credentials;
   if (!monitor) {
     return {
@@ -560,8 +564,11 @@ function handleAuth(app: AppContext, args: string[]): CommandResult {
       }],
     };
   }
+  const shown = (state: CredentialState): CredentialState => requester.via === 'fleet'
+    ? keepNamedStrings(state, { ...CREDENTIAL_STRINGS, lastAction: { ...CREDENTIAL_STRINGS.lastAction, said: true }, unsaved: true }) as CredentialState
+    : state;
   const sub = (args[0] ?? 'status').toLowerCase();
-  if (sub === 'status') return { lines: credentialLines(monitor.snapshot()) };
+  if (sub === 'status') return { lines: credentialLines(shown(monitor.snapshot())) };
   const usage: CommandResult = { lines: [{ text: 'Usage: /auth [status|refresh|login|recheck|token <tok>]', style: 'system' }] };
   let id: CredentialActionId;
   let params: { token?: string } = {};
@@ -583,9 +590,9 @@ function handleAuth(app: AppContext, args: string[]): CommandResult {
   }
   return {
     lines: [{ text: `/auth ${id}: running…`, style: 'system' }],
-    asyncWork: monitor.runAction(id, params).then((state) => ({
+    asyncWork: monitor.runAction(id, params).then(shown).then((state) => ({
       lines: [
-        { text: `/auth ${id}: ${state.lastAction?.ok ? 'done' : 'FAILED'} — ${state.lastAction?.message ?? 'no outcome recorded'}`, style: 'system' },
+        { text: `/auth ${id}: ${state.lastAction?.ok ? 'done' : 'FAILED'} — ${state.lastAction ? state.lastAction.message || state.lastAction.said : 'no outcome recorded'}`, style: 'system' },
         ...credentialLines(state),
       ],
     })),
@@ -730,6 +737,8 @@ function handleSessionSwitch(app: AppContext, nameOrId?: string): CommandResult 
 
   const running = stillRunning(app);
   if (running) return running;
+  const noStore = noStoreRefusal(app.sessionManager.getStorePath(session.id), { kind: 'switch', session });
+  if (noStore !== null) return { lines: [{ text: noStore, style: 'system' }], refused: true };
   resetBranchState(app.branchState);
 
   return {
@@ -1554,10 +1563,31 @@ function handleHistory(app: AppContext, countArg?: string): CommandResult {
   const cm = commandAgent(app)?.getContextManager();
   if (!cm) return { lines: [{ text: 'No agent context manager.', style: 'system' }] };
 
+  // A count that isn't written as a whole number above 0 in decimal digits is
+  // refused, naming it: "1e309" read as Infinity and slice(-Infinity) printed the whole store,
+  // one line per message, in the command's result, and "abc", "0" or "-5"
+  // fell back to 20 without a word. The grammar is digits with an optional
+  // leading + and a decimal part of zeros ("20", "+20", "20.0"), which main
+  // read too; exponents, other signs, 0x, separators and words are refused.
+  // #669's parseTokenCount reads the same grammar (plus a k/m suffix) below
+  // 2^53 and refuses larger counts, where this reads them as the cap (past
+  // the cap every count means the cap), so the two keep separate checks.
+  let count = 20;
+  if (countArg !== undefined) {
+    const match = /^\+?(\d*)(?:\.(\d*))?$/.exec(countArg);
+    const whole = match?.[1] ?? '';
+    const fraction = (match?.[2] ?? '').replace(/0+$/, '');
+    if (!match || whole === '' || fraction !== '' || !/[1-9]/.test(whole)) {
+      return { lines: [{ text: `Invalid message count: "${countArg}". Examples: 20, 200`, style: 'system' }] };
+    }
+    // Past the cap every count means the cap, so a long digit string needs no exactness.
+    count = Math.min(Number(whole), HISTORY_PAGE_MAX);
+  }
+
   const { messages } = cm.queryMessages({});
   const lines: Line[] = [{ text: `--- History (${messages.length} messages) ---`, style: 'system' }];
 
-  const recent = messages.slice(-(countArg && Number(countArg) > 0 ? Number(countArg) : 20));
+  const recent = messages.slice(-count);
   for (const msg of recent) {
     const text = msg.content
       .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
@@ -1571,6 +1601,14 @@ function handleHistory(app: AppContext, countArg?: string): CommandResult {
     });
   }
 
+  // The result is capped where the Web UI's history paging is: /history 5000
+  // on a 4,590-message store printed 4,590 lines, 151 KB (#666). The line
+  // about the cap comes last, after the rows, and only where the cap held
+  // rows back: through fleet--command the output is one event a line in a
+  // 500-entry buffer, so a line put first is evicted.
+  if (count === HISTORY_PAGE_MAX && messages.length > HISTORY_PAGE_MAX) {
+    lines.push({ text: `Showing the last ${HISTORY_PAGE_MAX} of ${messages.length}; /find <text> searches them all.`, style: 'system' });
+  }
   return { lines };
 }
 
@@ -1684,6 +1722,10 @@ async function bareTransition(app: AppContext, agentName: string, cm: ContextMan
   try {
     summary = await cm.generateTransitionSummary();
   } catch (err) {
+    if (input.requester?.via === 'fleet') {
+      process.stderr.write(`[${new Date().toISOString()}] [host] /newtopic's transition summary couldn't be written: ${messageOf(err).replace(/\s*[\r\n]+\s*/g, ' ')}\n`);
+      throw new Error("the transition summary couldn't be written; nothing was stored");
+    }
     throw new Error(`the transition summary couldn't be written (${messageOf(err)}); nothing was stored`);
   }
   // No await from these checks to the store: no turn starts, and nothing

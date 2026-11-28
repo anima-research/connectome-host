@@ -708,11 +708,14 @@ describe('answering a prompt', () => {
     expect(textOf(result)).toContain('To read on, call fetch again with the same source and offset: 20000.');
   });
 
-  test('a provider\'s message that ends in a full stop isn\'t given a second one', async () => {
-    const { membrane } = model([new Error('The model is overloaded. ')]);
+  test('a failed call of the separate model says that it failed, and none of its provider\'s words', async () => {
+    const { membrane } = model([new Error('sentinel-4c2d provider said: invalid x-api-key. ')]);
     const { call } = await started({ membrane });
     const result = await call({ source: at('/page'), prompt: 'q' });
-    expect(result.error).toContain('The model is overloaded. Leave out prompt');
+    expect(result.isError).toBe(true);
+    expect(result.error).toContain("was read, but the separate model didn't answer: the call failed. Leave out prompt to read the text itself. " +
+      'If it keeps failing, whoever runs this host can set modules.fetch.model.');
+    expect(result.error).not.toContain('sentinel-4c2d');
   });
 
   test('a reply that reaches its length limit with nothing written is reported as that, with images off as with them on', async () => {
@@ -724,7 +727,7 @@ describe('answering a prompt', () => {
   });
 
   test.each([
-    ['a failed call', new Error('overloaded'), 'overloaded'],
+    ['a failed call', new Error('overloaded'), 'the call failed'],
     ['a refusal', { stopReason: 'refusal' }, 'it refused'],
     ['an empty reply', { text: '  ', stopReason: 'end_turn' }, 'its reply was empty'],
   ])('%s is an error saying the page was read and how to get it anyway', async (_label, reply, says) => {
@@ -1206,10 +1209,11 @@ describe('looking at a page\'s images', () => {
     expect(result.error).not.toContain('I will look');
   });
 
-  test('a provider that fails after an image was shown is reported with the image, and with advice that fits', async () => {
+  test('a provider that fails after an image was shown is reported with the image, without its words, and with advice that fits', async () => {
     const { call } = await withImages([asking(at('/chart.png')), new Error('image exceeds the size the API takes')]);
     const result = await call({ source: at('/chart-page'), prompt: 'q' });
-    expect(result.error).toContain('image exceeds the size the API takes');
+    expect(result.error).toContain('the call failed.');
+    expect(result.error).not.toContain('image exceeds the size the API takes');
     expect(result.error).toContain(`It had asked to see ${at('/chart.png')}.`);
     expect(result.error).toContain('ask again in a way that needs no image');
     expect(result.error).not.toContain('modules.fetch.model');
@@ -1315,12 +1319,12 @@ describe('the recipe', () => {
   });
 
   test.each([
-    [{ fetch: 'yes' }, 'must be a boolean or object'],
-    [{ fetch: [] }, 'must be a boolean or object'],
+    [{ fetch: 'yes' }, 'Recipe modules.fetch must be true, false or an object, got "yes".'],
+    [{ fetch: [] }, 'Recipe modules.fetch must be true, false or an object, got an empty list.'],
     [{ fetch: { model: '' } }, 'modules.fetch.model'],
     [{ fetch: { local: 'yes' } }, 'modules.fetch.local'],
     [{ fetch: { allowPrivateNetwork: 1 } }, 'modules.fetch.allowPrivateNetwork'],
-    [{ fetch: { images: 'yes' } }, 'modules.fetch.images is "yes"; it must be a boolean'],
+    [{ fetch: { images: 'yes' } }, 'Recipe modules.fetch.images must be true or false, got "yes".'],
     [{ fetch: { maxBytes: 0 } }, 'modules.fetch.maxBytes'],
     [{ fetch: { maxBytes: 1.5 } }, 'modules.fetch.maxBytes'],
     [{ fetch: { maxBytes: 64 * 1024 * 1024 + 1 } }, 'modules.fetch.maxBytes'],
@@ -1329,8 +1333,8 @@ describe('the recipe', () => {
   });
 
   test('a refusal shows the value it refuses', () => {
-    expect(() => validateRecipe(recipe({ fetch: { maxBytes: 1.5 } }))).toThrow('modules.fetch.maxBytes is 1.5; it must be');
-    expect(() => validateRecipe(recipe({ fetch: { local: 'yes' } }))).toThrow('modules.fetch.local is "yes"; it must be');
+    expect(() => validateRecipe(recipe({ fetch: { maxBytes: 1.5 } }))).toThrow('Recipe modules.fetch.maxBytes must be a whole number from 1 to 67108864, got 1.5.');
+    expect(() => validateRecipe(recipe({ fetch: { local: 'yes' } }))).toThrow('Recipe modules.fetch.local must be true or false, got "yes".');
   });
 
   test('a server named fetch stands beside it: its tools are mcpl--fetch--…, not fetch--…', () => {

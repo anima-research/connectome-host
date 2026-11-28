@@ -4,6 +4,7 @@ import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, op
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { JsStore } from '@animalabs/chronicle';
 import { SessionManager } from '../src/session-manager.js';
 import { saveState, writeRecipeOut } from '../scripts/evacuator.js';
 
@@ -140,7 +141,7 @@ describe('a data directory a script makes before any host runs', () => {
 
   test("a legacy store's move into sessions makes the sessions directory for its owner alone", () => {
     const data = freshDataDir();
-    mkdirSync(join(data, 'store'), { recursive: true });
+    JsStore.openOrCreate({ path: join(data, 'store') }).close();
     underUmask022(() => new SessionManager(data).migrateIfNeeded());
     expect(modeOf(join(data, 'sessions'))).toBe(0o700);
   });

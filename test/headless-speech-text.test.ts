@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,11 +15,7 @@ async function withHost(body: (dir: string) => Promise<void>, env: Record<string
   const child = spawn(process.execPath, [CHILD], { cwd: dir, env: { ...process.env, ...env, DATA_DIR: dir }, stdio: 'ignore' });
   const closed = new Promise((resolve) => child.once('close', resolve));
   try {
-    const deadline = Date.now() + 20_000;
-    while (!existsSync(join(dir, 'ipc.sock'))) {
-      if (Date.now() > deadline) throw new Error('the host never listened');
-      await Bun.sleep(10);
-    }
+    (await connectWhenAccepting(join(dir, 'ipc.sock'), { timeoutMs: 20_000 })).destroy();
     await body(dir);
   } finally {
     child.kill('SIGTERM');
@@ -133,9 +129,8 @@ test("connectome send prints nothing for a final round with no text, and says th
     const out: string[] = [];
     const err: string[] = [];
     const status = await send({ root, argv: ['hello'], out: (line) => out.push(line), err: (line) => err.push(line) });
-    expect(status).toBe(0);
-    expect(out).toEqual([]);
-    expect(err.some((line) => line.includes("the agent's turn ended without saying anything here"))).toBe(true);
+    expect({ status, out, err }).toMatchObject({ status: 0, out: [] });
+    expect(err.join('\n')).toContain("the agent's turn ended without saying anything here");
   }, { CHILD_REPLY: 'thinking-only' });
 }, 60_000);
 
@@ -145,8 +140,8 @@ test("connectome send prints the reply alone, without the agent's thinking", asy
     mkdirSync(root);
     writeFileSync(join(root, 'install.json'), JSON.stringify({ v: 1, dataDir: dir, extraState: [] }));
     const out: string[] = [];
-    const status = await send({ root, argv: ['hello'], out: (line) => out.push(line), err: () => {} });
-    expect(status).toBe(0);
-    expect(out).toEqual([REPLY]);
+    const err: string[] = [];
+    const status = await send({ root, argv: ['hello'], out: (line) => out.push(line), err: (line) => err.push(line) });
+    expect({ status, out, err }).toMatchObject({ status: 0, out: [REPLY] });
   });
 }, 60_000);

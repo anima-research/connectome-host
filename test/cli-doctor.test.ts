@@ -420,19 +420,22 @@ describe('connectome doctor: check 3, the recipe', () => {
 
   test('the loader takes its values from .env, with doctor\'s own environment over them', async () => {
     const recipe = JSON.stringify({ name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hi', proseRouting: '${ROUTING}' } });
-    const at = install({ recipe, env: `DISCORD_TOKEN="${TOKEN}"\nROUTING=from-dotenv\n` });
+    const at = install({ recipe, env: `DISCORD_TOKEN="${TOKEN}"\nROUTING=hybrid\n` });
     const fromDotenv = await run(at, { states: { [HOST]: 'inactive/dead' } });
-    expect(fromDotenv.lines[5]).toEndWith('got "from-dotenv".');
+    expect(fromDotenv.lines[5]).toBe(`✓ ${join(at.work, 'recipe.json')} loads.`);
     const fromEnv = await run(at, { states: { [HOST]: 'inactive/dead' }, env: { ROUTING: 'from-environment' } });
-    expect(fromEnv.lines[5]).toEndWith('got "from-environment".');
+    expect(fromEnv.lines[5]).toEndWith('got "${ROUTING}".');
   });
 
   test('the loader gets the install\'s data directory as DATA_DIR, as the service\'s unit sets it, over doctor\'s own', async () => {
-    const recipe = JSON.stringify({ name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hi', proseRouting: '${DATA_DIR}' } });
-    const at = install({ recipe });
+    const at = install();
+    const children = [{ name: '${DATA_DIR}', recipe: 'a.json' }, { name: at.data, recipe: 'b.json' }];
+    writeFileSync(join(at.work, 'recipe.json'), JSON.stringify({
+      name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hi' }, modules: { fleet: { children } },
+    }));
     for (const env of [{}, { DATA_DIR: '/elsewhere' }]) {
       const r = await run(at, { states: { [HOST]: 'inactive/dead' }, env });
-      expect(r.lines[5]).toEndWith(`got "${at.data}".`);
+      expect(r.lines[5]).toEndWith(`Recipe modules.fleet.children[1].name ${JSON.stringify(at.data)} is duplicated.`);
     }
   });
 
@@ -441,7 +444,7 @@ describe('connectome doctor: check 3, the recipe', () => {
     const at = install({ recipe });
     const r = await run(at, { states: { [HOST]: 'inactive/dead' } });
     expect(r.lines[5]).toStartWith(`✗ ${join(at.work, 'recipe.json')} doesn't load: `);
-    expect(r.lines[5]).toEndWith('got "<DISCORD_TOKEN>".');
+    expect(r.lines[5]).toEndWith('got "${DISCORD_TOKEN}".');
     expect(r.out).not.toContain(TOKEN);
     expect(r.lines[6]).toBe(`  Next: correct it, then start the service with \`systemctl --user start ${HOST}\`.`);
   });
@@ -707,5 +710,52 @@ describe('connectome doctor: the closing line', () => {
     const at = install({ launchd: true });
     const r = await run(at, { states: { [LABEL]: 'running' }, health: HEALTHY });
     expect(r.lines.at(-1)).toBe('Doctor found no problem.');
+  });
+});
+
+describe('connectome doctor: the resident\'s own settings (case 22)', () => {
+  const ownRecipe = JSON.stringify({
+    name: 'Ember', agent: { name: 'ember', model: 'claude-test-model', systemPrompt: 'hello' }, ownSettings: ['agent.timezone'],
+  });
+  const withFile = () => {
+    const at = install({ recipe: ownRecipe });
+    mkdirSync(join(at.data, 'own-settings'));
+    writeFileSync(join(at.data, 'own-settings', 'own.json'), JSON.stringify({ 'agent.timezone': 'Europe/Berlin', 'agent.clock': false }));
+    return at;
+  };
+  const lines = (at: Install) => [
+    `The resident's own settings, in ${join(at.data, 'own-settings')}:`,
+    '  agent.timezone would be "Europe/Berlin" from the resident\'s file; the recipe sets none.',
+    '  agent.clock in the resident\'s file would not be used: the recipe\'s ownSettings does not name it.',
+  ];
+
+  test('with the host down, it prints what the next start would do with the file, after the recipe loads', async () => {
+    const at = withFile();
+    const r = await run(at, { states: { [HOST]: 'inactive/dead' } });
+    const at5 = r.lines.indexOf(`✓ ${join(at.work, 'recipe.json')} loads.`);
+    expect(r.lines.slice(at5 + 1, at5 + 4)).toEqual(lines(at));
+  });
+
+  test('with the host up, it loads the recipe that the unit names and prints the same', async () => {
+    const at = withFile();
+    const r = await run(at, { states: RUNNING, health: HEALTHY });
+    const loaded = r.lines.indexOf('✓ The host loaded Ember when it started.');
+    expect(r.lines.slice(loaded + 1, loaded + 4)).toEqual(lines(at));
+    expect(r.lines).toContain('Doctor found no problem.');
+  });
+
+  test('with the host up, a recipe that grants settings is checked before the resident has written a file', async () => {
+    const at = install({ recipe: ownRecipe });
+    const r = await run(at, { states: RUNNING, health: HEALTHY });
+    const loaded = r.lines.indexOf('✓ The host loaded Ember when it started.');
+    expect(r.lines.slice(loaded + 1, loaded + 3)).toEqual([
+      `The resident's own settings, in ${join(at.data, 'own-settings')}:`,
+      `  There is no ${join(at.data, 'own-settings', 'own.json')}.`,
+    ]);
+  });
+
+  test('a recipe without the key and no file prints nothing of it', async () => {
+    const r = await run(install(), { states: RUNNING, health: HEALTHY });
+    expect(r.out).not.toContain('own settings');
   });
 });

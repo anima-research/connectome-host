@@ -263,8 +263,8 @@ prompt. autoStart, autoRestart and `fleet--restart` bypass the check.
 | `fleet--list` | — | One row per known child. |
 | `fleet--status` | `name?` | Detailed record (shows the *requested* subscription, before the forced union below). |
 | `fleet--send` | `name, content` | Send a `text` command. |
-| `fleet--command` | `name, command` | Send a `command`; returns immediately — output arrives as `command-output` events (see `fleet--peek`). |
-| `fleet--peek` | `name, lines?=50` | Last N raw events from the child's 500-event ring buffer. |
+| `fleet--command` | `name, command` | Send a `command`; returns immediately — output arrives as `command-output` events (see `fleet--peek`). For a command that the fleet sent, `/auth` leaves out the credential's two messages, which can hold the provider's words. |
+| `fleet--peek` | `name, lines?=50` | Last N events from the child's 500-event ring buffer, each without a failure's own text: an `error` or `attemptError` at any depth that holds text or an object reads `"left out"`, but for a `tool:failed` event's own `error`, which shows, and `stack`, `providerErrorCode`, an alert's `message` and `data`, and an `errorType` of `safety` are left out. The buffer keeps no streamed chunk (`inference:tokens`). When a round with text ends, this host puts its text into the buffer as an `inference:round_text` (`agentName, content`), just before the event that ended the round. Where the child then sends an `inference:speech` for that round, the speech takes its place. A round whose start this host didn't see has none. A reply that the provider refused at its end can still show in either. A `note` in the result says so. The buffer keeps each event that it holds whole, and holds no `panel-response`, which goes only to its request. |
 | `fleet--kill` | `name` | `shutdown`, wait `gracefulShutdownMs`, SIGTERM, wait `sigtermEscalationMs`, SIGKILL. |
 | `fleet--restart` | `name` | Kill, then relaunch with the same recipe, dataDir, subscription, `env` and `autoRestart`. Cancels a pending automatic restart and starts a fresh retry budget (§4.6), as a `fleet--launch` of the same name does. |
 | `fleet--relay` | `from, to, prefix?` | Send to `to` the last `inference:speech` this host has had from `from` since its connection to `from` last opened. Refused when that frame is `""`, a round with no text, and while this host has no connection to a `from` that may be running (below). |
@@ -326,8 +326,12 @@ the list already contains `*`) adds any event the tree reducer needs that no
 existing pattern covers. That set, `REDUCER_REQUIRED_EVENTS`, is derived from
 the reducer's handlers in `src/state/agent-tree-reducer.ts` — adding a handler
 extends it with no recipe edits — plus the events the host forces:
-`usage:updated`, and `window:undone` and `presentation:retracted`, at which
-the Web UI reads the child's panels again. A recipe's `subscription`
+`usage:updated`; `window:undone` and `presentation:retracted`, at which
+the Web UI reads the child's panels again; and `inference:started`,
+`inference:stream_resumed`, `inference:tokens`, `inference:tool_calls_yielded`,
+`inference:completed`, `inference:failed`, `inference:aborted` and
+`inference:exhausted`, from which this host assembles each round's text for
+`fleet--peek`. A recipe's `subscription`
 therefore means "events I want *in addition to* what rendering needs".
 
 **Not forced:** `lifecycle` (needed by `fleet--await`), `inference:speech`

@@ -69,14 +69,16 @@ describe('validateRecipe extensions block', () => {
   test('custom strategy type without a strategy-kind extension is rejected', () => {
     expect(() => validateRecipe(baseRecipe({
       agent: { systemPrompt: 'x', strategy: { type: 'zk' } },
-    }))).toThrow(/Invalid strategy type "zk"/);
+    }))).toThrow('Recipe agent.strategy.type must be "autobiographical", "passthrough", "frontdesk" or a type that a "kind": ' +
+      '"strategy" extension registers (none is declared), got "zk".');
   });
 
   test('custom strategy type with only module-kind extensions is rejected', () => {
     expect(() => validateRecipe(baseRecipe({
       agent: { systemPrompt: 'x', strategy: { type: 'zk' } },
       extensions: { feeder: { kind: 'module', path: './f.ts' } },
-    }))).toThrow(/Invalid strategy type "zk"/);
+    }))).toThrow('Recipe agent.strategy.type must be "autobiographical", "passthrough", "frontdesk" or a type that a "kind": ' +
+      '"strategy" extension registers (none is declared), got "zk".');
   });
 
   test('custom strategy type with a strategy-kind extension is accepted', () => {

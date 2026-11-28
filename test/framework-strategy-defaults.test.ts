@@ -215,7 +215,7 @@ describe('standard-recipe memory defaults', () => {
       expect(() => recipe({
         name: 'Mira',
         strategy: { type: 'autobiographical', recoverLiteralThinkingWrappedCompression: bad as never },
-      })).toThrow('recoverLiteralThinkingWrappedCompression must be a boolean');
+      })).toThrow(/^Recipe agent\.strategy\.recoverLiteralThinkingWrappedCompression must be true or false, got /);
     }
   });
 

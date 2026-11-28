@@ -6,6 +6,415 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.28.0 — 2026-11-28
+
+### Breaking
+
+- **Recipe authors:** every host now has a module named `about`, so two
+  recipes stop the host at its start:
+  - One that gives an MCPL server the `toolPrefix` `about`. agent-framework
+    refuses a server's `toolPrefix` that meets a module's name, with
+    `MCPL server "<id>" toolPrefix "about" collides with module "about"`.
+    To migrate, give that server another `toolPrefix`.
+  - One that loads an extension module named `about`. agent-framework
+    refuses a second module of one name, with `Module already registered:
+    about`. To migrate, rename that module.
+
+  Unchanged: a server with no `toolPrefix` gets `mcpl--<id>`, which is
+  never `about`, and no shipped recipe sets `about` or loads an extension.
+
+- **Recipe authors and operators:** `channel-mode--set_channel_mode` takes
+  each call's MCPL server from the prefix of its channel id (the text before
+  the first `:`), not from `modules.channelMode.serverId`. The open, the
+  debounce rule's `source` and the close all use that server, so
+  `zulip:backend` now opens, gates and closes on `zulip` rather than on
+  `discord` (#613). The prefix must name an MCPL server the host knows,
+  connected or not. An id with no prefix, or with an unknown one, is refused
+  before any step, and the message shows the expected `<serverId>:<channel>`
+  form. So is an id containing `*`, which the gate would read as a wildcard
+  matching other servers or channels. Nothing else chooses the server: not
+  the channel registry, not the config, and not a default. A second call for
+  a channel id while the first is still running is refused before any step.
+  See `docs/ATTENTION-AND-GATING.md`.
+  - **Discord-only hosts:** calls with `discord:<guildId>:<channelId>` ids
+    run the same steps as before, including while Discord is disconnected.
+    One difference: a second call for an id while the first is still running
+    is now refused, where both used to run. Calls with an unprefixed id, such
+    as a raw channel snowflake, are now refused. Before, a debounced call
+    tried the open on `discord`, set a rule for the raw id and pinned it. That
+    rule could match push events, whose `channelId` can be the raw id, but
+    not the channel's messages, which carry `discord:<guildId>:<channelId>`.
+    Migration: pass the channel's registered id, as `channel_list` shows it.
+    An agent removes a rule such a call left with `wake_remove_rule`
+    `{ "name": "channel-mode:debounced:<id>" }`. Its pin can't be removed
+    with an agent tool or `/puppet`: host code removes it with
+    `framework.executeToolCall`, naming the pin tool of the module that
+    `modules.channelMode.gcModuleName` names (by default
+    `subscription-gc--pin_channel_idle_limit`), with input
+    `{ "channelId": "<id>", "pinned": false }`.
+  - **Recipe authors:** `modules.channelMode.serverId` is ignored, and a
+    startup line says so. If it named a server whose id differs from its
+    channels' prefix (say `discord-bot` serving `discord:…` ids), those calls
+    now go to the server the prefix names. With no `discord` server they are
+    refused as unknown. With one, they run there: for a channel only
+    `discord-bot` registers, the open fails, but the rule and pin steps
+    still run. Migration: give the MCPL server the id its channel ids
+    carry, then drop `serverId` from `modules.channelMode`. If
+    `modules.subscriptionGc.serverId` named the old id, change it to the new
+    one too: subscription GC watches only that server, so otherwise it stops
+    counting and auto-closing the renamed server's channels.
+  - **Known limit:** a channel id's prefix must equal its MCPL server id;
+    nothing checks it against the server that registered the channel, and
+    there is no `serverId` parameter or other override. A server whose id
+    differs from its channels' prefix (such as `discord-bot` above), or whose
+    id contains `:` (for `chat:west` registering `chat:west:room`, the prefix
+    is `chat`), can't be used with channel mode until its id matches.
+  - **Operators:** a rule an earlier release set for a prefixed id with
+    `source: "discord"` stays until that channel's mode is set again. The next
+    debounced call replaces it, and the next mentions call removes it.
+    Reapply the mode on affected channels, and remove any hand-written rules
+    that worked around this.
+- **Operators:** the `set_channel_mode` tool description and schema change on
+  upgrade. Each resident whose requests carry the tool (not hidden by its tool
+  allowlist) and use prompt caching rewrites its prompt cache in full on its
+  first such request, even if it never invokes the tool. A resident with
+  `promptCaching: false`, or on a model without prompt caching, has no cache
+  to rewrite.
+
+- **Recipe authors:** a recipe key `ownSettings` now has a meaning. Before
+  this change, the host warned that it ignores the key, and the recipe
+  loaded with any value there. Now the recipe loads only where the value is
+  `"all"`, `"read"` or a non-empty list of setting names, and where no
+  workspace mount is named `_settings`. To migrate, remove the key, or give
+  it one of those values and rename such a mount. Where the agent may call
+  the new utility `settings--own` and uses prompt caching, its summariser
+  requests, which carry each utility that the agent may call, miss their
+  prompt cache once at the upgrade.
+
+- **Recipe authors:** the recipe's type and its checks now come from one
+  schema. The load now checks every setting that the host itself reads. Some
+  recipes that loaded before are now refused. A refusal lists each fault
+  that the schema finds.
+  - **A saved recipe:** the host keeps a copy of its recipe in its data
+    directory. When you start the host without naming a recipe, it resumes
+    that copy. If the load refuses the copy, the host stops. A service unit
+    names a recipe file. A start that names a recipe file loads that file,
+    and then saves it as the new copy.
+  - **An update on trial:** the trial loads each recipe that a start would
+    load. A refusal stops the trial before its commit. The next start then
+    goes back to the earlier release and its data.
+  - **To migrate:** give each named setting the value that the refusal asks
+    for. Where the refusal says so, you can also leave the key out.
+  - **Servers in `mcpl-servers.json`:** the file gives a server's values.
+    The server's entry in `mcpServers` can replace its policy and transport
+    values, such as `toolPrefix`, `enabledTools` or `url`, and not its
+    `command`, `args` or `env`. Before, a `null` in the entry replaced the
+    file's value for such a key. Now, if you leave the key out, the server
+    takes the file's value. To run without the file's value, write the value
+    that you want in the recipe, for a key that the entry can replace, or
+    change `mcpl-servers.json`.
+
+  Newly refused:
+  - **A wrong value at a setting that had no check:** a value of the wrong
+    kind, a word outside the setting's list of words, or `null`. These
+    settings had no check:
+    - At the top level: `description`, `version`, and `mcpServers` itself.
+      Before, the load took a list there, and named its servers `0`, `1` and
+      so on. Give each server a name.
+    - In `agent`: `name`, `model`, `formatter`, `prefillUserMessage`,
+      `maxTokens`, `anthropicBetas`, `cacheKeepalive.enabled`, and
+      `strategy` itself.
+    - In `agent.strategy`, under every strategy type, a custom one too:
+      `headWindowTokens`, `recentWindowTokens`, `compressionModel`,
+      `compressionMaxTokens`, `maxMessageTokens`, `overBudgetGraceRatio`,
+      `enforceBudget`, `maxSpeculativeL1s`, `positionedRecallPairs`,
+      `recallHeaderTemplate`, `targetChunkTokens`, `mergeThreshold`,
+      `mergeMaxSourceSpanMessages`, `summaryTargetTokens`,
+      `productionBudgetTokens`, `l1BudgetTokens`, `l2BudgetTokens`,
+      `l3BudgetTokens`, `toolResultMaxLastN`, `toolUseInputMaxTokens`,
+      `adaptiveResolution`, `kvStableReachTokens`,
+      `kvStableQualityGapRatio`, `compressionSlackRatio`,
+      `speculativeProduction`, `l1HoldbackChunks`, `summaryParticipant`,
+      `summarySystemPrompt`, `summaryUserPrompt`, `summaryContextLabel`,
+      `witnessedBeforeSequence`, `witnessedInstruction`, `identityReminder`
+      and `witnessedIdentityReminder`. So an extension can count on the
+      host's kind of value at these keys. The host passed some of these
+      `null`s on to context-manager, where a `null` replaced the default. So
+      leaving such a key out can change what runs. A `null`
+      `overBudgetGraceRatio` ran as `0`, and its default is `0.02`.
+    - In `agent.refusalHandling`: `retries`, `maxRewinds` and
+      `announceHumanTurns`.
+    - In an `mcpServers` entry: `env`, `transport`, `token`, `access`,
+      `toolPrefix`, `enabledFeatureSets`, `disabledFeatureSets`,
+      `reconnect`, `reconnectIntervalMs`, `reconnectMaxIntervalMs`,
+      `channelSubscription`, `source.url` and `source.npm`. Also
+      agent-framework's `protocol`, `tokenTransport`, `credentialRequired`,
+      `allowHostCommands`, `enabledCapabilities`, `disabledCapabilities`,
+      `scopes` (with each scope's `whitelist` and `blacklist`) and
+      `autofetch` (with its `maxBytes` and `maxTotalBytes`).
+    - Each of these itself: `modules.subagents`, `modules.lessons`,
+      `modules.wake`, `modules.activity`, `modules.mcplAdmin`,
+      `modules.identity`, `modules.fleet`, `modules.webui`,
+      `modules.subscriptionGc`, `modules.channelMode` and `sessionNaming`.
+    - Within them: `modules.subagents.defaultModel` and `defaultMaxTokens`;
+      `modules.retrieval.model` and `maxInjected`;
+      `modules.activity.channels`; `modules.mcplAdmin.surface`;
+      `modules.identity.home` and `audience`; a fleet child's `dataDir`,
+      `env` and `autoRestart`; `modules.webui.port`, `host`,
+      `observersSurface`, and `basicAuth.username` and `password`;
+      `modules.ttsRelay.botId`, `userId`, `username`, `reconnectIntervalMs`
+      and `notifyOnInterruption`;
+      `modules.subscriptionGc.defaultLimitChars`, `serverId` and
+      `toolPrefix`; `modules.channelMode.serverId`, `toolPrefix`,
+      `gcModuleName` and `defaultDebounceMs`; `sessionNaming.examples`.
+  - **An element of the wrong kind** in a list: `agent.anthropicBetas`; an
+    `mcpServers` entry's `channelSubscription`, `enabledFeatureSets`,
+    `disabledFeatureSets`, `enabledCapabilities` and `disabledCapabilities`;
+    a scope's `whitelist` and `blacklist`; `modules.activity.channels`; a
+    fleet child's `subscription`; `modules.webui.allowedOrigins`; and
+    `sessionNaming.examples`. Also a value of the wrong kind in the map form
+    of `agent.strategy.toolResultMaxLastN`.
+  - **`null`, a list or an object** as an element of an `mcpServers` entry's
+    `args`, or as a value of its `env` or of a fleet child's `env`.
+  - **A value of the wrong kind other than `null`** at
+    `agent.contextBudgetTokens`, `modules.webui.basicAuth` and
+    `modules.webui.allowedOrigins`.
+  - **A list in place of an object** at `agent`, `agent.cacheKeepalive` or
+    an `mcpServers` entry.
+  - **`agent.responses.reasoningEffort` as a list,** such as `["low"]`. It
+    loaded before, because its text matched one of the setting's words.
+  - **`agent.strategy.type` as `0`, `""` or `false`.** With a strategy
+    extension, the load also refuses a number, `true`, a list or an object
+    there.
+  - **`agent.refusalHandling` as `0` or `""`.**
+  - **A wrong value at a setting that went unchecked in some cases.** These
+    are `agent.strategy.maxLiveImages`, `imageStripDepthTokens` and
+    `maxLiveImageBytes` under a `passthrough` or custom strategy. They are
+    also `codeExecution`'s `yieldMs`, `maxYieldMs`, `scriptLifetimeMs`,
+    `maxRunningScripts`, `maxScriptChildren`, `toolCallTimeoutMs`,
+    `wakeMinIntervalMs`, `maxWakesPerScript` and `memoryMaxBytes` when
+    `enabled` is `false`.
+  - **`modules.webui.basicAuth` without `username` or `password`.** The Web
+    UI refused it at its start.
+  - **An `mcpServers` entry's `id` other than the entry's own name.**
+    Before, the `id` replaced the server's name. It did nothing if
+    `mcpl-servers.json` had a server of the entry's name. Remove `id`, or
+    rename the entry.
+  - **A number that isn't finite,** such as `1e400`, at a setting that takes
+    a number.
+  - **A number or `true`/`false` from the environment** at a setting that
+    had no check, such as `"port": "${PORT}"`. Substitution gives text, and
+    these settings now check the kind of value.
+
+  Unchanged: a recipe that loads gets the same parsed recipe as before, with
+  one exception. A saved recipe of the older form has no `$unresolved` key.
+  Such a recipe now loses each key named `__proto__`, such as a server of
+  that name in `mcpServers`. A recipe file already lost such a key at
+  substitution. `null` keeps its meaning at `agent.systemPrompt`,
+  `agent.contextBudgetTokens`, `agent.refusalHandling` and its `autoRewind`,
+  `agent.strategy.type`, and `modules.webui.basicAuth` and `allowedOrigins`.
+  A number or `true`/`false` still loads in an `mcpServers` entry's `args`
+  and `env`, and in a fleet child's `env`.
+- **TypeScript callers:** the exported `Recipe*` types now come from the
+  schema, and they say what the load gives. Where the interfaces of 0.27.1
+  said otherwise, the types changed. For example:
+  - `Recipe`'s `agent.cacheTtl` is always present, since the load writes it.
+  - `RecipeStrategy.type` may be absent or `null`.
+  - The types take `null` at `agent.contextBudgetTokens`,
+    `agent.refusalHandling`, `modules.webui.basicAuth` and `allowedOrigins`.
+    They take a number or `true`/`false` among a server's `args`, and in the
+    `env` of a server or a fleet child. They also take `"http"` as an
+    entry's `transport`, the map form of
+    `agent.strategy.toolResultMaxLastN`, and `false` at
+    `agent.refusalHandling` and `modules.ttsRelay`.
+  - `RecipeWake`'s `policies` and `default` are `unknown`, since the load
+    doesn't check the wake gate's rules.
+
+  Code that builds a `Recipe` by hand may need a change. Code that reads one
+  of these settings as its old type may need a change too. `validateRecipe`
+  now returns a new object and leaves its argument as it was. Before, it
+  wrote `agent.systemPrompt` and `agent.cacheTtl` into its argument and
+  returned the argument. `src/tool-lifecycle-config.ts` no longer exports
+  `validateToolLifecycle` and `validateToolClassTable`. The schema checks a
+  recipe's `toolLifecycle` and `toolClassOverrides`, and
+  `parseToolLifecycle` checks a `toolLifecycle` value from elsewhere and
+  returns it.
+
+- **Operators:** the host now refuses a session's store directory that holds
+  no store. A start, `/session switch` and the store audit each refuse it.
+  This covers a mount point whose volume isn't mounted, and a link to a
+  directory that isn't there. Each refusal names the directory and why no
+  store opened, and the host writes nothing there. A start also refuses an
+  empty `<data>/store`, where hosts before sessions kept their one store. If
+  such a refusal comes during an update's trial, the update doesn't commit.
+  The launcher then starts the release that ran before. From 0.23.0 on, that
+  release still makes an empty store in a directory that is still empty.
+  From 0.23.0 until now, a start, a switch and the audit each made an empty
+  store in an empty directory. The resident then began that session with no
+  past, and the audit printed `opens`. Before 0.23.0, a start and the audit
+  failed on an empty directory. A start and the audit now also refuse a
+  store that Chronicle left half made, with no `MANIFEST`. They used to
+  complete it. `scripts/warmup-session.ts` now makes no store at all. It
+  exits 1 when the session's store directory is absent or holds no store.
+  **Migration:** mount the volume that holds the store. If the session
+  should begin empty, remove the directory instead. **Unchanged:** a first
+  start, `/session new` and the importers work as they did. When a session's
+  directory is absent, a start or a switch still makes its store.
+
+### Added
+
+- **`about--versions` gives an agent the versions that its host runs.**
+  Every host has it, as a utility of the built-in `settings` toolset, so
+  no agent request's tool list carries it: an agent opens the toolset with
+  `toolsets--open {"toolset": "settings"}` and calls it with
+  `toolsets--act {"tool": "about--versions", "args": {}}`. An agent without
+  the `settings` toolset calls it by its own name, and an agent whose
+  `allowedTools` leaves it out can't call it. Its answer has the host's line
+  and the Connectome packages' line, as `/bug` prints them, as the host
+  started with them, such as `connectome-host 0.28.0`, with
+  the commit and whether it's modified for a host that runs from a git
+  checkout, and `agent-framework … · membrane … · context-manager … ·
+  chronicle …`. Then one line for each MCPL server that the host has
+  loaded, by its id, with the server's own name and version as the last
+  handshake of its connection gave them. A server that isn't connected now
+  shows those, with `(not connected now)`, or says that its name and
+  version aren't known. Agent Framework 0.35.2 is the first release whose
+  server rows carry a server's own name and version.
+  At the upgrade, the summariser requests of each agent that may call it
+  and uses prompt caching miss their prompt cache once: they carry every
+  tool that the agent may call, utilities included, so they now carry this
+  one too.
+- **`mcpl-admin--mcpl_list` gives each loaded server's own name and
+  version** in its line, as `server="<name> <version>"`, or
+  `server=unknown` where the host doesn't know them.
+
+- `docs/DEPLOYMENTS.md` has a new section, "Moving from a clone to an install". Its steps move a host from a clone of connectome-host to an install of the package. An install has the `connectome` command, and it can update itself. The section also says how to go back to the clone. Four texts now name the section: setup's refusal of a clone, `connectome` in a directory with no install, `/update` on a host that runs from a clone, and a refused restart on a host with no install. The update tool no longer tells the agent that setup makes a clone an install. Setup refuses a clone.
+
+- `CODEX_REQUIRE_EXISTING_LOGIN=1` lets local `openai-codex` auth require an existing file-backed ChatGPT login on first token acquisition (a model call or an earlier `/auth refresh`) without starting device-code login or logging out through host login actions. Refusals identify the configured CLI and credential directory; after an external login, restart the host process (or its service), then retry, including when an existing session becomes unusable. Supplied `CodexAppServerAuth` instances inherit the policy; custom token callbacks own their internal auth policy. Existing-session refresh and default interactive login remain available. Refresh remains available until account or file inspection establishes that it is unavailable. Missing accounts and unusable files do not offer token refresh, and unrecognized flag values warn while retaining the off behavior.
+
+- A recipe's new key `ownSettings` lets the resident read some of its own
+  settings, and change some of them. It takes `"all"`, `"read"`, or a list
+  of names from the table of 20 settings in `src/own-settings-table.ts`. The
+  resident writes its settings into `own-settings/own.json` in the data
+  directory. If it may change a setting and the workspace is on, it reaches
+  the file through the mount `_settings`. The host applies the file at each
+  start. It checks each entry alone first, and then checks the recipe with
+  the entry in it. An entry that fails is left out, and the others still
+  apply. A numeric setting in the file takes a whole number, up to the
+  largest safe integer. If the setting's words say what 0 does, the number
+  can be 0. Otherwise it must be 1 or more. `summaryTargetTokens` takes at
+  most 10666, and the three text settings take at most 64, 200 and 2000
+  characters. A value in the file gets no `${VAR}` substitution, and the saved
+  recipe never holds one. The utility `settings--own` shows the resident its
+  settings, and what its file changes at the next start. The host tells the
+  resident when its file doesn't take effect as written. The host parks the
+  file as `own.not-used.json` when the recipe stops letting the resident
+  change settings. A later grant of a change brings the file back, if there
+  is no `own.json` and the host can read the parked file as a plain file of
+  5 MiB or less. `connectome doctor` prints what the next start would do
+  with the file. A recipe without `ownSettings` runs as before, with one
+  exception: a start parks an `own.json` that an earlier grant left, and
+  tells the resident. A name in a list that the table doesn't hold grants
+  nothing, and the start's log and `connectome doctor` name it.
+
+- `modules.workspace.outsideMounts` lets the workspace's `read` and `read_image` take an absolute path, or one that starts with `~/`, for a file outside every mount (`"read-only"`), and `write` too (`"read-write"`). Left out, every path is a mount's, as before. Such a file is read and written as the host's own user, through no mount's boundary, so the setting gives the agent every file that user reaches. The workspace keeps no copy of it, and what the agent reads of it is in its history as any tool result is. An absolute path that lies in a mount is that mount's file. `fetch` with `local` reads through the workspace's `read`, so it takes such a path too. The file viewers, the Web UI's and the control socket's, show the mounts' files only, and refuse one. The tools' descriptions say what the setting allows, so setting it changes them. The setting came in agent-framework 0.35.3, where this host's dependency range now starts.
+
+### Changed
+
+- **Compression quarantine:** the alert, the status-channel notice and the Health tab no longer tell an operator to "inspect refusing content; branch, pin, or clear". They say that held spans stay whole and take room in the context budget, and where to read the status. A new section of `docs/DEPLOYMENTS.md`, "Compression quarantine", says how to read the status and what the host offers. A program that matched the alert's old words stops matching. Its kind and data are unchanged.
+
+- The Context tab no longer asks for an exact count on a host with no Anthropic
+  credential and no gateway at `ANTHROPIC_BASE_URL`. Before, it sent the agent's
+  next request to Anthropic's API with an empty key. `/debug/context/makeup`
+  now reports `countSource: "count_tokens_no_credential"` for such a host whenever
+  there is a model to count with. That model is either the agent's own Claude
+  model or `COUNT_TOKENS_MODEL`. A new
+  `countHost` field names the host that a count was asked at. The Context
+  tab shows it under an exact count, and beside the reason when a count fails.
+  In the document view, a tooltip on "(exact)" names it.
+
+- `fetch` with a `prompt` says that its separate model's call failed, where its error gave that call's error message, which can hold the provider's own words. The error keeps its lead-in, what the model had asked to see and its advice. The host's record of model calls keeps the provider's message for whoever runs the host.
+
+- `/auth` that a fleet parent sends through `fleet--command` leaves out the credential state's message and its last action's message, which can hold the provider's own words. A parent agent read them in `fleet--peek`. The fields that it keeps are the ones that the Web UI keeps for an observer without `ops`, and the credential-unsaved warning. So a parent still reads the state's kind, its expiry, a pending login's address and code, and the actions, and it can still run each form of `/auth`. An action's line says whether it worked, in the host's own sentence, from a new field of the last action, `said`. Where the message quotes the error that the action met, `said` leaves that error out. A person who runs `/auth` still reads both messages.
+
+- `fleet--peek` returns a child's events without the text of the fields that a failure fills, which can hold a provider's error text or a refusal's category. A parent agent read it there. The tool's description is unchanged, and the result's `note` says what is left out. The child's event buffer keeps each event that it holds whole.
+  - An `error` or `attemptError` at any depth that holds text or an object, such as a failed node's in a tree snapshot, reads `"left out"`, so a parent still sees that something failed. That holds for the host's own errors too. A failed tool call's own `error`, the top-level one of a `tool:failed` event, shows, since the child's own agent reads it as its tool result; its `stack` is left out.
+  - An event's `stack` and `providerErrorCode`, an `ops:alert`'s `message` and `data`, and an `errorType` of `safety` are left out. Everything else in each event stays, such as its type and time, `errorType`, `httpStatus`, `retryable`, `shownReason`, speech and tool calls.
+  - A child's event buffer no longer keeps streamed chunks (`inference:tokens`), since they carry a child's text before the provider may refuse it. The host assembles each round's text from the chunks instead, and when a round with text ends, it puts the text into the buffer as an `inference:round_text`, just before the event that ended the round. Where the child then sends an `inference:speech` for that round, the speech takes its place. So peek shows the text of a round that ends in tool calls, of a silent round, of a subagent's round, and a reply that a subscription without `inference:speech` leaves out, for a child of any release. A round whose start this host didn't see, such as one under way when it connected, has no such entry. A reply that the provider refuses at its end, with no retry, can still show in either event, as it showed on earlier releases, since nothing in a child's events marks it. The host now names the events that it assembles from in its own list of forced events. Every child sent them before too, since the fleet's tree reads them. `fleet--list` and `fleet--status` no longer count chunks in `eventCount`.
+  - A child's event buffer no longer holds panel answers (`panel-response`). They carry the data of the Web UI's panels, a credential panel's rejection text among it, and no agent's tool asks for one. Each still reaches the Web UI or console that asked for it. They no longer push the child's own events out of the buffer, and `fleet--list` and `fleet--status` no longer count them in `eventCount` or `lastEventAt`.
+  - Fields with other names pass as they came, such as an MCPL server's `detail` or `stderrTail`, and a command's output.
+
+- A bare `/newtopic` that a fleet parent sends, and whose transition summary can't be written, says so without the summary's error, which can hold a provider's words. The child writes the error to its own log, in one line. For any other requester, the line still gives the error.
+
+- A recipe's refusal now names each fault that the schema finds, one per
+  line. Before, it named only the first fault. A wrong value reads `Recipe
+  <path> must be <what it takes>, got <value>.` The refusal prints no value
+  that came from the environment, and names the `${VAR}` reference instead.
+  Some older releases saved a recipe with its values filled in, and for such
+  a recipe the refusal prints no text value, only that it is a string. A refusal of an
+  unknown key lists the keys that its object takes.
+- The warning of keys that the host does not read now covers more objects,
+  such as `agent.thinking`, `codeExecution`, an `mcpServers` entry and
+  `modules.fleet`. Before, a misspelt key in these objects loaded without a
+  warning. The key still loads. Some objects still take any key without a
+  warning, such as the wake gate's rules and an extension's `config`.
+  Everything under a custom strategy goes whole to its extension, so it gets
+  no warning either. The warning gives the recipe's name as its author wrote
+  it. The warning gives no name for a recipe that an older release saved.
+
+- A status channel's notice names the alert's kind and says what happened in a fixed line for that kind ("context-refusal: its context couldn't be compiled for a request"), where it carried the alert's own message, up to 500 characters. A clear names the kind that cleared and, where others stay open, the one most in force, with no cause. The alert's message, which can carry a provider's error text, stays on the TUI's alert line, the Web UI, failures.log and the webhook, so neither a status channel's readers nor the agent's `[host-notice]` marker take it in.
+
+- When the host refuses a recipe for unknown keys, it now names the first
+  20 of them in each object of the recipe, and gives the count of the
+  others there. Before, it named every unknown key.
+
+### Fixed
+
+- A recipe that sets what the other OpenAI provider reads is told at start-up,
+  in an `[agent-settings]` line on stderr and in the runtime's log (#644): on
+  `openai-codex`, `agent.responses.serviceTier` and `compactThreshold`, which
+  the host sends on `openai-responses` only, with `agent.codex.fastMode` (or
+  `/fast on`) named for a `priority` tier; on any other provider,
+  `agent.codex.fastMode`, which the host reads on `openai-codex` only, with
+  `agent.responses.serviceTier: "priority"` named for `fastMode: true` on
+  `openai-responses`. The other provider's setting is named only where the
+  recipe doesn't already ask for priority processing. Before, each was accepted and dropped with
+  no sign.
+
+- **Web UI health:** a compression quarantine that a resident's strategy marks `unreadable` no longer clears a standing quarantine alert. `/healthz` now treats such a status as a failed read: the agent has no entry in `compressionQuarantine`, and `readFailures` names it. A page that shows the alert keeps it while the status is unreadable, and the Health tab says the quarantine couldn't be read. A page opened while the status is unreadable shows no quarantine alert. A reader of `/healthz` that looked for `unreadable` in `compressionQuarantine` reads `readFailures` instead.
+
+- `/history <n>` refuses a count that isn't written as a whole number above 0
+  in decimal digits, naming it (`1e309`, `abc`, `0`, `-5`, `2.5`, `0x10`, `1e3`; `20`, `+20` and
+  `20.0` are read), and shows at most 500 messages: `/history 1e309` read as
+  `Infinity` and printed the whole store, one line per message, in the
+  command's result (4,590 lines on one store), and `abc`, `0` or `-5` showed
+  the default 20 without a word. Where the 500 cap held rows back, a last line
+  says how many the store holds; `/find <text>` searches them all.
+
+- Attribute unknown-caller off-path refusal alerts to the process (`host`), using fixed status wording while call diagnostics stay in existing alert observers and logs. Coalesce bursts and floor successfully acknowledged process posts per configured channel by renotifyMs (30 minutes by default), across consumed notices and reconnects. Consume each notice after all configured status channels acknowledge it, and deliver later refusals afresh after the floor. Retain failed delivery for a later event, such as an alert, reconnect, module being added, MCPL server connecting or changing its tools, framework replacement, or another status channel's delayed delivery, under an at-least-once retry policy: a successful send whose response is lost can be duplicated, outside the acknowledged rate bound. Isolate process identity from an agent named host. Keep these notices out of agent replies and context markers, cap reply overrides at status, and emit no recovery line for an auxiliary call (#148).
+
+## 0.27.1 — 2026-11-20
+
+### Added
+
+- **`agent.sameRoundSkipReplyTextPolicy`** is passed to Agent Framework's
+  policy of the same name. Its values are `"private"`, the default, and
+  `"ask"`. Any other value is refused.
+  - Under `"ask"`, plain text beside a `skip_reply` becomes a draft. With
+    native tools, the framework may refuse the turn's first such
+    `skip_reply` once. It refuses only if the text would otherwise have been
+    posted or bounced. The refusal names the drafts and asks where they
+    should go.
+  - With the XML formatter, nothing is refused, and all of the turn's unsent
+    text is held when the turn ends.
+  - Nothing is held while `proseRouting` is `"disabled"`.
+  - The agent can see and change its own value through `agent_settings`.
+    Agent Framework's range now starts at 0.35.1, the first release with
+    both features.
+  - At the upgrade, the text of Agent Framework's `agent_settings` tool
+    changes, so every resident that has that tool misses its prompt cache
+    once.
+
 ## 0.27.0 — 2026-11-19
 
 ### Breaking

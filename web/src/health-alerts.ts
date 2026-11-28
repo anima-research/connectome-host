@@ -1,5 +1,5 @@
 import type { HealthSnapshot } from './Health';
-import { quarantineHeld } from '@conhost/web/quarantine-alert';
+import { quarantineAlarmMessage } from '@conhost/web/quarantine-alert';
 
 export interface HealthAlertUpsert {
   kind: string;
@@ -33,7 +33,7 @@ export function planHealthAlerts(
         plan.upsert.push({
           kind: QUARANTINE,
           agent,
-          message: `${quarantineHeld(q)} — spans stay raw and will eventually exhaust the context budget.`,
+          message: quarantineAlarmMessage(q),
         });
       }
     } else {

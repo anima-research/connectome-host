@@ -9,6 +9,7 @@ import { buildConversationsConfig, buildSubconsciousConfig, buildFrameworkStrate
 import { emptyExtensionRegistry } from '../src/extensions.js';
 import { FrontdeskStrategy } from '../src/strategies/frontdesk-strategy.js';
 import { unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
+import { checkRecipe } from '../src/recipe-schema.js';
 
 const raw = (strategy: Record<string, unknown> = {}) => JSON.parse(JSON.stringify({
   name: 'Instruction test', agent: { name: 'Participant', provider: 'mock', systemPrompt: 'Synthetic record.', strategy },
@@ -219,8 +220,9 @@ describe('recipe compression instructions: admission before construction/provide
             expect(warn).toHaveBeenCalledTimes(1);
             expect(warn).toHaveBeenCalledWith(`Recipe "Compatibility repro" has keys the host does not read (ignored): ${retired}.`);
           } else {
-            expect(unknownRecipeKeys(input)).toEqual([]);
-            expect(warn).not.toHaveBeenCalled();
+            expect(unknownRecipeKeys(input)).toEqual(['agent.strategy.formerlyIgnored']);
+            expect(warn).toHaveBeenCalledTimes(1);
+            expect(warn).toHaveBeenCalledWith('Recipe "Compatibility repro" has keys the host does not read (ignored): agent.strategy.formerlyIgnored.');
           }
         } finally { warn.mockRestore(); }
       });
@@ -236,15 +238,17 @@ describe('recipe compression instructions: admission before construction/provide
       expect(instruction(baseline)).toBe('HOST CHUNK 321');
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn.mock.calls[0]![0]).toContain('if it was false, nothing');
-      expect(warn.mock.calls[0]![0]).not.toContain('formerlyIgnored');
+      expect(warn.mock.calls[0]![0]).toContain('agent.strategy.formerlyIgnored');
     } finally { warn.mockRestore(); }
   });
 
   test('invalid new settings fail before recipe warnings can echo arbitrary keys or values', () => {
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      expect(errorMessage(() => recipe({ identityReminderSilent: false, VALUE_SENTINEL: 'SECRET', compressionInstructions: { templates: { VALUE_SENTINEL: 'SECRET' } } })))
-        .toBe('Invalid compressionInstructions configuration: templates: unknown key');
+      const input = raw({ identityReminderSilent: false, VALUE_SENTINEL: 'SECRET', compressionInstructions: { templates: { VALUE_SENTINEL: 'SECRET' } } });
+      const fault = 'Invalid compressionInstructions configuration: templates: unknown key';
+      expect(errorMessage(() => validateRecipe(input))).toBe(fault);
+      expect(checkRecipe(input)).toEqual({ ok: false, fault });
       expect(warn).not.toHaveBeenCalled();
     } finally { warn.mockRestore(); }
   });

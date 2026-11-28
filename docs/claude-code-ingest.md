@@ -405,6 +405,9 @@ service.
    instead.
    `CONNECTOME_UPDATE_CHECK=0` keeps the host from asking npm's registry for a newer
    release, as the fleet does for each child that it starts.
+   For a copy on a provider other than `anthropic`, leave `ANTHROPIC_API_KEY=mock` out
+   of the command. Only provider `anthropic` needs an Anthropic key to start. Without
+   that key, the copy doesn't send its compiled request out to be counted (below).
 
    Give the command more variables where the copy needs them:
    - Where the recipe's provider needs a key of its own to start, give that key's name
@@ -445,8 +448,12 @@ service.
    in the check, as `/puppet` would. The observers variable names a file in the new,
    empty directory, and that file doesn't exist. So no observer that the resident
    granted (`observers.json`) gets into the copy's Web UI without the check's password.
-   Where the host asks the API for a count, the count fails. Where it asks for none,
-   there is no live count either. The rest still compiles.
+   When the host asks the API for a count, the API refuses it, as it refuses every
+   request that carries the mock key. The ask still carries the copy's compiled request
+   to the API. A copy with no Anthropic credential and no `ANTHROPIC_BASE_URL` doesn't
+   send its compiled request out to be counted.
+   Where the host asks for no count, there is no live count either. The rest still
+   compiles.
 
    Then call the endpoints with the check's username and password, such as
    `curl -u check http://127.0.0.1:<port>/debug/context`. curl asks for the password
@@ -528,7 +535,7 @@ importer writes the session index, which a running host reads as it goes. After 
 import, start the service again with its start line. Then the seed's session is the
 one that opens. To open the import's session, use `/session switch <id>` with the bare
 id that the import printed, as `AGENT-ONBOARDING.md`'s "Importing a history" says.
-Watch `/healthz` for `compressionQuarantine`, and the per-call log
+Watch `/healthz` for `compressionQuarantine` and `readFailures`, and the per-call log
 (`data/llm-calls.<iso>.jsonl`) for `stop_reason`. If you're the setup agent, the person
 watches `/healthz` in your place. The first message comes from the person, not from you, as in
 `AGENT-ONBOARDING.md`'s "Going live". They can send it over the Discord channel that

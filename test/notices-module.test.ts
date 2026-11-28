@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { LoggingAnthropicAdapter, createOffPathRefusalCallback } from '../src/logging-adapter.js';
 import type { ModuleContext, TraceEvent } from '@animalabs/agent-framework';
 import {
+  DEFAULT_TIERS,
   NoticesModule,
   type NoticesModuleConfig,
   replyNoticeText,
@@ -9,6 +11,7 @@ import {
   statusClearText,
   globToRegExp,
 } from '../src/modules/notices-module.js';
+import { formatWireEvent } from '../src/tui.js';
 
 type Post = { channelId: string; text: string; agentName: string };
 
@@ -52,7 +55,7 @@ function harness(cfg: Partial<NoticesModuleConfig> = {}, opts: { brokenServers?:
       },
     },
     // Only whether the agent is registered: the marker is written through the module's context (ctx, below).
-    getAgent: (name: string) => (name === 'clerk' ? {} : null),
+    getAgent: (name: string) => (name === (cfg.agentName ?? 'clerk') ? {} : null),
   };
   let t = 0;
   const module = new NoticesModule({
@@ -134,7 +137,7 @@ describe('reactive replies', () => {
     await h.incoming('discord:g:other');
     expect(h.posts.length).toBe(2);
     expect(h.posts[0]).toMatchObject({ channelId: 'zulip:ops', agentName: 'clerk' });
-    expect(h.posts[0]!.text).toBe(replyNoticeText('clerk', { kind: 'quota-spent', message: '', until: 7_200_000 }));
+    expect(h.posts[0]!.text).toBe(replyNoticeText('clerk', { kind: 'quota-spent', until: 7_200_000 }));
     expect(h.posts[0]!.text).toContain('subscription quota is spent');
     expect(h.posts[0]!.text).toContain('Expected back after 1970-01-01 02:00 UTC');
     expect(h.posts[0]!.text).not.toContain('weekly');
@@ -266,10 +269,10 @@ describe('addressed push events', () => {
     await push(h, { source: 'zulip', mcplChannelId: 'zulip:general', isMention: true });
     await h.incoming('zulip:general');
     expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:general']);
-    expect(h.posts[0]!.text).toBe(replyNoticeText('clerk', { kind: 'hard-down', message: '' }));
+    expect(h.posts[0]!.text).toBe(replyNoticeText('clerk', { kind: 'hard-down' }));
     h.alert('hard-down-clear', 'inference ok');
     await h.settle();
-    expect(h.posts.map((p) => p.text)).toEqual([replyNoticeText('clerk', { kind: 'hard-down', message: '' }), replyClearText('clerk')]);
+    expect(h.posts.map((p) => p.text)).toEqual([replyNoticeText('clerk', { kind: 'hard-down' }), replyClearText('clerk')]);
   });
 
   test("a push that isn't a person's message addressed to the agent, or names no channel, and an event that isn't a push, are told nothing", async () => {
@@ -327,13 +330,13 @@ describe('overlapping kinds', () => {
     await h.settle();
     expect(h.module.episodeState()[0]).toMatchObject({ kinds: ['quota-spent'], tier: 'reply' });
     expect(h.posts.length).toBe(5);
-    expect(h.posts[4]).toMatchObject({ channelId: 'zulip:ops', text: statusClearText('clerk', 'compression-quarantine', 'EMPTY', 'quota-spent') });
+    expect(h.posts[4]).toMatchObject({ channelId: 'zulip:ops', text: statusClearText('clerk', 'compression-quarantine', 'quota-spent') });
     h.alert('quota-spent-clear', 'ok');
     await h.settle();
     expect(h.module.episodeState()).toEqual([]);
     expect(h.posts.slice(5).map((p) => [p.channelId, p.text]).sort()).toEqual([
       ['zulip:dev', replyClearText('clerk')],
-      ['zulip:ops', statusClearText('clerk', 'quota-spent', 'ok')],
+      ['zulip:ops', statusClearText('clerk', 'quota-spent')],
       ['zulip:other', replyClearText('clerk')],
     ]);
   });
@@ -374,7 +377,7 @@ describe('reply recovery', () => {
     const after = h.posts.slice(3).map((p) => [p.channelId, p.text]).sort();
     expect(after).toEqual([
       ['zulip:dev', replyClearText('clerk')],
-      ['zulip:ops', statusClearText('clerk', 'hard-down', 'inference completed', 'quota-unreadable')],
+      ['zulip:ops', statusClearText('clerk', 'hard-down', 'quota-unreadable')],
     ]);
     await h.incoming('zulip:dev');
     expect(h.posts.length).toBe(5);
@@ -396,7 +399,7 @@ describe('reply recovery', () => {
     expect(h.module.episodeState()).toEqual([]);
     expect(h.posts.slice(2).map((p) => [p.channelId, p.text]).sort()).toEqual([
       ['zulip:dev', replyClearText('clerk')],
-      ['zulip:ops', statusClearText('clerk', 'hard-down', 'inference completed')],
+      ['zulip:ops', statusClearText('clerk', 'hard-down')],
     ]);
   });
 
@@ -557,7 +560,7 @@ describe('waker replies', () => {
 });
 
 describe('status channels', () => {
-  test('status posts carry the operator message after the quiet window; a flap inside it says nothing', async () => {
+  test('status posts say what happened in fixed words after the quiet window; a flap inside it says nothing', async () => {
     const h = await started({ statusChannels: ['zulip:ops'], quietMs: 60_000 });
     h.alert('context-refusal', 'compile refused (over_budget): 212k > 200k');
     expect(h.timers.length).toBe(1);
@@ -569,12 +572,12 @@ describe('status channels', () => {
     h.alert('quota-spent', 'anthropic subscription quota spent (weekly)', { until: 3_600_000 });
     await h.fireTimers();
     expect(h.posts.length).toBe(1);
-    expect(h.posts[0]!.text).toBe(statusNoticeText('clerk', { kind: 'quota-spent', message: 'anthropic subscription quota spent (weekly)', until: 3_600_000 }));
-    expect(h.posts[0]!.text).toContain('quota-spent: anthropic subscription quota spent (weekly)');
+    expect(h.posts[0]!.text).toBe(statusNoticeText('clerk', { kind: 'quota-spent', until: 3_600_000 }));
+    expect(h.posts[0]!.text).not.toContain('anthropic subscription quota spent (weekly)');
     h.alert('quota-spent-clear', 'anthropic credential ok');
     await h.settle();
     expect(h.posts.length).toBe(2);
-    expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'quota-spent', 'anthropic credential ok'));
+    expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'quota-spent'));
   });
 
   test('an instructions-unavailable alert reaches the status channels after the quiet window, and its clear follows', async () => {
@@ -584,11 +587,12 @@ describe('status channels', () => {
     await h.fireTimers();
     expect(h.posts.length).toBe(1);
     expect(h.posts[0]!.channelId).toBe('zulip:ops');
-    expect(h.posts[0]!.text).toContain(`instructions-unavailable: ${lost}`);
+    expect(h.posts[0]!.text).toBe(statusNoticeText('clerk', { kind: 'instructions-unavailable' }));
+    expect(h.posts[0]!.text).not.toContain(lost);
     h.alert('instructions-unavailable-clear', '"instructions/AGENTS.md" loaded again; agents have their instructions');
     await h.settle();
     expect(h.posts.length).toBe(2);
-    expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'instructions-unavailable', '"instructions/AGENTS.md" loaded again; agents have their instructions'));
+    expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'instructions-unavailable'));
   });
 
   test('a credential not written to its file reaches the status channels, answers no one writing to the agent, and its clear follows', async () => {
@@ -599,11 +603,12 @@ describe('status channels', () => {
     await h.incoming('zulip:dev');
     expect(h.posts.length).toBe(1);
     expect(h.posts[0]!.channelId).toBe('zulip:ops');
-    expect(h.posts[0]!.text).toContain(`credential-unsaved: ${unsaved}`);
+    expect(h.posts[0]!.text).toBe(statusNoticeText('clerk', { kind: 'credential-unsaved' }));
+    expect(h.posts[0]!.text).not.toContain(unsaved);
     h.alert('credential-unsaved-clear', 'anthropic credential written to /x/creds.json');
     await h.settle();
     expect(h.posts.length).toBe(2);
-    expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'credential-unsaved', 'anthropic credential written to /x/creds.json'));
+    expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'credential-unsaved'));
   });
 
   test('a status channel that also matches the reply scope is told once, as status', async () => {
@@ -615,12 +620,12 @@ describe('status channels', () => {
     expect(h.posts.length).toBe(1);
     await h.incoming('zulip:dev');
     expect(h.posts.length).toBe(2);
-    expect(h.posts[1]!.text).toBe(replyNoticeText('clerk', { kind: 'hard-down', message: 'failing' }));
+    expect(h.posts[1]!.text).toBe(replyNoticeText('clerk', { kind: 'hard-down' }));
     h.emit({ type: 'inference:completed', agentName: 'clerk' });
     await h.settle();
     expect(h.posts.slice(2).map((p) => [p.channelId, p.text]).sort()).toEqual([
       ['zulip:dev', replyClearText('clerk')],
-      ['zulip:ops', statusClearText('clerk', 'hard-down', 'inference completed')],
+      ['zulip:ops', statusClearText('clerk', 'hard-down')],
     ]);
   });
 
@@ -638,7 +643,7 @@ describe('status channels', () => {
     await h.settle();
     await h.settle();
     expect(h.posts.map((p) => p.text.slice(0, 1))).toEqual(['⚠', '✓']);
-    expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'quota-spent', 'cleared while posting'));
+    expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'quota-spent'));
   });
 
   test('a kind change within an episode re-posts to status channels after the quiet window', async () => {
@@ -650,7 +655,7 @@ describe('status channels', () => {
     expect(h.posts.length).toBe(1);
     await h.fireTimers();
     expect(h.posts.length).toBe(2);
-    expect(h.posts[1]!.text).toContain('auth-rejected: rejected');
+    expect(h.posts[1]!.text).toBe(statusNoticeText('clerk', { kind: 'auth-rejected' }));
   });
 
   test('a kind joining mid-episode does not delay a kind already due; each kind has its own quiet deadline', async () => {
@@ -659,10 +664,10 @@ describe('status channels', () => {
     h.setTime(59_000);
     h.alert('compression-quarantine', '2 chunks');
     await h.fireTimers();
-    expect(h.posts.map((p) => p.text)).toEqual([statusNoticeText('clerk', { kind: 'quota-spent', message: 'spent' })]);
+    expect(h.posts.map((p) => p.text)).toEqual([statusNoticeText('clerk', { kind: 'quota-spent' })]);
     await h.fireTimers();
     expect(h.posts.length).toBe(2);
-    expect(h.posts[1]!.text).toContain('compression-quarantine: 2 chunks');
+    expect(h.posts[1]!.text).toBe(statusNoticeText('clerk', { kind: 'compression-quarantine' }));
   });
 
   test('a kind that clears while its status post is in flight is cleared right after it lands', async () => {
@@ -671,7 +676,7 @@ describe('status channels', () => {
     h.alert('compression-quarantine', '2 chunks');
     h.alert('quota-spent', 'spent');
     await h.settle();
-    expect(h.posts.map((p) => p.text)).toEqual([statusNoticeText('clerk', { kind: 'quota-spent', message: 'spent' })]);
+    expect(h.posts.map((p) => p.text)).toEqual([statusNoticeText('clerk', { kind: 'quota-spent' })]);
     h.alert('compression-quarantine-clear', 'EMPTY');
     await h.settle();
     expect(h.posts.length).toBe(1);
@@ -679,8 +684,8 @@ describe('status channels', () => {
     await h.settle();
     await h.settle();
     expect(h.posts.slice(1).map((p) => p.text)).toEqual([
-      statusNoticeText('clerk', { kind: 'compression-quarantine', message: '2 chunks' }),
-      statusClearText('clerk', 'compression-quarantine', 'cleared while posting', 'quota-spent'),
+      statusNoticeText('clerk', { kind: 'compression-quarantine' }),
+      statusClearText('clerk', 'compression-quarantine', 'quota-spent'),
     ]);
     expect(h.module.episodeState()[0]).toMatchObject({ kinds: ['quota-spent'], statusHeard: { 'zulip:ops': ['quota-spent'] } });
   });
@@ -696,7 +701,7 @@ describe('status channels', () => {
     await h.settle();
     await h.settle();
     expect(h.posts.map((p) => p.text.slice(0, 1))).toEqual(['⚠', '✓']);
-    expect(h.posts[1]!.text).toBe(statusClearText('discord', 'mcpl-down', 'cleared while posting'));
+    expect(h.posts[1]!.text).toBe(statusClearText('discord', 'mcpl-down'));
     expect(h.markers).toEqual([]);
   });
 
@@ -713,11 +718,11 @@ describe('status channels', () => {
     h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
     await h.settle();
     await h.settle();
-    expect(h.posts.map((p) => p.text)).toEqual([statusNoticeText('clerk', { kind: 'quota-spent', message: 'spent' })]);
+    expect(h.posts.map((p) => p.text)).toEqual([statusNoticeText('clerk', { kind: 'quota-spent' })]);
     expect(h.module.episodeState()[0]!.pending).toEqual([]);
     await h.fireTimers();
     expect(h.posts.length).toBe(2);
-    expect(h.posts[1]!.text).toContain('auth-rejected: rejected');
+    expect(h.posts[1]!.text).toBe(statusNoticeText('clerk', { kind: 'auth-rejected' }));
   });
 
   test('a superseded kind forgets its delivery record, so its return is told again', async () => {
@@ -733,14 +738,14 @@ describe('status channels', () => {
     h.alert('auth-login-required-clear', 'ok');
     await h.settle();
     expect(h.posts.length).toBe(4);
-    expect(h.posts[3]!.text).toBe(statusClearText('clerk', 'auth-login-required', 'ok', 'compression-quarantine'));
+    expect(h.posts[3]!.text).toBe(statusClearText('clerk', 'auth-login-required', 'compression-quarantine'));
     h.alert('auth-rejected', 'rejected again');
     await h.settle();
     expect(h.posts.length).toBe(5);
-    expect(h.posts[4]!.text).toContain('auth-rejected: rejected again');
+    expect(h.posts[4]!.text).toBe(statusNoticeText('clerk', { kind: 'auth-rejected' }));
   });
 
-  test('a kind cleared and re-raised while its post is in flight is told anew with the new message', async () => {
+  test('a kind cleared and re-raised while its post is in flight is told anew, and the old post lands with no clear', async () => {
     const h = await started({ statusChannels: ['zulip:ops'] });
     h.alert('quota-spent', 'spent');
     await h.settle();
@@ -750,15 +755,15 @@ describe('status channels', () => {
     h.alert('compression-quarantine', '3 chunks');
     await h.settle();
     expect(h.posts.map((p) => p.text)).toEqual([
-      statusNoticeText('clerk', { kind: 'quota-spent', message: 'spent' }),
-      statusNoticeText('clerk', { kind: 'compression-quarantine', message: '3 chunks' }),
+      statusNoticeText('clerk', { kind: 'quota-spent' }),
+      statusNoticeText('clerk', { kind: 'compression-quarantine' }),
     ]);
     release();
     await h.settle();
     await h.settle();
     const texts = h.posts.map((p) => p.text);
     expect(texts.length).toBe(3);
-    expect(texts.filter((t) => t.includes('3 chunks')).length).toBe(1);
+    expect(texts.filter((t) => t === statusNoticeText('clerk', { kind: 'compression-quarantine' })).length).toBe(2);
     expect(texts.filter((t) => t.startsWith('✓'))).toEqual([]);
     expect(h.module.episodeState()[0]!.statusHeard).toEqual({ 'zulip:ops': ['quota-spent', 'compression-quarantine'] });
   });
@@ -776,7 +781,7 @@ describe('status channels', () => {
     h.emit({ type: 'mcpl:server-reconnected', serverId: 'discord', attempts: 3 });
     await h.settle();
     expect(h.module.episodeState()).toEqual([]);
-    expect(h.posts[1]!.text).toBe(statusClearText('discord', 'mcpl-down', 'reconnected'));
+    expect(h.posts[1]!.text).toBe(statusClearText('discord', 'mcpl-down'));
   });
 });
 
@@ -851,7 +856,7 @@ describe('absent chat server', () => {
     await h.settle();
     await h.settle();
     expect(h.posts.length).toBe(2);
-    expect(h.posts[1]!.text).toContain('auth-rejected: rejected');
+    expect(h.posts[1]!.text).toBe(statusNoticeText('clerk', { kind: 'auth-rejected' }));
     expect(h.module.episodeState()[0]!.statusHeard).toEqual({ 'zulip:ops': ['compression-quarantine', 'auth-rejected'] });
   });
 
@@ -960,15 +965,15 @@ describe('absent chat server', () => {
     expect(h.posts.length).toBe(3);
     expect(h.module.episodeState()).toEqual([]);
     expect(h.module.owedState()).toEqual({
-      'zulip:ops': [statusClearText('clerk', 'compression-quarantine', 'EMPTY', 'quota-spent'), statusClearText('clerk', 'quota-spent', 'ok')],
+      'zulip:ops': [statusClearText('clerk', 'compression-quarantine', 'quota-spent'), statusClearText('clerk', 'quota-spent')],
       'zulip:dev': [replyClearText('clerk')],
     });
     h.broken.delete('zulip');
     h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
     for (let i = 0; i < 4; i++) await h.settle();
     expect(h.posts.slice(3).map((p) => [p.channelId, p.text])).toEqual([
-      ['zulip:ops', statusClearText('clerk', 'compression-quarantine', 'EMPTY', 'quota-spent')],
-      ['zulip:ops', statusClearText('clerk', 'quota-spent', 'ok')],
+      ['zulip:ops', statusClearText('clerk', 'compression-quarantine', 'quota-spent')],
+      ['zulip:ops', statusClearText('clerk', 'quota-spent')],
       ['zulip:dev', replyClearText('clerk')],
     ]);
     expect(h.module.owedState()).toEqual({});
@@ -983,7 +988,7 @@ describe('absent chat server', () => {
     h.alert('compression-quarantine-clear', 'EMPTY');
     h.alert('quota-spent-clear', 'ok');
     await h.settle();
-    const expected = [statusClearText('clerk', 'compression-quarantine', 'EMPTY', 'quota-spent'), statusClearText('clerk', 'quota-spent', 'ok')];
+    const expected = [statusClearText('clerk', 'compression-quarantine', 'quota-spent'), statusClearText('clerk', 'quota-spent')];
     expect(h.module.owedState()).toEqual({ 'zulip:ops': expected });
     h.emit({ type: 'mcpl:server-reconnected', serverId: 'discord', attempts: 1 });
     for (let i = 0; i < 3; i++) await h.settle();
@@ -1013,7 +1018,7 @@ describe('absent chat server', () => {
     releaseSlack();
     for (let i = 0; i < 6; i++) await h.settle();
     const texts = h.posts.slice(4).map((p) => [p.channelId, p.text]);
-    const quarantineClear = statusClearText('clerk', 'compression-quarantine', 'EMPTY', 'quota-spent');
+    const quarantineClear = statusClearText('clerk', 'compression-quarantine', 'quota-spent');
     expect(texts.filter(([ch, t]) => ch === 'zulip:ops' && t === quarantineClear).length).toBe(1);
     expect(texts.filter(([ch, t]) => ch === 'slack:ops' && t === quarantineClear).length).toBe(1);
     expect(h.module.owedState()).toEqual({});
@@ -1050,7 +1055,7 @@ describe('absent chat server', () => {
     h.broken.add('zulip');
     h.alert('compression-quarantine-clear', 'EMPTY');
     await h.settle();
-    expect(h.module.owedState()).toEqual({ 'zulip:ops': [statusClearText('clerk', 'compression-quarantine', 'EMPTY')] });
+    expect(h.module.owedState()).toEqual({ 'zulip:ops': [statusClearText('clerk', 'compression-quarantine')] });
     h.alert('compression-quarantine', '5 chunks');
     h.broken.delete('zulip');
     h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
@@ -1060,10 +1065,10 @@ describe('absent chat server', () => {
     h.alert('compression-quarantine-clear', 'EMPTY again');
     await h.settle();
     expect(h.posts.length).toBe(2);
-    expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'compression-quarantine', 'EMPTY again'));
+    expect(h.posts[1]!.text).toBe(statusClearText('clerk', 'compression-quarantine'));
   });
 
-  test('a returned status kind whose old clear was absorbed is still told with its new details, then cleared once', async () => {
+  test('a returned status kind whose old clear was absorbed is still told again, then cleared once', async () => {
     const h = await started({ statusChannels: ['zulip:ops'], quietMs: 60_000 });
     h.alert('compression-quarantine', '2 chunks');
     await h.fireTimers();
@@ -1077,10 +1082,10 @@ describe('absent chat server', () => {
     expect(h.posts.length).toBe(1);
     await h.fireTimers();
     expect(h.posts.length).toBe(2);
-    expect(h.posts[1]!.text).toContain('compression-quarantine: 5 chunks');
+    expect(h.posts[1]!.text).toBe(statusNoticeText('clerk', { kind: 'compression-quarantine' }));
     h.alert('compression-quarantine-clear', 'EMPTY again');
     await h.settle();
-    expect(h.posts.slice(2).map((p) => p.text)).toEqual([statusClearText('clerk', 'compression-quarantine', 'EMPTY again')]);
+    expect(h.posts.slice(2).map((p) => p.text)).toEqual([statusClearText('clerk', 'compression-quarantine')]);
   });
 
   test('literal channel ids naming servers outside the recipe warn once at start', async () => {
@@ -1151,5 +1156,672 @@ describe('the marker the agent reads', () => {
     expect(h.markers.length).toBe(2);
     expect(h.markers[0]).toStartWith('[host-notice] While you could not respond (quota-spent), the host posted this in zulip:ops:');
     expect(h.markers[1]).toStartWith('[host-notice] The host posted this status notice in zulip:ops about auth-expiring');
+  });
+});
+
+describe('process off-path refusal notices', () => {
+  for (const outcome of ['unknown', 'throw'] as const) {
+    test(`a sent process notice with a lost ${outcome} receipt retries on reconnect and can duplicate`, async () => {
+      const h = await started({ statusChannels: ['zulip:ops'] });
+      const publish = h.framework.channels.publishForAgent;
+      let loseReceipt = true;
+      h.framework.channels.publishForAgent = async (channelId, text, agentName) => {
+        const result = await publish(channelId, text, agentName);
+        if (!loseReceipt) return result;
+        loseReceipt = false;
+        if (outcome === 'throw') throw new Error('receipt connection lost');
+        return { success: false, error: 'posting was not confirmed; receipt lost' };
+      };
+      h.alert('refusal-offpath', 'sent diagnostic', undefined, 'host');
+      await h.settle();
+      expect(h.posts).toHaveLength(1);
+      expect(h.module.episodeState()[0]!.pending).toEqual(['zulip:ops']);
+      await h.fireTimers();
+      expect(h.posts).toHaveLength(1);
+      h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip' });
+      await h.settle();
+      expect(h.posts).toHaveLength(2);
+      expect(h.posts[1]).toEqual(h.posts[0]);
+      expect(h.module.episodeState()).toEqual([]);
+    });
+  }
+
+  for (const delayKind of ['renotifyMs', 'quietMs'] as const) {
+    test(`an oversized ${delayKind} wakes in bounded steps without posting early (R3-2)`, async () => {
+      const delay = 30 * 24 * 60 * 60_000;
+      const maxTimerDelay = 2_147_483_647;
+      const h = await started({ [delayKind]: delay, statusChannels: ['zulip:ops'] });
+      if (delayKind === 'renotifyMs') {
+        h.alert('refusal-offpath', 'acknowledged', undefined, 'host');
+        await h.settle();
+        expect(h.posts).toHaveLength(1);
+      }
+      const initialPosts = h.posts.length;
+      h.alert('refusal-offpath', 'held diagnostic', undefined, 'host');
+      expect(h.timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms)).toEqual([maxTimerDelay]);
+      await h.fireTimers();
+      expect(h.posts).toHaveLength(initialPosts);
+      expect(h.timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms)).toEqual([delay - maxTimerDelay]);
+      await h.fireTimers();
+      expect(h.posts).toHaveLength(initialPosts + 1);
+      expect(h.posts.at(-1)!.text).toBe(statusNoticeText('host', { kind: 'refusal-offpath' }));
+      expect(h.posts.at(-1)!.text).not.toContain('held diagnostic');
+      expect(h.module.episodeState()).toEqual([]);
+    });
+  }
+
+  for (const outcome of ['parked', 'unknown', 'throw'] as const) {
+    test(`a late ${outcome} process result retries once after framework replacement (R3-3)`, async () => {
+      const h = await started({ statusChannels: ['zulip:ops'] }, {
+        brokenServers: ['zulip'],
+        refusal: (server, channelId) => outcome === 'parked' ? serverDown(server, channelId)
+          : outcome === 'throw' ? 'throw' : { error: 'posting was not confirmed' },
+      });
+      const release = h.hold('zulip:ops');
+      h.alert('refusal-offpath', 'held diagnostic', undefined, 'host');
+      await h.module.stop();
+      const replacement = harness();
+      h.module.setFramework(replacement.framework as never);
+      await h.settle();
+      expect(replacement.calls.n).toBe(0);
+      release();
+      for (let i = 0; i < 4; i++) await h.settle();
+      expect(h.calls.n).toBe(1);
+      expect(replacement.calls.n).toBe(1);
+      expect(replacement.posts.map((post) => post.text)).toEqual([statusNoticeText('host', {
+        kind: 'refusal-offpath',
+      })]);
+      expect(h.module.episodeState()).toEqual([]);
+      await h.fireTimers();
+      await h.settle();
+      expect(replacement.calls.n).toBe(1);
+    });
+  }
+
+  test('a sustained 30-second refusal stream coalesces notices at the default floor', async () => {
+    const h = await started({ quietMs: 30_000, statusChannels: ['zulip:ops'] });
+    h.alert('refusal-offpath', 'initial', undefined, 'host');
+    await h.fireTimers();
+    expect(h.posts).toHaveLength(1);
+    for (let t = 60_000; t <= 1_800_000; t += 30_000) {
+      h.setTime(t);
+      h.alert('refusal-offpath', `diagnostic ${t}`, undefined, 'host');
+      h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip' });
+      h.emit({ type: 'module:added', moduleName: 'zulip' });
+      h.module.setFramework(h.framework as never);
+      await h.settle();
+      expect(h.posts).toHaveLength(1);
+    }
+    await h.fireTimers();
+    expect(h.posts.map((p) => p.text)).toEqual([
+      statusNoticeText('host', { kind: 'refusal-offpath' }),
+      statusNoticeText('host', { kind: 'refusal-offpath' }),
+    ]);
+    expect(h.module.episodeState()).toEqual([]);
+  });
+
+  test('a reconnect can retry one pending channel while another receipt is still in flight', async () => {
+    const h = await started({ statusChannels: ['slack:ops', 'zulip:ops'] }, { brokenServers: ['slack', 'zulip'] });
+    h.alert('refusal-offpath', 'pending diagnostic', undefined, 'host');
+    await h.settle();
+    const release = h.hold('slack:ops');
+    h.broken.delete('slack');
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'slack' });
+    await h.settle();
+    expect(h.posts).toEqual([]);
+    h.broken.delete('zulip');
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip' });
+    await h.settle();
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:ops']);
+    release();
+    await h.settle();
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:ops', 'slack:ops']);
+    expect(h.module.episodeState()).toEqual([]);
+  });
+
+  test('per-channel floors survive consumption and a held retry cannot postpone a healthy channel', async () => {
+    const h = await started({ renotifyMs: 100, statusChannels: ['slack:ops', 'zulip:ops'] }, { brokenServers: ['slack'] });
+    h.alert('refusal-offpath', 'first', undefined, 'host');
+    await h.settle();
+    h.setTime(50);
+    const release = h.hold('slack:ops');
+    h.broken.clear();
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'slack' });
+    await h.settle();
+    h.alert('refusal-offpath', 'latest', undefined, 'host');
+    h.setTime(100);
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip' });
+    await h.fireTimers();
+    expect(h.posts.filter((p) => p.channelId === 'zulip:ops').map((p) => p.text)).toEqual([
+      statusNoticeText('host', { kind: 'refusal-offpath' }),
+      statusNoticeText('host', { kind: 'refusal-offpath' }),
+    ]);
+    release();
+    await h.settle();
+    expect(h.posts.filter((p) => p.channelId === 'slack:ops')).toHaveLength(1);
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'slack' });
+    await h.settle();
+    expect(h.posts.filter((p) => p.channelId === 'slack:ops')).toHaveLength(1);
+    await h.fireTimers();
+    expect(h.posts.filter((p) => p.channelId === 'slack:ops').at(-1)!.text).toBe(
+      statusNoticeText('host', { kind: 'refusal-offpath' }));
+    expect(h.module.episodeState()).toEqual([]);
+    h.alert('refusal-offpath', 'after consumption', undefined, 'host');
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'slack' });
+    await h.settle();
+    expect(h.posts.filter((p) => p.channelId === 'slack:ops')).toHaveLength(2);
+    await h.fireTimers();
+    expect(h.posts.filter((p) => p.channelId === 'slack:ops')).toHaveLength(3);
+  });
+
+  test('Monday and Friday refusals deliver fixed host notices to every channel and keep diagnostics private', async () => {
+    const channels = ['zulip:ops', 'slack:ops'];
+    const h = await started({ quietMs: 60_000, statusChannels: channels });
+    const notify = createOffPathRefusalCallback(() => ({
+      notifyOpsAlert: (kind, agent, message, data) => h.alert(kind, message, data, agent),
+    }));
+    notify({ kind: 'complete', model: 'model-monday', category: 'cyber', messages: 19, inputTokens: 47_000 });
+    h.setTime(30_000);
+    notify({ kind: 'complete', model: 'model-monday-latest', category: 'cyber', messages: 20, inputTokens: 48_000 });
+    expect(h.posts).toEqual([]);
+    await h.fireTimers();
+    expect(h.posts.map((p) => [p.channelId, p.text])).toEqual(channels.map((ch) => [ch,
+      statusNoticeText('host', { kind: 'refusal-offpath' })]));
+    expect(h.module.episodeState()).toEqual([]);
+
+    h.setTime(4 * 24 * 60 * 60_000);
+    h.module.setFramework(h.framework as never);
+    h.emit({ type: 'inference:completed', agentName: 'clerk' });
+    notify({ kind: 'complete', model: 'model-friday', category: 'reasoning_extraction', messages: 400, inputTokens: 250_000 });
+    expect(h.posts.length).toBe(2);
+    await h.fireTimers();
+    expect(h.posts.slice(2).map((p) => [p.channelId, p.text])).toEqual(channels.map((ch) => [ch,
+      statusNoticeText('host', { kind: 'refusal-offpath' })]));
+    await h.incoming('zulip:dev');
+    expect(h.posts.length).toBe(4);
+    for (const post of h.posts) {
+      expect(post.text).not.toMatch(/model-monday|model-friday|cyber|reasoning_extraction|48k|250k/);
+      expect(post.text).toContain("an auxiliary model call, such as for a summary, couldn't be completed; see failures.log for details");
+    }
+    expect(h.module.episodeState()).toEqual([]);
+    expect(h.module.owedState()).toEqual({});
+    expect(h.markers).toEqual([]);
+  });
+
+  test('a process notice waits for all channels and sends the latest refusal to channels already told', async () => {
+    const h = await started({ quietMs: 60_000, statusChannels: ['zulip:ops', 'slack:ops'] }, { brokenServers: ['slack'] });
+    h.alert('refusal-offpath', 'first diagnostic', undefined, 'host');
+    await h.fireTimers();
+    expect(h.module.episodeState()[0]).toMatchObject({
+      kinds: ['refusal-offpath'], pending: ['slack:ops'], statusHeard: { 'zulip:ops': ['refusal-offpath'] },
+    });
+    const release = h.hold('slack:ops');
+    h.broken.clear();
+    h.setTime(4 * 24 * 60 * 60_000);
+    h.alert('refusal-offpath', 'intermediate diagnostic', undefined, 'host');
+    h.setTime(4 * 24 * 60 * 60_000 + 30_000);
+    h.alert('refusal-offpath', 'latest diagnostic', undefined, 'host');
+    expect(h.posts.length).toBe(1);
+    await h.fireTimers();
+    expect(h.module.episodeState().length).toBe(1);
+    expect(h.posts.map((p) => p.text)).toEqual([
+      statusNoticeText('host', { kind: 'refusal-offpath' }),
+      statusNoticeText('host', { kind: 'refusal-offpath' }),
+    ]);
+    release();
+    await h.settle();
+    expect(h.posts[2]).toMatchObject({ channelId: 'slack:ops',
+      text: statusNoticeText('host', { kind: 'refusal-offpath' }) });
+    expect(h.module.episodeState()).toEqual([]);
+    expect(h.markers).toEqual([]);
+  });
+
+  for (const oldFails of [false, true]) {
+    test(`a later refusal during an in-flight ${oldFails ? 'failed' : 'successful'} publish is delivered after it`, async () => {
+      const h = await started({ statusChannels: ['zulip:ops'] }, { brokenServers: oldFails ? ['zulip'] : [] });
+      const release = h.hold('zulip:ops');
+      h.alert('refusal-offpath', 'old diagnostic', undefined, 'host');
+      h.alert('refusal-offpath', 'intermediate diagnostic', undefined, 'host');
+      h.alert('refusal-offpath', 'latest diagnostic', undefined, 'host');
+      expect(h.calls.n).toBe(1);
+      h.broken.clear();
+      release();
+      for (let i = 0; i < 3; i++) await h.settle();
+      expect(h.calls.n).toBe(oldFails ? 2 : 1);
+      if (!oldFails) await h.fireTimers();
+      expect(h.calls.n).toBe(2);
+      expect(h.posts.map((p) => p.text)).toEqual([
+        ...(oldFails ? [] : [statusNoticeText('host', { kind: 'refusal-offpath' })]),
+        statusNoticeText('host', { kind: 'refusal-offpath' }),
+      ]);
+      expect(h.module.episodeState()).toEqual([]);
+      expect(h.module.owedState()).toEqual({});
+      expect(h.markers).toEqual([]);
+    });
+  }
+
+  for (const reason of [undefined, 'not-permitted', 'throw'] as const) {
+    for (const retry of ['alert', 'reconnect'] as const) {
+      test(`a first non-parked process failure (${reason ?? 'unclassified'}) waits for the next ${retry}`, async () => {
+        const h = await started({ quietMs: 60_000, statusChannels: ['zulip:ops'] }, {
+          brokenServers: ['zulip'],
+          refusal: () => reason === 'throw' ? 'throw' : { error: 'temporary failure', reason },
+        });
+        h.alert('refusal-offpath', 'first diagnostic', undefined, 'host');
+        await h.fireTimers();
+        expect(h.calls.n).toBe(1);
+        expect(h.module.episodeState()[0]!.pending).toEqual(['zulip:ops']);
+        h.broken.clear();
+        await h.fireTimers();
+        expect(h.calls.n).toBe(1);
+        if (retry === 'alert') h.alert('refusal-offpath', 'latest diagnostic', undefined, 'host');
+        else h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+        await h.fireTimers();
+        for (let i = 0; i < 3; i++) await h.settle();
+        expect(h.calls.n).toBe(2);
+        expect(h.posts.map((p) => p.text)).toEqual([statusNoticeText('host', {
+          kind: 'refusal-offpath',
+        })]);
+        expect(h.module.episodeState()).toEqual([]);
+        expect(h.markers).toEqual([]);
+      });
+    }
+  }
+
+  test('setFramework reflushes a parked result that arrives after the replacement flush', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] }, { brokenServers: ['zulip'] });
+    const release = h.hold('zulip:ops');
+    h.alert('refusal-offpath', 'held diagnostic', undefined, 'host');
+    const replacement = harness();
+    h.module.setFramework(replacement.framework as never);
+    await h.settle();
+    expect(replacement.calls.n).toBe(0);
+    release();
+    for (let i = 0; i < 4; i++) await h.settle();
+    expect(h.calls.n).toBe(1);
+    expect(h.posts).toEqual([]);
+    expect(replacement.calls.n).toBe(1);
+    expect(replacement.posts.map((p) => p.text)).toEqual([statusNoticeText('host', {
+      kind: 'refusal-offpath',
+    })]);
+    expect(h.module.episodeState()).toEqual([]);
+    expect([...h.markers, ...replacement.markers]).toEqual([]);
+  });
+
+  test('an older agent publish cannot discard an unheard process refusal retry for host', async () => {
+    const h = await started({ agentName: 'host', statusChannels: ['zulip:ops'] });
+    const release = h.hold('zulip:ops');
+    h.alert('context-refusal', 'held agent diagnostic', undefined, 'host');
+    h.broken.add('zulip');
+    h.alert('refusal-offpath', 'unheard process diagnostic', undefined, 'host');
+    await h.settle();
+    expect(h.module.episodeState().find((ep) => ep.kind === 'refusal-offpath')!.pending).toContain('zulip:ops');
+    h.broken.clear();
+    release();
+    await h.settle();
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+    for (let i = 0; i < 3; i++) await h.settle();
+    expect(h.posts.some((p) => p.text === statusNoticeText('host', {
+      kind: 'refusal-offpath',
+    }))).toBe(true);
+    expect(h.module.episodeState()[0]!.kinds).not.toContain('refusal-offpath');
+  });
+
+  test('a successful reply clears its own pending channel while a process status is still unheard', async () => {
+    const h = await started({ agentName: 'host', statusChannels: ['slack:ops'], replyIn: ['zulip:*'] }, { brokenServers: ['slack', 'zulip'] });
+    h.alert('refusal-offpath', 'pending process diagnostic', undefined, 'host');
+    h.alert('quota-spent', 'agent waits for quota', undefined, 'host');
+    await h.incoming('zulip:dev');
+    await h.settle();
+    expect(h.module.episodeState().find((ep) => ep.kind === 'quota-spent')!.pending).toContain('zulip:dev');
+    h.broken.delete('zulip');
+    await h.incoming('zulip:dev');
+    await h.settle();
+    expect(h.module.episodeState().find((ep) => ep.kind === 'quota-spent')!.pending).not.toContain('zulip:dev');
+    expect(h.module.episodeState()[0]!.pending).toContain('slack:ops');
+    expect(h.posts.filter((p) => p.channelId === 'zulip:dev')).toHaveLength(1);
+  });
+
+  test('a pending process notice does not retain marker history across incidents for an agent named host', async () => {
+    const h = await started({ agentName: 'host', statusChannels: ['zulip:ops', 'slack:ops'] }, { brokenServers: ['slack'] });
+    h.alert('refusal-offpath', 'process refusal', undefined, 'host');
+    const release = h.hold('zulip:ops');
+    h.alert('context-refusal', 'first agent incident', undefined, 'host');
+    await h.settle();
+    expect(h.markers.length).toBe(0);
+    h.emit({ type: 'inference:completed', agentName: 'host' });
+    await h.settle();
+    expect(h.module.episodeState()[0]!.kinds).toEqual(['refusal-offpath']);
+    release();
+    await h.settle();
+    expect(h.markers.length).toBe(1);
+    expect(h.posts.filter((p) => p.text.includes('cleared')).every((p) => !p.text.includes('refusal-offpath'))).toBe(true);
+    expect(h.posts.some((p) => p.text === statusClearText('host', 'context-refusal'))).toBe(true);
+    h.alert('context-refusal', 'second agent incident', undefined, 'host');
+    await h.settle();
+    expect(h.markers.length).toBe(2);
+    expect(h.markers.every((m) => m.startsWith('[host-notice] While you could not respond (context-refusal)'))).toBe(true);
+    expect(h.markers[0]).not.toContain('first agent incident');
+    expect(h.markers[1]).not.toContain('second agent incident');
+    expect(h.posts.filter((p) => p.text.includes('— refusal-offpath:')).map((p) => p.text)).toEqual([
+      statusNoticeText('host', { kind: 'refusal-offpath' }),
+    ]);
+  });
+
+  test('process notices with no status channels are consumed immediately without replies or context', async () => {
+    const h = await started({ kinds: { 'refusal-offpath': 'reply' } });
+    h.emit({ type: 'inference:started', agentName: 'clerk', channelId: 'zulip:dev' });
+    h.emit({ type: 'inference:exhausted', agentName: 'clerk' });
+    for (let i = 0; i < 2; i++) {
+      h.alert('refusal-offpath', `diagnostic ${i}`, undefined, 'host');
+      expect(h.module.episodeState()).toEqual([]);
+    }
+    await h.incoming('zulip:dev');
+    await h.fireTimers();
+    expect(h.calls.n).toBe(0);
+    expect(h.posts).toEqual([]);
+    expect(h.markers).toEqual([]);
+    expect(h.module.owedState()).toEqual({});
+  });
+
+  for (const agentName of ['clerk', undefined]) {
+    test(`shared adapter callback delivers a quiet host status with agentName=${agentName}`, async () => {
+      const h = await started({ agentName, quietMs: 60_000, statusChannels: ['zulip:ops'] });
+      const adapter = new LoggingAnthropicAdapter({ apiKey: 'test-key' }, '/tmp/llm-test.jsonl');
+      adapter.onRefusal = createOffPathRefusalCallback(() => ({
+        notifyOpsAlert: (kind, agent, message, data) => h.alert(kind, message, data, agent),
+      }));
+      const observed = adapter as unknown as {
+        observeCall: (...args: unknown[]) => void;
+      };
+      observed.observeCall('complete', '2026-10-28T00:00:00Z', 100,
+        { model: 'claude-opus-5-5', messages: new Array(19).fill({}) }, {},
+        { response: { usage: { inputTokens: 1_000, cacheReadTokens: 43_000, cacheCreationTokens: 3_000 },
+          raw: { stop_reason: 'refusal', stop_details: { category: 'cyber' } } } });
+      const message = 'off-path refusal (category=cyber) on a 19-message claude-opus-5-5 complete() call (~47k tok) — likely compression/summarizer';
+      expect(h.module.episodeState()).toEqual([expect.objectContaining({ key: 'host', tier: 'status' })]);
+      await h.incoming('zulip:dev');
+      expect(h.posts).toEqual([]);
+      await h.fireTimers();
+      expect(h.posts).toEqual([{ channelId: 'zulip:ops', agentName: agentName ?? 'host',
+        text: statusNoticeText('host', { kind: 'refusal-offpath' }) }]);
+      h.alert('refusal-offpath', message, undefined, 'host');
+      h.alert('refusal-offpath-clear', 'wrong subject', undefined, 'other');
+      for (const type of ['inference:completed', 'inference:turn_ended']) {
+        h.emit({ type, agentName: 'clerk' });
+      }
+      await h.fireTimers();
+      expect(h.posts.length).toBe(2);
+      expect(h.module.episodeState()).toEqual([]);
+      expect(h.markers).toEqual([]);
+    });
+  }
+
+  test('reply overrides cap the process notice at status and ordinary foreign agents remain filtered', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'], kinds: { 'refusal-offpath': 'reply' } });
+    h.emit({ type: 'inference:started', agentName: 'clerk', channelId: 'zulip:dev' });
+    h.emit({ type: 'inference:exhausted', agentName: 'clerk' });
+    h.alert('refusal-offpath', 'unknown caller', undefined, 'host');
+    h.alert('refusal-offpath', 'foreign refusal', undefined, 'other');
+    h.alert('hard-down', 'foreign outage', undefined, 'other');
+    h.alert('hard-down', 'host is not a general agent bypass', undefined, 'host');
+    await h.incoming('zulip:dev');
+    await h.settle();
+    expect(h.module.episodeState()).toEqual([]);
+    expect(h.posts.map((p) => p.channelId)).toEqual(['zulip:ops']);
+    expect(h.markers).toEqual([]);
+  });
+
+  test('silent overrides keep process notices silent', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'], kinds: { 'refusal-offpath': 'silent' } });
+    h.alert('refusal-offpath', 'unknown caller', undefined, 'host');
+    await h.fireTimers();
+    await h.incoming('zulip:dev');
+    expect(h.module.episodeState()).toEqual([]);
+    expect(h.posts).toEqual([]);
+    expect(h.markers).toEqual([]);
+  });
+
+  for (const type of ['inference:completed', 'inference:turn_ended']) {
+    for (const agentName of ['clerk', undefined, 'host']) {
+      test(`${type} clears agent kinds while retaining process refusal with agentName=${agentName}`, async () => {
+        const h = await started({ agentName, quietMs: 60_000, statusChannels: ['zulip:ops'] });
+        h.alert('refusal-offpath', 'unknown caller', undefined, 'host');
+        const agent = agentName ?? 'clerk';
+        for (const kind of ['hard-down', 'context-refusal', 'context-maintenance-failed']) {
+          h.alert(kind, kind, undefined, agent);
+        }
+        if (agent !== 'host') h.alert('refusal-offpath', 'known agent', undefined, agent);
+        await h.incoming('zulip:dev');
+        expect(h.posts[0]!.text).toBe(replyNoticeText(agent, { kind: 'hard-down' }));
+        h.emit({ type, agentName: agent });
+        await h.settle();
+        expect(h.module.episodeState()).toEqual([expect.objectContaining({ key: 'host', kinds: ['refusal-offpath'], tier: 'status' })]);
+        expect(h.posts.map((p) => p.text)).toEqual([replyNoticeText(agent, { kind: 'hard-down' }), replyClearText(agent)]);
+        await h.incoming('zulip:dev');
+        expect(h.posts.length).toBe(2);
+      });
+    }
+  }
+
+  test('mixed component and agent kinds retain their existing selection and recovery signals', async () => {
+    const h = await started({ agentName: undefined, quietMs: 60_000, statusChannels: ['zulip:ops'] });
+    h.alert('refusal-offpath', 'unknown caller', undefined, 'host');
+    h.alert('mcpl-down', 'component down', undefined, 'host');
+    h.alert('context-refusal', 'agent compile refused', undefined, 'host');
+    h.emit({ type: 'inference:completed', agentName: 'host' });
+    expect(h.module.episodeState().map((ep) => ep.kinds)).toEqual([['refusal-offpath'], ['mcpl-down', 'context-refusal']]);
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'host', attempts: 1 });
+    await h.settle();
+    expect(h.module.episodeState().map((ep) => ep.kinds)).toEqual([['refusal-offpath'], ['context-refusal']]);
+    h.emit({ type: 'inference:completed', agentName: 'host' });
+    expect(h.module.episodeState()[0]!.kinds).toEqual(['refusal-offpath']);
+  });
+
+  for (const timing of ['before', 'after', 'during']) {
+    test(`process clear ${timing} status delivery produces no recovery line`, async () => {
+      const h = await started({ quietMs: 60_000, statusChannels: ['zulip:ops'] });
+      h.alert('refusal-offpath', 'unknown caller', undefined, 'host');
+      const release = timing === 'during' ? h.hold('zulip:ops') : undefined;
+      if (timing !== 'before') await h.fireTimers();
+      expect(h.posts.length).toBe(timing === 'after' ? 1 : 0);
+      h.alert('refusal-offpath-clear', 'explicit recovery', undefined, 'host');
+      release?.();
+      await h.fireTimers();
+      await h.settle();
+      expect(h.module.episodeState()).toEqual([]);
+      expect(h.markers).toEqual([]);
+      expect(h.posts.map((p) => p.text)).toEqual([
+        statusNoticeText('host', { kind: 'refusal-offpath' }),
+      ]);
+    });
+  }
+
+  test('reconnect retries parked process delivery without claiming auxiliary recovery', async () => {
+    const h = await started({ quietMs: 60_000, statusChannels: ['zulip:ops'] }, { brokenServers: ['zulip'] });
+    h.alert('refusal-offpath', 'unknown caller', undefined, 'host');
+    await h.fireTimers();
+    expect(h.calls.n).toBe(1);
+    expect(h.posts).toEqual([]);
+    expect(h.module.episodeState()[0]!.pending).toEqual(['zulip:ops']);
+    h.broken.clear();
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'zulip', attempts: 1 });
+    for (let i = 0; i < 3; i++) await h.settle();
+    expect(h.posts.map((p) => p.text)).toEqual([statusNoticeText('host', { kind: 'refusal-offpath' })]);
+    expect(h.module.episodeState()).toEqual([]);
+    expect(h.markers).toEqual([]);
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'host', attempts: 1 });
+    await h.settle();
+    expect(h.posts.length).toBe(1);
+    expect(h.module.episodeState()).toEqual([]);
+    h.alert('refusal-offpath-clear', 'explicit recovery', undefined, 'host');
+    await h.settle();
+    expect(h.posts.length).toBe(1);
+    expect(h.module.episodeState()).toEqual([]);
+  });
+});
+
+const SENTINEL = 'sentinel-7f3a provider said: invalid x-api-key';
+
+describe("an alert's message stays with the operator", () => {
+  const WORDS: Array<[kind: string, text: string, subject?: string]> = [
+    ['hard-down', '⚠ [host notice] clerk — hard-down: its model calls keep failing.'],
+    ['quota-spent', '⚠ [host notice] clerk — quota-spent: its subscription quota is spent.'],
+    ['auth-expired', '⚠ [host notice] clerk — auth-expired: its provider credential has expired.'],
+    ['auth-rejected', '⚠ [host notice] clerk — auth-rejected: its provider credential was rejected.'],
+    ['auth-login-required', '⚠ [host notice] clerk — auth-login-required: its provider login must be redone.'],
+    ['provider-hold', '⚠ [host notice] clerk — provider-hold: the provider is holding its requests.'],
+    ['context-refusal', "⚠ [host notice] clerk — context-refusal: its context couldn't be compiled for a request."],
+    ['mcpl-down', "⚠ [host notice] discord — mcpl-down: this server isn't answering.", 'discord'],
+    ['quota-unreadable', "⚠ [host notice] clerk — quota-unreadable: its subscription quota couldn't be read, so no spent-quota hold is possible; an operator's Re-read quota reads it again."],
+    ['auth-expiring', '⚠ [host notice] clerk — auth-expiring: its provider credential expires soon.'],
+    ['credential-unsaved', "⚠ [host notice] clerk — credential-unsaved: its provider credential couldn't be saved to its file, so a restart may not find the credential in use; an operator's Re-check writes it again."],
+    ['refusal-offpath', "⚠ [host notice] clerk — refusal-offpath: an auxiliary model call, such as for a summary, couldn't be completed; see failures.log for details."],
+    ['refusal', "⚠ [host notice] clerk — refusal: a request couldn't be completed."],
+    ['context-maintenance-failed', "⚠ [host notice] clerk — context-maintenance-failed: its context maintenance didn't finish; failures.log says why."],
+    ['compression-quarantine', "⚠ [host notice] clerk — compression-quarantine: part of its history is held back from summaries and stays whole, which takes room in its context budget; this alone does not stop it, and the host's health report lists what is held."],
+    ['instructions-unavailable', "⚠ [host notice] clerk — instructions-unavailable: its instructions couldn't be loaded, so none are injected; failures.log says why."],
+    ['a-kind-of-its-own', '⚠ [host notice] clerk — a-kind-of-its-own: the host raised an alert of this kind.'],
+  ];
+  for (const [kind, text, subject] of WORDS) {
+    test(`the ${kind} status notice says what happened in fixed words, and no word of the alert's message`, async () => {
+      const h = await started({ statusChannels: ['zulip:ops'], kinds: { refusal: 'status', 'a-kind-of-its-own': 'status' } });
+      h.alert(kind, SENTINEL, undefined, subject ?? 'clerk');
+      await h.settle();
+      expect(h.posts.map((p) => [p.channelId, p.text])).toEqual([['zulip:ops', text]]);
+    });
+  }
+
+  test('a notice with an announced end says when, after the fixed words', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    h.alert('quota-spent', SENTINEL, { until: 3_600_000 });
+    await h.settle();
+    expect(h.posts.map((p) => p.text)).toEqual([
+      '⚠ [host notice] clerk — quota-spent: its subscription quota is spent. Expected back after 1970-01-01 01:00 UTC.',
+    ]);
+  });
+
+  test('an expiring credential says when it expires, not when the agent is back', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    h.alert('auth-expiring', SENTINEL, { until: 3_600_000 });
+    await h.settle();
+    expect(h.posts.map((p) => p.text)).toEqual([
+      '⚠ [host notice] clerk — auth-expiring: its provider credential expires soon. The credential expires at 1970-01-01 01:00 UTC.',
+    ]);
+  });
+
+  test('a recipe that makes auth-expiring a reply kind gets the expiry wording in its reply too', () => {
+    expect(replyNoticeText('clerk', { kind: 'auth-expiring', until: 3_600_000 })).toBe(
+      '⚠ [host notice] clerk cannot respond right now: it is temporarily unavailable (auth-expiring). The credential expires at 1970-01-01 01:00 UTC. An operator has been alerted.',
+    );
+  });
+
+  test('a kind named like an Object property takes the fallback words', () => {
+    expect(statusNoticeText('clerk', { kind: 'constructor', until: 3_600_000 })).toBe(
+      '⚠ [host notice] clerk — constructor: the host raised an alert of this kind. Expected back after 1970-01-01 01:00 UTC.',
+    );
+    expect(statusNoticeText('clerk', { kind: 'toString' })).toBe('⚠ [host notice] clerk — toString: the host raised an alert of this kind.');
+    expect(replyNoticeText('clerk', { kind: 'hasOwnProperty', until: 3_600_000 })).toBe(
+      '⚠ [host notice] clerk cannot respond right now: it is temporarily unavailable (hasOwnProperty). Expected back after 1970-01-01 01:00 UTC. An operator has been alerted.',
+    );
+  });
+
+  test('every kind the host tiers by default has fixed words of its own, and none takes the fallback', () => {
+    for (const [kind, tier] of Object.entries(DEFAULT_TIERS)) {
+      expect([kind, statusNoticeText('clerk', { kind })]).not.toEqual([kind, `⚠ [host notice] clerk — ${kind}: the host raised an alert of this kind.`]);
+      if (tier === 'reply') expect([kind, replyNoticeText('clerk', { kind })]).not.toEqual([kind, expect.stringContaining('temporarily unavailable')]);
+    }
+  });
+
+  test('a clear says which kind cleared and which stays open, and nothing of why it cleared', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    h.alert('quota-spent', SENTINEL);
+    h.alert('compression-quarantine', SENTINEL);
+    await h.settle();
+    h.alert('compression-quarantine-clear', SENTINEL);
+    await h.settle();
+    h.alert('quota-spent-clear', SENTINEL);
+    await h.settle();
+    h.alert('hard-down', SENTINEL);
+    await h.settle();
+    h.emit({ type: 'inference:completed', agentName: 'clerk' });
+    await h.settle();
+    h.alert('mcpl-down', SENTINEL, undefined, 'discord');
+    await h.settle();
+    h.emit({ type: 'mcpl:server-reconnected', serverId: 'discord', attempts: 1 });
+    await h.settle();
+    expect(h.posts.map((p) => p.text).filter((t) => t.startsWith('✓'))).toEqual([
+      '✓ [host notice] clerk — compression-quarantine cleared. Still: quota-spent.',
+      '✓ [host notice] clerk — quota-spent cleared.',
+      '✓ [host notice] clerk — hard-down cleared.',
+      '✓ [host notice] discord — mcpl-down cleared.',
+    ]);
+  });
+
+  test('a clear that lands while its notice is posting names no cause either', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'] });
+    const release = h.hold('zulip:ops');
+    h.alert('quota-spent', SENTINEL);
+    await h.settle();
+    h.alert('quota-spent-clear', SENTINEL);
+    await h.settle();
+    release();
+    await h.settle();
+    await h.settle();
+    expect(h.posts.map((p) => p.text)).toEqual([
+      '⚠ [host notice] clerk — quota-spent: its subscription quota is spent.',
+      '✓ [host notice] clerk — quota-spent cleared.',
+    ]);
+  });
+
+  test('no post, and no marker the agent reads, carries an alert message, while the TUI line shows it', async () => {
+    const h = await started({ statusChannels: ['zulip:ops'], kinds: { refusal: 'status' } });
+    h.alert('hard-down', `inference failed 3 times in a row. Last reason: ${SENTINEL}`);
+    h.alert('context-refusal', `compile refused (over_budget): ${SENTINEL}`);
+    h.alert('refusal', `category=${SENTINEL}`, { category: SENTINEL, streak: 2 });
+    h.alert('compression-quarantine', `2 chunk(s) in compression quarantine: ${SENTINEL}`);
+    await h.settle();
+    await h.incoming('zulip:dev');
+    h.alert('refusal-clear', SENTINEL);
+    await h.settle();
+    h.emit({ type: 'inference:completed', agentName: 'clerk' });
+    await h.settle();
+    const ops = h.posts.filter((p) => p.channelId === 'zulip:ops').map((p) => p.text);
+    for (const kind of ['hard-down', 'context-refusal', 'refusal', 'compression-quarantine']) {
+      expect(ops).toContain(statusNoticeText('clerk', { kind }));
+    }
+    expect(h.posts.filter((p) => p.channelId === 'zulip:dev').map((p) => p.text)).toEqual([replyNoticeText('clerk', { kind: 'hard-down' }), replyClearText('clerk')]);
+    const quarantine = statusNoticeText('clerk', { kind: 'compression-quarantine' });
+    expect(h.markers).toContain(
+      `[host-notice] The host posted this status notice in zulip:ops about compression-quarantine, for whoever runs it; nothing in it needs you to act: "${quarantine}"`,
+    );
+    expect(h.markers.filter((m) => m.startsWith('[host-notice] While you could not respond ('))).toEqual([
+      `[host-notice] While you could not respond (hard-down), the host posted this in zulip:ops: "${statusNoticeText('clerk', { kind: 'hard-down' })}"`,
+    ]);
+    for (const text of [...h.posts.map((p) => p.text), ...h.markers]) expect(text).not.toContain('sentinel-7f3a');
+    const line = formatWireEvent({ type: 'ops:alert', kind: 'hard-down', agentName: 'clerk', message: `Last reason: ${SENTINEL}` } as never);
+    expect(line?.text).toContain(SENTINEL);
+  });
+
+  test("an off-path refusal and a failed context maintenance are told to the agent as status, not as a time it couldn't respond", async () => {
+    for (const kind of ['refusal-offpath', 'context-maintenance-failed']) {
+      const h = await started({ statusChannels: ['zulip:ops'] });
+      h.alert(kind, SENTINEL);
+      await h.settle();
+      expect([kind, h.markers]).toEqual([kind, [
+        `[host-notice] The host posted this status notice in zulip:ops about ${kind}, for whoever runs it; nothing in it needs you to act: "${statusNoticeText('clerk', { kind })}"`,
+      ]]);
+    }
+  });
+
+  test('a reply notice, and the marker it writes, carry no alert message', async () => {
+    const h = await started();
+    h.alert('hard-down', `inference failed 3 times in a row. Last reason: ${SENTINEL}`);
+    await h.settle();
+    await h.incoming('zulip:dev');
+    await h.settle();
+    const reply = replyNoticeText('clerk', { kind: 'hard-down' });
+    expect(h.posts.map((p) => [p.channelId, p.text])).toEqual([['zulip:dev', reply]]);
+    expect(h.markers).toEqual([`[host-notice] While you could not respond (hard-down), the host posted this in zulip:dev: "${reply}"`]);
   });
 });
