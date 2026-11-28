@@ -530,6 +530,53 @@ describe('the mode', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('a headless.log that rolled over live is read with headless.log.1 back to that file\'s marker, so the run\'s earlier lines count', () => {
+    const dir = canaryDataDir();
+    try {
+      mkdirSync(dir, { recursive: true });
+      // An older run, then this run's boot and early lines, in the file the rollover moved aside.
+      writeFileSync(join(dir, 'headless.log.1'), '\n--- session 2026-10-11T22:00:00.000Z ---\n[mcpl] older run\n\n--- session 2026-10-11T23:30:00.000Z ---\nFailed to connect MCPL server "x": refused\n[mcpl] a\n[gate] b\n');
+      writeFileSync(join(dir, 'headless.log'), '\n--- session 2026-10-11T23:31:00.000Z ---\n[2026-10-11T23:31:00.000Z] headless.log rolled over at 67108864 bytes; the lines before this are in headless.log.1\n[mcpl] c\n');
+      const facts = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
+      expect(facts.hostErrors?.log).toBe('headless.log.1 + headless.log');
+      expect(facts.hostErrors?.tags).toEqual([['mcpl', 2], ['gate', 1]]);
+      // A run whose part of headless.log.1 outran the window is said to be cut short (R3-2).
+      writeFileSync(join(dir, 'headless.log.1'), `\n--- session 2026-10-11T23:30:00.000Z ---\n[mcpl] boot\n${'x'.repeat(5 * 1024 * 1024)}\n[gate] late\n`);
+      const cut = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
+      expect(cut.hostErrors?.log).toBe('headless.log.1 + headless.log');
+      expect(cut.hostErrors?.truncated).toBe(true);
+      expect([...(cut.hostErrors?.tags ?? [])].sort()).toEqual([['gate', 1], ['mcpl', 1]]);
+      // The notice names headless.log.1, and it can't be read: the report has
+      // the part after the rollover alone, and says so (R4-5).
+      rmSync(join(dir, 'headless.log.1'));
+      const gone = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
+      expect(gone.hostErrors?.log).toBe('headless.log');
+      expect(gone.hostErrors?.truncated).toBe(true);
+      expect(gone.hostErrors?.tags).toEqual([['mcpl', 1]]);
+      // Without the notice (a rollover at start, or none), headless.log.1 is left alone.
+      writeFileSync(join(dir, 'headless.log'), '\n--- session 2026-10-11T23:31:00.000Z ---\n[mcpl] c\n');
+      const plain = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
+      expect(plain.hostErrors?.log).toBe('headless.log');
+      expect(plain.hostErrors?.tags).toEqual([['mcpl', 1]]);
+      expect(plain.hostErrors?.truncated).toBe(false);
+      // A session that opened after a reopen with no rollover — the path was
+      // gone, or the start ran on stderr — holds the part after it alone, and
+      // the report says the run is cut, as it does for a lost headless.log.1 (R5-4).
+      for (const notice of [
+        'headless.log was gone (deleted, or moved by something other than the host) and was opened anew',
+        'headless.log is open from here; the 1048576 bytes of lines before this went to stderr',
+      ]) {
+        writeFileSync(join(dir, 'headless.log'), `\n--- session 2026-10-11T23:32:00.000Z ---\n[2026-10-11T23:32:00.000Z] ${notice}\n[mcpl] d\n`);
+        const reopened = gatherBugReportFacts({ now: NOW, mode: 'headless', dataDir: dir, recipe: {}, liveServers: [], serverConfig: () => undefined });
+        expect(reopened.hostErrors?.log, notice).toBe('headless.log');
+        expect(reopened.hostErrors?.truncated, notice).toBe(true);
+        expect(reopened.hostErrors?.tags, notice).toEqual([['mcpl', 1]]);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('who runs it', () => {

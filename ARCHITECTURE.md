@@ -420,7 +420,7 @@ Under `$DATA_DIR` (default `./data`):
 | `llm-calls.<iso>.jsonl` | Provider call log, one per process. |
 | `lessons.json` | Lesson store (shared by every session in the data dir). |
 | `observers.json`, `identity-key.pem` | WebUI observer grants; identity keypair. |
-| `ipc.sock`, `headless.log`, `headless.pid` | Headless mode. |
+| `ipc.sock`, `headless.log`, `headless.log.1`, `headless.pid` | Headless mode; `headless.log.1` is the log rolled over past 64 MiB. |
 | `mcpl-servers.agent.child.json` | A fleet child's own agent overlay, named to it by `MCPL_AGENT_OVERLAY_FILE`. |
 | `tui-error.log` | TUI-mode stderr. |
 | `readline-error.log` | Readline-mode stderr, on a terminal. |
